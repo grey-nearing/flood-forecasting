@@ -514,7 +514,7 @@ Data settings
        dynamic_inputs:
          1D:
            - prcp(mm/day)_daymet
-         1H:
+         1h:
            - total_precipitation_nldas_hourly
 
 -  ``forecast_inputs``: These are dynamic features (exactly like ``dyncamic_inputs``)

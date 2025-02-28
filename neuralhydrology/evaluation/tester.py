@@ -297,7 +297,7 @@ class BaseTester(object):
 
                 if metrics:
                     for target_variable in self.cfg.target_variables:
-                        # stack dates and time_steps so we don't just evaluate every 24H when use_frequencies=[1D, 1H]
+                        # stack dates and time_steps so we don't just evaluate every 24h when use_frequencies=[1D, 1h]
                         obs = xr.isel(time_step=slice(-frequency_factor, None)) \
                             .stack(datetime=['date', 'time_step']) \
                             .drop_vars({'datetime', 'date', 'time_step'})[f"{target_variable}_obs"]

@@ -74,7 +74,7 @@ class HourlyCamelsUS(camelsus.CamelsUS):
             else:
                 # load daily CAMELS forcings and upsample to hourly
                 df, _ = camelsus.load_camels_us_forcings(self.cfg.data_dir, basin, forcing)
-                df = df.resample('1H').ffill()
+                df = df.resample('1h').ffill()
             if len(self.cfg.forcings) > 1:
                 # rename columns
                 df = df.rename(columns={col: f"{col}_{forcing}" for col in df.columns if 'qobs' not in col.lower()})
@@ -94,7 +94,7 @@ class HourlyCamelsUS(camelsus.CamelsUS):
             # add daily discharge from CAMELS, using daymet to get basin area
             _, area = camelsus.load_camels_us_forcings(self.cfg.data_dir, basin, "daymet")
             discharge = camelsus.load_camels_us_discharge(self.cfg.data_dir, basin, area)
-            discharge = discharge.resample('1H').ffill()
+            discharge = discharge.resample('1h').ffill()
             df["QObs(mm/d)"] = discharge
 
         # only warn for missing netcdf files once for each forcing product
@@ -260,7 +260,7 @@ def load_hourly_us_stage(data_dir: Path, basin: str) -> pd.Series:
                      index_col=['datetime'],
                      parse_dates=['datetime'],
                      usecols=['datetime', 'gauge_height_ft'])
-    df = df.resample('H').mean()
+    df = df.resample('h').mean()
     df["gauge_height_m"] = df["gauge_height_ft"] * 0.3048
 
     return df["gauge_height_m"]
