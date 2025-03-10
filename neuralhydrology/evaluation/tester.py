@@ -432,7 +432,9 @@ class BaseTester(object):
             for data in loader:
 
                 for key in data:
-                    if not key.startswith('date'):
+                    if key.startswith('x_d'):
+                        data[key] = {k: v.to(self.device) for k, v in data[key].items()}
+                    elif not key.startswith('date'):
                         data[key] = data[key].to(self.device)
                 data = model.pre_model_hook(data, is_train=False)
                 predictions, loss = self._get_predictions_and_loss(model, data)

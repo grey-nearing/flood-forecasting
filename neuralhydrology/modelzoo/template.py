@@ -35,7 +35,7 @@ class TemplateModel(BaseModel):
         # Create model parts here #
         ###########################
 
-    def forward(self, data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(self, data: dict[str, torch.Tensor | dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         """Forward pass through the model
 
                 By convention, each forward pass has to accept a dict of input tensors. Usually, this dict contains
@@ -48,9 +48,10 @@ class TemplateModel(BaseModel):
 
                 Parameters
                 ----------
-                data : Dict[str, torch.Tensor]
+                data : dict[str, torch.Tensor | dict[str, torch.Tensor]]
                      Dictionary with tensors
-                        - x_d of shape [batch size, sequence length, features] containing the dynamic input data.
+                        - x_d, a dictionary with the dynamic input data. Each key is a feature name, and each
+                            value is a tensor of shape [batch size, sequence length, 1].
                         - x_s of shape [batch size, features] containing static input features. These are the
                             concatenation of what is defined in the config under static_attributes and evolving_attributes.
                             In case not a single camels attribute or static input feature is defined in the config,
@@ -60,7 +61,7 @@ class TemplateModel(BaseModel):
                             not be present.
                             
                         Note: If the input data are available at multiple frequencies (via use_frequencies), each input
-                            tensor will have a suffix "_{freq}" indicating the tensor's frequency.
+                            dictionary key will have a suffix "_{freq}" indicating the corresponding value's frequency.
 
                 Returns
                 -------

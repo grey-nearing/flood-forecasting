@@ -37,26 +37,29 @@ class InputLayer(nn.Module):
     def __init__(self, cfg: Config, embedding_type: str = 'full_model'):
         super(InputLayer, self).__init__()
 
-        if embedding_type not in _EMBEDDING_TYPES:
+        self.embedding_type = embedding_type
+        if embedding_type == 'full_model':
+            self._dynamic_inputs = cfg.dynamic_inputs
+            self._x_d_key = 'x_d'
+        elif embedding_type == 'forecast':
+            self._dynamic_inputs = cfg.forecast_inputs
+            self._x_d_key = 'x_d_forecast'
+        elif embedding_type == 'hindcast':
+            self._dynamic_inputs = cfg.hindcast_inputs
+            self._x_d_key = 'x_d_hindcast'
+        else:
             raise ValueError(
                 f'Embedding type {embedding_type} is not recognized. '
                 f'Must be one of: {_EMBEDDING_TYPES}.'
             )
-        self.embedding_type = embedding_type
-        if embedding_type == 'full_model':
-            dynamic_inputs = cfg.dynamic_inputs
-        elif embedding_type == 'forecast':
-            dynamic_inputs = cfg.forecast_inputs
-        elif embedding_type == 'hindcast':
-            dynamic_inputs = cfg.hindcast_inputs
-            
-        if isinstance(dynamic_inputs, dict):
-            frequencies = list(dynamic_inputs.keys())
+
+        if isinstance(self._dynamic_inputs, dict):
+            frequencies = list(self._dynamic_inputs.keys())
             if len(frequencies) > 1:
                 raise ValueError('InputLayer only supports single-frequency data')
-            dynamics_input_size = len(dynamic_inputs[frequencies[0]])
+            dynamics_input_size = len(self._dynamic_inputs[frequencies[0]])
         else:
-            dynamics_input_size = len(dynamic_inputs)
+            dynamics_input_size = len(self._dynamic_inputs)
 
         self._num_autoregression_inputs = 0
         if cfg.autoregressive_inputs:
@@ -83,6 +86,7 @@ class InputLayer(nn.Module):
         self.output_size = self.dynamics_output_size + self.statics_output_size + self._num_autoregression_inputs
         if cfg.head.lower() == "umal":
             self.output_size += 1
+        self.cfg = cfg
 
     @staticmethod
     def _get_embedding_net(embedding_spec: Optional[dict], input_size: int, purpose: str) -> Tuple[nn.Module, int]:
@@ -142,14 +146,17 @@ class InputLayer(nn.Module):
             If `concatenate_output` is True, a single tensor is returned. Else, a tuple with one tensor of dynamic
             inputs and one tensor of static inputs.
         """
+        features = self._dynamic_inputs
+        if isinstance(features, dict):
+            features = features[list(features.keys())[0]]
+        if self.cfg.timestep_counter:
+            if self.embedding_type == 'hindcast':
+                features += ['hindcast_counter']
+            elif self.embedding_type == 'forecast':
+                features += ['forecast_counter']
+
         # transpose to [seq_length, batch_size, n_features]
-        if self.embedding_type == 'full_model':
-            data_type = 'x_d'
-        elif self.embedding_type == 'forecast':
-            data_type = 'x_f'
-        elif self.embedding_type == 'hindcast':
-            data_type = 'x_h'
-        x_d = data[data_type].transpose(0, 1)
+        x_d = torch.cat([data['x_d'][k] for k in features], dim=-1).transpose(0, 1)
 
         if 'x_s' in data and 'x_one_hot' in data:
             x_s = torch.cat([data['x_s'], data['x_one_hot']], dim=-1)
@@ -160,11 +167,7 @@ class InputLayer(nn.Module):
         else:
             x_s = None
 
-        # Don't run autoregressive inputs through the embedding layer. This does not work with NaN's
-        if self._num_autoregression_inputs > 0:
-            dynamics_out = self.dynamics_embedding(x_d[:, :, :-self._num_autoregression_inputs])
-        else:
-            dynamics_out = self.dynamics_embedding(x_d)
+        dynamics_out = self.dynamics_embedding(x_d)
 
         statics_out = None
         if x_s is not None:
@@ -178,10 +181,13 @@ class InputLayer(nn.Module):
                 ret_val = torch.cat([dynamics_out, statics_out], dim=-1)
             else:
                 ret_val = dynamics_out
-            
+
             # Append autoregressive inputs to the end of the output.
+            # Don't run autoregressive inputs through the embedding layer. This does not work with NaN's.
             if self._num_autoregression_inputs:
-                ret_val = torch.cat([ret_val, x_d[:, :, -self._num_autoregression_inputs:]], dim=-1)
+                x_autoregressive = torch.cat([data[self._x_d_key][k]
+                                              for k in self.cfg.autoregressive_inputs], dim=-1).transpose(0, 1)
+                ret_val = torch.cat([ret_val, x_autoregressive], dim=-1)
 
         return ret_val
 
