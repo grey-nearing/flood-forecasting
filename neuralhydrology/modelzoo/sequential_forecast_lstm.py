@@ -7,7 +7,6 @@ from neuralhydrology.modelzoo.inputlayer import InputLayer
 from neuralhydrology.modelzoo.head import get_head
 from neuralhydrology.modelzoo.basemodel import BaseModel
 from neuralhydrology.utils.config import Config
-from neuralhydrology.modelzoo.fc import FC
 
 
 class SequentialForecastLSTM(BaseModel):

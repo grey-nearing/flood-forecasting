@@ -62,6 +62,8 @@ class ODELSTM(BaseModel):
             raise ValueError('ODELSTM needs at least two frequencies.')
         if isinstance(cfg.dynamic_inputs, dict) or isinstance(cfg.hidden_size, dict):
             raise ValueError('ODELSTM does not support per-frequency input variables or hidden sizes.')
+        if isinstance(cfg.dynamic_inputs[0], list):
+            raise ValueError('ODELSTM does not support input feature groups.')
 
         # Note: be aware that frequency_factors and slice_timesteps have a slightly different meaning here vs. in
         # MTSLSTM. Here, the frequency_factor is relative to the _lowest_ (not the next-lower) frequency.

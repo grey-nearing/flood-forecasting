@@ -82,6 +82,8 @@ class MTSLSTM(BaseModel):
             input_sizes += 1
 
         if isinstance(cfg.dynamic_inputs, list):
+            if isinstance(cfg.dynamic_inputs[0], list):
+                raise ValueError("MTS-LSTM does not support input feature groups.")
             self._dynamic_inputs = {freq: cfg.dynamic_inputs for freq in self._frequencies}
             input_sizes = {freq: input_sizes + len(cfg.dynamic_inputs) for freq in self._frequencies}
         else:

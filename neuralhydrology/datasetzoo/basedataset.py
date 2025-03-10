@@ -82,7 +82,7 @@ class BaseDataset(Dataset):
                 raise ValueError("For basin id embedding, the id_to_int dictionary has to be passed anything but train")
 
         if self.cfg.timestep_counter:
-            if not self.cfg.forecast_inputs:
+            if not self.cfg.forecast_inputs_flattened:
                 raise ValueError('Timestep counter only works for forecast data.')
             if cfg.forecast_overlap:
                 overlap_zeros = torch.zeros((cfg.forecast_overlap, 1))
@@ -170,13 +170,22 @@ class BaseDataset(Dataset):
             sample[f'{x_d_key}_hindcast'] = {}
             sample[f'{x_d_key}_forecast'] = {}
             for k, v in self._x_d[basin][freq].items():
-                if k in self.cfg.hindcast_inputs:
+                if k in self.cfg.hindcast_inputs_flattened:
                     sample[f'{x_d_key}_hindcast'][k] = v[hindcast_start_idx:hindcast_end_idx]
-                if k in self.cfg.forecast_inputs:
+                if k in self.cfg.forecast_inputs_flattened:
                     sample[f'{x_d_key}_forecast'][k] = v[forecast_start_idx:global_end_idx]
-                if not self.cfg.hindcast_inputs:
+                if not self.cfg.hindcast_inputs_flattened:
                     sample[x_d_key][k] = v[hindcast_start_idx:global_end_idx]
 
+            if self.is_train and (self.cfg.nan_step_probability or self.cfg.nan_sequence_probability):
+                if self.cfg.hindcast_inputs_flattened:
+                    sample[f'{x_d_key}_hindcast'] = self._add_nan_streaks(sample[f'{x_d_key}_hindcast'],
+                                                                          groups=self.cfg.hindcast_inputs)
+                    sample[f'{x_d_key}_forecast'] = self._add_nan_streaks(sample[f'{x_d_key}_forecast'],
+                                                                          groups=self.cfg.forecast_inputs)
+                else:
+                    sample[x_d_key] = self._add_nan_streaks(sample[x_d_key],
+                                                            groups=self.cfg.dynamic_inputs)
             sample[f'y{freq_suffix}'] = self._y[basin][freq][hindcast_start_idx:global_end_idx]
             sample[f'date{freq_suffix}'] = self._dates[basin][freq][hindcast_start_idx:global_end_idx]
 
@@ -200,6 +209,29 @@ class BaseDataset(Dataset):
                                                               num_classes=len(self.id_to_int)).to(torch.float32)
 
         return sample
+
+    def _add_nan_streaks(self, x_d: dict[str, torch.Tensor], groups: list[list[str]]) -> dict[str, torch.Tensor]:
+        """Samples NaN streaks for each feature group."""
+        if not groups or not isinstance(groups[0], list):
+            raise ValueError('For dropout streaks, dynamic_inputs must be a list of lists.')
+        seq_length = x_d[groups[0][0]].shape[0]
+        drop_masks = np.zeros((len(groups), seq_length, 1), dtype=bool)
+        drop_sequences = np.random.choice([True, False], p=[self.cfg.nan_sequence_probability,
+                                                            1-self.cfg.nan_sequence_probability],
+                                          size=len(groups))
+        if drop_sequences.all():
+            # Don't allow all sequences to be dropped out.
+            drop_sequences[np.random.choice(len(groups))] = False
+        for i in range(len(groups)):
+            drop_steps = np.random.choice([True, False], p=[self.cfg.nan_step_probability,
+                                                            1-self.cfg.nan_step_probability],
+                                          size=(seq_length, 1))
+            drop_masks[i] = drop_sequences[i] | drop_steps
+        drop_masks = torch.from_numpy(drop_masks)
+        for i, group in enumerate(groups):
+            for feature in group:
+                x_d[feature] = torch.where(drop_masks[i], torch.nan, x_d[feature])
+        return x_d
 
     def _load_basin_data(self, basin: str) -> pd.DataFrame:
         """This function has to return the data for the specified basin as a time-indexed pandas DataFrame"""
@@ -318,7 +350,7 @@ class BaseDataset(Dataset):
             keep_cols = self.cfg.target_variables + self.cfg.evolving_attributes + self.cfg.mass_inputs + self.cfg.autoregressive_inputs
 
             if isinstance(self.cfg.dynamic_inputs, list):
-                keep_cols += self.cfg.dynamic_inputs
+                keep_cols += self.cfg.dynamic_inputs_flattened
             else:
                 # keep all frequencies' dynamic inputs
                 keep_cols += [i for inputs in self.cfg.dynamic_inputs.values() for i in inputs]
@@ -542,7 +574,7 @@ class BaseDataset(Dataset):
             for freq in self.frequencies:
                 # make sure that possible mass inputs are sorted to the beginning of the dynamic feature list
                 if isinstance(self.cfg.dynamic_inputs, list):
-                    dynamic_cols = self.cfg.mass_inputs + self.cfg.dynamic_inputs
+                    dynamic_cols = self.cfg.mass_inputs + self.cfg.dynamic_inputs_flattened
                 else:
                     dynamic_cols = self.cfg.mass_inputs + self.cfg.dynamic_inputs[freq]
 
@@ -615,7 +647,7 @@ class BaseDataset(Dataset):
 
             # only store data if this basin has at least one valid sample in the given period
             if valid_samples.size > 0:
-                if self.cfg.forecast_inputs and not self.cfg.hindcast_inputs:
+                if self.cfg.forecast_inputs_flattened and not self.cfg.hindcast_inputs_flattened:
                     raise ValueError('Hindcast inputs must be provided if forecast inputs are provided.')
                 self._x_d[basin] = {freq: {k: torch.from_numpy(v.astype(np.float32))
                                            for k, v in _x_d.items()}

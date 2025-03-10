@@ -99,7 +99,7 @@ class LamaH(BaseDataset):
             for val in cfg.dynamic_inputs.values():
                 all_variables = all_variables + val
         else:
-            all_variables = all_variables + cfg.dynamic_inputs
+            all_variables = all_variables + cfg.dynamic_inputs_flattened
         return all_variables
 
     def _load_basin_data(self, basin: str) -> pd.DataFrame:

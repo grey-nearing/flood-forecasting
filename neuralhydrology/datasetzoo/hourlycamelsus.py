@@ -87,7 +87,7 @@ class HourlyCamelsUS(camelsus.CamelsUS):
             for val in self.cfg.dynamic_inputs.values():
                 all_features = all_features + val
         elif isinstance(self.cfg.dynamic_inputs, list):
-            all_features = all_features + self.cfg.dynamic_inputs
+            all_features = all_features + self.cfg.dynamic_inputs_flattened
 
         # catch also QObs(mm/d)_shiftX or _copyX features
         if any([x.startswith("QObs(mm/d)") for x in all_features]):
