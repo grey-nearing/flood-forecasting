@@ -396,7 +396,12 @@ class BaseTester(object):
 
         # save metrics any time this function is called, as long as they exist
         if self.cfg.metrics and results is not None:
-            df = metrics_to_dataframe(results, self.cfg.metrics)
+            metrics_list = self.cfg.metrics
+            if isinstance(metrics_list, dict):
+                metrics_list = list(set(metrics_list.values()))
+            if "all" in metrics_list:
+                metrics_list = get_available_metrics()
+            df = metrics_to_dataframe(results, metrics_list, self.cfg.target_variables)
             metrics_file = parent_directory / f"{self.period}_metrics.csv"
             df.to_csv(metrics_file)
             LOGGER.info(f"Stored metrics at {metrics_file}")
