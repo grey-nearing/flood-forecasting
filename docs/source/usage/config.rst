@@ -407,7 +407,7 @@ Training settings
    sequence length, else an int.
 
 -  ``forecast_seq_length``: Length of the forecast sequence. This is the
-   number of timesteps in the total ``seq_length`` that are part of the 
+   number of timesteps from the total ``seq_length`` that are part of the 
    forecast rather than the hindcast. Note that this does not add to the
    total ``seq_length``, and thus, the forecast sequence length must be
    less than the total sequence length.
@@ -416,7 +416,8 @@ Training settings
    data overlaps with hindcast data. This does not add to the
    ``forecast_sequence_length``, and must be no larger than the
    ``forecast_sequence_length``. This is used for 
-   ``ForecastOverlapMSERegularization`` in the ``handoff_forecast_model``.
+   ``ForecastOverlapMSERegularization`` in the ``handoff_forecast_model``
+   and for the ``stacked_lstm`` model.
 
 -  ``predict_last_n``: Defines which time steps are used to calculate
    the loss, counted backwards. Can't be larger than ``seq_length``.

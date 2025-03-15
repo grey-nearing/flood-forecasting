@@ -234,7 +234,7 @@ class Config(object):
                 raise ValueError('Forecast sequence length must be < sequence length.')
             if cfg.get('forecast_overlap'):
                 if cfg['forecast_overlap'] > cfg['forecast_seq_length']:
-                    raise ValueError('Forecast overlap must be <= forecast_seq_length.')
+                    raise ValueError('Forecast overlap must be <= forecast sequence length.')
 
         # Check autoregressive inputs.
         if 'autoregressive_inputs' in cfg:
