@@ -584,7 +584,7 @@ class Multimet(Dataset):
         # values are True for a dimension.
         indices = dask.array.nonzero(valid_sample_mask.data)
         # Compact memory widths. Values are indexes within each mask's shape.
-        dtypes = [np.min_scalar_type(n - 1) for n in valid_sample_mask.shape]
+        dtypes = map(np.min_scalar_type, valid_sample_mask.shape)
         indices = tuple(idx.astype(dt) for idx, dt in zip(indices, dtypes))
 
         return valid_sample_mask, indices
