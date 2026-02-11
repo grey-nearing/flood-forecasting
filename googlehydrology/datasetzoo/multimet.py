@@ -382,15 +382,18 @@ class Multimet(Dataset):
             raise ValueError(f'Requested index {item} is not an integer.')
 
         # TODO (future) :: Suggest remove outer keys and use only feature names. Major change required.
+        sample_index = self._sample_index[item]
         sample = {
-            'date': self._extract_dates(item),
-            'x_s': self._extract_statics(item),
-            'x_d_hindcast': self._extract_hindcasts(item),
-            'x_d_forecast': self._extract_forecasts(item),
-            'y': self._extract_targets(item),
+            'date': self._extract_dates(sample_index),
+            'x_s': self._extract_statics(sample_index),
+            'x_d_hindcast': self._extract_hindcasts(sample_index),
+            'x_d_forecast': self._extract_forecasts(sample_index),
+            'y': self._extract_targets(sample_index),
         }
         if self._per_basin_target_stds is not None:
-            sample['per_basin_target_stds'] = self._extract_per_basin_stds(item)
+            sample['per_basin_target_stds'] = self._extract_per_basin_stds(
+                sample_index
+            )
         if self._hindcast_counter is not None:
             sample['x_d_hindcast']['hindcast_counter'] = np.expand_dims(
                 self._hindcast_counter, -1
@@ -406,37 +409,39 @@ class Multimet(Dataset):
             _ = sample.pop('x_d_forecast')
 
         # Can't use strings. Torch does not support it in tensors.
-        sample['basin_index'] = np.array(
-            self._sample_index[item]['basin'], dtype=np.int16
-        )
+        sample['basin_index'] = np.array(sample_index['basin'], dtype=np.int16)
 
         return sample
 
-    def _calc_date_range(self, item: int, *, lead: bool = False) -> range:
-        date = self._sample_index[item]['date']
+    def _calc_date_range(
+        self, sample_index: dict[str, int], *, lead: bool = False
+    ) -> range:
+        date = sample_index['date']
         duration = self._seq_length - 1
         if not lead and not self._lead_times:
             return range(date - duration, date + 1)
         end = date + self.lead_time
         return range(end - duration, end + 1)
 
-    def _extract_dates(self, item: int) -> np.ndarray:
-        date = self._calc_date_range(item)
+    def _extract_dates(self, sample_index: dict[str, int]) -> np.ndarray:
+        date = self._calc_date_range(sample_index)
         features = self._extract_dataset(
             self._dataset, ['date'], {'date': date}
         )
         return features['date']
 
-    def _extract_statics(self, item: int) -> np.ndarray:
-        basin = self._sample_index[item]['basin']
+    def _extract_statics(self, sample_index: dict[str, int]) -> np.ndarray:
+        basin = sample_index['basin']
         features = self._extract_dataset(
             self._dataset, self._static_features, {'basin': basin}
         )
         return np.stack([features[e] for e in self._static_features], axis=-1)
 
-    def _extract_hindcasts(self, item: int) -> dict[str, np.ndarray]:
+    def _extract_hindcasts(
+        self, sample_index: dict[str, int]
+    ) -> dict[str, np.ndarray]:
         # Extract hindcast features without lead_time.
-        dim_indexes_without_lead_time = self._sample_index[item].copy()
+        dim_indexes_without_lead_time = sample_index.copy()
         dim_indexes_without_lead_time['date'] = range(
             dim_indexes_without_lead_time['date'] - self._seq_length + 1,
             dim_indexes_without_lead_time['date'] + 1,
@@ -449,7 +454,7 @@ class Multimet(Dataset):
 
         # Forecast features with lead_time may be used as hindcast features. In that case, we select
         # only the first lead_time value, and move selection period one day backwards.
-        dim_indexes_with_lead_time = self._sample_index[item].copy()
+        dim_indexes_with_lead_time = sample_index.copy()
         dim_indexes_with_lead_time['lead_time'] = 0
         dim_indexes_with_lead_time['date'] = range(
             dim_indexes_with_lead_time['date'] - self._seq_length,
@@ -469,12 +474,14 @@ class Multimet(Dataset):
         # There is no need for this except that it is how basedataset works, and everything else expects
         # the trailing dim. Remove this dependency in the future.
 
-    def _extract_forecasts(self, item: int) -> dict[str, np.ndarray]:
+    def _extract_forecasts(
+        self, sample_index: dict[str, int]
+    ) -> dict[str, np.ndarray]:
         features = self._extract_dataset(
-            self._dataset, self._forecast_features, self._sample_index[item]
+            self._dataset, self._forecast_features, sample_index
         )
         if self._forecast_overlap is not None and self._forecast_overlap > 0:
-            dim_indexes = self._sample_index[item].copy()
+            dim_indexes = sample_index.copy()
             dim_indexes['date'] = range(
                 dim_indexes['date']
                 + 1
@@ -498,20 +505,22 @@ class Multimet(Dataset):
         # There is no need for this except that it is how basedataset works, and everything else expects
         # the trailing dim. Remove this dependency in the future.
 
-    def _extract_targets(self, item: int) -> np.ndarray:
-        dim_indexes = self._sample_index[item].copy()
-        dim_indexes['date'] = self._calc_date_range(item, lead=True)
+    def _extract_targets(self, sample_index: dict[str, int]) -> np.ndarray:
+        dim_indexes = sample_index.copy()
+        dim_indexes['date'] = self._calc_date_range(sample_index, lead=True)
         features = self._extract_dataset(
             self._dataset, self._target_features, dim_indexes
         )
         return np.stack([features[e] for e in self._target_features], axis=-1)
 
-    def _extract_per_basin_stds(self, item: int) -> np.ndarray:
+    def _extract_per_basin_stds(
+        self, sample_index: dict[str, int]
+    ) -> np.ndarray:
         assert self._per_basin_target_stds is not None
         features = self._extract_dataset(
             self._per_basin_target_stds,
             self._target_features,
-            {'basin': self._sample_index[item]['basin']},
+            {'basin': sample_index['basin']},
         )
         return np.expand_dims(
             np.stack([features[e] for e in self._target_features], axis=-1),
