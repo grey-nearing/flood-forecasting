@@ -306,30 +306,31 @@ class Multimet(Dataset):
         #       computing indices needs going over all data (scaled) - so -
         #       those 3 are computed together.
 
-        if cfg.lazy_load:
-            LOGGER.debug('[lazy_load] pre-compute scaler')
-            (self.scaler.scaler,) = dask.compute(self.scaler.scaler)
-            memory.release()
+        LOGGER.debug('compute scaler')
+        (self.scaler.scaler,) = dask.compute(self.scaler.scaler)
+        memory.release()
+
         LOGGER.debug('scale data')
         self._dataset = self.scaler.scale(self._dataset)
 
+        if not cfg.lazy_load:
+            LOGGER.debug('[eager load] compute dataset')
+            (self._dataset,) = dask.compute(self._dataset)
+            memory.release()
+        else:
+            LOGGER.debug('[lazy load] not computing dataset')
+
         LOGGER.debug('create valid sample mask and indices plan')
         valid_sample_mask, indices = self._create_valid_sample_mask()
-
-        if cfg.lazy_load:
-            LOGGER.debug('[lazy_load] post-compute indices')
-            (indices,) = dask.compute(indices)
-        else:
-            LOGGER.debug('compute dataset, scaler, indices')
-            (self._dataset, self.scaler.scaler, indices) = dask.compute(
-                self._dataset, self.scaler.scaler, indices
-            )
+        LOGGER.debug('compute indices')
+        (indices,) = dask.compute(indices)
         memory.release()
 
         LOGGER.debug(f'Dataset size: {sizeof(self._dataset) / 1024**2} MB')
         LOGGER.debug(f'Dataset on disk: {self._dataset.nbytes / 1024**2} MB')
         LOGGER.debug(f'Sample index size: {sizeof(indices) / 1024**2} MB')
 
+        # TODO(future) :: Move above to the scalar compute block
         LOGGER.debug('scaler check zero scale')
         self.scaler.check_zero_scale()
         LOGGER.debug('scaler save')
