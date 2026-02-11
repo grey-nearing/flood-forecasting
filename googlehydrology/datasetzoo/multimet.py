@@ -406,8 +406,9 @@ class Multimet(Dataset):
             _ = sample.pop('x_d_forecast')
 
         # Can't use strings. Torch does not support it in tensors.
+        min_dtype = np.min_scalar_type(self._sample_index[item]['basin'])
         sample['basin_index'] = np.array(
-            self._sample_index[item]['basin'], dtype=np.int16
+            self._sample_index[item]['basin'], dtype=min_dtype
         )
 
         return sample
