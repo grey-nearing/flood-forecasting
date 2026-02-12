@@ -410,7 +410,7 @@ class Multimet(Dataset):
 
         # Can't use strings. Torch does not support it in tensors.
         basin_index = sample_index['basin']
-        # Use signed type: -1 handles limits, e.g. 128 -> int16.
+        # Use signed type: -1 handles limits, e.g. 128 > -128 > -129 > int16.
         min_dtype = np.min_scalar_type(-basin_index  - 1)
         sample['basin_index'] = np.array(basin_index , dtype=min_dtype)
 
