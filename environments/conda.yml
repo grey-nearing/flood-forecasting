@@ -15,7 +15,7 @@
 # How to install:
 # conda env create -f environments/conda.yml
 
-name: googlehydrology_test
+name: googlehydrology
 channels:  # Keep order
   - pytorch
   - nvidia
