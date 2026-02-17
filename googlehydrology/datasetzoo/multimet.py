@@ -904,7 +904,7 @@ class Multimet(Dataset):
         xr.Dataset
             Dataset containing the loaded features with dimensions (date, basin).
         """
-        if self._cfg.load_target_features_parallel_processes < 2:
+        if self._cfg.experimental_load_target_features_parallel_processes < 2:
             return load_caravan_timeseries_together(
                 self._targets_data_path,
                 self._basins,
@@ -933,7 +933,7 @@ class Multimet(Dataset):
 
         batch_size = math.ceil(
             len(self._basins)
-            / self._cfg.load_target_features_parallel_processes
+            / self._cfg.experimental_load_target_features_parallel_processes
         )
         batches = itertools.batched(self._basins, batch_size)
         processes = tuple(map(create_loader_process, batches))
