@@ -672,10 +672,8 @@ class Multimet(Dataset):
         LOGGER.debug('merge')
         ds = xr.merge(datasets, join='outer')
 
-        LOGGER.debug('chunk')
-        ds = ds.chunk('auto')
-        LOGGER.debug('unify_chunks')
-        ds = ds.unify_chunks()
+        LOGGER.debug('rechunk')
+        ds = rechunk(ds)
 
         return ds
 
@@ -1098,3 +1096,6 @@ class SampleIndexer:
 
     def get_column(self, dim: str):
         return next(v for (k, v) in self._aligned_indices if k == dim)
+
+def rechunk(ds: xr.Dataset | xr.DataTree) -> xr.Dataset:
+    return ds.chunk('auto').unify_chunks()
