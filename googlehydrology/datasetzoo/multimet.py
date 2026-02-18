@@ -310,6 +310,12 @@ class Multimet(Dataset):
         (self.scaler.scaler,) = dask.compute(self.scaler.scaler)
         memory.release()
 
+        LOGGER.debug('scaler check zero scale')
+        self.scaler.check_zero_scale()
+        if compute_scaler:
+            LOGGER.debug('scaler save')
+            self.scaler.save()
+
         LOGGER.debug('scale data')
         self._dataset = self.scaler.scale(self._dataset)
 
@@ -329,12 +335,6 @@ class Multimet(Dataset):
         LOGGER.debug(f'Dataset size: {sizeof(self._dataset) / 1024**2} MB')
         LOGGER.debug(f'Dataset on disk: {self._dataset.nbytes / 1024**2} MB')
         LOGGER.debug(f'Sample index size: {sizeof(indices) / 1024**2} MB')
-
-        # TODO(future) :: Move above to the scalar compute block
-        LOGGER.debug('scaler check zero scale')
-        self.scaler.check_zero_scale()
-        LOGGER.debug('scaler save')
-        self.scaler.save()
 
         # Create sample index lookup table for `__getitem__`.
         LOGGER.debug('create sample index')
