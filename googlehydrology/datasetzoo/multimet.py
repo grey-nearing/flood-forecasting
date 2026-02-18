@@ -107,7 +107,10 @@ class MultimetDataLoader(torch.utils.data.DataLoader):
                 {k: _convert_to_tensor(k, v) for k, v in sample.items()}
                 for sample in batch
             ]
-            yield self.collate_fn(batch)
+            batch = self.collate_fn(batch)
+
+            del indices
+            yield batch
 
     def __len__(self):
         return len(self.batch_sampler)
