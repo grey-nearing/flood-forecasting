@@ -113,8 +113,8 @@ class BaseTester(object):
 
         self.dataset = self._get_dataset_all()
 
-        exclude_basins = set(self._calc_exclude_basins())
-        self.basins = tuple(e for e in self.basins if e not in exclude_basins)
+        exclude_basins = set(self._calc_exclude_basins())  # Needs self.dataset
+        self.basins = [e for e in self.basins if e not in exclude_basins]
 
     def _set_device(self):
         if self.cfg.device is not None:
