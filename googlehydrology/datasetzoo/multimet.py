@@ -729,12 +729,21 @@ class Multimet(Dataset):
         return product_dss
 
     def _load_hindcast_as_csv(self) -> xr.Dataset:
-        return load_caravan_timeseries_together(
+        """Load hindcast data and add a 0-day lead_time dimension."""
+        ds = load_caravan_timeseries_together(
             data_dir=self._dynamics_data_path,
             basins=self._basins,
             target_features=self._hindcast_features,
             csv=True,
         )
+        
+        # Expand dimensions to include a 0-day lead time coordinate
+        ds = ds.expand_dims(lead_time=[pd.Timedelta(0, unit='D')])
+        
+        # Match the units attribute from the forecast loading logic
+        ds['lead_time'].attrs['units'] = 'timedelta (days)'
+        
+        return ds
 
     def _load_forecast_as_csv(self) -> xr.Dataset:
         """Load Caravan-Multimet data for forecast features with file fallback logic.
@@ -774,9 +783,15 @@ class Multimet(Dataset):
                 if lead_time_file_path.exists():
                     
                     # Load and set time column as index. Column names (lead times) become data.
-                    df = pd.read_csv(lead_time_file_path, index_col=0, parse_dates=True)
+                    # Load directly as float32 to save memory (avoids astype() copying later)
+                    df = pd.read_csv(
+                        lead_time_file_path, 
+                        index_col=0, 
+                        parse_dates=True, 
+                        dtype='float32'
+                    )
                     df.index.name = 'date'
-                    
+
                     # Melt lead times from columns into a new dimension/level
                     # The column headers (lead times) are currently strings, e.g., '0', '1', '2'
                     ds_melt = df.stack().to_frame(name=feature)
@@ -787,9 +802,9 @@ class Multimet(Dataset):
                     
                     # Convert lead_time from string/int to Timedelta for consistency.
                     if 'lead_time' in da.coords:
-                        # Assuming the numbers in the column headers represent lead time in hours ('h').
-                        da['lead_time'] = pd.to_timedelta(da['lead_time'].astype(int), unit='h')
-                        da['lead_time'].attrs['units'] = 'timedelta (hours)'
+                        # Convert column headers to represent lead time in days ('D').
+                        da['lead_time'] = pd.to_timedelta(da['lead_time'].astype(int), unit='D')
+                        da['lead_time'].attrs['units'] = 'timedelta (days)'
 
 
                 # --- 2. Fallback to file without lead time (Structure: rows=date, cols=feature) ---
