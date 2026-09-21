@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import functools
 import itertools
 import logging
@@ -320,9 +321,63 @@ class Multimet(Dataset):
             self.scaler.save()
 
         LOGGER.debug('scale data')
-        self._dataset = self.scaler.scale(self._dataset)
+        # `_dataset_all` holds the (still lazy) graph for every basin. The
+        # per-basin-set materialization lives in `load_basins`, so that a
+        # caller can later swap which basins are resident without rebuilding
+        # the dataset. Loading every basin is the default and is what happens
+        # here, so behaviour is unchanged.
+        self._dataset_all = self.scaler.scale(self._dataset)
+        del self._dataset
 
-        if not cfg.lazy_load:
+        self.load_basins()
+
+        LOGGER.debug('forecast dataset init complete (%s)', self._period)
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether a basin set is currently materialized."""
+        return hasattr(self, '_dataset')
+
+    def unload_basins(self) -> None:
+        """Release the materialized basin set, keeping the lazy graph.
+
+        Safe to call when nothing is loaded. After this returns, the dataset
+        is unusable until `load_basins` is called again -- `__len__` and
+        `__getitem__` will raise.
+        """
+        for attribute in (
+            '_dataset',
+            '_sample_index',
+            '_num_samples',
+            '_per_basin_target_stds',
+        ):
+            # `suppress` so that one missing attribute does not strand the
+            # rest; `unload_basins` must be callable from any state.
+            with contextlib.suppress(AttributeError):
+                delattr(self, attribute)
+
+        # Must be cleared alongside `_dataset`: entries are keyed on
+        # `id(dataset)` and hold references into the materialized arrays, so
+        # keeping them would both pin the memory we are trying to free and
+        # risk a stale hit if a new dataset reused the same address.
+        self._data_cache: dict[str, xr.DataArray] = {}
+
+        memory.release()
+
+    def load_basins(self, basins: list[str] | None = None) -> None:
+        """Materialize `basins` (default: all of them) for sampling.
+
+        Replaces whatever was previously loaded.
+        """
+        self.unload_basins()
+
+        if basins is None:
+            self._dataset = self._dataset_all
+        else:
+            LOGGER.debug('[load %d basins] (%s)', len(basins), self._period)
+            self._dataset = self._dataset_all.sel(basin=basins)
+
+        if not self._cfg.lazy_load:
             LOGGER.debug('[eager load] compute dataset')
             (self._dataset,) = dask.compute(self._dataset)
             memory.release()
@@ -347,7 +402,7 @@ class Multimet(Dataset):
         # TODO (future) :: Find a better way to decide whether to calculate these. At least keep a list of
         # losses that require them somewhere like `training.__init__.py`. Perhaps simply always calculate.
         self._per_basin_target_stds = None
-        if cfg.loss.lower() in ['nse']:
+        if self._cfg.loss.lower() in ['nse']:
             LOGGER.debug('create per_basin_target_stds')
             self._per_basin_target_stds = self._dataset[
                 self._target_features
@@ -360,11 +415,17 @@ class Multimet(Dataset):
                 skipna=True,
             )
 
-        self._data_cache: dict[str, xr.DataArray] = {}
-
-        LOGGER.debug('forecast dataset init complete (%s)', self._period)
+    def _check_loaded(self) -> None:
+        if not self.is_loaded:
+            raise RuntimeError(
+                'No basins are loaded. `load_basins()` must be called before '
+                'the dataset can be sampled (it is called by `__init__`, so '
+                'this means `unload_basins()` was called and not followed by '
+                'a matching `load_basins()`).'
+            )
 
     def __len__(self) -> int:
+        self._check_loaded()
         return self._num_samples
 
     def __getitem__(
