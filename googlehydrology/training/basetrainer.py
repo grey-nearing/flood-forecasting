@@ -38,6 +38,7 @@ from googlehydrology.training import (
     get_regularization_obj,
     loss,
 )
+from googlehydrology.training.basin_scheduler import BasinWindowScheduler
 from googlehydrology.training.logger import Logger
 from googlehydrology.utils.config import Config
 from googlehydrology.utils.logging_utils import setup_logging
@@ -75,6 +76,10 @@ class BaseTrainer(object):
         self.basins = load_basin_file(cfg.train_basin_file)
         self.cfg.number_of_basins = len(self.basins)
 
+        # Set by `initialize_training`; the basin scheduler below drives which
+        # of its basins are resident.
+        self.ds = None
+
         # check at which epoch the training starts
         self._epoch = self._get_start_epoch_number()
 
@@ -102,6 +107,24 @@ class BaseTrainer(object):
 
         self._set_random_seeds()
         self._set_device()
+
+        # `limit_n_basins` trains on a rotating window of basins to bound
+        # memory; disabled (all basins resident) when the setting is 0.
+        # Built *after* `_set_random_seeds`, which is what turns a `None`
+        # seed into a concrete one and writes it to the config. Building it
+        # any earlier would leave the permutation unseeded, so a resumed run
+        # would rotate through a different schedule than the original.
+        self._basin_scheduler = BasinWindowScheduler(
+            self.basins, window=self.cfg.limit_n_basins, seed=self.cfg.seed
+        )
+        self._loaded_basin_epoch = None
+        if self._basin_scheduler.enabled:
+            LOGGER.info(
+                'limit_n_basins=%d: training on a rotating window of basins; '
+                'every basin is seen once per %d epochs.',
+                self.cfg.limit_n_basins,
+                self._basin_scheduler.windows_per_sweep,
+            )
 
     def _get_dataset(self, compute_scaler: bool) -> Dataset:
         return get_dataset(
@@ -179,6 +202,32 @@ class BaseTrainer(object):
                 f'Could not resolve the following module parts for finetuning: {unresolved_modules}'
             )
 
+    def _load_basins_for_epoch(self, epoch: int) -> None:
+        """Materialize the basin window for `epoch`, if rotation is enabled.
+
+        Idempotent per epoch, so the window loaded during
+        `initialize_training` is not loaded a second time by the first pass
+        of the training loop.
+
+        `load_basins` releases the previous window before materializing the
+        next, so peak memory stays at one window rather than two.
+        """
+        if not self._basin_scheduler.enabled:
+            return
+        if self._loaded_basin_epoch == epoch:
+            return
+
+        basins = self._basin_scheduler.basins_for_epoch(epoch)
+        LOGGER.debug(
+            'epoch %d: loading basin window of %d', epoch, len(basins)
+        )
+        self.ds.load_basins(basins)
+        self._loaded_basin_epoch = epoch
+
+        # The sample count changes with the window, so the loader -- which
+        # samples over `len(ds)` -- has to be rebuilt against the new set.
+        self.loader = self._get_data_loader(ds=self.ds)
+
     def initialize_training(self):
         """Initialize the training class.
 
@@ -188,6 +237,11 @@ class BaseTrainer(object):
         """
         # Initialize dataset before the model is loaded.
         ds = self._get_dataset(compute_scaler=(not self.cfg.is_finetuning))
+        self.ds = ds
+        # With `limit_n_basins`, the dataset defers its initial load so the
+        # full basin set is never materialized. Load the first window here so
+        # that the emptiness check and the loader below have real data.
+        self._load_basins_for_epoch(self._epoch + 1)
         if len(ds) == 0:
             raise ValueError('Dataset contains no samples.')
         self.loader = self._get_data_loader(ds=ds)
@@ -255,6 +309,16 @@ class BaseTrainer(object):
                 ]
                 LOGGER.warning(''.join(warn_msg))
                 self.cfg.validate_n_random_basins = self.cfg.number_of_basins
+            if self._basin_scheduler.enabled:
+                # Training is memory-bounded but validation is not yet, so
+                # the first validation epoch can OOM a run that has been
+                # training happily. Say so up front rather than at epoch N.
+                LOGGER.warning(
+                    'limit_n_basins bounds memory for training only. The '
+                    'validation dataset still loads every basin in %s, so '
+                    'peak memory during validation is unchanged.',
+                    self.cfg.validation_basin_file,
+                )
             self.validator = self._get_tester()
 
         if self.cfg.target_noise_std is not None:
@@ -320,6 +384,7 @@ class BaseTrainer(object):
         lr_scheduler, lr_step = self._create_lr_scheduler()
 
         for epoch in range(self._epoch + 1, self._epoch + self.cfg.epochs + 1):
+            self._load_basins_for_epoch(epoch)
             LOGGER.info(f'learning rate is {lr_scheduler.get_last_lr()}')
 
             self._train_epoch(epoch=epoch)

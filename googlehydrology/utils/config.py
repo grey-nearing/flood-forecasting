@@ -341,6 +341,19 @@ class Config(object):
         self._cfg['lazy_load'] = value
 
     @property
+    def limit_n_basins(self) -> int:
+        """How many basins to hold in memory at once during training.
+
+        `0` (the default) disables the feature and loads every basin, which
+        is the historical behaviour.
+        """
+        return int(self._cfg.get('limit_n_basins', 0) or 0)
+
+    @limit_n_basins.setter
+    def limit_n_basins(self, value: int):
+        self._cfg['limit_n_basins'] = int(value)
+
+    @property
     def print_warnings_once(self) -> bool:
         return self._cfg.get('print_warnings_once', False)
 
