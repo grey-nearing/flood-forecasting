@@ -324,14 +324,36 @@ class Multimet(Dataset):
         # `_dataset_all` holds the (still lazy) graph for every basin. The
         # per-basin-set materialization lives in `load_basins`, so that a
         # caller can later swap which basins are resident without rebuilding
-        # the dataset. Loading every basin is the default and is what happens
-        # here, so behaviour is unchanged.
+        # the dataset. Loading every basin remains the default, and happens
+        # just below unless the caller has opted into driving it themselves.
         self._dataset_all = self.scaler.scale(self._dataset)
         del self._dataset
 
-        self.load_basins()
+        if self._defers_basin_load():
+            # The trainer drives which basins are resident, one window per
+            # epoch. Materializing everything here first would incur exactly
+            # the peak memory `limit_n_basins` exists to avoid, so skip it;
+            # `load_basins()` must be called before this dataset is sampled.
+            # Note the scaler above was still computed over *every* basin, so
+            # normalization statistics remain global.
+            LOGGER.debug(
+                '[limit_n_basins=%d] deferring initial basin load (%s)',
+                self._cfg.limit_n_basins,
+                self._period,
+            )
+        else:
+            self.load_basins()
 
         LOGGER.debug('forecast dataset init complete (%s)', self._period)
+
+    def _defers_basin_load(self) -> bool:
+        """Whether __init__ leaves the basin set for the caller to load.
+
+        Only training datasets defer, and only when `limit_n_basins` is on.
+        Evaluation and inference datasets always load eagerly, so the tester
+        and inference paths are unaffected by this setting.
+        """
+        return self._cfg.limit_n_basins > 0 and self._period == 'train'
 
     @property
     def is_loaded(self) -> bool:

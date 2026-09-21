@@ -796,3 +796,150 @@ def test_unload_basins_clears_data_cache(
     dataset.unload_basins()
 
     assert not dataset._data_cache
+
+# --- limit_n_basins deferred load ---
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_limit_n_basins_defers_load_for_training(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """With limit_n_basins on, a training dataset must not materialize.
+
+    Materializing every basin in __init__ would incur exactly the peak
+    memory the setting exists to avoid, so the trainer owns the load.
+    """
+    cfg = get_config('default')
+    cfg.update_config({'limit_n_basins': 1})
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+
+    assert not dataset.is_loaded
+    with pytest.raises(RuntimeError, match='No basins are loaded'):
+        len(dataset)
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+@pytest.mark.parametrize('period', ['validation', 'test'])
+def test_limit_n_basins_does_not_defer_for_non_training_periods(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+    period,
+):
+    """limit_n_basins is training-only.
+
+    The tester and inference paths resolve basins positionally against the
+    loaded set, so a partial load there would silently evaluate the wrong
+    basins. They must keep loading everything.
+    """
+    cfg = get_config('default')
+    cfg.update_config({'limit_n_basins': 1})
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    # Non-training periods load rather than compute the scaler, so a
+    # training dataset has to write one out first.
+    Multimet(cfg=cfg, is_train=True, period='train', compute_scaler=True)
+
+    dataset = Multimet(
+        cfg=cfg, is_train=False, period=period, compute_scaler=False
+    )
+
+    assert dataset.is_loaded
+    assert list(dataset._dataset.basin.values) == sample_basins
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_limit_n_basins_unset_loads_eagerly(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """The default path must be untouched by the feature."""
+    cfg = get_config('default')
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+
+    assert cfg.limit_n_basins == 0
+    assert dataset.is_loaded
+    assert list(dataset._dataset.basin.values) == sample_basins
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_limit_n_basins_keeps_scaler_global(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """Normalization must not depend on which basins happen to be resident.
+
+    The scaler is computed before the load is deferred, so it must match
+    the scaler from a full eager load exactly. If this ever regresses,
+    models trained with the feature on become silently incomparable to
+    models trained with it off.
+    """
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    cfg_full = get_config('full')
+    full = Multimet(cfg=cfg_full, is_train=True, period='train')
+
+    cfg_limited = get_config('limited')
+    cfg_limited.update_config({'limit_n_basins': 1})
+    limited = Multimet(cfg=cfg_limited, is_train=True, period='train')
+
+    assert not limited.is_loaded
+    assert set(limited.scaler.scaler) == set(full.scaler.scaler)
+    for key, expected in full.scaler.scaler.items():
+        xr.testing.assert_allclose(limited.scaler.scaler[key], expected)
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_limit_n_basins_window_rotation_is_sample_consistent(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """Rotating the window must leave the dataset fully usable each time.
+
+    This is the per-epoch operation the trainer performs, so a stale
+    sample index or cache surviving the swap would surface here.
+    """
+    cfg = get_config('default')
+    cfg.update_config({'limit_n_basins': 1})
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+
+    for basin in sample_basins:
+        dataset.load_basins([basin])
+
+        assert dataset.is_loaded
+        assert list(dataset._dataset.basin.values) == [basin]
+        assert len(dataset) > 0
+        # Every index the loader could draw must resolve.
+        dataset[0]
+        dataset[len(dataset) - 1]

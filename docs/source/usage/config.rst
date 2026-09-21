@@ -129,6 +129,35 @@ Data settings
 -  ``nan_handling_method``: ``masked_mean``, ``input_replacing``, or ``attention``. Strategy for handling missing input data.
 -  ``nan_handling_pos_encoding_size``: Size of positional encoding for NaN handling methods.
 -  ``lazy_load``: Whether to access data lazily rather than load all in-memory. Each batch is loaded dynamically. Default: `False`.
+-  ``limit_n_basins``: Train on at most this many basins at a time, rotating the set each epoch to bound memory. `0` (default) disables it. See `Limiting basins in memory`_.
+
+Limiting basins in memory
+-------------------------
+
+``limit_n_basins: W`` keeps only ``W`` training basins materialized at a time
+and swaps the set at the start of every epoch, so peak memory is bounded by
+``W`` rather than by the size of the dataset. ``0`` (the default) disables the
+feature and loads every basin.
+
+Basins are permuted once -- seeded by ``seed``, so a resumed run reproduces the
+same schedule -- and then visited in disjoint windows. Every basin is therefore
+trained on exactly once per ``ceil(n_basins / W)`` epochs. Picking a fresh
+random window each epoch instead would sample *with replacement* and leave a
+large fraction of basins untrained: at 16,000 basins and ``W = 100``, about 37%
+would never be seen in 160 epochs.
+
+Two caveats:
+
+-  **Epochs get shorter.** An epoch now covers ``W`` basins instead of all of
+   them, so epoch-indexed settings -- ``epochs``,
+   ``learning_rate_epochs_drop``, ``validate_every`` and
+   ``save_weights_every`` -- have to be rescaled by ``ceil(n_basins / W)`` to
+   describe the same amount of training.
+-  **Training only.** Validation, evaluation and inference still load every
+   basin, so memory during those phases is unchanged.
+
+Normalization is unaffected: the scaler is computed over all basins before any
+window is loaded.
 
 Finetune settings
 -----------------
