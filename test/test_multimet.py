@@ -650,3 +650,149 @@ def test_forecast_dataset_no_forecast_features_renames_key(
     assert 'x_d' in sample
     assert 'x_d_hindcast' not in sample
     assert 'x_d_forecast' not in sample
+
+
+# --- Basin load/unload lifecycle ---
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_dataset_is_loaded_after_init(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """__init__ must leave the dataset ready to sample.
+
+    Guards against reintroducing a two-phase init where callers have to
+    remember to call load_basins() themselves.
+    """
+    cfg = get_config('default')
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+
+    assert dataset.is_loaded
+    assert len(dataset) > 0
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_unload_basins_releases_and_reports_clearly(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """After unloading, sampling must fail loudly rather than obscurely."""
+    cfg = get_config('default')
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    dataset.unload_basins()
+
+    assert not dataset.is_loaded
+    with pytest.raises(RuntimeError, match='No basins are loaded'):
+        len(dataset)
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_unload_basins_is_idempotent(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """unload_basins() must be safe to call from any state."""
+    cfg = get_config('default')
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+
+    dataset.unload_basins()
+    dataset.unload_basins()  # must not raise
+
+    assert not dataset.is_loaded
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_reload_after_unload_restores_dataset(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """unload -> load must round-trip back to the same sample count."""
+    cfg = get_config('default')
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    original_length = len(dataset)
+
+    dataset.unload_basins()
+    dataset.load_basins()
+
+    assert dataset.is_loaded
+    assert len(dataset) == original_length
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_load_basins_subset_restricts_to_those_basins(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """Loading a subset must yield strictly fewer samples, over only those
+    basins. This is the capability the limit_n_basins work builds on."""
+    cfg = get_config('default')
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    full_length = len(dataset)
+
+    subset = sample_basins[:1]
+    dataset.load_basins(subset)
+
+    assert dataset.is_loaded
+    assert 0 < len(dataset) < full_length
+    assert list(dataset._dataset.basin.values) == subset
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_unload_basins_clears_data_cache(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """The cache pins the arrays we are trying to free, and is keyed on
+    id(dataset), so a stale entry could collide with a recycled address.
+    It must not survive an unload."""
+    cfg = get_config('default')
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    dataset[0]  # populate the cache
+    assert dataset._data_cache
+
+    dataset.unload_basins()
+
+    assert not dataset._data_cache
