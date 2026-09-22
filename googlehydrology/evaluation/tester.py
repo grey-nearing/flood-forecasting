@@ -237,11 +237,17 @@ class BaseTester(object):
         else:
             model.eval()
 
+        # `basins_indexes` are positions along the dataset's basin axis, which
+        # is what `_sample_index` numbers its basin column against. Resolving
+        # them against `self.basins` instead only happens to work while the
+        # two lists are identical; they are not, because `__init__` drops
+        # all-NaN basins from `self.basins` but not from the dataset (and
+        # `load_basins` can narrow the dataset without touching `self.basins`).
         batch_sampler = BasinBatchSampler(
             sample_index=self.dataset._sample_index,
             batch_size=self.cfg.batch_size,
             basins_indexes=get_samples_indexes(
-                self.basins, samples=list(basins)
+                self.dataset.loaded_basins, samples=list(basins)
             ),
         )
         loader = MultimetDataLoader(
@@ -669,7 +675,11 @@ class BaseTester(object):
                 loader, lambda data: data['basin_index'][0].item()
             )
             for basin_index, samples in basin_samples:
-                basin = loader.dataset._basins[basin_index]
+                # `basin_index` is a position along the *loaded* basin axis.
+                # `_basins` is the full configured list and is not narrowed by
+                # `load_basins`, so indexing it would name the wrong basin as
+                # soon as a subset is loaded.
+                basin = loader.dataset.loaded_basins[basin_index]
                 if basin not in basins:
                     continue
 
