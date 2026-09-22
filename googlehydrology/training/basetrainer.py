@@ -310,15 +310,25 @@ class BaseTrainer(object):
                 LOGGER.warning(''.join(warn_msg))
                 self.cfg.validate_n_random_basins = self.cfg.number_of_basins
             if self._basin_scheduler.enabled:
-                # Training is memory-bounded but validation is not yet, so
-                # the first validation epoch can OOM a run that has been
-                # training happily. Say so up front rather than at epoch N.
-                LOGGER.warning(
-                    'limit_n_basins bounds memory for training only. The '
-                    'validation dataset still loads every basin in %s, so '
-                    'peak memory during validation is unchanged.',
+                # Validation used to hold the entire pool for the lifetime of
+                # the run, which could OOM a run that had been training
+                # happily; this warning said so. That is no longer true --
+                # the tester defers and loads only the basins each round
+                # scores -- so state the bound that actually applies now.
+                #
+                # Note "at most ... at a time", not "released": each round
+                # replaces the previous subset, so one subset stays resident
+                # between rounds. The peak is bounded, which is the point;
+                # it is not zero.
+                LOGGER.info(
+                    'limit_n_basins=%d bounds training and validation. '
+                    'Validation holds at most %d basins at a time, sampled '
+                    'fresh from %s each round, rather than the whole file.',
+                    self.cfg.limit_n_basins,
+                    self.cfg.validate_n_random_basins,
                     self.cfg.validation_basin_file,
                 )
+
             self.validator = self._get_tester()
 
         if self.cfg.target_noise_std is not None:
