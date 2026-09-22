@@ -360,6 +360,20 @@ class Multimet(Dataset):
         """Whether a basin set is currently materialized."""
         return hasattr(self, '_dataset')
 
+    @property
+    def loaded_basins(self) -> list[str]:
+        """The basins currently materialized, in sample-index order.
+
+        This is the index space of the positional basin codes stored in
+        `_sample_index` and handed out as `sample['basin_index']`, so it is
+        the only correct list to resolve those codes against. It is *not*
+        necessarily `self._basins`: `_basins` is the full configured basin
+        list and never changes, whereas this shrinks to the subset passed to
+        `load_basins`.
+        """
+        self._check_loaded()
+        return self._loaded_basins
+
     def unload_basins(self) -> None:
         """Release the materialized basin set, keeping the lazy graph.
 
@@ -369,6 +383,7 @@ class Multimet(Dataset):
         """
         for attribute in (
             '_dataset',
+            '_loaded_basins',
             '_sample_index',
             '_num_samples',
             '_per_basin_target_stds',
@@ -398,6 +413,14 @@ class Multimet(Dataset):
         else:
             LOGGER.debug('[load %d basins] (%s)', len(basins), self._period)
             self._dataset = self._dataset_all.sel(basin=basins)
+
+        # Read back from the coordinate rather than trusting `basins`: this is
+        # the exact axis `_create_sample_index` below numbers its positional
+        # basin codes against, so deriving it any other way reintroduces the
+        # possibility of the two disagreeing.
+        self._loaded_basins = [
+            str(basin) for basin in self._dataset.basin.values
+        ]
 
         if not self._cfg.lazy_load:
             LOGGER.debug('[eager load] compute dataset')
