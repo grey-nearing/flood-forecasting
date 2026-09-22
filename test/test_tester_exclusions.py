@@ -62,7 +62,7 @@ def _legacy_calc_exclude_basins(tester):
         )
 
     for basin in tester.basins:
-        basin_ds = tester.dataset._dataset.sel(basin=basin)
+        basin_ds = tester.dataset.full_dataset.sel(basin=basin)
         diffs = np.diff(basin_ds.streamflow.isnull(), prepend=[0], append=[0])
         (starts,), (ends,) = np.where(diffs == 1), np.where(diffs == -1)
 
@@ -95,7 +95,11 @@ def _make_tester(values, windows, *, record_start=RECORD_START, days=None):
         cfg=cfg,
         period='test',
         basins=list(dataset.basin.values),
-        dataset=SimpleNamespace(_dataset=dataset),
+        # `full_dataset` is the graph for every configured basin. The old
+        # implementation read `_dataset`, which at this point in `__init__`
+        # was the eagerly-loaded full basin set -- the same content, so the
+        # differential comparison below stays apples-to-apples.
+        dataset=SimpleNamespace(full_dataset=dataset),
     )
 
 
@@ -234,7 +238,7 @@ def test_agrees_when_data_is_dask_backed():
     eager = _make_tester(values, [window])
     lazy = _make_tester(values, [window])
     # Chunk across both axes so no single chunk holds a whole basin.
-    lazy.dataset._dataset['streamflow'] = (
+    lazy.dataset.full_dataset['streamflow'] = (
         ('basin', 'date'),
         dask_array.from_array(values, chunks=(2, 16)),
     )

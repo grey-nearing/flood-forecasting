@@ -329,13 +329,14 @@ class Multimet(Dataset):
         self._dataset_all = self.scaler.scale(self._dataset)
         del self._dataset
 
-        if self._defers_basin_load():
-            # The trainer drives which basins are resident, one window per
-            # epoch. Materializing everything here first would incur exactly
-            # the peak memory `limit_n_basins` exists to avoid, so skip it;
-            # `load_basins()` must be called before this dataset is sampled.
-            # Note the scaler above was still computed over *every* basin, so
-            # normalization statistics remain global.
+        if self.defers_basin_load:
+            # The caller drives which basins are resident -- the trainer
+            # rotates a window per epoch, the tester loads the basins it is
+            # about to evaluate. Materializing everything here first would
+            # incur exactly the peak memory `limit_n_basins` exists to avoid,
+            # so skip it; `load_basins()` must be called before this dataset
+            # is sampled. Note the scaler above was still computed over
+            # *every* basin, so normalization statistics remain global.
             LOGGER.debug(
                 '[limit_n_basins=%d] deferring initial basin load (%s)',
                 self._cfg.limit_n_basins,
@@ -346,19 +347,37 @@ class Multimet(Dataset):
 
         LOGGER.debug('forecast dataset init complete (%s)', self._period)
 
-    def _defers_basin_load(self) -> bool:
-        """Whether __init__ leaves the basin set for the caller to load.
+    @property
+    def defers_basin_load(self) -> bool:
+        """Whether `__init__` leaves the basin set for the caller to load.
 
-        Only training datasets defer, and only when `limit_n_basins` is on.
-        Evaluation and inference datasets always load eagerly, so the tester
-        and inference paths are unaffected by this setting.
+        Gated on `limit_n_basins` so that runs which do not opt in keep the
+        original eager behaviour exactly. When it is on, *every* period
+        defers, including validation and test: the validation pool is
+        typically as large as the training pool, and holding all of it for
+        the lifetime of the run defeats the point of bounding the training
+        side.
+
+        Callers that defer must call `load_basins()` before sampling.
         """
-        return self._cfg.limit_n_basins > 0 and self._period == 'train'
+        return self._cfg.limit_n_basins > 0
 
     @property
     def is_loaded(self) -> bool:
         """Whether a basin set is currently materialized."""
         return hasattr(self, '_dataset')
+
+    @property
+    def full_dataset(self) -> xr.Dataset:
+        """The scaled graph for every configured basin, always available.
+
+        Unlike `_dataset` this exists regardless of what is loaded, and it
+        stays lazy: reading a small slice of it (a single variable over a
+        date window, say) costs only that slice, not a materialization of
+        the whole pool. That is what lets the tester decide which basins to
+        exclude before it commits to loading any of them.
+        """
+        return self._dataset_all
 
     @property
     def loaded_basins(self) -> list[str]:
