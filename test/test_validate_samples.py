@@ -1266,3 +1266,44 @@ def test_validate_samples_target_missing_predict_last_n_raises_error(
             target_features=['t1'],
             predict_last_n=None,  # Missing predict_last_n
         )
+
+
+def test_validate_samples_windows_account_for_min_lead_time():
+    """Hindcast and target windows follow the forecast issue-date convention.
+
+    With `min_lead_time=1` a sample issued on date D uses hindcasts up to D-1
+    and targets up to D + lead_time - 1, so NaNs must invalidate exactly the
+    samples whose windows touch them.
+    """
+    basins = ['basin_A']
+    dates = pd.date_range('2020-01-01', periods=10, freq='D')
+    hindcast = np.ones((1, 10))
+    hindcast[0, 3] = np.nan
+    targets = np.ones((1, 10))
+    targets[0, 7] = np.nan
+    dataset = create_test_dataset(
+        {'h1': hindcast, 't1': targets}, basins, dates
+    )
+
+    valid_mask, _ = validate_samples(
+        is_train=True,
+        dataset=dataset,
+        sample_dates=dates,
+        nan_handling_method=None,
+        feature_groups=[['h1']],
+        hindcast_features=['h1'],
+        target_features=['t1'],
+        seq_length=2,
+        predict_last_n=1,
+        lead_time=2,
+        min_lead_time=1,
+    )
+
+    # Hindcast window [D-2, D-1] is incomplete for D=0,1 and contains the NaN
+    # at day 3 for D=4,5. The single target day D+1 is NaN for D=6 and out of
+    # range for D=9.
+    expected_valid_days = [2, 3, 7, 8]
+    np.testing.assert_array_equal(
+        np.flatnonzero(valid_mask.sel(basin='basin_A').values),
+        expected_valid_days,
+    )
