@@ -339,10 +339,14 @@ class BaseTester(object):
                     and self.dataset.lead_time
                 ):
                     time_step_coords += self.dataset.lead_time
-                    min_lead_time = getattr(self.dataset, '_min_lead_time', 1)
-                    date_coords = dates[lowest_freq][
-                        :, -self.dataset.lead_time - 1 + min_lead_time
-                    ]
+                    # The last target date is the issue date plus the number of
+                    # forecast steps beyond the (1-indexed) first lead time.
+                    # Deriving the issue date from it, instead of indexing a
+                    # column, also works when predict_last_n < lead_time.
+                    min_lead_time = getattr(self.dataset, 'min_lead_time', 1)
+                    date_coords = dates[lowest_freq][:, -1] - (
+                        self.dataset.lead_time - min_lead_time
+                    ) * pd.Timedelta(lowest_freq)
                 coords = {'date': date_coords, 'time_step': time_step_coords}
                 xr = xarray.Dataset(data_vars=data_vars, coords=coords)
                 xr = xr.reindex(

@@ -237,6 +237,15 @@ class Multimet(Dataset):
             self._min_lead_time = int(
                 (self._dataset.lead_time.min() / np.timedelta64(1, 'D')).item()
             )
+            # The date arithmetic in `_calc_date_range` and `_extract_hindcasts`
+            # relies on the shortest loaded lead time being the Caravan-MultiMet
+            # first lead (1 day, valid on the issue date itself).
+            if self._min_lead_time != MULTIMET_MINIMUM_LEAD_TIME:
+                raise ValueError(
+                    'Expected the minimum forecast lead time to be '
+                    f'{MULTIMET_MINIMUM_LEAD_TIME} day(s), got '
+                    f'{self._min_lead_time}.'
+                )
             self._lead_times = list(
                 range(self._min_lead_time, self.lead_time + 1)
             )
@@ -376,6 +385,11 @@ class Multimet(Dataset):
     def __len__(self) -> int:
         return self._num_samples
 
+    @property
+    def min_lead_time(self) -> int:
+        """Shortest forecast lead time in days, or 0 without forecast inputs."""
+        return self._min_lead_time
+
     def __getitem__(
         self, item: int
     ) -> dict[str, torch.Tensor | np.ndarray | dict[str, torch.Tensor]]:
@@ -455,10 +469,11 @@ class Multimet(Dataset):
     def _extract_hindcasts(
         self, sample_index: dict[str, int]
     ) -> dict[str, np.ndarray]:
-        # In Caravan-MultiMet, forecast issue date D has 1st lead_time (lead_time=1D)
-        # covering [D 00:00, D+1 00:00], so completed hindcast days prior to D 00:00
-        # cover [D - seq_length, ..., D - 1] when forecasting (_min_lead_time = 1),
-        # and [D - seq_length + 1, ..., D] when hindcast-only (_min_lead_time = 0).
+        # In Caravan-MultiMet the first lead time (1 day) of a forecast issued
+        # on date D covers [D 00:00, D+1 00:00]. The completed hindcast days
+        # before D 00:00 are therefore [D - seq_length, ..., D - 1] when
+        # forecasting (_min_lead_time = 1), and [D - seq_length + 1, ..., D]
+        # when hindcast-only (_min_lead_time = 0).
         hindcast_end = sample_index['date'] + 1 - self._min_lead_time
         hindcast_date_range = range(
             hindcast_end - self._seq_length,
@@ -474,9 +489,9 @@ class Multimet(Dataset):
             dim_indexes_without_lead_time,
         )
 
-        # Forecast features with lead_time may be used as hindcast features. Since
-        # lead_time=1D (index 0) on date t covers [t 00:00, t+1 00:00], it shares
-        # the exact same valid date range as 2D hindcast features.
+        # Forecast features with lead_time may be used as hindcast features.
+        # The first lead time (index 0) on date t covers [t 00:00, t+1 00:00],
+        # so it shares the valid date range of the 2D hindcast features.
         dim_indexes_with_lead_time = sample_index.copy()
         dim_indexes_with_lead_time['lead_time'] = 0
         dim_indexes_with_lead_time['date'] = hindcast_date_range
