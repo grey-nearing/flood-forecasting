@@ -9,7 +9,6 @@ clip_targets_to_zero:
 dataset: multimet
 detect_anomaly: false
 device: cpu
-data_dir: ~/Projects/unify-input-file-formats/tutorial/Caravan-zarr
 dynamics_data_dir: gs://caravan-multimet/v1.1
 epochs: 15
 experiment_name: 5-basin-example-zarr
@@ -64,7 +63,8 @@ log_n_figures: 0
 logging_level: INFO
 loss: MSE
 metrics:
-- all 
+- NSE
+- KGE
 model: mean_embedding_forecast_lstm
 num_workers: 2
 number_of_basins: 5
@@ -73,8 +73,8 @@ output_activation: linear
 output_dropout: 0.4
 predict_last_n: 8
 print_warnings_once: false
-run_dir: ~/Projects/unify-input-file-formats/tutorial/model-runs/5-basin-example-zarr
-seed: 422911
+run_dir: /home/hydro_user/flood-forecasting/tutorial/model-runs/5-basin-example-zarr
+seed: 42
 seq_length: 365
 static_attributes:
 - area
@@ -100,13 +100,13 @@ statics_embedding:
 target_noise_std: 0.005
 target_variables:
 - streamflow
-test_basin_file: ~/Projects/unify-input-file-formats/tutorial/basin-lists/8-basin-test.txt
+test_basin_file: /home/hydro_user/flood-forecasting/tutorial/basin-lists/8-basin-test.txt
 test_end_date: 31/12/2024
 test_start_date: 01/01/2022
 tester_sample_reduction: median
 tester_skip_obs_all_nan: true
 timestep_counter: true
-train_basin_file: ~/Projects/unify-input-file-formats/tutorial/basin-lists/5-basin-train.txt
+train_basin_file: /home/hydro_user/flood-forecasting/tutorial/basin-lists/5-basin-train.txt
 train_end_date: 31/12/2020
 train_start_date: 01/01/2000
 union_mapping:
@@ -118,10 +118,11 @@ union_mapping:
   hres_total_precipitation: era5land_total_precipitation
 validate_every: 1
 validate_n_random_basins: -1
-validation_basin_file: ~/Projects/unify-input-file-formats/tutorial/basin-lists/5-basin-train.txt
+validation_basin_file: /home/hydro_user/flood-forecasting/tutorial/basin-lists/5-basin-train.txt
 validation_end_date: 31/12/2024
 validation_start_date: 01/01/2022
 weight_init_opts:
 - lstm-ih-xavier
 - lstm-hh-orthogonal
 - fc-xavier
+data_dir: /home/hydro_user/flood-forecasting/tutorial/Caravan-zarr
