@@ -788,8 +788,12 @@ class BaseTester(object):
                     'losses': losses,
                     'mean_losses': mean_losses,
                 }
-                if torch.cuda.is_available():  # Await gpu to cpu copies
-                    torch.cuda.synchronize()
+                # Await the non-blocking GPU -> CPU copies above. Without an
+                # explicit device, `synchronize` only waits on the *current*
+                # device (cuda:0), so on any other GPU the copied arrays could
+                # still be incomplete when read.
+                if self.device.type == 'cuda':
+                    torch.cuda.synchronize(self.device)
                 yield res
 
     def _get_predictions_and_loss(
