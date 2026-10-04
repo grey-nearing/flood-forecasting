@@ -245,30 +245,34 @@ def test_union_features_with_same_dimensions():
 def test_union_lead_time_feature_with_non_lead_time_feature(
     sample_basins, sample_dates, sample_lead_times
 ):
-    # feature_da has lead_time, mask_feature_da does not
+    # feature_da has lead_time, mask_feature_da does not.
+    # NaNs on date 0 across lead_times [1D, 2D, 3D] are valid on dates [0, 1, 2]
+    # and must be filled by the corresponding mask values [1, 2, 3].
     feature_da = xr.DataArray(
-        [[[np.nan, 20, 30], [40, 50, 60]]],
+        [[[np.nan, np.nan, np.nan], [40, 50, np.nan], [70, 80, 90]]],
         coords={
             'basin': sample_basins[:1],
-            'date': sample_dates[:2],
+            'date': sample_dates[:3],
             'lead_time': sample_lead_times,
         },
         dims=['basin', 'date', 'lead_time'],
     )
     mask_feature_da = xr.DataArray(
-        [[1], [2]],
-        coords={'date': sample_dates[:2], 'basin': sample_basins[:1]},
+        [[1], [2], [3]],
+        coords={'date': sample_dates[:3], 'basin': sample_basins[:1]},
         dims=['date', 'basin'],
     )
-    # Expected: the NaN at lead_time=1D on date 0 is filled with the mask
-    # value from the same date (1), since the 1-day lead is valid on its
-    # issue date.
-    expected_data = [[[1, 20, 30], [40, 50, 60]]]
+    # On date 0, lead_times [1D, 2D, 3D] pull from dates [0, 1, 2] -> [1, 2, 3].
+    # On date 1, lead_time=3D is valid on date 3 (outside the 3-day range),
+    # which remains NaN.
+    expected_data = [
+        [[1.0, 2.0, 3.0], [40.0, 50.0, np.nan], [70.0, 80.0, 90.0]]
+    ]
     expected = xr.DataArray(
         expected_data,
         coords={
             'basin': sample_basins[:1],
-            'date': sample_dates[:2],
+            'date': sample_dates[:3],
             'lead_time': sample_lead_times,
         },
         dims=['basin', 'date', 'lead_time'],
@@ -300,10 +304,8 @@ def test_union_non_lead_time_feature_with_lead_time_feature(
     # Select the mask at the min lead (1 day) = [100, 200, 300]. The 1-day
     # lead is valid on its issue date, so shift_days=0 and the NaN at index 1
     # in [10, nan, 20] is filled with 200.
-    expected_data = [[10, 200, 20]]
-
     expected = xr.DataArray(
-        expected_data,
+        [[10, 200, 20]],
         coords={'basin': [sample_basins[0]], 'date': sample_dates[:3]},
         dims=['basin', 'date'],
     )
@@ -311,6 +313,19 @@ def test_union_non_lead_time_feature_with_lead_time_feature(
         feature_da, mask_feature_da
     )
     xr.testing.assert_equal(result, expected)
+
+    # When the mask's shortest lead time is 2 days (shift_days=1), the 2-day
+    # forecast issued on date 0 (value 101) is valid on date 1 and fills NaN.
+    mask_min_2d = mask_feature_da.sel(lead_time=sample_lead_times[1:])
+    expected_shifted = xr.DataArray(
+        [[10, 101, 20]],
+        coords={'basin': [sample_basins[0]], 'date': sample_dates[:3]},
+        dims=['basin', 'date'],
+    )
+    result_shifted = _union_non_lead_time_feature_with_lead_time_feature(
+        feature_da, mask_min_2d
+    )
+    xr.testing.assert_equal(result_shifted, expected_shifted)
 
 
 # --- Tests for union_features (main function) ---
@@ -348,11 +363,19 @@ def test_union_features_mixed_dimensions(base_dataset):
         'feature_3d_forecast': 'mask_2d',  # 3D feature masked by 2D feature
         'feature_2d_hindcast': 'mask_3d',  # 2D feature masked by 3D feature
     }
-    # Set specific values in masks to fill NaNs.
-    # The NaN in feature_3d_forecast is at basin_B, 2000-01-03, lead_time=1D,
-    # which is valid on 2000-01-03.
+    # Also introduce a NaN at lead_time=2D on 2000-01-03 (valid on 2000-01-04).
+    base_dataset['feature_3d_forecast'].loc[
+        {
+            'basin': 'basin_B',
+            'date': '2000-01-03',
+            'lead_time': np.timedelta64(2, 'D'),
+        }
+    ] = np.nan
     base_dataset['mask_2d'].loc[{'basin': 'basin_B', 'date': '2000-01-03'}] = (
         1000.0
+    )
+    base_dataset['mask_2d'].loc[{'basin': 'basin_B', 'date': '2000-01-04'}] = (
+        1004.0
     )
     # The NaN in feature_2d_hindcast is at basin_A, 2000-01-02, which matches
     # lead_time=1D issued on 2000-01-02.
@@ -366,10 +389,12 @@ def test_union_features_mixed_dimensions(base_dataset):
 
     result_ds = union_features(base_dataset, union_mapping)
 
-    # Verify feature_3d_forecast (masked by mask_2d): the NaN at basin_B,
-    # 2000-01-03, lead_time=1D is filled by mask_2d at basin_B, 2000-01-03.
+    # Verify feature_3d_forecast (masked by mask_2d): lead_time=1D on 2000-01-03
+    # is filled from 2000-01-03 (1000.0), and lead_time=2D on 2000-01-03 is
+    # filled from its valid date 2000-01-04 (1004.0).
     expected_3d_data = base_dataset['feature_3d_forecast'].values.copy()
     expected_3d_data[1, 2, 0] = 1000.0  # basin_B, 2000-01-03, lead_time=1D
+    expected_3d_data[1, 2, 1] = 1004.0  # basin_B, 2000-01-03, lead_time=2D
     expected_feature_3d_forecast = xr.DataArray(
         expected_3d_data,
         coords=base_dataset['feature_3d_forecast'].coords,

@@ -133,12 +133,25 @@ def _check_results(config: Config, basin: str, discharge: pd.Series = None):
         'D'
     )
 
+    full_discharge = None
     if discharge is None:
         discharge_ds = caravan.load_caravan_timeseries_together(
             config.data_dir, [basin], config.target_variables, csv=False
         )
         discharge = discharge_ds.to_dataframe()
+        full_discharge = discharge.loc[basin, 'streamflow']
         discharge_ds.close()
+
+    target = config.target_variables[0]
+    if hasattr(config, 'lead_time') and full_discharge is not None:
+        issue_dates = pd.to_datetime(results['date'].values)
+        for ts in results['time_step'].values:
+            if ts < 1:
+                continue
+            obs_ts = results[f'{target}_obs'].sel(time_step=ts).squeeze().values
+            valid_dates = issue_dates + pd.Timedelta(days=int(ts) - 1)
+            expected_ts = full_discharge.reindex(valid_dates).values
+            assert obs_ts == approx(expected_ts, nan_ok=True)
 
     if hasattr(config, 'lead_time'):
         # time_step=1 is the first (1-day) lead time, valid on the issue date.
@@ -146,7 +159,7 @@ def _check_results(config: Config, basin: str, discharge: pd.Series = None):
     else:
         results = results.isel(time_step=-1)
 
-    results_array = results[f'{config.target_variables[0]}_obs'].values
+    results_array = results[f'{target}_obs'].values
     idx = pd.IndexSlice
     discharge_slice = discharge.loc[
         idx[basin, test_start_date:test_end_date], 'streamflow'
@@ -156,7 +169,7 @@ def _check_results(config: Config, basin: str, discharge: pd.Series = None):
     assert discharge_array == approx(results_array, nan_ok=True)
 
     # CAMELS forcings have no NaNs, so there should be no NaN predictions
-    assert not pd.isna(results[f'{config.target_variables[0]}_sim']).any()
+    assert not pd.isna(results[f'{target}_sim']).any()
 
 
 def test_forecast_short_predict_last_n(
