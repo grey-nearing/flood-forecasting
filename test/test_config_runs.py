@@ -21,7 +21,6 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from pandas.tseries.frequencies import to_offset
 from pytest import approx
 
 from googlehydrology.datasetzoo import caravan

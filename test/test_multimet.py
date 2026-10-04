@@ -16,10 +16,9 @@ import pytest
 import numpy as np
 import pandas as pd
 import xarray as xr
-import torch
 import re
 from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 from typing import Callable
 
 from googlehydrology.datasetzoo.multimet import Multimet
