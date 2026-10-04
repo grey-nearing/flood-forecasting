@@ -10,6 +10,10 @@ Because the models have seen the entire historical timeline during training, **y
 
 Please see the **"Appropriate Use Cases"** section below for instructions on how to properly utilize these weights for scientifically rigorous research.
 
+## **0\. Compatibility Note (version 1.13.0)**
+
+Version 1.13.0 of `googlehydrology` corrected an off-by-one error in how forecast lead times were aligned with hindcast inputs and targets (GitHub issue #332). The weights in this directory were **retrained with the corrected code**. Weights produced by earlier versions of the code base (including the previous release of these models) are not compatible with version 1.13.0 and later: they expect inputs shifted by one day and will produce degraded forecasts. Likewise, do not load these weights with code older than 1.13.0.
+
 ## **1\. Model Variants**
 
 We are releasing two distinct sets of pre-trained models, both trained using the multimet dataset configuration (excluding the CHIRPS precipitation product).
