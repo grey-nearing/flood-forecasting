@@ -924,9 +924,10 @@ class Multimet(Dataset):
 
     def _lead_time_slice(self) -> slice:
         # https://pandas.pydata.org/pandas-docs/stable/user_guide/advanced.html#endpoints-are-inclusive
+        max_lead_time = max(self.lead_time, MULTIMET_MINIMUM_LEAD_TIME)
         return slice(
             pd.Timedelta(days=MULTIMET_MINIMUM_LEAD_TIME),
-            pd.Timedelta(days=self.lead_time),
+            pd.Timedelta(days=max_lead_time),
         )
 
     @staticmethod
