@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     https://www.apache.org/licenses/LICENSE-2.0
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -46,17 +46,19 @@ import concurrent.futures
 import datetime
 import io
 import logging
-import netrc
 import os
 import re
-import shutil
-import tempfile
 import threading
-import time
-import urllib.parse
 
 import h5py  # type: ignore[import-untyped]
-from multimet.gridded_archive_builders import storage
+from multimet.utils import storage
+from multimet.utils.http import (
+    DEFAULT_CMR_GRANULES_URL,
+    EarthdataSession,
+    download_http_file,
+    get_earthdata_credentials_from_netrc,
+    query_cmr_granules,
+)
 import numpy as np
 import pandas as pd
 import requests
@@ -66,7 +68,6 @@ import xarray as xr
 DEFAULT_GESDISC_URL = (
     "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGDE.07"
 )
-DEFAULT_CMR_GRANULES_URL = "https://cmr.earthdata.nasa.gov/search/granules.json"
 IMERG_HHR_SHORT_NAME = "GPM_3IMERGHHE"
 IMERG_DAILY_SHORT_NAME = "GPM_3IMERGDE"
 DEFAULT_START_DATE = "2000-06-01"
@@ -104,129 +105,38 @@ IMERG_ATTRS = {
 
 _netcdf_lock = threading.Lock()
 
-
-def query_cmr_granules(
-    short_name: str,
-    date: pd.Timestamp,
-    version: str = "07",
-    cmr_url: str = DEFAULT_CMR_GRANULES_URL,
-    timeout: int = 30,
-) -> list[str]:
-  """Queries NASA's Common Metadata Repository (CMR) for IMERG granule URLs."""
-  dt = pd.Timestamp(date)
-  start_iso = dt.strftime("%Y-%m-%dT00:00:00Z")
-  end_iso = dt.strftime("%Y-%m-%dT23:59:59Z")
-  params = {
-      "short_name": short_name,
-      "version": version,
-      "temporal": f"{start_iso},{end_iso}",
-      "page_size": 200,
-  }
-  resp = requests.get(cmr_url, params=params, timeout=timeout)
-  resp.raise_for_status()
-  entries = resp.json().get("feed", {}).get("entry", [])
-  urls: list[str] = []
-  for entry in entries:
-    for link in entry.get("links", []):
-      href = link.get("href", "")
-      rel = link.get("rel", "")
-      if (
-          href.startswith("https://")
-          and "data#" in rel
-          and not href.endswith((".xml", ".dmrpp", ".s3"))
-          and href.endswith((".RT-H5", ".HDF5", ".h5", ".nc4", ".nc"))
-      ):
-        urls.append(href)
-        break
-  return sorted(set(urls))
+__all__ = [
+    "DEFAULT_CMR_GRANULES_URL",
+    "DEFAULT_GESDISC_URL",
+    "DEFAULT_START_DATE",
+    "EXPECTED_HHR_START_TOKENS",
+    "EarthdataSession",
+    "GESDISCImergSource",
+    "IMERG_ATTRS",
+    "IMERG_DAILY_SHORT_NAME",
+    "IMERG_HHR_SHORT_NAME",
+    "IMERG_LATS",
+    "IMERG_LONS",
+    "IMERG_VARIABLE",
+    "LAT_COUNT",
+    "LON_COUNT",
+    "LocalImergSource",
+    "build_arg_parser",
+    "build_batch_dataset",
+    "build_imerg_archive",
+    "download_daily_imerg",
+    "get_earthdata_credentials_from_netrc",
+    "main",
+    "parse_imerg_netcdf_to_grid",
+    "query_cmr_granules",
+    "write_batch_in_place",
+    "write_batch_to_zarr",
+]
 
 
-def get_earthdata_credentials_from_netrc(
-    netrc_path: str | None = None,
-) -> tuple[str | None, str | None]:
-  """Reads NASA Earthdata credentials from ``.netrc`` if present.
-
-  Raises if ``netrc_path`` was explicitly provided by the user and cannot be
-  parsed or does not exist.
-  """
-  if netrc_path is not None:
-    if not os.path.exists(netrc_path):
-      raise FileNotFoundError(
-          f"Specified netrc_path does not exist: {netrc_path}"
-      )
-    parsed = netrc.netrc(netrc_path)
-  else:
-    default_path = os.path.expanduser("~/.netrc")
-    if not os.path.exists(default_path):
-      return None, None
-    parsed = netrc.netrc(default_path)
-
-  for host in ("urs.earthdata.nasa.gov", "gpm1.gesdisc.eosdis.nasa.gov"):
-    auth_info = parsed.authenticators(host)
-    if auth_info:
-      return auth_info[0], auth_info[2]
-  return None, None
-
-
-class EarthdataSession(requests.Session):
-  """Custom ``requests.Session`` that preserves auth across NASA URS redirects."""
-
-  AUTH_HOST = "urs.earthdata.nasa.gov"
-
-  def __init__(
-      self,
-      username: str | None = None,
-      password: str | None = None,
-      token: str | None = None,
-      netrc_path: str | None = None,
-  ):
-    super().__init__()
-    token = token or os.environ.get("EARTHDATA_TOKEN")
-    username = username or os.environ.get("EARTHDATA_USERNAME")
-    password = password or os.environ.get("EARTHDATA_PASSWORD")
-
-    if not (username and password) and not token:
-      netrc_user, netrc_pass = get_earthdata_credentials_from_netrc(netrc_path)
-      if netrc_user and netrc_pass:
-        username, password = netrc_user, netrc_pass
-
-    self.token = token
-    self.username = username
-    self.password = password
-
-    if token:
-      self.headers.update({"Authorization": f"Bearer {token}"})
-    elif username and password:
-      self.auth = (username, password)
-
-  def rebuild_auth(
-      self,
-      prepared_request: requests.PreparedRequest,
-      response: requests.Response,
-  ) -> None:
-    """Preserves Authorization header across redirects to/from NASA URS."""
-    headers = prepared_request.headers
-    url = prepared_request.url
-
-    parsed_url = urllib.parse.urlparse(url)
-    if parsed_url.hostname == self.AUTH_HOST:
-      if self.token:
-        headers["Authorization"] = f"Bearer {self.token}"
-      elif self.username and self.password:
-        prepared_request.prepare_auth((self.username, self.password))
-      return
-
-    if "Authorization" in headers:
-      original_parsed = urllib.parse.urlparse(response.request.url)
-      redirect_parsed = urllib.parse.urlparse(url)
-      if (
-          original_parsed.hostname != redirect_parsed.hostname
-          and redirect_parsed.hostname != self.AUTH_HOST
-          and original_parsed.hostname != self.AUTH_HOST
-      ):
-        del headers["Authorization"]
-
-    super().rebuild_auth(prepared_request, response)
+def _date_token_regex(date_str: str) -> re.Pattern[str]:
+  """Builds a regex matching a delimited YYYYMMDD date token in filenames."""
+  return re.compile(rf"(?:^|[._-]){re.escape(date_str)}(?:-S\d{{6}}|[._-])")
 
 
 def download_daily_imerg(
@@ -238,253 +148,262 @@ def download_daily_imerg(
   if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1024:
     return dest_path
 
-  if session is None:
-    session = EarthdataSession()
-
-  os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
-  temp_path = f"{dest_path}.tmp.{os.getpid()}.{time.time_ns()}"
-
-  try:
-    with session.get(url, stream=True, timeout=120) as resp:
-      if resp.status_code in (401, 403):
-        raise PermissionError(
-            f"NASA GES DISC returned HTTP {resp.status_code} Unauthorized "
-            f"for URL:\n  {url}\nAccess to NASA IMERG data requires NASA "
-            "Earthdata Login authentication."
-        )
-      if resp.status_code == 404:
-        raise FileNotFoundError(
-            f"NASA GES DISC returned HTTP 404 Not Found for URL: {url}"
-        )
-      resp.raise_for_status()
-      with open(temp_path, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=1024 * 1024):
-          if chunk:
-            f.write(chunk)
-
-    if os.path.getsize(temp_path) <= 1024:
-      raise ValueError(
-          f"Downloaded IMERG granule is unexpectedly small "
-          f"({os.path.getsize(temp_path)} bytes): {url}"
-      )
-    os.replace(temp_path, dest_path)
-    return dest_path
-  finally:
-    if os.path.exists(temp_path):
-      os.remove(temp_path)
+  active_session = session if session is not None else EarthdataSession()
+  return download_http_file(
+      url,
+      dest_path,
+      session=active_session,
+      timeout=120,
+      min_bytes=1024,
+      resource_label="NASA GES DISC",
+  )
 
 
-def parse_imerg_netcdf_to_grid(nc_path: str) -> np.ndarray:
+def parse_imerg_netcdf_to_grid(
+    nc_path: str,
+    expected_date: pd.Timestamp | None = None,
+) -> np.ndarray:
   """Reads a NASA IMERG V07 daily NetCDF-4 file into a (lat, lon) float32 grid.
 
   Strictly validates:
-  1. Presence of IMERG V07 ``precipitation`` variable (rejects legacy V06
-     ``precipitationCal``).
-  2. ``lat`` and ``lon`` coordinates match ``IMERG_LATS`` and ``IMERG_LONS``.
-  3. 2D spatial dimensions are ``('lat', 'lon')`` or ``('lon', 'lat')`` with
-     shape ``(LAT_COUNT, LON_COUNT)`` after transposing.
-  4. The resulting daily grid is not entirely ``NaN``.
+  - Required V07 precipitation variable (``precipitation``; rejects legacy V06
+    ``precipitationCal``)
+  - Required ``lat`` and ``lon`` coordinates matching ``IMERG_LATS`` /
+    ``IMERG_LONS``
+  - Internal ``time`` coordinate matching ``expected_date`` when provided
+  - 2D shape ``(1800, 3600)`` after squeezing ``time`` and transposing
+    ``(lon, lat)`` -> ``(lat, lon)``
+  - At least one finite value in the daily grid
+
+  Args:
+    nc_path: Path to the local daily NetCDF-4 file.
+    expected_date: Optional expected UTC date for internal timestamp
+      verification.
+
+  Returns:
+    2D ``float32`` array of shape ``(LAT_COUNT, LON_COUNT)`` with negative/fill
+    values masked to ``np.nan``.
   """
-  with _netcdf_lock, xr.open_dataset(nc_path) as ds:
-    if "precipitation" not in ds:
-      raise KeyError(
-          f"IMERG V07 variable 'precipitation' not found in {nc_path} "
-          f"(found variables: {list(ds.data_vars)}). Legacy V06 "
-          "'precipitationCal' files are not supported."
-      )
-    if "lat" not in ds or "lon" not in ds:
-      raise KeyError(
-          f"Required coordinates 'lat' and 'lon' not found in {nc_path}."
-      )
-
-    file_lats = np.asarray(ds["lat"].values, dtype=np.float32)
-    file_lons = np.asarray(ds["lon"].values, dtype=np.float32)
-    if file_lats.shape != (LAT_COUNT,) or not np.allclose(
-        file_lats, IMERG_LATS, atol=1e-3
-    ):
-      raise ValueError(
-          f"Latitude coordinate in {nc_path} does not match expected IMERG "
-          f"grid (shape={file_lats.shape}, expected=({LAT_COUNT},))."
-      )
-    if file_lons.shape != (LON_COUNT,) or not np.allclose(
-        file_lons, IMERG_LONS, atol=1e-3
-    ):
-      raise ValueError(
-          f"Longitude coordinate in {nc_path} does not match expected IMERG "
-          f"grid (shape={file_lons.shape}, expected=({LON_COUNT},))."
-      )
-
-    da = ds["precipitation"]
-    if "time" in da.dims:
-      if da.sizes["time"] != 1:
-        raise ValueError(
-            f"Expected single daily time step in {nc_path}, got "
-            f"time={da.sizes['time']}."
+  with _netcdf_lock:
+    with xr.open_dataset(nc_path, engine="netcdf4") as ds:
+      if "precipitation" not in ds:
+        raise KeyError(
+            f"Required V07 variable 'precipitation' not found in {nc_path}: "
+            f"{list(ds.data_vars)}"
         )
-      da = da.squeeze("time")
-    if da.dims == ("lon", "lat"):
-      da = da.transpose("lat", "lon")
-    elif da.dims != ("lat", "lon"):
-      raise ValueError(
-          f"Unexpected spatial dimensions {da.dims} in {nc_path}; expected "
-          "('lat', 'lon') or ('lon', 'lat')."
-      )
 
-    vals = da.values.astype(np.float32)
+      for coord_name in ("lat", "lon"):
+        if coord_name not in ds.coords and coord_name not in ds:
+          raise KeyError(
+              f"Required coordinate {coord_name!r} not found in {nc_path}."
+          )
 
-  if vals.shape != (LAT_COUNT, LON_COUNT):
+      if "time" in ds.coords or "time" in ds:
+        time_vals = pd.to_datetime(ds["time"].values)
+        if len(time_vals) != 1:
+          raise ValueError(
+              f"Expected single daily timestamp in {nc_path}, got "
+              f"{len(time_vals)}."
+          )
+        if expected_date is not None:
+          file_date = pd.Timestamp(time_vals[0]).normalize()
+          exp_date = pd.Timestamp(expected_date).normalize()
+          if file_date != exp_date:
+            raise ValueError(
+                f"IMERG NetCDF {nc_path} internal time "
+                f"{file_date.strftime('%Y-%m-%d')} does not match expected "
+                f"date {exp_date.strftime('%Y-%m-%d')}."
+            )
+      elif expected_date is not None:
+        raise KeyError(
+            f"Required 'time' coordinate not found in IMERG NetCDF {nc_path}."
+        )
+
+      file_lats = np.asarray(ds["lat"].values, dtype=np.float32)
+      file_lons = np.asarray(ds["lon"].values, dtype=np.float32)
+      if file_lats.shape != IMERG_LATS.shape or not np.allclose(
+          file_lats, IMERG_LATS, atol=1e-2
+      ):
+        raise ValueError(
+            f"Latitude coordinate in {nc_path} does not match expected "
+            f"IMERG_LATS (shape={file_lats.shape})."
+        )
+      if file_lons.shape != IMERG_LONS.shape or not np.allclose(
+          file_lons, IMERG_LONS, atol=1e-2
+      ):
+        raise ValueError(
+            f"Longitude coordinate in {nc_path} does not match expected "
+            f"IMERG_LONS (shape={file_lons.shape})."
+        )
+
+      da = ds["precipitation"]
+      if "time" in da.dims:
+        da = da.squeeze("time")
+
+      if da.dims == ("lon", "lat"):
+        da = da.transpose("lat", "lon")
+      elif da.dims != ("lat", "lon"):
+        raise ValueError(
+            f"Unexpected dimensions {da.dims} for 'precipitation' in "
+            f"{nc_path}; expected ('lat', 'lon') or ('lon', 'lat')."
+        )
+
+      grid = np.asarray(da.values, dtype=np.float32)
+
+  if grid.shape != (LAT_COUNT, LON_COUNT):
     raise ValueError(
-        f"Unexpected IMERG grid shape {vals.shape} in {nc_path}; expected "
-        f"({LAT_COUNT}, {LON_COUNT})."
+        f"Unexpected IMERG grid shape {grid.shape} in {nc_path}; "
+        f"expected ({LAT_COUNT}, {LON_COUNT})."
     )
 
-  grid = np.where(vals < 0.0, np.nan, vals)
+  grid = np.where((grid >= 0.0) & (~np.isnan(grid)), grid, np.nan).astype(
+      np.float32
+  )
   if not np.isfinite(grid).any():
     raise ValueError(
-        f"IMERG daily NetCDF {nc_path} contains no finite precipitation values "
+        f"IMERG NetCDF {nc_path} contains no finite precipitation values "
         "(all-NaN)."
     )
   return grid
 
 
-def _read_and_parse_h5_granule(fpath: str) -> np.ndarray:
-  """Reads a single half-hourly IMERG V07 HDF5 granule into a (lat, lon) array.
+def _parse_h5_granule_bytes(content: bytes) -> np.ndarray:
+  """Parses a single half-hourly IMERG HDF5 granule into a (lat, lon) array."""
+  with h5py.File(io.BytesIO(content), "r") as f:
+    if "Grid" not in f:
+      raise KeyError("HDF5 granule is missing required 'Grid' group.")
+    grid_group = f["Grid"]
+    if "precipitation" not in grid_group:
+      raise KeyError(
+          "Required V07 'Grid/precipitation' dataset not found in HDF5 granule."
+      )
+    precip_ds = grid_group["precipitation"]
 
-  Validates that ``/Grid/precipitation`` exists and has raw shape
-  ``(LON_COUNT, LAT_COUNT)`` before transposing to ``(LAT_COUNT, LON_COUNT)``.
-  """
+    if "lat" in grid_group and "lon" in grid_group:
+      h5_lats = np.asarray(grid_group["lat"][:], dtype=np.float32)
+      h5_lons = np.asarray(grid_group["lon"][:], dtype=np.float32)
+      if h5_lats.shape != IMERG_LATS.shape or not np.allclose(
+          h5_lats, IMERG_LATS, atol=1e-2
+      ):
+        raise ValueError(
+            f"Unexpected 'Grid/lat' in HDF5 granule: shape={h5_lats.shape}"
+        )
+      if h5_lons.shape != IMERG_LONS.shape or not np.allclose(
+          h5_lons, IMERG_LONS, atol=1e-2
+      ):
+        raise ValueError(
+            f"Unexpected 'Grid/lon' in HDF5 granule: shape={h5_lons.shape}"
+        )
+
+    data = precip_ds[:]
+    if data.ndim == 3:
+      if data.shape[0] != 1:
+        raise ValueError(
+            f"Expected single time slice in HDF5 granule, got shape "
+            f"{data.shape}."
+        )
+      data = data[0]
+    if data.shape != (LON_COUNT, LAT_COUNT):
+      raise ValueError(
+          f"Unexpected HDF5 precipitation array shape {data.shape}; "
+          f"expected ({LON_COUNT}, {LAT_COUNT})."
+      )
+    return np.asarray(data.T, dtype=np.float32)
+
+
+def _read_and_parse_h5_granule(fpath: str) -> np.ndarray:
+  """Reads a local HDF5 granule from disk and parses its precipitation grid."""
   with open(fpath, "rb") as f:
     content = f.read()
-
-  with h5py.File(io.BytesIO(content), "r") as h5:
-    if "Grid" not in h5 or "precipitation" not in h5["Grid"]:
-      raise KeyError(
-          f"IMERG V07 '/Grid/precipitation' dataset not found in {fpath}. "
-          "Legacy V06 'precipitationCal' granules are not supported."
-      )
-    grid_group = h5["Grid"]
-    if "lat" in grid_group:
-      h5_lats = np.asarray(grid_group["lat"][:], dtype=np.float32)
-      if h5_lats.shape != (LAT_COUNT,) or not np.allclose(
-          h5_lats, IMERG_LATS, atol=1e-3
-      ):
-        raise ValueError(
-            f"Latitude coordinate in HDF5 granule {fpath} does not match "
-            "expected IMERG grid."
-        )
-    if "lon" in grid_group:
-      h5_lons = np.asarray(grid_group["lon"][:], dtype=np.float32)
-      if h5_lons.shape != (LON_COUNT,) or not np.allclose(
-          h5_lons, IMERG_LONS, atol=1e-3
-      ):
-        raise ValueError(
-            f"Longitude coordinate in HDF5 granule {fpath} does not match "
-            "expected IMERG grid."
-        )
-    ds = grid_group["precipitation"]
-    raw = np.squeeze(ds[()])
-    if raw.shape != (LON_COUNT, LAT_COUNT):
-      raise ValueError(
-          f"Unexpected raw HDF5 '/Grid/precipitation' shape {raw.shape} in "
-          f"{fpath}; expected ({LON_COUNT}, {LAT_COUNT})."
-      )
-    return np.transpose(raw).astype(np.float32)
+  return _parse_h5_granule_bytes(content)
 
 
 class GESDISCImergSource:
-  """Downloads and extracts daily gridded precipitation from NASA GES DISC."""
+  """Fetches NASA GPM IMERG V07 Daily NetCDF-4 files from NASA GES DISC."""
 
   def __init__(
       self,
       cache_dir: str,
       base_url: str = DEFAULT_GESDISC_URL,
-      cmr_url: str = DEFAULT_CMR_GRANULES_URL,
       username: str | None = None,
       password: str | None = None,
       token: str | None = None,
       netrc_path: str | None = None,
       cleanup_cache: bool = False,
   ):
-    self.base_url = base_url.rstrip("/")
-    self.cmr_url = cmr_url
-    self.username = username
-    self.password = password
-    self.token = token
-    self.netrc_path = netrc_path
-    self.cleanup_cache = cleanup_cache
-    self._thread_local = threading.local()
     self.cache_dir = cache_dir
-    os.makedirs(self.cache_dir, exist_ok=True)
+    self.base_url = base_url.rstrip("/")
+    self.cleanup_cache = cleanup_cache
+    self.session = EarthdataSession(
+        username=username,
+        password=password,
+        token=token,
+        netrc_path=netrc_path,
+    )
+    tail = self.base_url.rsplit("/", 1)[-1]
+    if "." in tail:
+      short_part, ver_part = tail.split(".", 1)
+      self.collection_short_name = short_part or IMERG_DAILY_SHORT_NAME
+      self.version: str | None = ver_part
+    else:
+      self.collection_short_name = tail or IMERG_DAILY_SHORT_NAME
+      self.version = None
 
-  @property
-  def session(self) -> EarthdataSession:
-    if not hasattr(self._thread_local, "session"):
-      self._thread_local.session = EarthdataSession(
-          username=self.username,
-          password=self.password,
-          token=self.token,
-          netrc_path=self.netrc_path,
+  def _resolve_daily_granule_url(self, date: pd.Timestamp) -> str:
+    """Discovers the exact daily NetCDF-4 URL for ``date`` via NASA CMR."""
+    cmr_kwargs: dict[str, object] = {}
+    if self.version is not None:
+      cmr_kwargs["version"] = self.version
+    cmr_urls = query_cmr_granules(
+        self.collection_short_name, date, **cmr_kwargs  # type: ignore[arg-type]
+    )
+    nc_urls = [u for u in cmr_urls if u.endswith((".nc4", ".nc"))]
+    if not nc_urls:
+      raise FileNotFoundError(
+          f"No published IMERG V07 daily NetCDF-4 granule found in NASA CMR "
+          f"for {date.strftime('%Y-%m-%d')} "
+          f"(collection={self.collection_short_name}, version={self.version})."
       )
-    return self._thread_local.session
+    if len(nc_urls) > 1:
+      raise ValueError(
+          f"Multiple daily IMERG NetCDF-4 granules returned by NASA CMR for "
+          f"{date.strftime('%Y-%m-%d')}: {nc_urls}"
+      )
+    return nc_urls[0]
 
   def extract_date(self, date: pd.Timestamp) -> np.ndarray:
-    """Downloads daily NetCDF-4 granule and returns (1800, 3600) array in mm."""
-    date = pd.to_datetime(date)
+    """Downloads and parses the daily IMERG NetCDF-4 file for ``date``."""
     date_str = date.strftime("%Y%m%d")
-    year = date.year
-    month = date.month
+    token_re = _date_token_regex(date_str)
+    os.makedirs(self.cache_dir, exist_ok=True)
 
-    prefix = f"3B-DAY-E.MS.MRG.3IMERG.{date_str}-S000000-E235959."
     cached_matches = [
         os.path.join(self.cache_dir, fname)
         for fname in sorted(os.listdir(self.cache_dir))
-        if fname.startswith(prefix)
-        and fname.endswith(".nc4")
-        and os.path.getsize(os.path.join(self.cache_dir, fname)) > 1024
+        if fname.endswith((".nc4", ".nc")) and token_re.search(fname)
     ]
     if len(cached_matches) > 1:
       raise ValueError(
-          f"Multiple conflicting cached IMERG granules found for {date_str}: "
-          f"{cached_matches}"
+          f"Multiple conflicting cached IMERG files found for "
+          f"{date.strftime('%Y-%m-%d')}: {cached_matches}"
+      )
+    if len(cached_matches) == 1:
+      nc_path = cached_matches[0]
+    else:
+      target_url = self._resolve_daily_granule_url(date)
+      dest_path = os.path.join(self.cache_dir, os.path.basename(target_url))
+      nc_path = download_daily_imerg(
+          target_url, dest_path, session=self.session
       )
 
-    if len(cached_matches) == 1:
-      cached_path = cached_matches[0]
-    else:
-      cmr_urls = [
-          u
-          for u in query_cmr_granules(
-              IMERG_DAILY_SHORT_NAME, date, cmr_url=self.cmr_url
-          )
-          if u.endswith(".nc4")
-      ]
-      if not cmr_urls:
-        raise FileNotFoundError(
-            f"No published IMERG V07 daily granule found in NASA CMR for "
-            f"{date.strftime('%Y-%m-%d')}."
-        )
-      if len(cmr_urls) > 1:
-        raise ValueError(
-            f"Multiple conflicting IMERG V07 daily granules returned by NASA "
-            f"CMR for {date.strftime('%Y-%m-%d')}: {cmr_urls}"
-        )
-      granule_fn = os.path.basename(urllib.parse.urlparse(cmr_urls[0]).path)
-      if self.base_url == DEFAULT_GESDISC_URL.rstrip("/"):
-        download_url = cmr_urls[0]
-      else:
-        download_url = f"{self.base_url}/{year}/{month:02d}/{granule_fn}"
-      cached_path = os.path.join(self.cache_dir, granule_fn)
-      download_daily_imerg(download_url, cached_path, session=self.session)
-
-    try:
-      return parse_imerg_netcdf_to_grid(cached_path)
-    finally:
-      if self.cleanup_cache and os.path.exists(cached_path):
-        os.remove(cached_path)
+    grid = parse_imerg_netcdf_to_grid(nc_path, expected_date=date)
+    if self.cleanup_cache and os.path.exists(nc_path):
+      os.remove(nc_path)
+    return grid
 
 
 class LocalImergSource:
-  """Extracts daily gridded precipitation from a local directory."""
+  """Ingests daily IMERG grids from local NetCDF-4 or 48 half-hourly HDF5s."""
 
   def __init__(
       self,
@@ -492,56 +411,75 @@ class LocalImergSource:
       local_format: str = "nc4",
       granule_workers: int = 8,
   ):
-    if not os.path.isdir(local_dir):
-      raise FileNotFoundError(
-          f"Local IMERG source directory does not exist: {local_dir}"
-      )
     if local_format not in ("nc4", "h5"):
       raise ValueError(
           f"Invalid local_format={local_format!r}. Must be 'nc4' or 'h5'."
       )
+    if not os.path.isdir(local_dir):
+      raise FileNotFoundError(
+          f"Local IMERG directory does not exist: {local_dir}"
+      )
     self.local_dir = local_dir
     self.local_format = local_format
-    self.granule_workers = max(1, granule_workers)
+    self.granule_workers = granule_workers
+
+  def _candidate_dirs(self, date: pd.Timestamp) -> list[str]:
+    """Returns candidate directories to search for ``date``."""
+    month_str = date.strftime("%Y%m")
+    year_str = date.strftime("%Y")
+    mm_str = date.strftime("%m")
+    candidates = [
+        self.local_dir,
+        os.path.join(self.local_dir, month_str),
+        os.path.join(self.local_dir, year_str, mm_str),
+        os.path.join(self.local_dir, year_str),
+    ]
+    seen: list[str] = []
+    for d in candidates:
+      if os.path.isdir(d) and d not in seen:
+        seen.append(d)
+    return seen
 
   def extract_date(self, date: pd.Timestamp) -> np.ndarray:
-    """Extracts a daily grid from local NetCDF-4 or 48 half-hourly HDF5 files."""
-    date = pd.to_datetime(date)
+    """Extracts the daily IMERG grid for ``date`` in ``self.local_format``."""
     date_str = date.strftime("%Y%m%d")
-    month_str = date.strftime("%Y%m")
+    token_re = _date_token_regex(date_str)
+    candidate_dirs = self._candidate_dirs(date)
 
     if self.local_format == "nc4":
-      nc_matches = [
-          os.path.join(self.local_dir, fname)
-          for fname in sorted(os.listdir(self.local_dir))
-          if date_str in fname and fname.endswith((".nc4", ".nc"))
-      ]
-      if not nc_matches:
+      nc_files: list[str] = []
+      for d in candidate_dirs:
+        for fname in sorted(os.listdir(d)):
+          if fname.endswith((".nc4", ".nc")) and token_re.search(fname):
+            nc_files.append(os.path.join(d, fname))
+      if not nc_files:
         raise FileNotFoundError(
             f"No local IMERG NetCDF-4 file found for "
             f"{date.strftime('%Y-%m-%d')} in {self.local_dir}."
         )
-      if len(nc_matches) > 1:
+      if len(nc_files) > 1:
         raise ValueError(
             f"Multiple conflicting local IMERG NetCDF-4 files found for "
-            f"{date.strftime('%Y-%m-%d')}: {nc_matches}"
+            f"{date.strftime('%Y-%m-%d')} in {self.local_dir}: {nc_files}"
         )
-      return parse_imerg_netcdf_to_grid(nc_matches[0])
+      return parse_imerg_netcdf_to_grid(nc_files[0], expected_date=date)
 
-    # local_format == "h5": require all 48 unique half-hourly HDF5 granules.
-    search_dirs = [self.local_dir, os.path.join(self.local_dir, month_str)]
+    # self.local_format == "h5"
     h5_files: list[str] = []
-    for dpath in search_dirs:
-      if os.path.isdir(dpath):
-        for fname in sorted(os.listdir(dpath)):
-          if date_str in fname and fname.endswith((".RT-H5", ".HDF5", ".h5")):
-            h5_files.append(os.path.join(dpath, fname))
+    for d in candidate_dirs:
+      for fname in sorted(os.listdir(d)):
+        if fname.endswith((".RT-H5", ".HDF5", ".h5")) and token_re.search(
+            fname
+        ):
+          h5_files.append(os.path.join(d, fname))
+      if h5_files:
+        break
 
     if len(h5_files) != 48:
       raise ValueError(
-          f"Incomplete or duplicate half-hourly HDF5 granules for "
-          f"{date.strftime('%Y-%m-%d')} in {self.local_dir}: found "
-          f"{len(h5_files)} granules, expected 48."
+          f"Expected 48 half-hourly IMERG HDF5 granules for "
+          f"{date.strftime('%Y-%m-%d')}, found {len(h5_files)} in "
+          f"{self.local_dir}."
       )
 
     observed_tokens: set[str] = set()
@@ -596,12 +534,8 @@ class LocalImergSource:
 def build_batch_dataset(
     batch_dates: Sequence[pd.Timestamp],
     batch_grids: Sequence[np.ndarray],
-    latitudes: np.ndarray | None = None,
-    longitudes: np.ndarray | None = None,
 ) -> xr.Dataset:
   """Assembles a batch of daily IMERG grids into the canonical Zarr schema."""
-  lats = IMERG_LATS if latitudes is None else latitudes
-  lons = IMERG_LONS if longitudes is None else longitudes
   return xr.Dataset(
       data_vars={
           IMERG_VARIABLE: (
@@ -611,8 +545,8 @@ def build_batch_dataset(
       },
       coords={
           "time": list(batch_dates),
-          "latitude": lats,
-          "longitude": lons,
+          "latitude": IMERG_LATS,
+          "longitude": IMERG_LONS,
       },
       attrs=dict(IMERG_ATTRS),
   )
@@ -708,9 +642,8 @@ def build_imerg_archive(
           f"Cannot run --in_place: target store {full_target_url} does not "
           "exist."
       )
-    with xr.open_zarr(mapper, consolidated=False) as existing_ds:
-      time_pd = pd.to_datetime(existing_ds["time"].values)
-      date_to_idx = {t.strftime("%Y-%m-%d"): i for i, t in enumerate(time_pd)}
+    time_pd = storage.decode_zarr_time_index(mapper)
+    date_to_idx = {t.strftime("%Y-%m-%d"): i for i, t in enumerate(time_pd)}
     in_place_dates = requested_dates
     append_dates = pd.DatetimeIndex([])
   elif store_exists:
@@ -724,58 +657,52 @@ def build_imerg_archive(
       )
       return
 
-  temp_cache_ctx = (
-      tempfile.TemporaryDirectory(prefix="imerg_cache_")
-      if cache_dir is None
-      else None
-  )
-  effective_cache_dir = (
-      temp_cache_ctx.name if temp_cache_ctx is not None else str(cache_dir)
-  )
+  with storage.managed_cache_dir(
+      cache_dir, cleanup_cache, prefix="imerg_cache_"
+  ) as effective_cache_dir:
+    if source_type == "local":
+      logging.info(
+          "Using local directory archive from %s (format=%s)",
+          local_dir,
+          local_format,
+      )
+      source: LocalImergSource | GESDISCImergSource = LocalImergSource(
+          local_dir=str(local_dir),
+          local_format=local_format,
+          granule_workers=granule_workers,
+      )
+    else:
+      logging.info("Using NASA GES DISC public daily NetCDF archive")
+      source = GESDISCImergSource(
+          cache_dir=effective_cache_dir,
+          base_url=gesdisc_url,
+          username=earthdata_username,
+          password=earthdata_password,
+          token=earthdata_token,
+          netrc_path=netrc_path,
+          cleanup_cache=cleanup_cache,
+      )
 
-  if source_type == "local":
-    logging.info(
-        "Using local directory archive from %s (format=%s)",
-        local_dir,
-        local_format,
-    )
-    source: LocalImergSource | GESDISCImergSource = LocalImergSource(
-        local_dir=str(local_dir),
-        local_format=local_format,
-        granule_workers=granule_workers,
-    )
-  else:
-    logging.info("Using NASA GES DISC public daily NetCDF archive")
-    source = GESDISCImergSource(
-        cache_dir=effective_cache_dir,
-        base_url=gesdisc_url,
-        username=earthdata_username,
-        password=earthdata_password,
-        token=earthdata_token,
-        netrc_path=netrc_path,
-        cleanup_cache=cleanup_cache,
-    )
+    is_first_write = not store_exists
 
-  is_first_write = not store_exists
+    def _extract_chunk(
+        chunk_dates: pd.DatetimeIndex,
+    ) -> list[tuple[pd.Timestamp, np.ndarray]]:
+      if num_workers > 1 and len(chunk_dates) > 1:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(chunk_dates), num_workers)
+        ) as executor:
+          futures = {
+              executor.submit(source.extract_date, dt): dt
+              for dt in chunk_dates
+          }
+          results_map: dict[pd.Timestamp, np.ndarray] = {}
+          for future in concurrent.futures.as_completed(futures):
+            dt_item = futures[future]
+            results_map[dt_item] = future.result()
+          return [(dt, results_map[dt]) for dt in chunk_dates]
+      return [(dt, source.extract_date(dt)) for dt in chunk_dates]
 
-  def _extract_chunk(
-      chunk_dates: pd.DatetimeIndex,
-  ) -> list[tuple[pd.Timestamp, np.ndarray]]:
-    if num_workers > 1 and len(chunk_dates) > 1:
-      with concurrent.futures.ThreadPoolExecutor(
-          max_workers=min(len(chunk_dates), num_workers)
-      ) as executor:
-        futures = {
-            executor.submit(source.extract_date, dt): dt for dt in chunk_dates
-        }
-        results_map: dict[pd.Timestamp, np.ndarray] = {}
-        for future in concurrent.futures.as_completed(futures):
-          dt_item = futures[future]
-          results_map[dt_item] = future.result()
-        return [(dt, results_map[dt]) for dt in chunk_dates]
-    return [(dt, source.extract_date(dt)) for dt in chunk_dates]
-
-  try:
     if len(in_place_dates) > 0:
       for i in tqdm.trange(
           0, len(in_place_dates), batch_size, desc="IMERG In-Place Update"
@@ -810,12 +737,6 @@ def build_imerg_archive(
     logging.info(
         "IMERG archive build complete for %s to %s!", start_date, end_date
     )
-  finally:
-    if temp_cache_ctx is not None:
-      temp_cache_ctx.cleanup()
-    elif cleanup_cache and cache_dir and os.path.exists(cache_dir):
-      shutil.rmtree(cache_dir)
-      logging.info("Cleaned up cache directory: %s", cache_dir)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

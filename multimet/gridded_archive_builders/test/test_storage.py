@@ -18,9 +18,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from multimet.gridded_archive_builders import storage
-from multimet.gridded_archive_builders.storage import (
+from multimet.utils import storage
+from multimet.utils.storage import (
     is_remote_target,
+    parse_cf_time_coordinate,
     resolve_zarr_target,
 )
 import numpy as np
@@ -106,6 +107,22 @@ class TestValidation:
       resolve_zarr_target("")
 
 
+class TestCFTimeCoordinateParsing:
+  """Tests CF time coordinate decoding across units and missing metadata."""
+
+  def test_parses_hours_since_epoch(self) -> None:
+    arr = np.array([0, 24, 48], dtype=np.int64)
+    idx = parse_cf_time_coordinate(
+        arr, {"units": "hours since 2024-01-01 00:00:00"}
+    )
+    assert list(idx) == list(pd.date_range("2024-01-01", "2024-01-03"))
+
+  def test_rejects_numeric_time_without_units(self) -> None:
+    arr = np.array([0, 1, 2], dtype=np.int64)
+    with pytest.raises(ValueError, match="lacks a valid CF"):
+      parse_cf_time_coordinate(arr, {})
+
+
 class TestAppendAndResumeIntegrity:
   """Tests batch writes, in-place writes, and strict resume validation."""
 
@@ -140,7 +157,10 @@ class TestAppendAndResumeIntegrity:
     target = str(tmp_path / "trailing_nan.zarr")
     ds = xr.Dataset(
         {"v": (["time", "x"], [[1.0, 2.0], [np.nan, np.nan]])},
-        coords={"time": pd.date_range("2025-01-01", "2025-01-02"), "x": [0, 1]},
+        coords={
+            "time": pd.date_range("2025-01-01", "2025-01-02"),
+            "x": [0, 1],
+        },
     )
     storage.write_dataset_batch_to_zarr(
         ds, target, is_initial_write=True, consolidated=False
@@ -151,11 +171,34 @@ class TestAppendAndResumeIntegrity:
           target, pd.date_range("2025-01-01", "2025-01-03")
       )
 
+  def test_plan_archive_resume_rejects_interior_date_gap(
+      self, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "interior_gap.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "x"], [[1.0, 2.0], [3.0, 4.0]])},
+        coords={
+            "time": pd.to_datetime(["2025-01-01", "2025-01-03"]),
+            "x": [0, 1],
+        },
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    with pytest.raises(ValueError, match="strictly contiguous daily"):
+      storage.plan_archive_resume(
+          target, pd.date_range("2025-01-01", "2025-01-04")
+      )
+
   def test_plan_archive_resume_rejects_date_gap(self, tmp_path: Path) -> None:
     target = str(tmp_path / "gap.zarr")
     ds = xr.Dataset(
         {"v": (["time", "x"], [[1.0, 2.0], [3.0, 4.0]])},
-        coords={"time": pd.date_range("2025-01-01", "2025-01-02"), "x": [0, 1]},
+        coords={
+            "time": pd.date_range("2025-01-01", "2025-01-02"),
+            "x": [0, 1],
+        },
     )
     storage.write_dataset_batch_to_zarr(
         ds, target, is_initial_write=True, consolidated=False
@@ -184,3 +227,34 @@ class TestAppendAndResumeIntegrity:
     )
     with pytest.raises(ValueError, match="Dates not found"):
       storage.write_dataset_batch_in_place(missing_update, target)
+
+  def test_write_dataset_batch_rejects_mismatched_spatial_coordinates(
+      self, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "coord_check.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "latitude", "longitude"], np.ones((1, 2, 2)))},
+        coords={
+            "time": [pd.Timestamp("2025-01-01")],
+            "latitude": [-10.0, 10.0],
+            "longitude": [-20.0, 20.0],
+        },
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    flipped_lat_batch = xr.Dataset(
+        {"v": (["time", "latitude", "longitude"], np.ones((1, 2, 2)))},
+        coords={
+            "time": [pd.Timestamp("2025-01-01")],
+            "latitude": [10.0, -10.0],
+            "longitude": [-20.0, 20.0],
+        },
+    )
+    with pytest.raises(ValueError, match="latitude"):
+      storage.write_dataset_batch_in_place(flipped_lat_batch, target)
+    with pytest.raises(ValueError, match="latitude"):
+      storage.write_dataset_batch_to_zarr(
+          flipped_lat_batch, target, is_initial_write=False, consolidated=False
+      )

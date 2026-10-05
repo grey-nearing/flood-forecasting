@@ -19,16 +19,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from multimet.gridded_archive_builders import (
-    build_imerg_archive as imerg_module,
-)
 from multimet.gridded_archive_builders.build_cpc_archive import (
     CPC_VARIABLE,
     build_cpc_archive,
 )
 from multimet.gridded_archive_builders.build_imerg_archive import (
     IMERG_ATTRS,
+    IMERG_LATS,
+    IMERG_LONS,
     IMERG_VARIABLE,
+    LAT_COUNT,
+    LON_COUNT,
     build_imerg_archive,
 )
 import numpy as np
@@ -45,6 +46,30 @@ def open_store(path: str) -> xr.Dataset:
     return store.load()
 
 
+def _write_imerg_nc4_day(
+    local_dir: Path, date_iso: str, value: float
+) -> Path:
+  """Writes a full-resolution (1800, 3600) daily IMERG NetCDF-4 file."""
+  dt = pd.Timestamp(date_iso)
+  d_str = dt.strftime("%Y%m%d")
+  out_path = local_dir / f"imerg_{d_str}.nc4"
+  ds = xr.Dataset(
+      {
+          "precipitation": (
+              ["time", "lat", "lon"],
+              np.full((1, LAT_COUNT, LON_COUNT), value, dtype=np.float32),
+          )
+      },
+      coords={
+          "time": [dt],
+          "lat": IMERG_LATS,
+          "lon": IMERG_LONS,
+      },
+  )
+  ds.to_netcdf(out_path)
+  return out_path
+
+
 class TestCPCArchiveEndToEnd:
   """Full ``build_cpc_archive`` runs against a local store."""
 
@@ -58,6 +83,7 @@ class TestCPCArchiveEndToEnd:
         target_zarr=target,
         start_year=2020,
         end_year=2020,
+        end_date="2020-01-05",
         cache_dir=str(psl_cache),
         num_workers=1,
     )
@@ -68,6 +94,21 @@ class TestCPCArchiveEndToEnd:
     assert list(pd.to_datetime(store["time"].values)) == list(
         pd.date_range("2020-01-01", "2020-01-05")
     )
+
+  def test_incomplete_historical_year_without_end_date_raises_value_error(
+      self, write_psl_year: Callable[..., Path], psl_cache: Path, tmp_path: Path
+  ) -> None:
+    write_psl_year(2020, "2020-01-01", "2020-01-05")
+    target = str(tmp_path / "cpc_incomplete.zarr")
+
+    with pytest.raises(ValueError, match="before end of year 2020-12-31"):
+      build_cpc_archive(
+          target_zarr=target,
+          start_year=2020,
+          end_year=2020,
+          cache_dir=str(psl_cache),
+          num_workers=1,
+      )
 
   def test_multi_year_build_is_chronological(
       self, write_psl_year: Callable[..., Path], psl_cache: Path, tmp_path: Path
@@ -80,6 +121,8 @@ class TestCPCArchiveEndToEnd:
         target_zarr=target,
         start_year=2020,
         end_year=2021,
+        start_date="2020-12-29",
+        end_date="2021-01-03",
         cache_dir=str(psl_cache),
         num_workers=1,
     )
@@ -98,11 +141,12 @@ class TestCPCArchiveEndToEnd:
     write_psl_year(2021, "2021-01-01", "2021-01-03")
     target = str(tmp_path / "cpc_gap.zarr")
 
-    with pytest.raises(ValueError, match="Non-contiguous CPC archive dates"):
+    with pytest.raises(ValueError, match="before end of year 2020-12-31"):
       build_cpc_archive(
           target_zarr=target,
           start_year=2020,
           end_year=2021,
+          end_date="2021-01-03",
           cache_dir=str(psl_cache),
           num_workers=1,
       )
@@ -117,6 +161,7 @@ class TestCPCArchiveEndToEnd:
         target_zarr=target,
         start_year=2020,
         end_year=2020,
+        end_date="2020-01-04",
         cache_dir=str(psl_cache),
         num_workers=1,
     )
@@ -191,7 +236,7 @@ class TestCPCArchiveEndToEnd:
         num_workers=1,
     )
 
-    with pytest.raises(ValueError, match="create a date gap"):
+    with pytest.raises(ValueError, match="expected 2020-01-05"):
       build_cpc_archive(
           target_zarr=target,
           start_year=2020,
@@ -238,6 +283,7 @@ class TestCPCArchiveEndToEnd:
         target_zarr=target,
         start_year=2020,
         end_year=2020,
+        end_date="2020-01-06",
         cache_dir=str(psl_cache),
         num_workers=1,
     )
@@ -247,6 +293,7 @@ class TestCPCArchiveEndToEnd:
         target_zarr=target,
         start_year=2020,
         end_year=2020,
+        end_date="2020-01-02",
         cache_dir=str(psl_cache),
         num_workers=1,
         overwrite=True,
@@ -268,6 +315,7 @@ class TestCPCArchiveEndToEnd:
         target_zarr=target,
         start_year=2020,
         end_year=2020,
+        end_date="2020-01-02",
         cache_dir=str(psl_cache),
         num_workers=1,
     )
@@ -285,6 +333,7 @@ class TestCPCArchiveEndToEnd:
         target_zarr=target,
         start_year=2020,
         end_year=2020,
+        end_date="2020-01-02",
         cache_dir=str(psl_cache),
         cleanup_cache=True,
         num_workers=1,
@@ -306,6 +355,8 @@ class TestCPCArchiveEndToEnd:
         target_zarr=serial_target,
         start_year=2020,
         end_year=2021,
+        start_date="2020-12-29",
+        end_date="2021-01-03",
         cache_dir=str(psl_cache),
         num_workers=1,
     )
@@ -313,6 +364,8 @@ class TestCPCArchiveEndToEnd:
         target_zarr=parallel_target,
         start_year=2020,
         end_year=2021,
+        start_date="2020-12-29",
+        end_date="2021-01-03",
         cache_dir=str(psl_cache),
         num_workers=2,
     )
@@ -324,33 +377,15 @@ class TestCPCArchiveEndToEnd:
 
 
 class TestIMERGArchiveEndToEnd:
-  """Full ``build_imerg_archive`` runs against a local store."""
+  """Full ``build_imerg_archive`` runs against a local store at native (1800, 3600) resolution."""
 
-  def test_build_resume_and_in_place_update(
-      self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-  ) -> None:
-    small_lats = np.linspace(-89.95, 89.95, 8, dtype=np.float32)
-    small_lons = np.linspace(-179.95, 179.95, 12, dtype=np.float32)
-    monkeypatch.setattr(imerg_module, "LAT_COUNT", 8)
-    monkeypatch.setattr(imerg_module, "LON_COUNT", 12)
-    monkeypatch.setattr(imerg_module, "IMERG_LATS", small_lats)
-    monkeypatch.setattr(imerg_module, "IMERG_LONS", small_lons)
-
+  def test_build_resume_and_in_place_update(self, tmp_path: Path) -> None:
     local_dir = tmp_path / "local_nc"
     local_dir.mkdir()
-    for d_idx, d_str in enumerate(
-        ["20240101", "20240102", "20240103"], start=1
+    for d_idx, d_iso in enumerate(
+        ["2024-01-01", "2024-01-02", "2024-01-03"], start=1
     ):
-      ds = xr.Dataset(
-          {
-              "precipitation": (
-                  ["lat", "lon"],
-                  np.full((8, 12), float(d_idx), dtype=np.float32),
-              )
-          },
-          coords={"lat": small_lats, "lon": small_lons},
-      )
-      ds.to_netcdf(local_dir / f"imerg_{d_str}.nc4")
+      _write_imerg_nc4_day(local_dir, d_iso, float(d_idx))
 
     target_store = str(tmp_path / "imerg_out.zarr")
     cache_dir = tmp_path / "temp_cache"
@@ -373,6 +408,7 @@ class TestIMERGArchiveEndToEnd:
 
     store = open_store(target_store)
     assert len(store["time"]) == 3
+    assert store[IMERG_VARIABLE].shape == (3, LAT_COUNT, LON_COUNT)
     assert store.attrs["title"] == IMERG_ATTRS["title"]
     assert float(store[IMERG_VARIABLE].isel(time=0).mean()) == pytest.approx(
         1.0
@@ -382,16 +418,7 @@ class TestIMERGArchiveEndToEnd:
     )
 
     # 2. Add 2024-01-04 and resume up to 2024-01-04.
-    ds_day4 = xr.Dataset(
-        {
-            "precipitation": (
-                ["lat", "lon"],
-                np.full((8, 12), 4.0, dtype=np.float32),
-            )
-        },
-        coords={"lat": small_lats, "lon": small_lons},
-    )
-    ds_day4.to_netcdf(local_dir / "imerg_20240104.nc4")
+    _write_imerg_nc4_day(local_dir, "2024-01-04", 4.0)
 
     build_imerg_archive(
         target_zarr=target_store,
@@ -424,16 +451,7 @@ class TestIMERGArchiveEndToEnd:
     assert len(open_store(target_store)["time"]) == 4
 
     # 4. In-place update of 2024-01-02 with updated valid data.
-    ds_day2_updated = xr.Dataset(
-        {
-            "precipitation": (
-                ["lat", "lon"],
-                np.full((8, 12), 99.0, dtype=np.float32),
-            )
-        },
-        coords={"lat": small_lats, "lon": small_lons},
-    )
-    ds_day2_updated.to_netcdf(local_dir / "imerg_20240102.nc4")
+    _write_imerg_nc4_day(local_dir, "2024-01-02", 99.0)
 
     build_imerg_archive(
         target_zarr=target_store,
