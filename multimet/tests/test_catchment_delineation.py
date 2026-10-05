@@ -26,7 +26,7 @@ import pandas as pd
 import pytest
 from shapely.geometry import box
 
-from catchment_delineation import (
+from multimet.catchment_delineation import (
     RES_DEG,
     TILE_CELLS,
     CatchmentCoverageError,
@@ -36,18 +36,18 @@ from catchment_delineation import (
     list_available_tiles,
     tile_key_to_filename,
 )
-from catchment_delineation.benchmark import (
+from multimet.catchment_delineation.benchmark import (
     compute_iou_and_metrics,
     run_benchmark,
 )
-from catchment_delineation.cli import (
+from multimet.catchment_delineation.cli import (
     _sanitize_feature_for_export,
     load_coords_from_csv,
     load_coords_from_file,
     main,
     parse_coord_str,
 )
-from catchment_delineation.gcs import is_gcs_path, normalize_gcs_path
+from multimet.utils.gcs import is_gcs_path, normalize_gcs_path
 
 _SOUTH_D8: int = 4
 _WEST_D8: int = 16
@@ -230,7 +230,7 @@ def test_missing_tile_aborts_in_both_local_and_gcs_modes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Missing or failed neighbor tiles must abort in BOTH local and GCS modes."""
-    import catchment_delineation.delineator as cd_del
+    import multimet.catchment_delineation.delineator as cd_del
 
     south = np.zeros((TILE_CELLS, TILE_CELLS), dtype=np.uint8)
     col = 1200
@@ -311,7 +311,7 @@ def test_clean_cache_only_removes_newly_downloaded_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """--clean-cache must never delete user tiles_dir or pre-existing files."""
-    import catchment_delineation.delineator as cd_del
+    import multimet.catchment_delineation.delineator as cd_del
 
     user_tiles_dir = tmp_path / 'user_tiles'
     _write_synthetic_tile(user_tiles_dir)
@@ -503,7 +503,7 @@ def test_expected_area_hint_failure_logs_loudly_and_produces_no_polygon(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """If expected_area_km2 cannot be matched, log loudly to stderr and produce no polygon."""
-    from catchment_delineation import CatchmentAreaMismatchError
+    from multimet.catchment_delineation import CatchmentAreaMismatchError
 
     _write_synthetic_tile(tmp_path)
     delin = DemDelineator(tiles_dir=tmp_path)

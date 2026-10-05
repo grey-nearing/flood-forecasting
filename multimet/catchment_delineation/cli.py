@@ -40,26 +40,26 @@ import fsspec
 import geopandas as gpd
 import pandas as pd
 
-from catchment_delineation.delineator import (
+from multimet.catchment_delineation.delineator import (
     CatchmentCoverageError,
     DemDelineator,
     build_missing_feature,
 )
-from catchment_delineation.gcs import (
-    download_tile_from_gcs,
-    is_gcs_path,
-    normalize_gcs_path,
-    upload_file_to_gcs,
-)
-from catchment_delineation.tiles import (
+from multimet.catchment_delineation.gcs import download_tile_from_gcs
+from multimet.catchment_delineation.tiles import (
     is_coord_in_coverage,
     is_tile_in_coverage,
     latlon_to_tile_key,
     list_available_tiles,
     tile_key_to_filename,
 )
+from multimet.utils.gcs import (
+    is_gcs_path,
+    normalize_gcs_path,
+    upload_file_to_gcs,
+)
 
-logger = logging.getLogger('catchment_delineation.cli')
+logger = logging.getLogger('multimet.catchment_delineation.cli')
 
 _LAT_COLUMN_ALLOWLIST: tuple[str, ...] = (
     'latitude',

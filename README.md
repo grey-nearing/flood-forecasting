@@ -95,7 +95,7 @@ The MultiMet meteorological forcing data extension is accessed directly from **G
 
 If you have latitude and longitude coordinates for streamflow gauges and need their upstream watershed boundary polygons and drainage areas ($\text{km}^2$), use the `delineate-catchment` command-line tool included in this repository. It traces upstream drainage areas across 90-meter flow-direction map tiles and writes polygons in Caravan-compatible GeoParquet, GeoJSON, or Shapefile format for downstream MultiMet and static attribute extraction.
 
-* **Package Guide & CLI Reference:** [`catchment_delineation/README.md`](catchment_delineation/README.md)
+* **Package Guide & CLI Reference:** [`multimet/catchment_delineation/README.md`](multimet/catchment_delineation/README.md)
 * **Official Documentation:** [`docs/source/usage/catchment_delineation.rst`](docs/source/usage/catchment_delineation.rst)
 * **MultiMet Forcing Data:** See **MultiMet Data** above (`gs://caravan-multimet/v1.1`).
 

@@ -22,10 +22,10 @@ multimet.gridded_archive_builders.build_imerg_archive
    :show-inheritance:
    :undoc-members:
 
-multimet.gridded_archive_builders.storage
------------------------------------------
+multimet.utils.storage
+----------------------
 
-.. automodule:: multimet.gridded_archive_builders.storage
+.. automodule:: multimet.utils.storage
    :members:
    :show-inheritance:
    :undoc-members:

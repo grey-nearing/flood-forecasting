@@ -17,8 +17,7 @@ This skill defines how tests are organized, written, and reviewed across the `fl
 
 1. **Test Directory Layout:**
    - Every top-level package maintains its own co-located `tests/` directory:
-     - `multimet/tests/`: Unit, integration, and canary tests for `gridded_archive_builders`, `timeseries_extractors`, `static_extractor`, and `multimet/utils`.
-     - `catchment_delineation/tests/`: Unit and integration tests for `catchment_delineation`.
+     - `multimet/tests/`: Unit, integration, and canary tests for `catchment_delineation`, `gridded_archive_builders`, `timeseries_extractors`, `static_extractor`, and `multimet/utils`.
      - `return_periods/tests/`: Unit and USGS Bulletin 17C benchmark verification tests (`moose_river_example_data.csv`, `orestimba_creek_example_data.csv`).
      - `test/` (consolidating into `googlehydrology/tests/` per Issue #17): Core hydrology model, trainer, tester, loss, and datasetzoo tests.
 2. **Pytest & CI Configuration:**

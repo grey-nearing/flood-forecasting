@@ -17,7 +17,7 @@
 import math
 from pathlib import Path
 
-from catchment_delineation.config import (
+from multimet.catchment_delineation.config import (
     DEM_MAX_LAT,
     DEM_MAX_LON,
     DEM_MIN_LAT,

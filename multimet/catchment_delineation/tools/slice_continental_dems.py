@@ -27,8 +27,8 @@ import numpy as np
 import rasterio
 from rasterio.windows import Window
 
-from catchment_delineation.config import RES_DEG, TILE_CELLS, TILE_DEG
-from catchment_delineation.tiles import tile_key_to_filename
+from multimet.catchment_delineation.config import RES_DEG, TILE_CELLS, TILE_DEG
+from multimet.catchment_delineation.tiles import tile_key_to_filename
 
 
 def _slice_single_tile(
