@@ -1,23 +1,55 @@
-catchment\_delineation package
-==============================
+multimet.catchment_delineation package
+======================================
 
-Submodules
-----------
+.. automodule:: multimet.catchment_delineation
+   :members:
+   :show-inheritance:
+   :undoc-members:
 
-.. toctree::
-   :maxdepth: 4
+multimet.catchment_delineation.delineator
+-----------------------------------------
 
-   catchment_delineation.benchmark
-   catchment_delineation.cli
-   catchment_delineation.config
-   catchment_delineation.delineator
-   catchment_delineation.gcs
-   catchment_delineation.tiles
+.. automodule:: multimet.catchment_delineation.delineator
+   :members:
+   :show-inheritance:
+   :undoc-members:
 
-Module contents
----------------
+multimet.catchment_delineation.cli
+----------------------------------
 
-.. automodule:: catchment_delineation
+.. automodule:: multimet.catchment_delineation.cli
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+multimet.catchment_delineation.benchmark
+----------------------------------------
+
+.. automodule:: multimet.catchment_delineation.benchmark
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+multimet.catchment_delineation.config
+-------------------------------------
+
+.. automodule:: multimet.catchment_delineation.config
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+multimet.catchment_delineation.tiles
+------------------------------------
+
+.. automodule:: multimet.catchment_delineation.tiles
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+multimet.catchment_delineation.gcs
+----------------------------------
+
+.. automodule:: multimet.catchment_delineation.gcs
    :members:
    :show-inheritance:
    :undoc-members:

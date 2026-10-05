@@ -1,6 +1,6 @@
 # MultiMet Data Workflows (`multimet`)
 
-The `multimet` package provides tools for preparing **gridded meteorological archives** (`multimet/gridded_archive_builders`), **static watershed attribute tables** (`multimet/static_extractor`), and **catchment meteorological timeseries** (`multimet/timeseries_extractors`) for OpenHydroNet.
+The `multimet` package provides tools for **watershed boundary delineation** ([`multimet/catchment_delineation`](catchment_delineation/README.md)), **gridded meteorological archives** ([`multimet/gridded_archive_builders`](gridded_archive_builders/README.md)), **static watershed attribute tables** (`multimet/static_extractor`), and **catchment meteorological timeseries** ([`multimet/timeseries_extractors`](timeseries_extractors/README.md)) for OpenHydroNet.
 
 ---
 
@@ -379,3 +379,8 @@ benchmark-static-extractor \
 
 The [`multimet/timeseries_extractors`](timeseries_extractors/README.md) subpackage reduces gridded meteorological archives and upstream weather feeds to catchment-averaged daily forcing time series (`extract-multimet` and `extract-multimet-dask`) standardized to the Caravan MultiMet schema. See [`multimet/timeseries_extractors/README.md`](timeseries_extractors/README.md) for full documentation and CLI examples.
 
+---
+
+## Part 4: Watershed Boundary Delineation (`multimet/catchment_delineation`)
+
+The [`multimet/catchment_delineation`](catchment_delineation/README.md) subpackage creates watershed boundary polygons and calculates drainage areas ($\text{km}^2$) from 90-meter flow-direction map tiles (`delineate-catchment` and `benchmark-catchment`). See [`multimet/catchment_delineation/README.md`](catchment_delineation/README.md) for quick-start commands, Python examples, and CLI flags.

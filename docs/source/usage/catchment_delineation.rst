@@ -23,11 +23,11 @@ Data Requirements
 Before running ``delineate-catchment``, you need a folder (local or on Google Cloud Storage ``gs://``) containing 90-meter (3-arc-second) D8 flow-direction map tiles saved as 5°×5° NumPy (``.npy``) files (such as ``n35w090_dir.npy``).
 
 * **If you already have a folder or GCS bucket of 5°×5° ``.npy`` tiles:** Pass that folder directly with ``--tiles-dir /path/to/tiles_5deg`` (or ``--gcs-uri gs://... --cache-dir /tmp/tile_cache``).
-* **If you are starting from raw HydroSHEDS or MERIT GeoTIFF files:** Use ``catchment_delineation/scripts/slice_continental_dems.py`` to slice the continental ``.tif`` files into 5°×5° ``.npy`` tiles:
+* **If you are starting from raw HydroSHEDS or MERIT GeoTIFF files:** Use ``multimet/catchment_delineation/tools/slice_continental_dems.py`` to slice the continental ``.tif`` files into 5°×5° ``.npy`` tiles:
 
 .. code-block:: bash
 
-   python catchment_delineation/scripts/slice_continental_dems.py \
+   python multimet/catchment_delineation/tools/slice_continental_dems.py \
      --input-tifs /path/to/raw_hydrosheds_tifs/*.tif \
      --out-dir /path/to/tiles_5deg
 
@@ -130,7 +130,7 @@ You can also run delineation directly inside a Python script or notebook:
 
 .. code-block:: python
 
-   from catchment_delineation import DemDelineator
+   from multimet.catchment_delineation import DemDelineator
 
    delineator = DemDelineator(tiles_dir="/path/to/tiles_5deg")
 
@@ -177,7 +177,7 @@ Please keep these five rules in mind when running the tool:
 Command-Line Arguments (CLI)
 ------------------------------
 
-All arguments for ``delineate-catchment`` (also runnable as ``python -m catchment_delineation``) are listed below by group.
+All arguments for ``delineate-catchment`` (also runnable as ``python -m multimet.catchment_delineation``) are listed below by group.
 
 Coordinate Input Options
 ^^^^^^^^^^^^^^^^^^^^^^^^

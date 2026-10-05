@@ -3,9 +3,8 @@ name: algorithm-rules-and-norms
 description: >-
   Non-negotiable algorithmic rules, data-integrity invariants, error-handling
   norms, spatial/temporal alignment assumptions, and cache-safety requirements
-  across all flood-forecasting, multimet, catchment_delineation, and
-  return_periods code. Use whenever writing, modifying, or reviewing algorithms
-  and data pipelines.
+  across all googlehydrology, multimet, and return_periods code. Use whenever
+  writing, modifying, or reviewing algorithms and data pipelines.
 ---
 
 # Algorithm Rules, Assumptions & Data-Integrity Norms (`flood-forecasting`)
@@ -29,7 +28,7 @@ Every model, data ingestion pipeline, spatial extractor, catchment delineator, a
 ## 2. Zero `try`/`except`/`finally` Blocks That Mask Failures
 
 - **Do Not Catch Exceptions to Hide Bad Data or Broken Code:**
-  - Avoid `try`/`except` blocks across data pipelines (`multimet/`, `catchment_delineation/`, `return_periods/`). Never catch broad exceptions (`Exception`, `KeyError`, `ValueError`, `OSError`) to log a warning and return `NaN`, `None`, or an empty collection.
+  - Avoid `try`/`except` blocks across data pipelines (`multimet/` and `return_periods/`). Never catch broad exceptions (`Exception`, `KeyError`, `ValueError`, `OSError`) to log a warning and return `NaN`, `None`, or an empty collection.
 - **Validate Preconditions Explicitly:**
   - Check local file/directory existence explicitly with `os.path.exists` / `Path.exists()`.
   - Check HTTP status codes explicitly (`response.status_code == 404`) before calling `response.raise_for_status()`.

@@ -16,53 +16,20 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 from pathlib import Path
 
 import fsspec
 
-from catchment_delineation.tiles import (
+from multimet.catchment_delineation.tiles import (
     get_required_tiles_for_bbox,
     is_tile_in_coverage,
     tile_key_to_filename,
 )
+from multimet.utils.gcs import normalize_gcs_path
 
 logger = logging.getLogger(__name__)
-
-
-def is_gcs_path(path: str | Path | None) -> bool:
-    """Return whether path is a Google Cloud Storage URI."""
-    if path is None:
-        return False
-    return str(path).startswith(('gs://', 'gcs://', 'gs:/', 'gcs:/'))
-
-
-def normalize_gcs_path(path: str | Path) -> str:
-    """Normalize a GCS URI even if Path() stripped a slash."""
-    if path is None:
-        raise ValueError('Cannot normalize a None path.')
-    raw = str(path).strip()
-    if not raw:
-        raise ValueError('Cannot normalize an empty path.')
-    if raw.startswith('gs:/') and not raw.startswith('gs://'):
-        return 'gs://' + raw[4:]
-    if raw.startswith('gcs:/') and not raw.startswith('gcs://'):
-        return 'gcs://' + raw[5:]
-    return raw
-
-
-def upload_file_to_gcs(local_path: str | Path, gcs_uri: str) -> None:
-    """Upload a local file to an explicit Google Cloud Storage URI."""
-    local_p = Path(local_path)
-    if not local_p.is_file():
-        raise FileNotFoundError(
-            f'Local file {local_p} not found for GCS upload.'
-        )
-    normalized_uri = normalize_gcs_path(gcs_uri)
-    with local_p.open('rb') as src, fsspec.open(normalized_uri, 'wb') as dst:
-        dst.write(src.read())
 
 
 def download_tile_from_gcs(
@@ -99,24 +66,20 @@ def download_tile_from_gcs(
     )
 
     tmp_file = directory / f'.tmp_{os.getpid()}_{filename}'
-    try:
-        with (
-            fsspec.open(tile_gcs_uri, 'rb') as src,
-            tmp_file.open('wb') as dst,
-        ):
-            dst.write(src.read())
-        if not tmp_file.is_file() or tmp_file.stat().st_size == 0:
-            raise RuntimeError(
-                f'Downloaded empty DEM tile {filename} from {tile_gcs_uri}.'
-            )
-        tmp_file.replace(dest_file)
-        if created_files is not None:
-            created_files.add(dest_file)
-        return dest_file
-    finally:
-        if tmp_file.exists():
-            with contextlib.suppress(OSError):
-                tmp_file.unlink()
+    with (
+        fsspec.open(tile_gcs_uri, 'rb') as src,
+        tmp_file.open('wb') as dst,
+    ):
+        dst.write(src.read())
+    if not tmp_file.is_file() or tmp_file.stat().st_size == 0:
+        tmp_file.unlink(missing_ok=True)
+        raise RuntimeError(
+            f'Downloaded empty DEM tile {filename} from {tile_gcs_uri}.'
+        )
+    tmp_file.replace(dest_file)
+    if created_files is not None:
+        created_files.add(dest_file)
+    return dest_file
 
 
 def download_tiles_for_bbox(

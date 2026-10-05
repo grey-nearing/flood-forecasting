@@ -42,23 +42,20 @@ import shapely.wkt
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
-from catchment_delineation.delineator import (
+from multimet.catchment_delineation.delineator import (
     CatchmentCoverageError,
     DemDelineator,
 )
-from catchment_delineation.gcs import (
-    download_tile_from_gcs,
-    is_gcs_path,
-    normalize_gcs_path,
-)
-from catchment_delineation.tiles import (
+from multimet.catchment_delineation.gcs import download_tile_from_gcs
+from multimet.catchment_delineation.tiles import (
     is_coord_in_coverage,
     is_tile_in_coverage,
     latlon_to_tile_key,
     tile_key_to_filename,
 )
+from multimet.utils.gcs import is_gcs_path, normalize_gcs_path
 
-logger = logging.getLogger('catchment_delineation.benchmark')
+logger = logging.getLogger('multimet.catchment_delineation.benchmark')
 
 _MAX_PRECACHE_THREADS: int = 16
 _PROGRESS_INTERVAL: int = 50

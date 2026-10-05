@@ -43,7 +43,7 @@ from rasterio.transform import from_origin
 from shapely.geometry import Polygon, mapping, shape
 from shapely.ops import unary_union
 
-from catchment_delineation.config import (
+from multimet.catchment_delineation.config import (
     DEM_MAX_LAT,
     DEM_MAX_LON,
     DEM_MIN_LAT,
@@ -53,17 +53,14 @@ from catchment_delineation.config import (
     TILE_CELLS,
     TILE_DEG,
 )
-from catchment_delineation.gcs import (
-    download_tile_from_gcs,
-    is_gcs_path,
-    normalize_gcs_path,
-)
-from catchment_delineation.tiles import (
+from multimet.catchment_delineation.gcs import download_tile_from_gcs
+from multimet.catchment_delineation.tiles import (
     MIN_TILE_LAT_TOP,
     is_coord_in_coverage,
     is_tile_in_coverage,
     tile_key_to_filename,
 )
+from multimet.utils.gcs import is_gcs_path, normalize_gcs_path
 
 logger = logging.getLogger(__name__)
 
