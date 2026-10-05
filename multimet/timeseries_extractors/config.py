@@ -32,9 +32,6 @@ class Product(enum.Enum):
   CHIRPS = "CHIRPS"
   CHIRPS_GEFS = "CHIRPS_GEFS"
   HRES = "HRES"
-  GRAPHCAST = "GRAPHCAST"
-  AIFS = "AIFS"
-  DYNAMICAL_IMERG = "DYNAMICAL_IMERG"
 
 
 PRODUCT_TYPES: Mapping[Product, ProductType] = {
@@ -44,16 +41,11 @@ PRODUCT_TYPES: Mapping[Product, ProductType] = {
     Product.CHIRPS: ProductType.NOWCAST,
     Product.CHIRPS_GEFS: ProductType.FORECAST,
     Product.HRES: ProductType.FORECAST,
-    Product.GRAPHCAST: ProductType.FORECAST,
-    Product.AIFS: ProductType.FORECAST,
-    Product.DYNAMICAL_IMERG: ProductType.NOWCAST,
 }
 
 FORECAST_LEAD_DAYS: Mapping[Product, int] = {
     Product.CHIRPS_GEFS: 16,
     Product.HRES: 10,
-    Product.GRAPHCAST: 10,
-    Product.AIFS: 10,
 }
 
 # Target bands / data variable names per product in Caravan-MultiMet.
@@ -114,19 +106,6 @@ PRODUCT_BANDS: Mapping[Product, Tuple[str, ...]] = {
         "hres_temperature_2m",
         "hres_total_precipitation",
     ),
-    Product.GRAPHCAST: (
-        "graphcast_temperature_2m",
-        "graphcast_total_precipitation",
-        "graphcast_u_component_of_wind_10m",
-        "graphcast_v_component_of_wind_10m",
-    ),
-    Product.AIFS: (
-        "aifs_temperature_2m",
-        "aifs_total_precipitation",
-        "aifs_u_component_of_wind_10m",
-        "aifs_v_component_of_wind_10m",
-    ),
-    Product.DYNAMICAL_IMERG: ("imerg_precipitation",),
 }
 
 # Companion audit variable recording the area-weighted fraction [0.0, 1.0] of
@@ -139,9 +118,6 @@ MISSING_FRACTION_VAR: Mapping[Product, str] = {
     Product.CHIRPS: "chirps_missing_fraction",
     Product.CHIRPS_GEFS: "chirpsgefs_missing_fraction",
     Product.HRES: "hres_missing_fraction",
-    Product.GRAPHCAST: "graphcast_missing_fraction",
-    Product.AIFS: "aifs_missing_fraction",
-    Product.DYNAMICAL_IMERG: "imerg_missing_fraction",
 }
 
 GITHUB_REPO_URL = "https://github.com/google-research/flood-forecasting"
@@ -532,53 +508,6 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
         ),
         "Version": "1.1",
     },
-    Product.GRAPHCAST: {
-        "Citation": (
-            "Lam, R., Sanchez-Gonzalez, A., Willson, M., Wirnsberger, P.,"
-            " Fortunato, M., Alet, F., ... & Battaglia, P. (2023). Learning"
-            " skillful medium-range global weather forecasting. Science,"
-            " 382(6677), 1416-1421."
-        ),
-        "License": (
-            "Creative Commons Attribution-NonCommercial-ShareAlike 4.0"
-            " International (CC-BY-NC-SA 4.0). Google DeepMind."
-        ),
-        "Product": "GraphCast Operational Forecast (10-day)",
-        "Released": "2024-11-18",
-        "Sources": "Google DeepMind GraphCast medium-range weather forecast.",
-        "Units": (
-            "temperature_2m: 2m air temperature [°C]\n"
-            "total_precipitation: Total precipitation [mm]\n"
-            "u_component_of_wind_10m: U-component of wind at 10m [m/s]\n"
-            "v_component_of_wind_10m: V-component of wind at 10m [m/s]"
-        ),
-        "Version": "1.1",
-    },
-    Product.AIFS: {
-        "Citation": (
-            "Lang, S., Alexe, M., Chantry, M., Dramsch, J., Dueben, P.,"
-            " Lessig, C., ... & Nipen, T. (2024). AIFS - ECMWF's data-driven"
-            " forecasting system. arXiv:2406.01465."
-        ),
-        "License": (
-            "Creative Commons Attribution 4.0 International (CC-BY-4.0)."
-            " ECMWF Open Data / dynamical.org."
-        ),
-        "Product": "ECMWF AIFS Single Forecast (10-day)",
-        "Released": "2024-11-18",
-        "Sources": (
-            "ECMWF Artificial Intelligence Forecasting System (AIFS) accessed"
-            " via dynamical.org Icechunk catalog."
-            " https://dynamical.org/catalog/ecmwf-aifs-single-forecast"
-        ),
-        "Units": (
-            "temperature_2m: 2m air temperature [°C]\n"
-            "total_precipitation: Total precipitation [mm]\n"
-            "u_component_of_wind_10m: U-component of wind at 10m [m/s]\n"
-            "v_component_of_wind_10m: V-component of wind at 10m [m/s]"
-        ),
-        "Version": "1.1",
-    },
     Product.CHIRPS: {
         "Citation": (
             "Funk, C., Peterson, P., Landsfeld, M., Pedreros, D., Verdin, J.,"
@@ -623,28 +552,11 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
         "Units": "precipitation [mm]",
         "Version": "1.1",
     },
-    Product.DYNAMICAL_IMERG: {
-        "Citation": (
-            "Huffman, G.J., E.F. Stocker, D.T. Bolvin, E.J. Nelkin, Jackson"
-            " Tan (2024), GPM IMERG Early Precipitation L3 Half Hourly 0.1"
-            " degree x 0.1 degree V07, Greenbelt, MD, Goddard Earth Sciences"
-            " Data and Information Services Center (GES DISC)."
-        ),
-        "License": "NASA GPM Open Data Policy. https://gpm.nasa.gov/data/policy",
-        "Product": "IMERG v07 Early (dynamical.org catalog)",
-        "Released": "2024-11-18",
-        "Sources": (
-            "IMERG-Early v07 from NASA GPM, accessed via dynamical.org Icechunk"
-            " catalog. https://dynamical.org/catalog/nasa-imerg-analysis-early"
-        ),
-        "Units": "precipitation [mm]",
-        "Version": "1.1",
-    },
 }
 
-# Upstream agency HTTP endpoints and catalog identifiers for direct third-party
-# downloading. Note: NO gs:// bucket paths are hardcoded here — any Zarr or
-# gridded archive path must be explicitly supplied by the user.
+# Upstream agency HTTP endpoints for direct third-party downloading.
+# Note: NO gs:// bucket paths are hardcoded here — any Zarr or gridded
+# archive path must be explicitly supplied by the user.
 DEFAULT_STORAGE_PATHS: Mapping[Product, Mapping[str, str]] = {
     Product.ERA5_LAND: {},
     Product.CPC: {
@@ -676,14 +588,6 @@ DEFAULT_STORAGE_PATHS: Mapping[Product, Mapping[str, str]] = {
     Product.HRES: {
         # ECMWF Open Data public HTTP archive
         "ecmwf_open_data": "https://data.ecmwf.int/forecasts/",
-    },
-
-    Product.GRAPHCAST: {},
-    Product.AIFS: {
-        "dynamical_id": "ecmwf-aifs-single-forecast",
-    },
-    Product.DYNAMICAL_IMERG: {
-        "dynamical_id": "nasa-imerg-analysis-early",
     },
 }
 

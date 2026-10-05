@@ -37,6 +37,7 @@ from multimet.utils.zonal import ZonalWeightCalculator, ZonalWeightMatrix
 import netCDF4
 
 import logging
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -49,8 +50,16 @@ from multimet.utils.zonal import (
 logger = logging.getLogger(__name__)
 
 
-def ensure_psl_cpc_netcdf(year: int, cache_dir: str = "/tmp/cpc_cache") -> str:
+def _default_cpc_cache_dir() -> str:
+  return os.path.join(tempfile.gettempdir(), "cpc_cache")
+
+
+def ensure_psl_cpc_netcdf(
+    year: int, cache_dir: Optional[str] = None
+) -> str:
   """Downloads and caches yearly NOAA PSL CPC NetCDF file if not already present."""
+  if cache_dir is None:
+    cache_dir = _default_cpc_cache_dir()
   os.makedirs(cache_dir, exist_ok=True)
   local_path = os.path.join(cache_dir, f"precip.{year}.nc")
   if os.path.exists(local_path) and os.path.getsize(local_path) > 1024 * 1024:
@@ -106,10 +115,10 @@ class CPCExtractor(BaseExtractor):
       self,
       data_dir: Optional[str] = None,
       source: str = "auto",
-      cache_dir: str = "/tmp/cpc_cache",
+      cache_dir: Optional[str] = None,
   ):
     super().__init__(Product.CPC, data_dir)
-    self.cache_dir = cache_dir
+    self.cache_dir = cache_dir if cache_dir is not None else _default_cpc_cache_dir()
 
     source_lower = source.lower()
     if source_lower in ("archive", "gridded_archive", "zarr", "zarr_archive"):
