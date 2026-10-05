@@ -20,7 +20,7 @@ channels:  # Keep order
   - pytorch
   - nvidia
   - conda-forge
-  - defaults
+  - nodefaults
 dependencies:
   - absl-py=2.3.*
   - bokeh=3.8.1

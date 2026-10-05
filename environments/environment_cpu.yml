@@ -19,7 +19,7 @@ name: googlehydrology
 channels:
   - pytorch
   - conda-forge
-  - defaults
+  - nodefaults
 dependencies:
   - python=3.12.*
   - pytorch=2.5.*
