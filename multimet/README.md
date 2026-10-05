@@ -1,6 +1,6 @@
 # MultiMet Data Workflows (`multimet`)
 
-The `multimet` package provides tools for preparing both **gridded meteorological archives** (`multimet/gridded_archive_builders`) and **static watershed attribute tables** (`multimet/static_extractor`) for OpenHydroNet.
+The `multimet` package provides tools for preparing **gridded meteorological archives** (`multimet/gridded_archive_builders`), **static watershed attribute tables** (`multimet/static_extractor`), and **catchment meteorological timeseries** (`multimet/timeseries_extractors`) for OpenHydroNet.
 
 ---
 
@@ -372,3 +372,10 @@ benchmark-static-extractor \
     --workers 14 \
     -o /path/to/benchmark_results/
 ```
+
+---
+
+## Part 3: Catchment Meteorological Timeseries Extractors (`multimet/timeseries_extractors`)
+
+The [`multimet/timeseries_extractors`](timeseries_extractors/README.md) subpackage reduces gridded meteorological archives and upstream weather feeds to catchment-averaged daily forcing time series (`extract-multimet` and `extract-multimet-dask`) standardized to the Caravan MultiMet schema. See [`multimet/timeseries_extractors/README.md`](timeseries_extractors/README.md) for full documentation and CLI examples.
+

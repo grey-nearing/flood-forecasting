@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MultiMet data workflows for static watershed attributes and gridded archives.
+"""MultiMet data workflows for static watershed attributes, gridded archives, and catchment timeseries.
 
 Exposes:
 
@@ -21,6 +21,8 @@ Exposes:
   :func:`compute_caravan_climate_metrics`).
 * Gridded meteorological archive builders
   (:mod:`multimet.gridded_archive_builders`).
+* Catchment meteorological timeseries extractors
+  (:mod:`multimet.timeseries_extractors`).
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ __all__ = [
     "ERA5GriddedExtractor",
     "compute_caravan_climate_metrics",
     "gridded_archive_builders",
+    "timeseries_extractors",
 ]
 
 _STATIC_EXPORTS = frozenset({
@@ -45,6 +48,7 @@ _STATIC_EXPORTS = frozenset({
 
 _SUBMODULES = frozenset({
     "gridded_archive_builders",
+    "timeseries_extractors",
 })
 
 

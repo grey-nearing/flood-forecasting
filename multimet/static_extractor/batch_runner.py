@@ -139,82 +139,10 @@ from multimet.utils.gcs import (
     sync_gcs_directory,
     upload_to_gcs,
 )
-
-
-def find_vector_file_in_dir(dataset_dir: Path) -> Optional[Path]:
-  """Finds the primary watershed polygon file in a dataset directory."""
-  dataset_name = dataset_dir.name.lower()
-
-  preferred_names = [
-      f"{dataset_name}_basin_shapes.shp",
-      f"{dataset_name}_basins.shp",
-      f"{dataset_name}.shp",
-      f"{dataset_name}.geojson",
-      f"{dataset_name}.geoparquet",
-      f"{dataset_name}.parquet",
-  ]
-  for pref in preferred_names:
-    p = dataset_dir / pref
-    if p.exists():
-      return p
-
-  shps = sorted(dataset_dir.glob("*.shp"))
-  if shps:
-    basin_shps = [
-        s
-        for s in shps
-        if "gauge" not in s.name.lower() and "point" not in s.name.lower()
-    ]
-    return basin_shps[0] if basin_shps else shps[0]
-
-  for ext in [".geojson", ".gpkg", ".json", ".parquet", ".geoparquet"]:
-    matches = sorted(dataset_dir.glob(f"*{ext}"))
-    if matches:
-      return matches[0]
-
-  return None
-
-
-def find_all_dataset_dirs(root_dir: Path) -> Dict[str, Path]:
-  """Recursively finds all dataset directories containing vector files under root_dir."""
-  datasets: Dict[str, Path] = {}
-  direct_vfs = [
-      f for f in root_dir.iterdir()
-      if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
-      and "gauge" not in f.name.lower() and "point" not in f.name.lower()
-  ]
-  if len(direct_vfs) > 1:
-    for vf in sorted(direct_vfs):
-      ds_key = f"{root_dir.name}_{vf.stem}" if root_dir.name not in ["staged_shapefiles", "data", "shapes"] else vf.stem
-      datasets[ds_key] = vf
-    return datasets
-
-  root_vf = find_vector_file_in_dir(root_dir)
-  if root_vf:
-    datasets[root_dir.name] = root_vf
-    return datasets
-
-  for dirpath, dirnames, _ in os.walk(root_dir):
-    d = Path(dirpath)
-    if d == root_dir:
-      continue
-    d_vfs = [
-        f for f in d.iterdir()
-        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
-        and "gauge" not in f.name.lower() and "point" not in f.name.lower()
-    ]
-    if len(d_vfs) > 1:
-      for vf in sorted(d_vfs):
-        ds_key = f"{d.name}_{vf.stem}" if d.name not in ["staged_shapefiles", "data", "shapes"] else vf.stem
-        datasets[ds_key] = vf
-      dirnames.clear()
-      continue
-
-    vf = find_vector_file_in_dir(d)
-    if vf:
-      datasets[d.name] = vf
-      dirnames.clear()
-  return datasets
+from multimet.utils.geometry import (
+    find_all_dataset_dirs,
+    find_vector_file_in_dir,
+)
 
 
 def discover_datasets(
