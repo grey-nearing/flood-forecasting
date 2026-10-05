@@ -11,6 +11,7 @@ torch
 absl-py
 # Required so that autodoc can import the multimet archive builders.
 fsspec
+h5py
 pandas
 requests
 scipy

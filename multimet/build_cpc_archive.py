@@ -30,6 +30,7 @@ Standardizes spatial dimensions to the Caravan MultiMet specification:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 import datetime
 import functools
 import logging
@@ -38,24 +39,25 @@ import os
 import shutil
 import tempfile
 import time
-import urllib.error
-import urllib.request
-from collections.abc import Sequence
-
-import numpy as np
-import pandas as pd
-import tqdm
-import xarray as xr
 
 from multimet import storage
+import numpy as np
+import pandas as pd
+import requests
+import tqdm
+import xarray as xr
 
 # NOAA PSL publishes CPC Global Unified Precipitation from 1979 onwards.
 DEFAULT_START_YEAR = 1979
 DEFAULT_END_YEAR = datetime.date.today().year
 
-# Standard CPC 0.5 deg coordinates.
+# Standard CPC 0.5 deg coordinates (target Caravan MultiMet layout).
 CPC_LATS = np.linspace(-89.75, 89.75, 360, dtype=np.float32)
 CPC_LONS = np.linspace(-179.75, 179.75, 720, dtype=np.float32)
+
+# Expected raw NOAA PSL NetCDF coordinates prior to standardization.
+EXPECTED_PSL_LATS = np.linspace(89.75, -89.75, 360, dtype=np.float32)
+EXPECTED_PSL_LONS = np.linspace(0.25, 359.75, 720, dtype=np.float32)
 
 # Name of the single data variable written to the archive.
 CPC_VARIABLE = "cpc_precipitation"
@@ -69,7 +71,6 @@ def ensure_psl_cpc_netcdf(
     year: int,
     cache_dir: str,
     url_template: str = NOAA_PSL_URL_TEMPLATE,
-    max_retries: int = 4,
 ) -> str:
   """Downloads and caches a yearly NOAA PSL CPC NetCDF file if not present.
 
@@ -77,78 +78,54 @@ def ensure_psl_cpc_netcdf(
     year: Four-digit calendar year to fetch.
     cache_dir: Local directory where downloaded NetCDF files are cached.
     url_template: URL template accepting ``{year}``.
-    max_retries: Maximum number of download attempts for transient errors.
 
   Returns:
     Path to the local ``precip.{year}.nc`` file.
 
   Raises:
-    storage.UpstreamDataMissingError: If the upstream server returns HTTP 404.
-    RuntimeError: If the download fails after ``max_retries`` attempts.
+    FileNotFoundError: If the upstream server returns HTTP 404.
+    requests.HTTPError: If the upstream server returns another HTTP error.
   """
   os.makedirs(cache_dir, exist_ok=True)
   local_path = os.path.join(cache_dir, f"precip.{year}.nc")
-  if os.path.exists(local_path) and os.path.getsize(local_path) > 1024 * 1024:
+  if os.path.exists(local_path) and os.path.getsize(local_path) > 1024:
     return local_path
 
   url = url_template.format(year=year)
   temp_path = f"{local_path}.tmp.{os.getpid()}.{time.time_ns()}"
   logging.info("Downloading NOAA PSL CPC NetCDF for %d from %s...", year, url)
 
-  last_error: Exception | None = None
-  for attempt in range(max_retries):
-    try:
-      if (
-          os.path.exists(local_path)
-          and os.path.getsize(local_path) > 1024 * 1024
-      ):
-        return local_path
-      req = urllib.request.Request(
-          url,
-          headers={"User-Agent": "OpenMultiMet/1.1 (Google Research)"},
-      )
-      with urllib.request.urlopen(req, timeout=180) as response, open(
-          temp_path, "wb"
-      ) as out_f:
-        shutil.copyfileobj(response, out_f)
-      if not (
-          os.path.exists(local_path)
-          and os.path.getsize(local_path) > 1024 * 1024
-      ):
-        os.replace(temp_path, local_path)
-      logging.info(
-          "Cached %s (%.1f MB)", local_path, os.path.getsize(local_path) / 1e6
-      )
-      return local_path
-    except urllib.error.HTTPError as err:
-      if os.path.exists(temp_path):
-        os.remove(temp_path)
-      if err.code == 404:
-        raise storage.UpstreamDataMissingError(
+  try:
+    with requests.get(
+        url,
+        headers={"User-Agent": "OpenMultiMet/1.1 (Google Research)"},
+        stream=True,
+        timeout=180,
+    ) as response:
+      if response.status_code == 404:
+        raise FileNotFoundError(
             f"NOAA PSL CPC NetCDF for year {year} not published (HTTP 404): "
             f"{url}"
-        ) from err
-      last_error = err
-    except (urllib.error.URLError, TimeoutError, OSError) as err:
-      last_error = err
-      if os.path.exists(temp_path):
-        os.remove(temp_path)
+        )
+      response.raise_for_status()
+      with open(temp_path, "wb") as out_f:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+          if chunk:
+            out_f.write(chunk)
 
-    wait_s = 3 * (2**attempt)
-    logging.warning(
-        "Failed download attempt %d/%d for year %d: %s. Retrying in %ds...",
-        attempt + 1,
-        max_retries,
-        year,
-        last_error,
-        wait_s,
+    if os.path.getsize(temp_path) <= 1024:
+      raise ValueError(
+          f"Downloaded NOAA PSL CPC NetCDF for {year} is unexpectedly small "
+          f"({os.path.getsize(temp_path)} bytes): {url}"
+      )
+    os.replace(temp_path, local_path)
+    logging.info(
+        "Cached %s (%.1f MB)", local_path, os.path.getsize(local_path) / 1e6
     )
-    time.sleep(wait_s)
-
-  raise RuntimeError(
-      f"Failed to download NOAA PSL NetCDF for {year} after {max_retries} "
-      f"attempts: {last_error}"
-  ) from last_error
+    return local_path
+  finally:
+    if os.path.exists(temp_path):
+      os.remove(temp_path)
 
 
 def process_cpc_netcdf_to_dataset(
@@ -160,10 +137,14 @@ def process_cpc_netcdf_to_dataset(
 ) -> xr.Dataset | None:
   """Reads a yearly NOAA PSL NetCDF file and standardizes it to MultiMet schema.
 
-  Performs spatial transformation:
-  1. Inverts latitude axis (PSL: ``[89.75 .. -89.75]`` -> ``[-89.75 .. 89.75]``).
-  2. Shifts longitude axis (PSL: ``[0.25 .. 359.75]`` -> ``[-179.75 .. 179.75]``).
-  3. Masks missing values (``< 0`` or fill values) to ``np.nan``.
+  Validates input coordinates, dimensions, and daily data completeness before
+  performing spatial transformation:
+  1. Verifies ``lat`` is descending ``[89.75 .. -89.75]`` and ``lon`` is
+     ascending ``[0.25 .. 359.75]``.
+  2. Inverts latitude axis (PSL: ``[89.75 .. -89.75]`` -> ``[-89.75 .. 89.75]``).
+  3. Shifts longitude axis (PSL: ``[0.25 .. 359.75]`` -> ``[-179.75 .. 179.75]``).
+  4. Masks missing values (``< 0`` or fill values) to ``np.nan``.
+  5. Verifies that every retained day contains finite precipitation values.
 
   Args:
     nc_path: Path to local ``precip.{year}.nc`` file.
@@ -171,15 +152,68 @@ def process_cpc_netcdf_to_dataset(
     target_end_date: Optional inclusive upper bound filter on dates.
     trim_trailing_unpublished: If ``True`` and the dataset contains valid dates
       followed by trailing all-NaN slices (such as future pre-allocated dates in
-      NOAA PSL's current-year file), strips the trailing all-NaN dates.
+      NOAA PSL's current-year file), strips the trailing all-NaN dates prior to
+      checking for interior all-NaN days.
 
   Returns:
     Standardized ``xarray.Dataset`` with dimensions
-    ``(time, latitude, longitude)``, or ``None`` if no dates match.
+    ``(time, latitude, longitude)``, or ``None`` if no dates fall within the
+    ``target_start_date`` / ``target_end_date`` filter.
+
+  Raises:
+    KeyError: If required variables or coordinates are missing.
+    ValueError: If coordinate values, dimensions, date monotonicity, or daily
+      finite data checks fail.
   """
   with xr.open_dataset(nc_path, decode_timedelta=False) as ds:
-    precip_raw = ds["precip"].values
+    for required_key in ("precip", "lat", "lon", "time"):
+      if required_key not in ds:
+        raise KeyError(
+            f"Required key {required_key!r} not found in CPC NetCDF {nc_path}."
+        )
+    da = ds["precip"]
+    if da.dims != ("time", "lat", "lon"):
+      raise ValueError(
+          f"Expected 'precip' dimensions ('time', 'lat', 'lon') in {nc_path}, "
+          f"got {da.dims}."
+      )
+    raw_lats = np.asarray(ds["lat"].values, dtype=np.float32)
+    raw_lons = np.asarray(ds["lon"].values, dtype=np.float32)
+    if raw_lats.shape != EXPECTED_PSL_LATS.shape or not np.allclose(
+        raw_lats, EXPECTED_PSL_LATS, atol=1e-3
+    ):
+      raise ValueError(
+          f"Unexpected latitude coordinates in {nc_path}: expected 360 points "
+          "descending from 89.75 to -89.75."
+      )
+    if raw_lons.shape != EXPECTED_PSL_LONS.shape or not np.allclose(
+        raw_lons, EXPECTED_PSL_LONS, atol=1e-3
+    ):
+      raise ValueError(
+          f"Unexpected longitude coordinates in {nc_path}: expected 720 points "
+          "ascending from 0.25 to 359.75."
+      )
+    precip_raw = da.values
     time_raw = pd.to_datetime(ds["time"].values)
+
+  if precip_raw.ndim != 3 or precip_raw.shape[1:] != (
+      len(CPC_LATS),
+      len(CPC_LONS),
+  ):
+    raise ValueError(
+        f"Unexpected 'precip' array shape {precip_raw.shape} in {nc_path}."
+    )
+
+  dates = pd.DatetimeIndex(time_raw.strftime("%Y-%m-%d"))
+  if len(dates) == 0:
+    raise ValueError(f"CPC NetCDF {nc_path} has an empty time coordinate.")
+  expected_full_dates = pd.date_range(dates[0], dates[-1], freq="1D")
+  if len(dates) != len(expected_full_dates) or not (
+      dates == expected_full_dates
+  ).all():
+    raise ValueError(
+        f"Time coordinate in {nc_path} is not strictly contiguous daily."
+    )
 
   # Invert latitude: north->south [89.75 .. -89.75] to [-89.75 .. 89.75].
   precip_lat_inv = precip_raw[:, ::-1, :]
@@ -194,7 +228,28 @@ def process_cpc_netcdf_to_dataset(
       np.float32
   )
 
-  dates = pd.DatetimeIndex(time_raw.strftime("%Y-%m-%d"))
+  finite_per_day = np.isfinite(precip_clean).any(axis=(1, 2))
+  if not finite_per_day.any():
+    raise ValueError(
+        f"CPC NetCDF {nc_path} contains no finite precipitation values on any "
+        "day."
+    )
+
+  if trim_trailing_unpublished:
+    last_valid_idx = int(np.where(finite_per_day)[0][-1])
+    dates = dates[: last_valid_idx + 1]
+    precip_clean = precip_clean[: last_valid_idx + 1]
+    finite_per_day = finite_per_day[: last_valid_idx + 1]
+
+  if not finite_per_day.all():
+    bad_dates = [
+        dates[i].strftime("%Y-%m-%d")
+        for i in np.where(~finite_per_day)[0]
+    ]
+    raise ValueError(
+        f"CPC NetCDF {nc_path} contains all-NaN daily slices on dates: "
+        f"{bad_dates}"
+    )
 
   if target_start_date is not None or target_end_date is not None:
     mask = np.ones(len(dates), dtype=bool)
@@ -205,15 +260,6 @@ def process_cpc_netcdf_to_dataset(
 
     dates = dates[mask]
     precip_clean = precip_clean[mask]
-
-  if trim_trailing_unpublished and len(dates) > 0:
-    finite_per_day = np.isfinite(precip_clean).any(axis=(1, 2))
-    if finite_per_day.any():
-      last_valid_idx = int(np.where(finite_per_day)[0][-1])
-      dates = dates[: last_valid_idx + 1]
-      precip_clean = precip_clean[: last_valid_idx + 1]
-    else:
-      return None
 
   if len(dates) == 0:
     return None
@@ -268,7 +314,6 @@ def write_batch_to_zarr(
     project: str | None = None,
     is_initial_write: bool = False,
     consolidated: bool = False,
-    max_retries: int = 5,
 ) -> None:
   """Writes or appends a batch of dates to the target Zarr store."""
   chunk_days = min(30, len(ds_batch["time"]))
@@ -279,7 +324,6 @@ def write_batch_to_zarr(
       is_initial_write=is_initial_write,
       consolidated=consolidated,
       time_chunk_size=chunk_days,
-      max_retries=max_retries,
   )
 
 
@@ -300,13 +344,9 @@ def _extract_single_year_task(
       os.getpid(),
       year,
   )
-  try:
-    nc_path = ensure_psl_cpc_netcdf(
-        year, cache_dir=cache_dir, url_template=url_template
-    )
-  except storage.UpstreamDataMissingError as err:
-    logging.warning("Skipping unpublished year %d: %s", year, err)
-    return year, None
+  nc_path = ensure_psl_cpc_netcdf(
+      year, cache_dir=cache_dir, url_template=url_template
+  )
 
   y_start = year_starts.get(year, start_date)
   ds_year = process_cpc_netcdf_to_dataset(
@@ -359,8 +399,15 @@ def build_cpc_archive(
     overwrite: Whether to delete and rebuild an existing target store.
     num_workers: Number of parallel worker processes.
   """
+  if end_year < start_year:
+    raise ValueError(
+        f"end_year ({end_year}) must be >= start_year ({start_year})."
+    )
+
   full_target_url, _, store_exists, has_consolidated, mapper = (
-      storage.inspect_zarr_store(target_zarr, project=project, overwrite=overwrite)
+      storage.inspect_zarr_store(
+          target_zarr, project=project, overwrite=overwrite
+      )
   )
 
   if num_workers is None or num_workers <= 0:
@@ -368,6 +415,14 @@ def build_cpc_archive(
 
   t_start_filter = pd.Timestamp(start_date) if start_date else None
   t_end_filter = pd.Timestamp(end_date) if end_date else None
+  if (
+      t_start_filter is not None
+      and t_end_filter is not None
+      and t_end_filter < t_start_filter
+  ):
+    raise ValueError(
+        f"end_date ({end_date}) must be >= start_date ({start_date})."
+    )
 
   if t_start_filter:
     start_year = max(start_year, t_start_filter.year)
@@ -385,62 +440,55 @@ def build_cpc_archive(
   logging.info("Target: %s", full_target_url)
 
   is_first_write = not store_exists
-  processed_years: set[int] = set()
   year_starts: dict[int, pd.Timestamp] = {}
-  in_place_dates_set: set[str] = set()
-  date_to_idx: dict[str, int] = {}
+  last_written_date: pd.Timestamp | None = None
 
   if store_exists:
     with xr.open_zarr(mapper, consolidated=has_consolidated) as existing_ds:
-      existing_times = pd.to_datetime(existing_ds["time"].values)
-      date_to_idx = {
-          t.strftime("%Y-%m-%d"): idx for idx, t in enumerate(existing_times)
-      }
-      # Detect any trailing all-NaN slices at the end of the store so they are
-      # re-fetched and updated in-place rather than locking out future updates.
-      trailing_nan_dates: list[pd.Timestamp] = []
-      for idx in range(len(existing_times) - 1, -1, -1):
-        sub_vals = np.asarray(existing_ds[CPC_VARIABLE].isel(time=idx).values)
-        if not np.isfinite(sub_vals).any():
-          trailing_nan_dates.append(pd.Timestamp(existing_times[idx]))
-          in_place_dates_set.add(existing_times[idx].strftime("%Y-%m-%d"))
-        else:
-          break
-
-      valid_times = (
-          existing_times[: len(existing_times) - len(trailing_nan_dates)]
-          if trailing_nan_dates
-          else existing_times
+      existing_times = pd.DatetimeIndex(
+          pd.to_datetime(existing_ds["time"].values)
       )
-
-    for y in years:
-      y_dates = valid_times[valid_times.year == y]
-      expected_days = (
-          366 if (y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) else 365
+      if len(existing_times) == 0:
+        raise ValueError("Existing CPC Zarr store has an empty time coordinate.")
+      expected_existing = pd.date_range(
+          existing_times[0], existing_times[-1], freq="1D"
       )
-      if len(y_dates) >= expected_days:
-        processed_years.add(y)
-      elif len(y_dates) > 0:
-        next_date = pd.Timestamp(y_dates.max()) + pd.Timedelta(days=1)
-        year_starts[y] = (
-            max(t_start_filter, next_date)
-            if t_start_filter is not None
-            else next_date
+      if len(existing_times) != len(expected_existing) or not (
+          existing_times == expected_existing
+      ).all():
+        raise ValueError(
+            "Existing CPC Zarr store time coordinate is not strictly "
+            "contiguous daily."
         )
-        logging.info(
-            "Year %d partially present (%d valid dates up to %s). Resuming "
-            "from %s.",
-            y,
-            len(y_dates),
-            y_dates.max().strftime("%Y-%m-%d"),
-            year_starts[y].strftime("%Y-%m-%d"),
+      last_slice = np.asarray(
+          existing_ds[CPC_VARIABLE].isel(time=len(existing_times) - 1).values
+      )
+      if not np.isfinite(last_slice).any():
+        raise ValueError(
+            "Existing CPC Zarr store ends with an all-NaN slice at "
+            f"{existing_times[-1].strftime('%Y-%m-%d')}."
         )
 
-    remaining_years = [y for y in years if y not in processed_years]
-    if not remaining_years:
+    last_written_date = pd.Timestamp(existing_times[-1])
+    resume_start = last_written_date + pd.Timedelta(days=1)
+    if t_start_filter is not None and t_start_filter > resume_start:
+      raise ValueError(
+          f"Cannot resume CPC archive from start_date={start_date}: existing "
+          f"store ends at {last_written_date.strftime('%Y-%m-%d')}, which "
+          "would create a date gap."
+      )
+    if t_end_filter is not None and resume_start > t_end_filter:
+      logging.info(
+          "Store already contains all requested dates up to %s. Done!",
+          end_date,
+      )
+      return
+
+    years = [y for y in years if y >= resume_start.year]
+    if not years:
       logging.info("Store already contains all requested years. Done!")
       return
-    years = remaining_years
+    year_starts[resume_start.year] = resume_start
     is_first_write = False
 
   temp_cache_ctx = (
@@ -464,6 +512,45 @@ def build_cpc_archive(
       year_starts=year_starts,
   )
 
+  def _handle_year_result(y: int, ds_year: xr.Dataset | None) -> int:
+    nonlocal is_first_write, last_written_date
+    if ds_year is None:
+      if (
+          store_exists
+          and y == years[-1]
+          and last_written_date is not None
+          and y == last_written_date.year
+      ):
+        logging.info(
+            "Year %d already up to date through %s.",
+            y,
+            last_written_date.strftime("%Y-%m-%d"),
+        )
+        return 0
+      raise ValueError(
+          f"No valid CPC data found for year {y} within requested date bounds."
+      )
+
+    year_times = pd.DatetimeIndex(pd.to_datetime(ds_year["time"].values))
+    if last_written_date is not None:
+      expected_next = last_written_date + pd.Timedelta(days=1)
+      if pd.Timestamp(year_times[0]) != expected_next:
+        raise ValueError(
+            f"Non-contiguous CPC archive dates between {last_written_date.strftime('%Y-%m-%d')} "
+            f"and {pd.Timestamp(year_times[0]).strftime('%Y-%m-%d')}."
+        )
+
+    write_batch_to_zarr(
+        ds_year,
+        full_target_url,
+        project=project,
+        is_initial_write=is_first_write,
+        consolidated=has_consolidated,
+    )
+    is_first_write = False
+    last_written_date = pd.Timestamp(year_times[-1])
+    return len(year_times)
+
   try:
     if num_workers > 1 and len(years) > 1:
       mp_ctx = mp.get_context("spawn")
@@ -474,39 +561,11 @@ def build_cpc_archive(
             total=len(years),
             desc=f"Processing CPC ({num_workers} workers)",
         ):
-          if ds_year is None:
-            logging.warning(
-                "No valid data returned for year %d within date filters.", y
-            )
-            continue
-          total_days_processed += _write_cpc_year_dataset(
-              ds_year,
-              full_target_url=full_target_url,
-              project=project,
-              is_first_write=is_first_write,
-              has_consolidated=has_consolidated,
-              in_place_dates_set=in_place_dates_set,
-              date_to_idx=date_to_idx,
-          )
-          is_first_write = False
+          total_days_processed += _handle_year_result(y, ds_year)
     else:
       for y in tqdm.tqdm(years, desc="Processing CPC (sequential)"):
         _, ds_year = worker_fn(y)
-        if ds_year is None:
-          logging.warning(
-              "No valid data returned for year %d within date filters.", y
-          )
-          continue
-        total_days_processed += _write_cpc_year_dataset(
-            ds_year,
-            full_target_url=full_target_url,
-            project=project,
-            is_first_write=is_first_write,
-            has_consolidated=has_consolidated,
-            in_place_dates_set=in_place_dates_set,
-            date_to_idx=date_to_idx,
-        )
-        is_first_write = False
+        total_days_processed += _handle_year_result(y, ds_year)
 
     logging.info(
         "CPC Archive build complete! Processed %d total days across %d years "
@@ -521,52 +580,6 @@ def build_cpc_archive(
     elif cleanup_cache and cache_dir and os.path.exists(cache_dir):
       shutil.rmtree(cache_dir)
       logging.info("Cleaned up cache directory: %s", cache_dir)
-
-
-def _write_cpc_year_dataset(
-    ds_year: xr.Dataset,
-    *,
-    full_target_url: str,
-    project: str | None,
-    is_first_write: bool,
-    has_consolidated: bool,
-    in_place_dates_set: set[str],
-    date_to_idx: dict[str, int],
-) -> int:
-  """Writes a processed CPC year dataset, splitting in-place vs append slices."""
-  year_times = pd.to_datetime(ds_year["time"].values)
-  in_place_mask = np.array(
-      [t.strftime("%Y-%m-%d") in in_place_dates_set for t in year_times],
-      dtype=bool,
-  )
-  append_mask = np.array(
-      [t.strftime("%Y-%m-%d") not in date_to_idx for t in year_times],
-      dtype=bool,
-  )
-
-  days_written = 0
-  if in_place_mask.any():
-    ds_in_place = ds_year.isel(time=in_place_mask)
-    storage.write_dataset_batch_in_place(
-        ds_in_place,
-        full_target_url,
-        project=project,
-        date_to_idx=date_to_idx,
-    )
-    days_written += len(ds_in_place["time"])
-
-  if append_mask.any():
-    ds_append = ds_year.isel(time=append_mask)
-    write_batch_to_zarr(
-        ds_append,
-        full_target_url,
-        project=project,
-        is_initial_write=is_first_write,
-        consolidated=has_consolidated,
-    )
-    days_written += len(ds_append["time"])
-
-  return days_written
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

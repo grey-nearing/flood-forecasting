@@ -15,7 +15,8 @@
 """Shared fixtures for the gridded archive builder tests.
 
 Every fixture here produces *synthetic* data on the local filesystem. The unit
-and integration suites never touch NOAA PSL, NASA, ECMWF Open Data, or GCS, so they are hermetic and safe to run in CI.
+and integration suites never touch NOAA PSL, NASA, or GCS, so they are hermetic
+and safe to run in CI.
 
 The one exception is ``test_canary.py``, which deliberately talks to those live
 services. Those tests are skipped unless ``--run-canary`` is passed; see
@@ -32,9 +33,6 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from multimet import build_hres_archive as hres_module
-from multimet import storage
-
 _CANARY_FLAG = "--run-canary"
 
 
@@ -45,8 +43,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
       action="store_true",
       default=False,
       help=(
-          "Run canaries against live third-party feeds (NOAA PSL, "
-          "ECMWF Open Data, NASA CMR). Requires network access."
+          "Run canaries against live third-party feeds (NOAA PSL, NASA CMR). "
+          "Requires network access."
       ),
   )
 
@@ -69,9 +67,6 @@ def pytest_collection_modifyitems(
 PSL_LATS = np.linspace(89.75, -89.75, 360, dtype=np.float32)
 PSL_LONS = np.linspace(0.25, 359.75, 720, dtype=np.float32)
 PSL_MISSING_VALUE = -9.96921e36
-
-FAKE_HRES_LATS = np.linspace(-90.0, 90.0, 4, dtype=np.float32)
-FAKE_HRES_LONS = np.linspace(0.0, 315.0, 8, dtype=np.float32)
 
 
 def make_psl_precip_array(
@@ -141,66 +136,3 @@ def write_psl_year(psl_cache: Path) -> Callable[..., Path]:
     )
 
   return _write
-
-
-class FakeHRESSource:
-  """In-memory stand-in for :class:`ECMWFOpenDataSource`."""
-
-  def __init__(
-      self,
-      available: Iterable[str] | None = None,
-      offset: float = 0.0,
-      latitudes: np.ndarray = FAKE_HRES_LATS,
-      longitudes: np.ndarray = FAKE_HRES_LONS,
-  ):
-    self.available = None if available is None else set(available)
-    self.offset = offset
-    self.latitudes = latitudes
-    self.longitudes = longitudes
-    self.requested: list[str] = []
-
-  def value_for(self, date: pd.Timestamp, variable: str) -> float:
-    """Deterministic value written for a given date/variable pair."""
-    day_of_year = float(pd.Timestamp(date).dayofyear)
-    variable_index = float(hres_module.HRES_VARIABLES.index(variable))
-    return day_of_year + 100.0 * variable_index + self.offset
-
-  def extract_date(self, date: pd.Timestamp) -> dict[str, np.ndarray]:
-    """Mirrors the ``extract_date`` contract of the real source."""
-    key = pd.Timestamp(date).strftime("%Y-%m-%d")
-    self.requested.append(key)
-    if self.available is not None and key not in self.available:
-      raise storage.UpstreamDataMissingError(f"{key} is not published")
-    shape = (
-        hres_module.NUM_LEAD_DAYS,
-        len(self.latitudes),
-        len(self.longitudes),
-    )
-    return {
-        variable: np.full(shape, self.value_for(date, variable), np.float32)
-        for variable in hres_module.HRES_VARIABLES
-    }
-
-
-@pytest.fixture
-def fake_hres_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Callable[..., FakeHRESSource]:
-  """Factory that swaps the Open Data source for an in-memory fake."""
-  monkeypatch.setattr(hres_module, "HRES_LATS", FAKE_HRES_LATS)
-  monkeypatch.setattr(hres_module, "HRES_LONS", FAKE_HRES_LONS)
-
-  def _install(
-      available: Iterable[str] | None = None,
-      offset: float = 0.0,
-  ) -> FakeHRESSource:
-    source = FakeHRESSource(available=available, offset=offset)
-
-    def fake_init_worker(ecmwf_open_data_bucket: str = "") -> None:
-      del ecmwf_open_data_bucket
-      hres_module._worker_source = source  # type: ignore[assignment]
-
-    monkeypatch.setattr(hres_module, "_init_worker", fake_init_worker)
-    return source
-
-  return _install

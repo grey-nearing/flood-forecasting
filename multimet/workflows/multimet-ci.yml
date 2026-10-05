@@ -86,7 +86,6 @@ jobs:
         run: |
           python -c "import multimet; print(sorted(dir(multimet)))"
           python -m multimet.build_cpc_archive --help
-          python -m multimet.build_hres_archive --help
           python -m multimet.build_imerg_archive --help
 
       # --timeout-method=thread dumps the stack of every thread when a test
