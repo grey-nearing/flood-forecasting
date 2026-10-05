@@ -20,7 +20,7 @@ channels:  # Keep order
   - pytorch
   - nvidia
   - conda-forge
-  - nodefaults
+  - defaults
 dependencies:
   - absl-py=2.3.*
   - bokeh=3.8.1
@@ -37,14 +37,16 @@ dependencies:
   - h5py=3.15.1  # Sets the underlying C library "hdf5", letting h5py set it.
   - ipython
   - jupyter
+  - conda-forge::libprotobuf
   - matplotlib=3.10.*
   - more-itertools=10.8.*
   - nbsphinx=0.9.8
   - netcdf4=1.7.3
   - numpy=2.4.*
+  - conda-forge::orc
   - pandas=2.3.*
   - parso=0.8.5
-  - pyarrow
+  - conda-forge::pyarrow
   - pydantic=2.12.*
   - pyogrio
   - pyproj
