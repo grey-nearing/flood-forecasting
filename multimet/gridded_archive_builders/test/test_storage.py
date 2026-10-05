@@ -18,8 +18,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from multimet import storage
-from multimet.storage import is_remote_target, resolve_zarr_target
+from multimet.gridded_archive_builders import storage
+from multimet.gridded_archive_builders.storage import (
+    is_remote_target,
+    resolve_zarr_target,
+)
 import numpy as np
 import pandas as pd
 import pytest

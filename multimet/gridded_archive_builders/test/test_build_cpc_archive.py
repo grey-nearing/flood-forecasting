@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for :mod:`multimet.build_cpc_archive`."""
+"""Unit tests for :mod:`multimet.gridded_archive_builders.build_cpc_archive`."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
 
-from multimet.build_cpc_archive import (
+from multimet.gridded_archive_builders.build_cpc_archive import (
     CPC_LATS,
     CPC_LONS,
     CPC_VARIABLE,
@@ -27,7 +27,7 @@ from multimet.build_cpc_archive import (
     process_cpc_netcdf_to_dataset,
     write_batch_to_zarr,
 )
-from multimet.test.conftest import PSL_LATS, PSL_LONS
+from multimet.gridded_archive_builders.test.conftest import PSL_LATS, PSL_LONS
 import numpy as np
 import pandas as pd
 import pytest

@@ -10,7 +10,6 @@ SOURCEDIR     = source
 BUILDDIR      = build
 PACKAGEDIR    = ../googlehydrology
 PACKAGEDIR2   = ../catchment_delineation
-MULTIMETDIR   = ../multimet
 
 # Put it first so that "make" without argument is like "make help".
 help:
@@ -27,9 +26,7 @@ apidoc:
 	@echo "Generating API documentation..."
 	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR)"
 	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR2)"
-	@$(SPHINXAPIDOC) -f -e -o "$(SOURCEDIR)/api" --tocfile multimet_modules \
-		"$(MULTIMETDIR)" "$(MULTIMETDIR)/test"
-	@printf "Modules\n=======\n\n.. toctree::\n   :maxdepth: 4\n\n   googlehydrology\n   catchment_delineation\n" > "$(SOURCEDIR)/api/modules.rst"
+	@printf "Modules\n=======\n\n.. toctree::\n   :maxdepth: 4\n\n   googlehydrology\n   catchment_delineation\n   static_extractor\n   gridded_archive_builders\n" > "$(SOURCEDIR)/api/modules.rst"
 
 # Target to clean API docs
 clean-api:

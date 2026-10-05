@@ -2,9 +2,9 @@
 Gridded Weather Archives
 ========================
 
-This guide explains how to use the command-line tools in the :mod:`multimet`
-package to download public gridded precipitation data and save it in
-standardized daily Zarr archives.
+This guide explains how to use the command-line tools in the
+:mod:`multimet.gridded_archive_builders` package to download public gridded
+precipitation data and save it in standardized daily Zarr archives.
 
 .. note::
 

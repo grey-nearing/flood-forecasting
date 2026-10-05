@@ -103,7 +103,7 @@ If you have latitude and longitude coordinates for streamflow gauges and need th
 
 Most users do not need to build weather archives—pointing `dynamics_data_dir` to `gs://caravan-multimet/v1.1` is all that is needed to train and evaluate models.
 
-If you want to download raw gridded precipitation data directly from NOAA (CPC) or NASA (IMERG) and build your own Zarr archives, use the command-line tools in the [`multimet`](multimet/README.md) package (`build-cpc-archive` and `build-imerg-archive`). See [`multimet/README.md`](multimet/README.md) and the [Gridded Weather Archives documentation](docs/source/usage/gridded_archives.rst) for usage instructions and command-line arguments.
+If you want to download raw gridded precipitation data directly from NOAA (CPC) or NASA (IMERG) and build your own Zarr archives, use the command-line tools in the [`multimet/gridded_archive_builders`](multimet/gridded_archive_builders/README.md) package (`build-cpc-archive` and `build-imerg-archive`). See [`multimet/gridded_archive_builders/README.md`](multimet/gridded_archive_builders/README.md) and the [Gridded Weather Archives documentation](docs/source/usage/gridded_archives.rst) for usage instructions and command-line arguments.
 
 ## **Usage**
 

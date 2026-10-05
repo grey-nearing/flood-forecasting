@@ -1,12 +1,12 @@
 # MultiMet Data Workflows (`multimet`)
 
-The `multimet` package provides tools for preparing both **gridded meteorological archives** (NOAA CPC and NASA GPM IMERG) and **static watershed attribute tables** (`multimet/static_extractor`) for OpenHydroNet.
+The `multimet` package provides tools for preparing both **gridded meteorological archives** (`multimet/gridded_archive_builders`) and **static watershed attribute tables** (`multimet/static_extractor`) for OpenHydroNet.
 
 ---
 
-## Part 1: Gridded Precipitation Archive Builders (`build-cpc-archive`, `build-imerg-archive`)
+## Part 1: Gridded Precipitation Archive Builders (`multimet/gridded_archive_builders`)
 
-This package includes command-line tools to download public gridded precipitation data from NOAA and NASA and save it into standardized daily Zarr archives.
+The [`multimet/gridded_archive_builders`](gridded_archive_builders/README.md) subpackage includes command-line tools (`build-cpc-archive` and `build-imerg-archive`) to download public gridded precipitation data from NOAA and NASA and save it into standardized daily Zarr archives.
 
 > **Do you need these tools?**
 > If you only want to train or evaluate flood-forecasting models using the published MultiMet dataset, **you do not need to run these tools**. Simply point `dynamics_data_dir` in your training configuration file to `gs://caravan-multimet/v1.1`.

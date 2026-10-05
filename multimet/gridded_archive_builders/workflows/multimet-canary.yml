@@ -72,5 +72,5 @@ jobs:
 
       - name: Run canaries
         run: |
-          pytest multimet/test -m canary --run-canary \
+          pytest multimet/gridded_archive_builders/test -m canary --run-canary \
             -v -ra --timeout=900 --timeout-method=thread

@@ -40,6 +40,7 @@ setup(
         'multimet',
         'multimet.utils',
         'multimet.static_extractor',
+        'multimet.gridded_archive_builders',
     ],
     url='https://googlehydrology.readthedocs.io',
     project_urls={
@@ -56,8 +57,8 @@ setup(
         'console_scripts': [
             'schedule-runs=googlehydrology.run_scheduler:_main',
             'run=googlehydrology.run:_main',
-            'build-cpc-archive=multimet.build_cpc_archive:main',
-            'build-imerg-archive=multimet.build_imerg_archive:main',
+            'build-cpc-archive=multimet.gridded_archive_builders.build_cpc_archive:main',
+            'build-imerg-archive=multimet.gridded_archive_builders.build_imerg_archive:main',
             'delineate-catchment=catchment_delineation.cli:main',
             'benchmark-catchment=catchment_delineation.benchmark:main',
             'extract-caravan-static=multimet.static_extractor.cli:main',

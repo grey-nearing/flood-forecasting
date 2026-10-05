@@ -56,7 +56,7 @@ import time
 import urllib.parse
 
 import h5py  # type: ignore[import-untyped]
-from multimet import storage
+from multimet.gridded_archive_builders import storage
 import numpy as np
 import pandas as pd
 import requests
