@@ -23,11 +23,11 @@ Data Requirements
 Before running ``delineate-catchment``, you need a folder (local or on Google Cloud Storage ``gs://``) containing 90-meter (3-arc-second) D8 flow-direction map tiles saved as 5°×5° NumPy (``.npy``) files (such as ``n35w090_dir.npy``).
 
 * **If you already have a folder or GCS bucket of 5°×5° ``.npy`` tiles:** Pass that folder directly with ``--tiles-dir /path/to/tiles_5deg`` (or ``--gcs-uri gs://... --cache-dir /tmp/tile_cache``).
-* **If you are starting from raw HydroSHEDS or MERIT GeoTIFF files:** Use ``scripts/slice_continental_dems.py`` to slice the continental ``.tif`` files into 5°×5° ``.npy`` tiles:
+* **If you are starting from raw HydroSHEDS or MERIT GeoTIFF files:** Use ``catchment_delineation/scripts/slice_continental_dems.py`` to slice the continental ``.tif`` files into 5°×5° ``.npy`` tiles:
 
 .. code-block:: bash
 
-   python scripts/slice_continental_dems.py \
+   python catchment_delineation/scripts/slice_continental_dems.py \
      --input-tifs /path/to/raw_hydrosheds_tifs/*.tif \
      --out-dir /path/to/tiles_5deg
 

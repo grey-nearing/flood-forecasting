@@ -21,10 +21,10 @@ Given the latitude and longitude of a river gauge, the tool produces its watersh
 Before running `delineate-catchment`, you need a folder (either on your computer or in Google Cloud Storage `gs://`) containing 5°×5° flow-direction `.npy` files (for example, `n35w090_dir.npy`).
 
 * **If you already have a folder or `gs://` bucket of `.npy` tiles:** Pass that folder directly using `--tiles-dir /path/to/tiles_5deg` (or `--gcs-uri gs://... --cache-dir /tmp/tile_cache`).
-* **If you are starting from raw HydroSHEDS or MERIT GeoTIFF files:** Run `scripts/slice_continental_dems.py` once to slice the continental `.tif` rasters into 5°×5° `.npy` tiles:
+* **If you are starting from raw HydroSHEDS or MERIT GeoTIFF files:** Run `catchment_delineation/scripts/slice_continental_dems.py` once to slice the continental `.tif` rasters into 5°×5° `.npy` tiles:
 
 ```bash
-python scripts/slice_continental_dems.py \
+python catchment_delineation/scripts/slice_continental_dems.py \
   --input-tifs /path/to/raw_hydrosheds_tifs/*.tif \
   --out-dir /path/to/tiles_5deg
 ```
