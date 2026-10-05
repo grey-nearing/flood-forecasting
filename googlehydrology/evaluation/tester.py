@@ -191,6 +191,38 @@ class BaseTester(object):
             compute_scaler=False,
         )
 
+    def _load_basins_for_evaluation(self, basins: list[str]) -> None:
+        """Materialize exactly the basins this evaluation will touch.
+
+        Without `limit_n_basins` the dataset loaded every basin in its own
+        `__init__` and there is nothing to do -- narrowing it here would
+        change the behaviour of runs that never asked for it, and would
+        throw away work on every call.
+
+        With `limit_n_basins` the dataset deferred, and this is where the
+        basin set gets chosen. Validation samples a fresh random subset per
+        call, so the resident set is bounded by `validate_n_random_basins`
+        rather than by the size of the validation pool -- which is the whole
+        point, since that pool can be as large as the training one.
+        """
+        if not self.dataset.defers_basin_load:
+            return
+
+        required = sorted(basins)
+        if self.dataset.is_loaded and self.dataset.loaded_basins == required:
+            # Same subset as last time (the common case for `test`, which
+            # evaluates every basin every call). Reloading would be pure
+            # cost.
+            return
+
+        LOGGER.debug(
+            '[%s] loading %d of %d basins for evaluation',
+            self.period,
+            len(required),
+            len(self.basins),
+        )
+        self.dataset.load_basins(required)
+
     def evaluate(
         self,
         epoch: int = None,
@@ -231,17 +263,25 @@ class BaseTester(object):
         ):
             basins = random.sample(basins, k=self.cfg.validate_n_random_basins)
 
+        self._load_basins_for_evaluation(basins)
+
         # force model to train-mode when doing mc-dropout evaluation
         if self.cfg.mc_dropout:
             model.train()
         else:
             model.eval()
 
+        # `basins_indexes` are positions along the dataset's basin axis, which
+        # is what `_sample_index` numbers its basin column against. Resolving
+        # them against `self.basins` instead only happens to work while the
+        # two lists are identical; they are not, because `__init__` drops
+        # all-NaN basins from `self.basins` but not from the dataset (and
+        # `load_basins` can narrow the dataset without touching `self.basins`).
         batch_sampler = BasinBatchSampler(
             sample_index=self.dataset._sample_index,
             batch_size=self.cfg.batch_size,
             basins_indexes=get_samples_indexes(
-                self.basins, samples=list(basins)
+                self.dataset.loaded_basins, samples=list(basins)
             ),
         )
         loader = MultimetDataLoader(
@@ -522,6 +562,21 @@ class BaseTester(object):
                     LOGGER.warning('Could not consolidate metadata for %s: %s', result_file, e)
 
     def _calc_exclude_basins(self) -> Iterator[str]:
+        """Basins with no usable observations over an evaluation window.
+
+        A basin is excluded when, for any one of the configured windows,
+        every observation it has inside that window is NaN.
+
+        Equivalently -- and this is how it used to be written -- some
+        maximal run of NaNs in the record fully covers the window. The two
+        phrasings agree exactly, *provided* the record spans the window: a
+        run of NaNs cannot extend past data that does not exist, so a basin
+        whose record stops short of the window was never excluded by the old
+        code. That precondition used to be implicit in the run endpoints;
+        it is now checked outright, because reducing over a truncated (or
+        empty) window would otherwise report "all NaN" and quietly shrink
+        the evaluation set.
+        """
         if not self.cfg.tester_skip_obs_all_nan:
             return
 
@@ -540,21 +595,50 @@ class BaseTester(object):
                 'tester_skip_obs_all_nan combined with lazy_load may be slow, '
                 'it goes over all the data.'
             )
-        # TODO(future): this may be optimized to work vectorically via xarray on all
-        # basins at once.
-        for basin in self.basins:
-            basin_ds = self.dataset._dataset.sel(basin=basin)
-            # Calculate all-nan ranges
-            diffs = np.diff(
-                basin_ds.streamflow.isnull(), prepend=[0], append=[0]
-            )
-            (starts,), (ends,) = np.where(diffs == 1), np.where(diffs == -1)
 
-            nan_date_starts = basin_ds.date.data[starts]
-            nan_date_ends = basin_ds.date.data[ends - 1]
-            for start, end in zip(period_start, period_end):
-                if np.any((nan_date_starts <= start) & (nan_date_ends >= end)):
-                    yield basin
+        # Deliberately the *full* lazy graph, not `_dataset`: this runs
+        # during `__init__`, before anything is loaded, and it has to see
+        # every candidate basin to decide which to drop. Reading it stays
+        # cheap because the reduction below touches one variable over one
+        # date window. Scaling does not affect the answer -- it is a linear
+        # transform, so NaNs stay NaN.
+        dataset = self.dataset.full_dataset
+        observations = dataset.streamflow
+        record_dates = dataset.date.values
+        record_start, record_end = record_dates.min(), record_dates.max()
+
+        # One reduction over every basin at once. This used to be a Python
+        # loop with a `.sel(basin=...)` per basin, measured at ~0.37 ms per
+        # basin against in-memory data and ~4.6 ms per basin against a
+        # chunked dask array -- roughly 6 s and 1.2 min respectively at
+        # 16k basins, paid at startup before the first epoch. The lazy
+        # figure is a floor: it was measured against an in-process array,
+        # whereas a real store adds per-chunk I/O to every one of those
+        # `.sel` calls.
+        excluded = None
+        for start, end in zip(period_start, period_end):
+            if record_start > start or record_end < end:
+                # The record does not span this window, so nothing in it can
+                # have been excluded on this window's account.
+                continue
+
+            window = observations.sel(date=slice(start, end))
+            window_all_nan = window.isnull().all(
+                dim=[d for d in window.dims if d != 'basin']
+            )
+            excluded = (
+                window_all_nan
+                if excluded is None
+                else excluded | window_all_nan
+            )
+
+        if excluded is None:
+            return
+
+        excluded = excluded.compute()
+        yield from (
+            str(basin) for basin in excluded.basin.values[excluded.values]
+        )
 
     def _create_and_log_figures(
         self,
@@ -685,7 +769,11 @@ class BaseTester(object):
                 loader, lambda data: data['basin_index'][0].item()
             )
             for basin_index, samples in basin_samples:
-                basin = loader.dataset._basins[basin_index]
+                # `basin_index` is a position along the *loaded* basin axis.
+                # `_basins` is the full configured list and is not narrowed by
+                # `load_basins`, so indexing it would name the wrong basin as
+                # soon as a subset is loaded.
+                basin = loader.dataset.loaded_basins[basin_index]
                 if basin not in basins:
                     continue
 
