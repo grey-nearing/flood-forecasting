@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CLI entry point for python -m catchment_delineation."""
+"""CLI entry point for python -m multimet.catchment_delineation."""
 
 import sys
 
-from catchment_delineation.cli import main
+from multimet.catchment_delineation.cli import main
 
 if __name__ == '__main__':
     sys.exit(main())

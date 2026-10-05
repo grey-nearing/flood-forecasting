@@ -19,7 +19,7 @@ multi-tile D8 flow-direction rasters (HydroSHEDS 90m / MERIT) with seamless
 cross-tile boundary routing.
 """
 
-from catchment_delineation.config import (
+from multimet.catchment_delineation.config import (
     DEM_MAX_LAT,
     DEM_MAX_LON,
     DEM_MIN_LAT,
@@ -29,7 +29,7 @@ from catchment_delineation.config import (
     TILE_CELLS,
     TILE_DEG,
 )
-from catchment_delineation.delineator import (
+from multimet.catchment_delineation.delineator import (
     CatchmentAreaMismatchError,
     CatchmentCoverageError,
     DemDelineator,
@@ -37,17 +37,17 @@ from catchment_delineation.delineator import (
     delineate_coordinates,
     delineate_dem,
 )
-from catchment_delineation.gcs import (
+from multimet.catchment_delineation.gcs import (
     download_tile_from_gcs,
     download_tiles_for_bbox,
-    is_gcs_path,
 )
-from catchment_delineation.tiles import (
+from multimet.catchment_delineation.tiles import (
     is_tile_available,
     latlon_to_tile_key,
     list_available_tiles,
     tile_key_to_filename,
 )
+from multimet.utils.gcs import is_gcs_path
 
 __all__ = [
     'DEM_MAX_LAT',
