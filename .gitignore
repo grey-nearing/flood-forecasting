@@ -2,14 +2,15 @@
 **/*.pyc
 **/*.h5
 **/*.p
-!test/test_data/*.p
+!model/tests/test_data/*.p
 *.swp
 .coverage
 
 # folder
 build/*
 dist/*
-googlehydrology.egg-info/*
+openhydronet.egg-info/*
+*.egg-info/
 .vscode/*
 .idea/*
 .ipynb_checkpoints/

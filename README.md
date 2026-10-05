@@ -22,14 +22,14 @@ This repository contains implementations of the core models used in Google's pro
 
 ### **Mean-Embedding-Forecast-LSTM**
 
-The [Mean Embedding Forecast LSTM](https://github.com/google-research/flood-forecasting/blob/main/googlehydrology/modelzoo/mean_embedding_forecast_lstm.py) is a forecasting model that uses separate embedding networks for hindcast and forecast inputs. It aggregates these inputs using masked means before passing them into respective LSTMs for the hindcast and forecast periods.
+The [Mean Embedding Forecast LSTM](https://github.com/google-research/flood-forecasting/blob/main/model/modelzoo/mean_embedding_forecast_lstm.py) is a forecasting model that uses separate embedding networks for hindcast and forecast inputs. It aggregates these inputs using masked means before passing them into respective LSTMs for the hindcast and forecast periods.
 
 * **Status:** **Current production model** (as of December 2025\) for [Google FloodHub](https://sites.research.google/floods/).  
 * **Reference:** Gauch, Martin, et al. "[How to deal with missing input data](https://hess.copernicus.org/articles/29/6221/2025/)." *Hydrology and Earth System Sciences* (2025).
 
 ### **Handoff-Forecast-LSTM**
 
-The [State Handoff Forecast LSTM](https://github.com/google-research/flood-forecasting/blob/main/googlehydrology/modelzoo/handoff_forecast_lstm.py) is a forecasting model that uses a state-handoff to transition from a hindcast sequence (LSTM) model to a forecast sequence (LSTM) model. The hindcast model runs from the past up to the present (the issue time of the forecast) and then passes the cell state and hidden state of the LSTM into a (nonlinear) handoff network, which is used to initialize a new LSTM that rolls out over the forecast period.
+The [State Handoff Forecast LSTM](https://github.com/google-research/flood-forecasting/blob/main/model/modelzoo/handoff_forecast_lstm.py) is a forecasting model that uses a state-handoff to transition from a hindcast sequence (LSTM) model to a forecast sequence (LSTM) model. The hindcast model runs from the past up to the present (the issue time of the forecast) and then passes the cell state and hidden state of the LSTM into a (nonlinear) handoff network, which is used to initialize a new LSTM that rolls out over the forecast period.
 
 * **Status:** Former production model for [Google FloodHub](https://sites.research.google/floods/).  
 * **Reference:** Nearing, Grey, et al. "[Global prediction of extreme floods in ungauged watersheds](https://www.nature.com/articles/s41586-024-07145-1)." *Nature* (2024).
@@ -46,7 +46,7 @@ We recommend using **Conda** to manage dependencies like PyTorch and CUDA.
    conda env create -f environments/conda.yml
 
    # Activate the environment (MANDATORY)  
-   conda activate googlehydrology  
+   conda activate openhydronet  
    ```
     
 3. Install the Package:  
@@ -60,16 +60,16 @@ We recommend using **Conda** to manage dependencies like PyTorch and CUDA.
 
 ## **🚀 Tutorial Notebook**
 
-The most direct way to explore this repository is through our interactive tutorial: [**OpenHydroNet Tutorial Notebook**](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/tutorial/OpenHydroNet_Tutorial.ipynb).
+The most direct way to explore this repository is through our interactive tutorial: [**OpenHydroNet Tutorial Notebook**](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/model/tutorial/OpenHydroNet_Tutorial.ipynb).
 
 **What you will learn:**
 
-* **Model Evaluation:** Load pre-trained Google Hydrology models and calculate performance metrics (NSE, KGE) on real-world basin data.  
+* **Model Evaluation:** Load pre-trained OpenHydroNet models and calculate performance metrics (NSE, KGE) on real-world basin data.  
 * **Fine-Tuning for Performance:** Learn how to fine-tune the `static_embedding_fc` layer. This is a powerful technique for improving predictions on "outlier" basins (e.g., basins with unusual sizes or geology) without retraining the entire model.
 * **Visualizing Results:** Compare model hydrographs against observed discharge data.
 
 **Run it now:** 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/tutorial/OpenHydroNet_Tutorial.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/model/tutorial/OpenHydroNet_Tutorial.ipynb)
 
 ## **Data Setup**
 
@@ -133,7 +133,7 @@ Generate predictions (without skipping NaN observations):
 
 ## **Configuration**
 
-Experiments are defined by YAML files. Update the following paths in your config (e.g., tutorial/training-config.yml):
+Experiments are defined by YAML files. Update the following paths in your config (e.g., `model/tutorial/configs/train-config.yml`):
 
 * run\_dir: Where weights and logs are saved.  
 * train\_basin\_file: Path to the list of basin IDs.  
@@ -143,7 +143,7 @@ Experiments are defined by YAML files. Update the following paths in your config
 
 ### **Example Configurations**
 
-The `~/flood-forecasting/example-configs` directory contains reference YAML files that define the experimental setups for different model architectures and datasets.
+The `~/flood-forecasting/model/example-configs` directory contains reference YAML files that define the experimental setups for different model architectures and datasets.
 
 * **`floodhub-settings-config.yml`**  
   * **Model Architecture:** `mean_embedding_forecast_lstm`  

@@ -50,11 +50,11 @@ saves the result to the ``--target_zarr`` location you provide.
 Prerequisites
 -------------
 
-Activate the ``googlehydrology`` Conda environment and install the package:
+Activate the ``openhydronet`` Conda environment and install the package:
 
 .. code-block:: bash
 
-   conda activate googlehydrology
+   conda activate openhydronet
    pip install -e .
 
 Additional Requirements by Dataset

@@ -45,7 +45,7 @@ Every top-level package (`multimet/README.md`, `return_periods/README.md`) and m
 2. **Overview & Summary Table:**
    - Summarize the CLI commands, Python classes, spatial resolutions, coordinate systems, and date ranges.
 3. **Prerequisites & Credentials:**
-   - Show Conda environment activation (`conda activate googlehydrology`), installation (`pip install -e .`), and any required login steps (such as NASA Earthdata Login `.netrc` or Google Cloud credentials).
+   - Show Conda environment activation (`conda activate openhydronet`), installation (`pip install -e .`), and any required login steps (such as NASA Earthdata Login `.netrc` or Google Cloud credentials).
 4. **Copy-Pasteable Quick Start Examples:**
    - Provide short, copy-pasteable CLI and Python examples for initial runs, adding new dates (`--extend_archive`), cloud paths (`gs://`), and cache cleanup (`--cleanup_cache` / `--clean-cache`).
 5. **What to Watch Out For (Common Pitfalls):**

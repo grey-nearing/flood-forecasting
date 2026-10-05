@@ -86,7 +86,7 @@ Do not merely skim mathematical or domain code—verify formulas from first prin
 Whenever a PR modifies model math, feature ordering, temporal alignment, scalers, or input/output data formats:
 
 1. **Backwards Compatibility & Numerical Equivalence:**
-   - Check whether existing `pretrained-models/`, `tutorial/model-runs/5-basin-example`, and saved scalers (`scaler.nc` / `scaler.zarr`) still load and evaluate cleanly, or whether the PR fixes a training/alignment bug that requires retraining the shipped weights.
+   - Check whether existing `model/pretrained-models/`, `model/tutorial/model-runs/5-basin-example`, and saved scalers (`scaler.nc` / `scaler.zarr`) still load and evaluate cleanly, or whether the PR fixes a training/alignment bug that requires retraining the shipped weights.
    - For format or dataloader refactors, verify claimed numerical equivalence empirically (checking `float32` vs. `float64` promotion, chunking order, and coordinate decoding).
 2. **Pretrained Weight & Checkpoint Hygiene:**
    - When updating pretrained model weights in the repository:
@@ -128,7 +128,7 @@ Evaluate how the PR fits into the broader codebase (see [`skills/repo-organizati
    - Search across packages and subpackages for duplicated utilities (GCS/Zarr storage, CF time decoding, HTTP/Earthdata downloads, FAO-56 Penman-Monteith PET, Caravan climate indices, polygon/zonal geometry).
    - Consolidate shared domain utilities into `multimet/utils/` (even if a specific function in that utility module is currently called by only one subpackage) and remove thin re-export shims.
 3. **Package Layout, Explicit CLI Paths, & Dead-Code Removal:**
-   - Verify files live in their canonical package/subpackage locations (`googlehydrology/` / `model/`, `multimet/<subpackage>/`, `return_periods/`), tests live in `<package>/tests/`, and auxiliary scripts live in `<package>/tools/` (never in root `scripts/` or `tools/` folders, and never with subpackage `.github/workflows/`).
+   - Verify files live in their canonical package/subpackage locations (`model/`, `multimet/<subpackage>/`, `return_periods/`), tests live in `<package>/tests/`, and auxiliary scripts live in `<package>/tools/` (never in root `scripts/` or `tools/` folders, and never with subpackage `.github/workflows/`).
    - Ensure all input and output paths are required explicitly via caller arguments or CLI flags—flag and remove any hardcoded `gs://open-multimet/data`, `/tmp/`, local user paths, or implicit default output paths.
    - Remove dead code, unused archival paths, vestigial multi-frequency code, out-of-scope product code (e.g., unfinished HRES/ERA5 code in a CPC/IMERG PR), and temporary working-note `.md` plan files in the repository root.
 4. **PR Scope Discipline:**

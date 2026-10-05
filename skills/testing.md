@@ -19,7 +19,7 @@ This skill defines how tests are organized, written, and reviewed across the `fl
    - Every top-level package maintains its own co-located `tests/` directory:
      - `multimet/tests/`: Unit, integration, and canary tests for `catchment_delineation`, `gridded_archive_builders`, `timeseries_extractors`, `static_extractor`, and `multimet/utils`.
      - `return_periods/tests/`: Unit and USGS Bulletin 17C benchmark verification tests (`moose_river_example_data.csv`, `orestimba_creek_example_data.csv`).
-     - `test/` (consolidating into `googlehydrology/tests/` per Issue #17): Core hydrology model, trainer, tester, loss, and datasetzoo tests.
+     - `model/tests/`: Core hydrology model, trainer, tester, loss, and datasetzoo tests.
 2. **Pytest & CI Configuration:**
    - Register every test directory in `pyproject.toml` under `[tool.pytest.ini_options] testpaths`.
    - Use standard Pytest markers registered in `pyproject.toml`:

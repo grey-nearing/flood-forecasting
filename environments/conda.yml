@@ -15,7 +15,7 @@
 # How to install:
 # conda env create -f environments/conda.yml
 
-name: googlehydrology
+name: openhydronet
 channels:  # Keep order
   - pytorch
   - nvidia
