@@ -8,3 +8,4 @@ Modules
    catchment_delineation
    static_extractor
    gridded_archive_builders
+   timeseries_extractors

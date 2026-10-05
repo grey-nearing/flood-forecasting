@@ -26,7 +26,7 @@ apidoc:
 	@echo "Generating API documentation..."
 	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR)"
 	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR2)"
-	@printf "Modules\n=======\n\n.. toctree::\n   :maxdepth: 4\n\n   googlehydrology\n   catchment_delineation\n   static_extractor\n   gridded_archive_builders\n" > "$(SOURCEDIR)/api/modules.rst"
+	@printf "Modules\n=======\n\n.. toctree::\n   :maxdepth: 4\n\n   googlehydrology\n   catchment_delineation\n   static_extractor\n   gridded_archive_builders\n   timeseries_extractors\n" > "$(SOURCEDIR)/api/modules.rst"
 
 # Target to clean API docs
 clean-api:
