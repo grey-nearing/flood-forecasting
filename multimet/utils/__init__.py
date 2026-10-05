@@ -30,6 +30,7 @@ from multimet.utils.gcs import (
 from multimet.utils.http import (
     DEFAULT_CMR_GRANULES_URL,
     EarthdataSession,
+    check_http_url_exists,
     download_http_file,
     get_earthdata_credentials_from_netrc,
     query_cmr_granules,
@@ -50,6 +51,7 @@ from multimet.utils.storage import (
 __all__ = [
     "DEFAULT_CMR_GRANULES_URL",
     "EarthdataSession",
+    "check_http_url_exists",
     "decode_zarr_time_index",
     "download_directory_from_gcs",
     "download_file_from_gcs",
@@ -75,3 +77,4 @@ __all__ = [
     "write_dataset_batch_in_place",
     "write_dataset_batch_to_zarr",
 ]
+

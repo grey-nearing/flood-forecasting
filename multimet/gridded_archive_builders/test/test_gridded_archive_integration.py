@@ -32,6 +32,7 @@ from multimet.gridded_archive_builders.build_imerg_archive import (
     LON_COUNT,
     build_imerg_archive,
 )
+from multimet.gridded_archive_builders.test.conftest import PSL_LATS, PSL_LONS
 import numpy as np
 import pandas as pd
 import pytest
@@ -375,6 +376,148 @@ class TestCPCArchiveEndToEnd:
     assert len(parallel["time"]) == 6
     xr.testing.assert_identical(serial, parallel)
 
+  def test_extend_archive_missing_store_raises_file_not_found(
+      self, psl_cache: Path, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "nonexistent_cpc.zarr")
+    with pytest.raises(FileNotFoundError, match="--extend_archive"):
+      build_cpc_archive(
+          target_zarr=target,
+          start_year=2020,
+          end_year=2020,
+          cache_dir=str(psl_cache),
+          extend_archive=True,
+          num_workers=1,
+      )
+
+  def test_extend_archive_with_overwrite_raises_value_error(
+      self, psl_cache: Path, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "cpc.zarr")
+    with pytest.raises(ValueError, match="cannot be used together"):
+      build_cpc_archive(
+          target_zarr=target,
+          start_year=2020,
+          end_year=2020,
+          cache_dir=str(psl_cache),
+          extend_archive=True,
+          overwrite=True,
+          num_workers=1,
+      )
+
+  def test_extend_archive_ignores_stale_cache_and_trims_active_year_tail(
+      self,
+      write_psl_year: Callable[..., Path],
+      psl_cache: Path,
+      tmp_path: Path,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    # 1. Build initial store through 2026-01-02 using cached precip.2026.nc.
+    write_psl_year(2026, "2026-01-01", "2026-01-02")
+    target = str(tmp_path / "cpc_extend.zarr")
+    build_cpc_archive(
+        target_zarr=target,
+        start_year=2026,
+        end_year=2026,
+        end_date="2026-01-02",
+        cache_dir=str(psl_cache),
+        num_workers=1,
+        reference_date="2026-01-03",
+    )
+    assert len(open_store(target)["time"]) == 2
+
+    # 2. Now upstream has data through 2026-01-05 (with trailing NaNs 01-06..01-08),
+    # while psl_cache still holds the stale 2-day precip.2026.nc.
+    def fake_download(url: str, dest_path: str, **kwargs: object) -> str:
+      dates = pd.date_range("2026-01-01", "2026-01-08", freq="1D")
+      data = np.full((len(dates), 360, 720), 7.0, dtype=np.float32)
+      data[5:] = np.nan  # Valid through 2026-01-05 (lag = 2 days from Jan 7)
+      ds = xr.Dataset(
+          data_vars={"precip": (["time", "lat", "lon"], data)},
+          coords={"time": dates, "lat": PSL_LATS, "lon": PSL_LONS},
+      )
+      ds.to_netcdf(dest_path)
+      ds.close()
+      return dest_path
+
+    monkeypatch.setattr(
+        "multimet.gridded_archive_builders.build_cpc_archive.download_http_file",
+        fake_download,
+    )
+
+    build_cpc_archive(
+        target_zarr=target,
+        start_year=2026,
+        end_year=2026,
+        cache_dir=str(psl_cache),
+        extend_archive=True,
+        num_workers=1,
+        reference_date="2026-01-07",
+    )
+
+    store = open_store(target)
+    times = pd.to_datetime(store["time"].values)
+    assert list(times) == list(pd.date_range("2026-01-01", "2026-01-05"))
+    assert float(store[CPC_VARIABLE].sel(time="2026-01-05").mean()) == (
+        pytest.approx(7.0)
+    )
+
+  def test_extend_archive_handles_early_january_rollover_when_new_year_unpublished(
+      self,
+      write_psl_year: Callable[..., Path],
+      psl_cache: Path,
+      tmp_path: Path,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    # Build initial store through 2025-12-28.
+    write_psl_year(2025, "2025-12-27", "2025-12-30")
+    target = str(tmp_path / "cpc_rollover.zarr")
+    build_cpc_archive(
+        target_zarr=target,
+        start_year=2025,
+        end_year=2025,
+        start_date="2025-12-27",
+        end_date="2025-12-28",
+        cache_dir=str(psl_cache),
+        num_workers=1,
+        reference_date="2025-12-29",
+    )
+
+    # On 2026-01-02 (reference_date = 2026-01-02), precip.2025.nc has valid data
+    # through 2025-12-30 and trailing NaN on 2025-12-31, while precip.2026.nc is
+    # not yet published on NOAA PSL (HTTP 404).
+    dates_2025 = pd.date_range("2025-12-27", "2025-12-31", freq="1D")
+    data_2025 = np.full((len(dates_2025), 360, 720), 4.0, dtype=np.float32)
+    data_2025[-1] = np.nan  # Dec 31 unpublished
+    ds_2025 = xr.Dataset(
+        data_vars={"precip": (["time", "lat", "lon"], data_2025)},
+        coords={"time": dates_2025, "lat": PSL_LATS, "lon": PSL_LONS},
+    )
+    ds_2025.to_netcdf(psl_cache / "precip.2025.nc")
+    ds_2025.close()
+
+    monkeypatch.setattr(
+        "multimet.gridded_archive_builders.build_cpc_archive.check_http_url_exists",
+        lambda url, **kw: False,
+    )
+    monkeypatch.setattr(
+        "multimet.gridded_archive_builders.build_cpc_archive.download_http_file",
+        lambda url, dest_path, **kw: dest_path,
+    )
+
+    build_cpc_archive(
+        target_zarr=target,
+        start_year=2025,
+        end_year=2026,
+        cache_dir=str(psl_cache),
+        num_workers=1,
+        reference_date="2026-01-02",
+    )
+
+    store = open_store(target)
+    times = pd.to_datetime(store["time"].values)
+    assert list(times) == list(pd.date_range("2025-12-27", "2025-12-30"))
+
 
 class TestIMERGArchiveEndToEnd:
   """Full ``build_imerg_archive`` runs against a local store at native (1800, 3600) resolution."""
@@ -467,3 +610,36 @@ class TestIMERGArchiveEndToEnd:
     assert float(store[IMERG_VARIABLE].isel(time=1).mean()) == pytest.approx(
         99.0
     )
+
+    # 5. Extend archive without --end_date: auto-discovers latest published date
+    # (2024-01-05) within 7 days of reference_date="2024-01-08".
+    _write_imerg_nc4_day(local_dir, "2024-01-05", 5.0)
+    build_imerg_archive(
+        target_zarr=target_store,
+        start_date="2024-01-01",
+        source_type="local",
+        local_format="nc4",
+        local_dir=str(local_dir),
+        extend_archive=True,
+        num_workers=1,
+        reference_date="2024-01-08",
+    )
+    store = open_store(target_store)
+    assert len(store["time"]) == 5
+    assert pd.Timestamp(store["time"].values[-1]) == pd.Timestamp("2024-01-05")
+
+    # 6. Interior gap before latest published date (2024-01-07 exists, 2024-01-06
+    # missing) raises FileNotFoundError for the missing interior date.
+    _write_imerg_nc4_day(local_dir, "2024-01-07", 7.0)
+    with pytest.raises(FileNotFoundError, match="2024-01-06"):
+      build_imerg_archive(
+          target_zarr=target_store,
+          start_date="2024-01-01",
+          source_type="local",
+          local_format="nc4",
+          local_dir=str(local_dir),
+          extend_archive=True,
+          num_workers=1,
+          reference_date="2024-01-08",
+      )
+

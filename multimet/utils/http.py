@@ -103,6 +103,49 @@ def download_http_file(
   return dest_str
 
 
+def check_http_url_exists(
+    url: str,
+    *,
+    session: requests.Session | None = None,
+    headers: Mapping[str, str] | None = None,
+    timeout: int = 30,
+    resource_label: str = "HTTP resource",
+) -> bool:
+  """Checks whether an HTTP resource exists without downloading its body.
+
+  Args:
+    url: Target HTTP/HTTPS URL.
+    session: Optional ``requests.Session``.
+    headers: Optional HTTP request headers.
+    timeout: Request timeout in seconds.
+    resource_label: Human-readable label included in error messages.
+
+  Returns:
+    ``True`` if the server responds with HTTP 2xx, ``False`` if the server
+    responds with HTTP 404.
+
+  Raises:
+    PermissionError: If the server returns HTTP 401 or 403.
+    requests.HTTPError: If the server returns any other error status code.
+  """
+  req_fn = session.get if session is not None else requests.get
+  req_kwargs: dict[str, object] = {"stream": True, "timeout": timeout}
+  if headers is not None:
+    req_kwargs["headers"] = dict(headers)
+
+  with req_fn(url, **req_kwargs) as resp:  # type: ignore[arg-type]
+    if resp.status_code in (401, 403):
+      raise PermissionError(
+          f"{resource_label} returned HTTP {resp.status_code} Unauthorized "
+          f"for URL:\n  {url}\nAccess requires authentication."
+      )
+    if resp.status_code == 404:
+      return False
+    resp.raise_for_status()
+    return True
+
+
+
 def get_earthdata_credentials_from_netrc(
     netrc_path: str | None = None,
 ) -> tuple[str | None, str | None]:

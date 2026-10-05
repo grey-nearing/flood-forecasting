@@ -39,7 +39,7 @@ import os
 import time
 
 from multimet.utils import storage
-from multimet.utils.http import download_http_file
+from multimet.utils.http import check_http_url_exists, download_http_file
 import numpy as np
 import pandas as pd
 import tqdm
@@ -48,6 +48,10 @@ import xarray as xr
 # NOAA PSL publishes CPC Global Unified Precipitation from 1979 onwards.
 DEFAULT_START_YEAR = 1979
 DEFAULT_END_YEAR = datetime.date.today().year
+
+# Maximum allowed upstream publication lag (in days) when extending to present
+# without an explicit --end_date.
+MAX_PUBLICATION_LAG_DAYS = 7
 
 # Standard CPC 0.5 deg coordinates (target Caravan MultiMet layout).
 CPC_LATS = np.linspace(-89.75, 89.75, 360, dtype=np.float32)
@@ -65,17 +69,54 @@ NOAA_PSL_URL_TEMPLATE = (
 )
 
 
+def _is_cached_cpc_netcdf_usable(
+    nc_path: str,
+    *,
+    required_end_date: pd.Timestamp | None = None,
+) -> bool:
+  """Returns True if ``nc_path`` exists and covers ``required_end_date``."""
+  if not os.path.exists(nc_path) or os.path.getsize(nc_path) <= 1024:
+    return False
+  if required_end_date is None:
+    return True
+  with xr.open_dataset(nc_path, decode_timedelta=False) as ds:
+    if "precip" not in ds or "time" not in ds:
+      return False
+    time_raw = pd.to_datetime(ds["time"].values)
+    dates = pd.DatetimeIndex(time_raw.strftime("%Y-%m-%d"))
+    if len(dates) == 0:
+      return False
+    precip_raw = np.asarray(ds["precip"].values, dtype=np.float32)
+    if precip_raw.ndim != 3:
+      return False
+    finite_per_day = np.isfinite(
+        np.where(precip_raw < 0, np.nan, precip_raw)
+    ).any(axis=(1, 2))
+    if not finite_per_day.any():
+      return False
+    last_valid_idx = int(np.where(finite_per_day)[0][-1])
+    last_valid_date = pd.Timestamp(dates[last_valid_idx]).normalize()
+    return bool(last_valid_date >= pd.Timestamp(required_end_date).normalize())
+
+
 def ensure_psl_cpc_netcdf(
     year: int,
     cache_dir: str,
     url_template: str = NOAA_PSL_URL_TEMPLATE,
+    *,
+    force_download: bool = False,
+    required_end_date: pd.Timestamp | None = None,
 ) -> str:
-  """Downloads and caches a yearly NOAA PSL CPC NetCDF file if not present.
+  """Downloads and caches a yearly NOAA PSL CPC NetCDF file if needed.
 
   Args:
     year: Four-digit calendar year to fetch.
     cache_dir: Local directory where downloaded NetCDF files are cached.
     url_template: URL template accepting ``{year}``.
+    force_download: If ``True``, always downloads a fresh copy from ``url_template``
+      even if a cached file exists in ``cache_dir``.
+    required_end_date: Optional date that a cached file must contain finite
+      precipitation data through in order to be reused without re-downloading.
 
   Returns:
     Path to the local ``precip.{year}.nc`` file.
@@ -87,7 +128,9 @@ def ensure_psl_cpc_netcdf(
   """
   os.makedirs(cache_dir, exist_ok=True)
   local_path = os.path.join(cache_dir, f"precip.{year}.nc")
-  if os.path.exists(local_path) and os.path.getsize(local_path) > 1024:
+  if not force_download and _is_cached_cpc_netcdf_usable(
+      local_path, required_end_date=required_end_date
+  ):
     return local_path
 
   url = url_template.format(year=year)
@@ -113,6 +156,8 @@ def process_cpc_netcdf_to_dataset(
     *,
     expected_year: int | None = None,
     trim_trailing_unpublished: bool = False,
+    reference_date: pd.Timestamp | None = None,
+    max_lag_days: int = MAX_PUBLICATION_LAG_DAYS,
 ) -> xr.Dataset | None:
   """Reads a yearly NOAA PSL NetCDF file and standardizes it to MultiMet schema.
 
@@ -132,11 +177,16 @@ def process_cpc_netcdf_to_dataset(
     target_end_date: Optional inclusive upper bound filter on dates.
     expected_year: Optional calendar year that all timestamps in ``nc_path``
       must belong to and cover.
-    trim_trailing_unpublished: If ``True`` (used only for the active current
-      calendar year) and the dataset contains valid dates followed by trailing
-      all-NaN slices (future pre-allocated dates in NOAA PSL's current-year
-      file), strips the trailing all-NaN dates prior to checking for interior
-      all-NaN days.
+    trim_trailing_unpublished: If ``True`` (used only within the active
+      publication window) and the dataset contains valid dates followed by
+      trailing all-NaN slices (future pre-allocated dates in NOAA PSL's active
+      yearly file), strips the trailing all-NaN dates prior to checking for
+      interior all-NaN days.
+    reference_date: Optional reference "today" date used to enforce
+      ``max_lag_days`` when ``trim_trailing_unpublished`` is ``True`` and
+      ``target_end_date`` is ``None``.
+    max_lag_days: Maximum allowed lag (in days) between ``reference_date`` and
+      the last finite date in an auto-trimmed active-year file.
 
   Returns:
     Standardized ``xarray.Dataset`` with dimensions
@@ -146,7 +196,7 @@ def process_cpc_netcdf_to_dataset(
   Raises:
     KeyError: If required variables or coordinates are missing.
     ValueError: If coordinate values, dimensions, date monotonicity, calendar
-      year coverage, or daily finite data checks fail.
+      year coverage, publication lag, or daily finite data checks fail.
   """
   with xr.open_dataset(nc_path, decode_timedelta=False) as ds:
     for required_key in ("precip", "lat", "lon", "time"):
@@ -226,6 +276,16 @@ def process_cpc_netcdf_to_dataset(
 
   finite_per_day = np.isfinite(precip_clean).any(axis=(1, 2))
   if not finite_per_day.any():
+    if (
+        trim_trailing_unpublished
+        and target_end_date is None
+        and reference_date is not None
+        and expected_year is not None
+    ):
+      ref_ts = pd.Timestamp(reference_date).normalize()
+      prev_year_end = pd.Timestamp(f"{expected_year - 1}-12-31")
+      if 0 <= int((ref_ts - prev_year_end).days) <= max_lag_days:
+        return None
     raise ValueError(
         f"CPC NetCDF {nc_path} contains no finite precipitation values on any "
         "day."
@@ -272,6 +332,24 @@ def process_cpc_netcdf_to_dataset(
         raise ValueError(
             f"CPC NetCDF {nc_path} ends at {dates[-1].strftime('%Y-%m-%d')}, "
             f"before end of year {req_end.strftime('%Y-%m-%d')}."
+        )
+
+  if (
+      trim_trailing_unpublished
+      and target_end_date is None
+      and reference_date is not None
+  ):
+    ref_ts = pd.Timestamp(reference_date).normalize()
+    inferred_year = expected_year if expected_year is not None else int(dates[-1].year)
+    year_end = pd.Timestamp(f"{inferred_year}-12-31")
+    if inferred_year == ref_ts.year or dates[-1] < year_end:
+      lag_days = int((ref_ts - dates[-1]).days)
+      if lag_days > max_lag_days:
+        raise ValueError(
+            f"CPC NetCDF {nc_path} latest valid date is "
+            f"{dates[-1].strftime('%Y-%m-%d')}, which lags reference date "
+            f"{ref_ts.strftime('%Y-%m-%d')} by {lag_days} days "
+            f"(max allowed lag: {max_lag_days} days)."
         )
 
   if target_start_date is not None or target_end_date is not None:
@@ -359,7 +437,10 @@ def _extract_single_year_task(
     end_date: pd.Timestamp | None,
     cleanup_cache: bool,
     year_starts: dict[int, pd.Timestamp],
-    current_year: int,
+    reference_date: pd.Timestamp,
+    max_lag_days: int,
+    force_download: bool,
+    store_exists: bool,
 ) -> tuple[int, xr.Dataset | None]:
   """Worker function to download and transform a single year of CPC data."""
   t0 = time.time()
@@ -368,17 +449,37 @@ def _extract_single_year_task(
       os.getpid(),
       year,
   )
+  y_start = year_starts.get(year, start_date)
+  required_cache_end: pd.Timestamp | None = None
+  if end_date is not None and end_date.year == year:
+    required_cache_end = end_date
+  elif year >= reference_date.year and end_date is None:
+    required_cache_end = reference_date
+  elif store_exists and y_start is not None:
+    required_cache_end = y_start
+
   nc_path = ensure_psl_cpc_netcdf(
-      year, cache_dir=cache_dir, url_template=url_template
+      year,
+      cache_dir=cache_dir,
+      url_template=url_template,
+      force_download=force_download,
+      required_end_date=required_cache_end,
   )
 
-  y_start = year_starts.get(year, start_date)
+  year_end = pd.Timestamp(f"{year}-12-31")
+  can_trim_tail = year == reference_date.year or (
+      end_date is None
+      and year == reference_date.year - 1
+      and 0 <= int((reference_date - year_end).days) <= max_lag_days
+  )
   ds_year = process_cpc_netcdf_to_dataset(
       nc_path,
       target_start_date=y_start,
       target_end_date=end_date,
       expected_year=year,
-      trim_trailing_unpublished=(year == current_year),
+      trim_trailing_unpublished=can_trim_tail,
+      reference_date=reference_date,
+      max_lag_days=max_lag_days,
   )
 
   if cleanup_cache and os.path.exists(nc_path):
@@ -398,7 +499,7 @@ def build_cpc_archive(
     target_zarr: str,
     *,
     start_year: int = DEFAULT_START_YEAR,
-    end_year: int = DEFAULT_END_YEAR,
+    end_year: int | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     project: str | None = None,
@@ -406,14 +507,18 @@ def build_cpc_archive(
     source_url_template: str = NOAA_PSL_URL_TEMPLATE,
     cleanup_cache: bool = False,
     overwrite: bool = False,
+    extend_archive: bool = False,
     num_workers: int | None = None,
+    reference_date: str | pd.Timestamp | None = None,
+    max_lag_days: int = MAX_PUBLICATION_LAG_DAYS,
 ) -> None:
   """Executes the NOAA CPC daily gridded archive build.
 
   Args:
     target_zarr: Destination Zarr store URI or local directory path.
     start_year: First NOAA PSL yearly file to ingest.
-    end_year: Last NOAA PSL yearly file to ingest (inclusive).
+    end_year: Last NOAA PSL yearly file to ingest (inclusive). Defaults to the
+      year of ``reference_date`` (current calendar year).
     start_date: Optional inclusive lower bound date filter (YYYY-MM-DD).
     end_date: Optional inclusive upper bound date filter (YYYY-MM-DD).
     project: Optional GCP project for GCS billing/authentication.
@@ -422,8 +527,25 @@ def build_cpc_archive(
     source_url_template: Upstream URL template accepting ``{year}``.
     cleanup_cache: Whether to delete cached NetCDF files after ingestion.
     overwrite: Whether to delete and rebuild an existing target store.
+    extend_archive: If ``True``, requires the target archive to exist and forces
+      fresh downloads of all required yearly files without using cached files.
     num_workers: Number of parallel worker processes.
+    reference_date: Optional reference "today" date (defaults to current local
+      date) used for active-year and early-January rollover lag bounds.
+    max_lag_days: Maximum allowed publication lag (in days) when ``end_date`` is
+      omitted.
   """
+  if extend_archive and overwrite:
+    raise ValueError("--extend_archive and --overwrite cannot be used together.")
+
+  ref_ts = (
+      pd.Timestamp(reference_date).normalize()
+      if reference_date is not None
+      else pd.Timestamp(datetime.date.today())
+  )
+  if end_year is None:
+    end_year = int(ref_ts.year)
+
   if end_year < start_year:
     raise ValueError(
         f"end_year ({end_year}) must be >= start_year ({start_year})."
@@ -434,12 +556,17 @@ def build_cpc_archive(
           target_zarr, project=project, overwrite=overwrite
       )
   )
+  if extend_archive and not store_exists:
+    raise FileNotFoundError(
+        f"Cannot run --extend_archive: target store {full_target_url} does not "
+        "exist."
+    )
 
   if num_workers is None or num_workers <= 0:
     num_workers = min(32, os.cpu_count() or 4)
 
-  t_start_filter = pd.Timestamp(start_date) if start_date else None
-  t_end_filter = pd.Timestamp(end_date) if end_date else None
+  t_start_filter = pd.Timestamp(start_date).normalize() if start_date else None
+  t_end_filter = pd.Timestamp(end_date).normalize() if end_date else None
   if (
       t_start_filter is not None
       and t_end_filter is not None
@@ -491,18 +618,26 @@ def build_cpc_archive(
     year_starts[resume_start.year] = resume_start
     is_first_write = False
 
-  current_year = datetime.date.today().year
   total_days_processed = 0
   t0_total = time.time()
+
+  def _is_in_rollover_window(y: int) -> bool:
+    prev_dec31 = pd.Timestamp(f"{y - 1}-12-31")
+    return (
+        t_end_filter is None
+        and y == ref_ts.year
+        and 0 <= int((ref_ts - prev_dec31).days) <= max_lag_days
+    )
 
   def _handle_year_result(y: int, ds_year: xr.Dataset | None) -> int:
     nonlocal is_first_write, last_written_date
     if ds_year is None:
       if (
-          store_exists
-          and y == years[-1]
+          y == years[-1]
           and last_written_date is not None
-          and y == last_written_date.year
+          and t_end_filter is None
+          and int((ref_ts - last_written_date).days) <= max_lag_days
+          and (y == last_written_date.year or _is_in_rollover_window(y))
       ):
         logging.info(
             "Year %d already up to date through %s.",
@@ -538,6 +673,53 @@ def build_cpc_archive(
   with storage.managed_cache_dir(
       cache_dir, cleanup_cache, prefix="cpc_cache_"
   ) as effective_cache_dir:
+    if (
+        years
+        and _is_in_rollover_window(years[-1])
+        and (len(years) > 1 or last_written_date is not None)
+    ):
+      rollover_year = years[-1]
+      local_rollover = os.path.join(
+          effective_cache_dir, f"precip.{rollover_year}.nc"
+      )
+      has_local_rollover = (
+          not extend_archive
+          and _is_cached_cpc_netcdf_usable(local_rollover)
+      )
+      if not has_local_rollover:
+        rollover_url = source_url_template.format(year=rollover_year)
+        if not check_http_url_exists(
+            rollover_url,
+            headers={"User-Agent": "OpenMultiMet/1.1 (Google Research)"},
+            resource_label=f"NOAA PSL CPC NetCDF for year {rollover_year}",
+        ):
+          logging.info(
+              "NOAA PSL file for new year %d is not published yet (within "
+              "%d-day rollover window of %s).",
+              rollover_year,
+              max_lag_days,
+              ref_ts.strftime("%Y-%m-%d"),
+          )
+          years = years[:-1]
+
+    if not years:
+      if (
+          last_written_date is not None
+          and int((ref_ts - last_written_date).days) <= max_lag_days
+      ):
+        logging.info(
+            "Store already up to date through %s within %d-day rollover "
+            "window.",
+            last_written_date.strftime("%Y-%m-%d"),
+            max_lag_days,
+        )
+        return
+      raise FileNotFoundError(
+          f"NOAA PSL CPC NetCDF for year {ref_ts.year} is not published and "
+          f"existing archive date {last_written_date} lags "
+          f"{ref_ts.strftime('%Y-%m-%d')} by more than {max_lag_days} days."
+      )
+
     worker_fn = functools.partial(
         _extract_single_year_task,
         cache_dir=effective_cache_dir,
@@ -546,7 +728,10 @@ def build_cpc_archive(
         end_date=t_end_filter,
         cleanup_cache=cleanup_cache,
         year_starts=year_starts,
-        current_year=current_year,
+        reference_date=ref_ts,
+        max_lag_days=max_lag_days,
+        force_download=extend_archive,
+        store_exists=store_exists,
     )
     if num_workers > 1 and len(years) > 1:
       mp_ctx = mp.get_context("spawn")
@@ -637,6 +822,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
       help="Delete and rebuild the target store instead of resuming it.",
   )
   parser.add_argument(
+      "--extend_archive",
+      "--extend-archive",
+      dest="extend_archive",
+      action="store_true",
+      help=(
+          "Extend an existing archive from its last date to the latest "
+          "published data, ignoring any pre-cached files."
+      ),
+  )
+  parser.add_argument(
       "--num_workers",
       type=int,
       default=min(32, os.cpu_count() or 4),
@@ -662,6 +857,7 @@ def main(argv: Sequence[str] | None = None) -> None:
       source_url_template=args.source_url_template,
       cleanup_cache=args.cleanup_cache,
       overwrite=args.overwrite,
+      extend_archive=args.extend_archive,
       num_workers=args.num_workers,
   )
 

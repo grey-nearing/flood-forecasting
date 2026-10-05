@@ -400,3 +400,89 @@ class TestCMRQuery:
     assert urls == [
         "https://gpm1.gesdisc.eosdis.nasa.gov/data/3B-DAY-E.V07B.nc4"
     ]
+
+  def test_gesdisc_find_latest_published_date_steps_back_within_7_days(
+      self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    def fake_query(
+        short_name: str, date: pd.Timestamp, **kwargs: object
+    ) -> list[str]:
+      if pd.Timestamp(date).normalize() <= pd.Timestamp("2026-01-08"):
+        return [
+            f"https://gpm1.gesdisc.eosdis.nasa.gov/3B-DAY-E.{date.strftime('%Y%m%d')}.nc4"
+        ]
+      return []
+
+    monkeypatch.setattr(imerg_module, "query_cmr_granules", fake_query)
+    source = imerg_module.GESDISCImergSource(cache_dir=str(tmp_path))
+    latest = source.find_latest_published_date(
+        pd.Timestamp("2026-01-10"), max_lag_days=7
+    )
+    assert latest == pd.Timestamp("2026-01-08")
+
+  def test_gesdisc_find_latest_published_date_raises_when_lag_exceeds_7_days(
+      self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    monkeypatch.setattr(
+        imerg_module, "query_cmr_granules", lambda *a, **k: []
+    )
+    source = imerg_module.GESDISCImergSource(cache_dir=str(tmp_path))
+    with pytest.raises(FileNotFoundError, match="max allowed lag: 7 days"):
+      source.find_latest_published_date(
+          pd.Timestamp("2026-01-10"), max_lag_days=7
+      )
+
+  def test_gesdisc_force_download_replaces_cached_file(
+      self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    dt = pd.Timestamp("2024-06-01")
+    stale_path = tmp_path / "3B-DAY-E.20240601-S000000.V07B.nc4"
+    write_synthetic_imerg_nc4(
+        stale_path,
+        date="2024-06-01",
+        fill_value=1.0,
+    )
+    fresh_source_dir = tmp_path / "fresh"
+    fresh_source_dir.mkdir()
+    fresh_file = fresh_source_dir / "3B-DAY-E.20240601-S000000.V07B.nc4"
+    write_synthetic_imerg_nc4(
+        fresh_file,
+        date="2024-06-01",
+        fill_value=42.0,
+    )
+
+    monkeypatch.setattr(
+        imerg_module,
+        "query_cmr_granules",
+        lambda *a, **k: [
+            "https://gpm1.gesdisc.eosdis.nasa.gov/3B-DAY-E.20240601-S000000.V07B.nc4"
+        ],
+    )
+
+    def fake_download(
+        url: str, dest_path: str, **kwargs: object
+    ) -> str:
+      Path(dest_path).write_bytes(fresh_file.read_bytes())
+      return dest_path
+
+    monkeypatch.setattr(imerg_module, "download_daily_imerg", fake_download)
+
+    source = imerg_module.GESDISCImergSource(
+        cache_dir=str(tmp_path), force_download=True
+    )
+    assert stale_path.exists()
+    grid = source.extract_date(dt)
+    assert float(np.nanmean(grid)) == pytest.approx(42.0)
+
+  def test_cli_parses_extend_archive_flags(self) -> None:
+    parser = imerg_module.build_arg_parser()
+    args_u = parser.parse_args(
+        ["--target_zarr", "/tmp/imerg.zarr", "--extend_archive"]
+    )
+    assert args_u.extend_archive is True
+
+    args_h = parser.parse_args(
+        ["--target_zarr", "/tmp/imerg.zarr", "--extend-archive"]
+    )
+    assert args_h.extend_archive is True
+
