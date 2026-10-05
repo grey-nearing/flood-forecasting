@@ -201,7 +201,7 @@ def test_evaluate_synchronizes_configured_cuda_device():
     )
 
     class _FakeDataset:
-        _basins = ['basin_A']
+        loaded_basins = ['basin_A']
 
     batch = {
         'basin_index': torch.tensor([0, 0]),

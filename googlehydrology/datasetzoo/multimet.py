@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import functools
 import itertools
 import logging
@@ -338,9 +339,127 @@ class Multimet(Dataset):
             self.scaler.save()
 
         LOGGER.debug('scale data')
-        self._dataset = self.scaler.scale(self._dataset)
+        # `_dataset_all` holds the (still lazy) graph for every basin. The
+        # per-basin-set materialization lives in `load_basins`, so that a
+        # caller can later swap which basins are resident without rebuilding
+        # the dataset. Loading every basin remains the default, and happens
+        # just below unless the caller has opted into driving it themselves.
+        self._dataset_all = self.scaler.scale(self._dataset)
+        del self._dataset
 
-        if not cfg.lazy_load:
+        if self.defers_basin_load:
+            # The caller drives which basins are resident -- the trainer
+            # rotates a window per epoch, the tester loads the basins it is
+            # about to evaluate. Materializing everything here first would
+            # incur exactly the peak memory `limit_n_basins` exists to avoid,
+            # so skip it; `load_basins()` must be called before this dataset
+            # is sampled. Note the scaler above was still computed over
+            # *every* basin, so normalization statistics remain global.
+            LOGGER.debug(
+                '[limit_n_basins=%d] deferring initial basin load (%s)',
+                self._cfg.limit_n_basins,
+                self._period,
+            )
+        else:
+            self.load_basins()
+
+        LOGGER.debug('forecast dataset init complete (%s)', self._period)
+
+    @property
+    def defers_basin_load(self) -> bool:
+        """Whether `__init__` leaves the basin set for the caller to load.
+
+        Gated on `limit_n_basins` so that runs which do not opt in keep the
+        original eager behaviour exactly. When it is on, *every* period
+        defers, including validation and test: the validation pool is
+        typically as large as the training pool, and holding all of it for
+        the lifetime of the run defeats the point of bounding the training
+        side.
+
+        Callers that defer must call `load_basins()` before sampling.
+        """
+        return self._cfg.limit_n_basins > 0
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether a basin set is currently materialized."""
+        return hasattr(self, '_dataset')
+
+    @property
+    def full_dataset(self) -> xr.Dataset:
+        """The scaled graph for every configured basin, always available.
+
+        Unlike `_dataset` this exists regardless of what is loaded, and it
+        stays lazy: reading a small slice of it (a single variable over a
+        date window, say) costs only that slice, not a materialization of
+        the whole pool. That is what lets the tester decide which basins to
+        exclude before it commits to loading any of them.
+        """
+        return self._dataset_all
+
+    @property
+    def loaded_basins(self) -> list[str]:
+        """The basins currently materialized, in sample-index order.
+
+        This is the index space of the positional basin codes stored in
+        `_sample_index` and handed out as `sample['basin_index']`, so it is
+        the only correct list to resolve those codes against. It is *not*
+        necessarily `self._basins`: `_basins` is the full configured basin
+        list and never changes, whereas this shrinks to the subset passed to
+        `load_basins`.
+        """
+        self._check_loaded()
+        return self._loaded_basins
+
+    def unload_basins(self) -> None:
+        """Release the materialized basin set, keeping the lazy graph.
+
+        Safe to call when nothing is loaded. After this returns, the dataset
+        is unusable until `load_basins` is called again -- `__len__` and
+        `__getitem__` will raise.
+        """
+        for attribute in (
+            '_dataset',
+            '_loaded_basins',
+            '_sample_index',
+            '_num_samples',
+            '_per_basin_target_stds',
+        ):
+            # `suppress` so that one missing attribute does not strand the
+            # rest; `unload_basins` must be callable from any state.
+            with contextlib.suppress(AttributeError):
+                delattr(self, attribute)
+
+        # Must be cleared alongside `_dataset`: entries are keyed on
+        # `id(dataset)` and hold references into the materialized arrays, so
+        # keeping them would both pin the memory we are trying to free and
+        # risk a stale hit if a new dataset reused the same address.
+        self._data_cache: dict[str, xr.DataArray] = {}
+
+        memory.release()
+
+    def load_basins(self, basins: list[str] | None = None) -> None:
+        """Materialize `basins` (default: all of them) for sampling.
+
+        Replaces whatever was previously loaded.
+        """
+        self.unload_basins()
+
+        if basins is None:
+            self._dataset = self._dataset_all
+        else:
+            LOGGER.debug('[load %d basins] (%s)', len(basins), self._period)
+            self._dataset = self._dataset_all.sel(basin=basins)
+
+        # Read back from the coordinate rather than trusting `basins`: this is
+        # the exact axis `_create_sample_index` below numbers its positional
+        # basin codes against, so deriving it any other way reintroduces the
+        # possibility of the two disagreeing.
+        self._loaded_basins = [
+            str(basin) for basin in self._dataset.basin.values
+        ]
+
+        if not self._cfg.lazy_load:
             LOGGER.debug('[eager load] compute dataset')
             (self._dataset,) = dask.compute(self._dataset)
             memory.release()
@@ -365,7 +484,7 @@ class Multimet(Dataset):
         # TODO (future) :: Find a better way to decide whether to calculate these. At least keep a list of
         # losses that require them somewhere like `training.__init__.py`. Perhaps simply always calculate.
         self._per_basin_target_stds = None
-        if cfg.loss.lower() in ['nse']:
+        if self._cfg.loss.lower() in ['nse']:
             LOGGER.debug('create per_basin_target_stds')
             self._per_basin_target_stds = self._dataset[
                 self._target_features
@@ -378,11 +497,17 @@ class Multimet(Dataset):
                 skipna=True,
             )
 
-        self._data_cache: dict[str, xr.DataArray] = {}
-
-        LOGGER.debug('forecast dataset init complete (%s)', self._period)
+    def _check_loaded(self) -> None:
+        if not self.is_loaded:
+            raise RuntimeError(
+                'No basins are loaded. `load_basins()` must be called before '
+                'the dataset can be sampled (it is called by `__init__`, so '
+                'this means `unload_basins()` was called and not followed by '
+                'a matching `load_basins()`).'
+            )
 
     def __len__(self) -> int:
+        self._check_loaded()
         return self._num_samples
 
     @property
