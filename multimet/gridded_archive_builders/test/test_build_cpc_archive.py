@@ -23,6 +23,7 @@ from multimet.gridded_archive_builders.build_cpc_archive import (
     CPC_LATS,
     CPC_LONS,
     CPC_VARIABLE,
+    build_arg_parser,
     ensure_psl_cpc_netcdf,
     process_cpc_netcdf_to_dataset,
     write_batch_to_zarr,
@@ -412,3 +413,120 @@ class TestEnsurePslNetcdf:
 
     with pytest.raises(FileNotFoundError, match="HTTP 404"):
       ensure_psl_cpc_netcdf(2099, cache_dir=str(psl_cache))
+
+  def test_stale_cached_file_redownloaded_when_required_end_date_is_newer(
+      self,
+      sample_year: Path,
+      psl_cache: Path,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    assert sample_year.exists()
+    download_calls: list[str] = []
+
+    def fake_download(url: str, dest_path: str, **kwargs: object) -> str:
+      download_calls.append(url)
+      return dest_path
+
+    monkeypatch.setattr(
+        "multimet.gridded_archive_builders.build_cpc_archive.download_http_file",
+        fake_download,
+    )
+
+    # sample_year ends 2020-01-03; requiring 2020-01-05 must invalidate cache.
+    ensure_psl_cpc_netcdf(
+        2020,
+        cache_dir=str(psl_cache),
+        required_end_date=pd.Timestamp("2020-01-05"),
+    )
+    assert len(download_calls) == 1
+
+  def test_force_download_bypasses_valid_cached_file(
+      self,
+      sample_year: Path,
+      psl_cache: Path,
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+    assert sample_year.exists()
+    download_calls: list[str] = []
+
+    def fake_download(url: str, dest_path: str, **kwargs: object) -> str:
+      download_calls.append(url)
+      return dest_path
+
+    monkeypatch.setattr(
+        "multimet.gridded_archive_builders.build_cpc_archive.download_http_file",
+        fake_download,
+    )
+
+    ensure_psl_cpc_netcdf(
+        2020,
+        cache_dir=str(psl_cache),
+        force_download=True,
+        required_end_date=pd.Timestamp("2020-01-02"),
+    )
+    assert len(download_calls) == 1
+
+
+class TestPublicationLagAndCli:
+  """7-day publication lag enforcement and CLI --extend_archive parsing."""
+
+  def test_trailing_unpublished_lag_within_7_days_succeeds(
+      self, sample_year: Path
+  ) -> None:
+    dates = pd.date_range("2026-01-01", "2026-01-10", freq="1D")
+    data = np.full((len(dates), 360, 720), 2.5, dtype=np.float32)
+    data[3:] = np.nan  # Last finite day is 2026-01-03
+    source = xr.Dataset(
+        data_vars={"precip": (["time", "lat", "lon"], data)},
+        coords={"time": dates, "lat": PSL_LATS, "lon": PSL_LONS},
+    )
+    path = sample_year.parent / "precip.2026.nc"
+    source.to_netcdf(path)
+    source.close()
+
+    dataset = process_cpc_netcdf_to_dataset(
+        str(path),
+        trim_trailing_unpublished=True,
+        reference_date=pd.Timestamp("2026-01-10"),
+        max_lag_days=7,
+    )
+    assert dataset is not None
+    assert len(dataset["time"]) == 3
+    assert pd.Timestamp(dataset["time"].values[-1]) == pd.Timestamp(
+        "2026-01-03"
+    )
+
+  def test_trailing_unpublished_lag_exceeding_7_days_raises_value_error(
+      self, sample_year: Path
+  ) -> None:
+    dates = pd.date_range("2026-01-01", "2026-01-15", freq="1D")
+    data = np.full((len(dates), 360, 720), 2.5, dtype=np.float32)
+    data[3:] = np.nan  # Last finite day is 2026-01-03 (9 days before Jan 12)
+    source = xr.Dataset(
+        data_vars={"precip": (["time", "lat", "lon"], data)},
+        coords={"time": dates, "lat": PSL_LATS, "lon": PSL_LONS},
+    )
+    path = sample_year.parent / "precip.2026.nc"
+    source.to_netcdf(path)
+    source.close()
+
+    with pytest.raises(ValueError, match="max allowed lag: 7 days"):
+      process_cpc_netcdf_to_dataset(
+          str(path),
+          trim_trailing_unpublished=True,
+          reference_date=pd.Timestamp("2026-01-12"),
+          max_lag_days=7,
+      )
+
+  def test_cli_parses_extend_archive_flags(self) -> None:
+    parser = build_arg_parser()
+    args_underscore = parser.parse_args(
+        ["--target_zarr", "/tmp/cpc.zarr", "--extend_archive"]
+    )
+    assert args_underscore.extend_archive is True
+
+    args_hyphen = parser.parse_args(
+        ["--target_zarr", "/tmp/cpc.zarr", "--extend-archive"]
+    )
+    assert args_hyphen.extend_archive is True
+

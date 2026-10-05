@@ -71,6 +71,7 @@ DEFAULT_GESDISC_URL = (
 IMERG_HHR_SHORT_NAME = "GPM_3IMERGHHE"
 IMERG_DAILY_SHORT_NAME = "GPM_3IMERGDE"
 DEFAULT_START_DATE = "2000-06-01"
+MAX_PUBLICATION_LAG_DAYS = 7
 
 LAT_COUNT = 1800
 LON_COUNT = 3600
@@ -121,6 +122,7 @@ __all__ = [
     "LAT_COUNT",
     "LON_COUNT",
     "LocalImergSource",
+    "MAX_PUBLICATION_LAG_DAYS",
     "build_arg_parser",
     "build_batch_dataset",
     "build_imerg_archive",
@@ -143,9 +145,14 @@ def download_daily_imerg(
     url: str,
     dest_path: str,
     session: requests.Session | None = None,
+    force_download: bool = False,
 ) -> str:
   """Downloads a daily IMERG NetCDF-4 file from NASA GES DISC."""
-  if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1024:
+  if (
+      not force_download
+      and os.path.exists(dest_path)
+      and os.path.getsize(dest_path) > 1024
+  ):
     return dest_path
 
   active_session = session if session is not None else EarthdataSession()
@@ -330,10 +337,12 @@ class GESDISCImergSource:
       token: str | None = None,
       netrc_path: str | None = None,
       cleanup_cache: bool = False,
+      force_download: bool = False,
   ):
     self.cache_dir = cache_dir
     self.base_url = base_url.rstrip("/")
     self.cleanup_cache = cleanup_cache
+    self.force_download = force_download
     self.session = EarthdataSession(
         username=username,
         password=password,
@@ -349,15 +358,19 @@ class GESDISCImergSource:
       self.collection_short_name = tail or IMERG_DAILY_SHORT_NAME
       self.version = None
 
-  def _resolve_daily_granule_url(self, date: pd.Timestamp) -> str:
-    """Discovers the exact daily NetCDF-4 URL for ``date`` via NASA CMR."""
+  def _query_daily_granule_urls(self, date: pd.Timestamp) -> list[str]:
+    """Queries NASA CMR for daily NetCDF-4 granule URLs on ``date``."""
     cmr_kwargs: dict[str, object] = {}
     if self.version is not None:
       cmr_kwargs["version"] = self.version
     cmr_urls = query_cmr_granules(
         self.collection_short_name, date, **cmr_kwargs  # type: ignore[arg-type]
     )
-    nc_urls = [u for u in cmr_urls if u.endswith((".nc4", ".nc"))]
+    return [u for u in cmr_urls if u.endswith((".nc4", ".nc"))]
+
+  def _resolve_daily_granule_url(self, date: pd.Timestamp) -> str:
+    """Discovers the exact daily NetCDF-4 URL for ``date`` via NASA CMR."""
+    nc_urls = self._query_daily_granule_urls(date)
     if not nc_urls:
       raise FileNotFoundError(
           f"No published IMERG V07 daily NetCDF-4 granule found in NASA CMR "
@@ -371,6 +384,31 @@ class GESDISCImergSource:
       )
     return nc_urls[0]
 
+  def find_latest_published_date(
+      self,
+      reference_date: pd.Timestamp,
+      max_lag_days: int = MAX_PUBLICATION_LAG_DAYS,
+  ) -> pd.Timestamp:
+    """Finds the most recent published daily IMERG granule within ``max_lag_days``."""
+    ref_day = pd.Timestamp(reference_date).normalize()
+    for offset in range(max_lag_days + 1):
+      candidate = ref_day - pd.Timedelta(days=offset)
+      nc_urls = self._query_daily_granule_urls(candidate)
+      if len(nc_urls) > 1:
+        raise ValueError(
+            f"Multiple daily IMERG NetCDF-4 granules returned by NASA CMR for "
+            f"{candidate.strftime('%Y-%m-%d')}: {nc_urls}"
+        )
+      if len(nc_urls) == 1:
+        return candidate
+    earliest = (ref_day - pd.Timedelta(days=max_lag_days)).strftime("%Y-%m-%d")
+    raise FileNotFoundError(
+        f"No published IMERG V07 daily NetCDF-4 granule found in NASA CMR "
+        f"between {earliest} and {ref_day.strftime('%Y-%m-%d')} "
+        f"(max allowed lag: {max_lag_days} days; "
+        f"collection={self.collection_short_name}, version={self.version})."
+    )
+
   def extract_date(self, date: pd.Timestamp) -> np.ndarray:
     """Downloads and parses the daily IMERG NetCDF-4 file for ``date``."""
     date_str = date.strftime("%Y%m%d")
@@ -382,6 +420,11 @@ class GESDISCImergSource:
         for fname in sorted(os.listdir(self.cache_dir))
         if fname.endswith((".nc4", ".nc")) and token_re.search(fname)
     ]
+    if self.force_download:
+      for stale_path in cached_matches:
+        if os.path.exists(stale_path):
+          os.remove(stale_path)
+      cached_matches = []
     if len(cached_matches) > 1:
       raise ValueError(
           f"Multiple conflicting cached IMERG files found for "
@@ -393,7 +436,10 @@ class GESDISCImergSource:
       target_url = self._resolve_daily_granule_url(date)
       dest_path = os.path.join(self.cache_dir, os.path.basename(target_url))
       nc_path = download_daily_imerg(
-          target_url, dest_path, session=self.session
+          target_url,
+          dest_path,
+          session=self.session,
+          force_download=self.force_download,
       )
 
     grid = parse_imerg_netcdf_to_grid(nc_path, expected_date=date)
@@ -439,6 +485,46 @@ class LocalImergSource:
       if os.path.isdir(d) and d not in seen:
         seen.append(d)
     return seen
+
+  def _has_date(self, date: pd.Timestamp) -> bool:
+    """Returns True if local files for ``date`` exist in ``self.local_dir``."""
+    date_str = date.strftime("%Y%m%d")
+    token_re = _date_token_regex(date_str)
+    candidate_dirs = self._candidate_dirs(date)
+    if self.local_format == "nc4":
+      for d in candidate_dirs:
+        for fname in sorted(os.listdir(d)):
+          if fname.endswith((".nc4", ".nc")) and token_re.search(fname):
+            return True
+      return False
+    for d in candidate_dirs:
+      h5_matches = [
+          fname
+          for fname in sorted(os.listdir(d))
+          if fname.endswith((".RT-H5", ".HDF5", ".h5"))
+          and token_re.search(fname)
+      ]
+      if len(h5_matches) == 48:
+        return True
+    return False
+
+  def find_latest_published_date(
+      self,
+      reference_date: pd.Timestamp,
+      max_lag_days: int = MAX_PUBLICATION_LAG_DAYS,
+  ) -> pd.Timestamp:
+    """Finds the most recent local IMERG date within ``max_lag_days``."""
+    ref_day = pd.Timestamp(reference_date).normalize()
+    for offset in range(max_lag_days + 1):
+      candidate = ref_day - pd.Timedelta(days=offset)
+      if self._has_date(candidate):
+        return candidate
+    earliest = (ref_day - pd.Timedelta(days=max_lag_days)).strftime("%Y-%m-%d")
+    raise FileNotFoundError(
+        f"No local IMERG ({self.local_format}) data found in {self.local_dir} "
+        f"between {earliest} and {ref_day.strftime('%Y-%m-%d')} "
+        f"(max allowed lag: {max_lag_days} days)."
+    )
 
   def extract_date(self, date: pd.Timestamp) -> np.ndarray:
     """Extracts the daily IMERG grid for ``date`` in ``self.local_format``."""
@@ -601,11 +687,13 @@ def build_imerg_archive(
     cleanup_cache: bool = False,
     overwrite: bool = False,
     in_place: bool = False,
+    extend_archive: bool = False,
     local_dir: str | None = None,
     earthdata_username: str | None = None,
     earthdata_password: str | None = None,
     earthdata_token: str | None = None,
     netrc_path: str | None = None,
+    reference_date: str | pd.Timestamp | None = None,
 ) -> None:
   """Builds or updates the unified IMERG daily native-resolution Zarr archive."""
   if source_type not in ("gesdisc", "local"):
@@ -616,46 +704,26 @@ def build_imerg_archive(
     source_type = "local"
   if source_type == "local" and not local_dir:
     raise ValueError("--local_dir must be provided when --source=local.")
+  if extend_archive and overwrite:
+    raise ValueError("--extend_archive and --overwrite cannot be used together.")
 
   full_target_url, _, store_exists, has_consolidated, mapper = (
       storage.inspect_zarr_store(
           target_zarr, project=project, overwrite=overwrite
       )
   )
-
-  if end_date is None:
-    end_date = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-
-  if pd.Timestamp(end_date) < pd.Timestamp(start_date):
-    raise ValueError(
-        f"end_date ({end_date}) must be >= start_date ({start_date})."
+  if extend_archive and not store_exists:
+    raise FileNotFoundError(
+        f"Cannot run --extend_archive: target store {full_target_url} does not "
+        "exist."
     )
 
-  requested_dates = pd.date_range(start_date, end_date, freq="1D")
-  date_to_idx: dict[str, int] = {}
-  in_place_dates = pd.DatetimeIndex([])
-  append_dates = requested_dates
-
-  if in_place:
-    if not store_exists:
-      raise ValueError(
-          f"Cannot run --in_place: target store {full_target_url} does not "
-          "exist."
-      )
-    time_pd = storage.decode_zarr_time_index(mapper)
-    date_to_idx = {t.strftime("%Y-%m-%d"): i for i, t in enumerate(time_pd)}
-    in_place_dates = requested_dates
-    append_dates = pd.DatetimeIndex([])
-  elif store_exists:
-    append_dates, date_to_idx = storage.plan_archive_resume(
-        mapper, requested_dates, has_consolidated=has_consolidated
-    )
-    if len(append_dates) == 0:
-      logging.info(
-          "Store already contains all valid dates up to %s. Nothing to do!",
-          end_date,
-      )
-      return
+  if reference_date is not None:
+    reference_ts = pd.Timestamp(reference_date).normalize()
+  else:
+    reference_ts = pd.Timestamp(
+        datetime.date.today() - datetime.timedelta(days=1)
+    ).normalize()
 
   with storage.managed_cache_dir(
       cache_dir, cleanup_cache, prefix="imerg_cache_"
@@ -681,7 +749,46 @@ def build_imerg_archive(
           token=earthdata_token,
           netrc_path=netrc_path,
           cleanup_cache=cleanup_cache,
+          force_download=(extend_archive or in_place or store_exists),
       )
+
+    if end_date is None:
+      latest_published = source.find_latest_published_date(
+          reference_ts, max_lag_days=MAX_PUBLICATION_LAG_DAYS
+      )
+      end_date = latest_published.strftime("%Y-%m-%d")
+      logging.info("Resolved latest published IMERG date: %s", end_date)
+
+    if pd.Timestamp(end_date) < pd.Timestamp(start_date):
+      raise ValueError(
+          f"end_date ({end_date}) must be >= start_date ({start_date})."
+      )
+
+    requested_dates = pd.date_range(start_date, end_date, freq="1D")
+    date_to_idx: dict[str, int] = {}
+    in_place_dates = pd.DatetimeIndex([])
+    append_dates = requested_dates
+
+    if in_place:
+      if not store_exists:
+        raise ValueError(
+            f"Cannot run --in_place: target store {full_target_url} does not "
+            "exist."
+        )
+      time_pd = storage.decode_zarr_time_index(mapper)
+      date_to_idx = {t.strftime("%Y-%m-%d"): i for i, t in enumerate(time_pd)}
+      in_place_dates = requested_dates
+      append_dates = pd.DatetimeIndex([])
+    elif store_exists:
+      append_dates, date_to_idx = storage.plan_archive_resume(
+          mapper, requested_dates, has_consolidated=has_consolidated
+      )
+      if len(append_dates) == 0:
+        logging.info(
+            "Store already contains all valid dates up to %s. Nothing to do!",
+            end_date,
+        )
+        return
 
     is_first_write = not store_exists
 
@@ -761,7 +868,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
       "--end_date",
       type=str,
       default=None,
-      help="Last date to ingest (YYYY-MM-DD, default yesterday UTC).",
+      help=(
+          "Last date to ingest (YYYY-MM-DD, default latest published within 7"
+          " days of yesterday UTC)."
+      ),
   )
   parser.add_argument(
       "--source",
@@ -831,6 +941,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
       help="Rewrite dates that already exist in the target store in place.",
   )
   parser.add_argument(
+      "--extend_archive",
+      "--extend-archive",
+      dest="extend_archive",
+      action="store_true",
+      help=(
+          "Extend an existing archive in place without reusing pre-cached "
+          "files; fails if the target store does not already exist."
+      ),
+  )
+  parser.add_argument(
       "--local_dir",
       type=str,
       default=None,
@@ -884,6 +1004,7 @@ def main(argv: Sequence[str] | None = None) -> None:
       cleanup_cache=args.cleanup_cache,
       overwrite=args.overwrite,
       in_place=args.in_place,
+      extend_archive=args.extend_archive,
       local_dir=args.local_dir,
       earthdata_username=args.earthdata_username,
       earthdata_password=args.earthdata_password,

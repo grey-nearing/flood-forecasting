@@ -55,9 +55,10 @@ build-cpc-archive \
   --end_year 2022 \
   --cleanup_cache
 
-# Run the same command later to append newly published days
+# Extend an existing archive with newly published days (ignores pre-cached files)
 build-cpc-archive \
   --target_zarr ./data/cpc_daily.zarr \
+  --extend_archive \
   --cleanup_cache
 ```
 
@@ -67,10 +68,11 @@ build-cpc-archive \
 * `--start_year`: First year to download (integer, default: `1979`).
 * `--end_year`: Last year to download, inclusive (integer, default: current calendar year).
 * `--start_date`: Optional start date filter (`YYYY-MM-DD`) if you only want dates on or after a specific day inside `--start_year`.
-* `--end_date`: Optional end date filter (`YYYY-MM-DD`) if you only want dates on or before a specific day inside `--end_year`.
+* `--end_date`: Optional end date filter (`YYYY-MM-DD`) if you only want dates on or before a specific day inside `--end_year`. When omitted, the active year is extended up to the latest published day on NOAA PSL (allowing up to 7 days of upstream publication lag while rejecting any interior date gaps).
 * `--cache_dir`: Local folder used to store downloaded NOAA NetCDF files before processing. If omitted, a temporary folder is created and removed automatically when the command finishes.
 * `--cleanup_cache`: Deletes each downloaded NetCDF file as soon as it is written to the Zarr archive. Recommended to save disk space.
 * `--overwrite`: Deletes the existing Zarr archive at `--target_zarr` and rebuilds it from scratch. If not set, the tool resumes and appends only new dates.
+* `--extend_archive` (or `--extend-archive`): Extends an existing archive in place without reusing any pre-cached NetCDF files; raises an error if `--target_zarr` does not already exist.
 * `--num_workers`: Number of years to download and process in parallel (integer, default: number of CPU cores up to `32`). Set to `1` to run one year at a time.
 * `--project`: Google Cloud project ID used for billing and authentication when `--target_zarr` is a `gs://` bucket (default: `None`).
 * `--source_url_template`: Custom download URL template containing `{year}` (default: official NOAA PSL URL).
@@ -91,6 +93,12 @@ build-imerg-archive \
   --end_date 2024-01-10 \
   --cleanup_cache
 
+# Extend an existing archive up to the latest published day on NASA GES DISC
+build-imerg-archive \
+  --target_zarr ./data/imerg_daily.zarr \
+  --extend_archive \
+  --cleanup_cache
+
 # Build from a local directory of pre-downloaded V07 .nc4 files
 build-imerg-archive \
   --target_zarr ./data/imerg_daily.zarr \
@@ -105,7 +113,7 @@ build-imerg-archive \
 
 * `--target_zarr` *(required)*: Path where the output Zarr archive is saved (local path or `gs://` URI).
 * `--start_date`: First date to include in `YYYY-MM-DD` format (default: `2000-06-01`).
-* `--end_date`: Last date to include in `YYYY-MM-DD` format (default: yesterday UTC).
+* `--end_date`: Last date to include in `YYYY-MM-DD` format (default: latest published day within 7 days of yesterday UTC; every date up to that day must exist with no interior gaps).
 * `--source`: Where to read IMERG data from (choices: `gesdisc` or `local`, default: `gesdisc`).
   * `gesdisc`: Discovers the published daily V07 NetCDF-4 granule via NASA CMR and downloads it from NASA GES DISC over HTTPS.
   * `local`: Reads pre-downloaded V07 files from `--local_dir`.
@@ -122,5 +130,7 @@ build-imerg-archive \
 * `--granule_workers`: Number of parallel threads used to read the 48 half-hourly HDF5 files per day when using `--source local` with `--local_format h5` (integer, default: `8`).
 * `--overwrite`: Deletes the existing Zarr archive at `--target_zarr` and rebuilds it from scratch.
 * `--in_place`: Overwrites the requested `--start_date` to `--end_date` dates in-place inside an existing Zarr archive.
+* `--extend_archive` (or `--extend-archive`): Extends an existing archive in place without reusing any pre-cached files; raises an error if `--target_zarr` does not already exist.
 * `--project`: Google Cloud project ID used when writing to a `gs://` bucket (default: `None`).
 * `--gesdisc_url`: Custom base URL for NASA GES DISC IMERG V07 daily files.
+

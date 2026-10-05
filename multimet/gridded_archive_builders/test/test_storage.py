@@ -258,3 +258,43 @@ class TestAppendAndResumeIntegrity:
       storage.write_dataset_batch_to_zarr(
           flipped_lat_batch, target, is_initial_write=False, consolidated=False
       )
+
+
+class TestHttpUrlExists:
+  """Tests ``multimet.utils.http.check_http_url_exists``."""
+
+  def test_returns_true_on_200_and_false_on_404_and_raises_on_401(
+      self, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    from multimet.utils import http as http_utils
+
+    class _FakeResp:
+
+      def __init__(self, code: int):
+        self.status_code = code
+
+      def __enter__(self) -> _FakeResp:
+        return self
+
+      def __exit__(self, *args: object) -> None:
+        pass
+
+      def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+          raise RuntimeError(f"HTTP {self.status_code}")
+
+    status_to_return = 200
+    monkeypatch.setattr(
+        http_utils.requests,
+        "get",
+        lambda *a, **k: _FakeResp(status_to_return),
+    )
+    assert http_utils.check_http_url_exists("https://example.com/a.nc") is True
+
+    status_to_return = 404
+    assert http_utils.check_http_url_exists("https://example.com/a.nc") is False
+
+    status_to_return = 401
+    with pytest.raises(PermissionError, match="HTTP 401"):
+      http_utils.check_http_url_exists("https://example.com/a.nc")
+

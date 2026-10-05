@@ -95,9 +95,10 @@ Example Usage
      --end_year 2022 \
      --cleanup_cache
 
-   # Run the same command later to append newly published days
+   # Extend an existing archive with newly published days (ignores pre-cached files)
    build-cpc-archive \
      --target_zarr ./data/cpc_daily.zarr \
+     --extend_archive \
      --cleanup_cache
 
 Command-Line Arguments (``build-cpc-archive``)
@@ -112,7 +113,10 @@ Command-Line Arguments (``build-cpc-archive``)
 -  ``--start_date``: Optional start date filter (``YYYY-MM-DD``) if you only
    want dates on or after a specific day inside ``--start_year``.
 -  ``--end_date``: Optional end date filter (``YYYY-MM-DD``) if you only want
-   dates on or before a specific day inside ``--end_year``.
+   dates on or before a specific day inside ``--end_year``. When omitted, the
+   active year is extended up to the latest published day on NOAA PSL (allowing
+   up to 7 days of upstream publication lag while rejecting any interior date
+   gaps).
 -  ``--cache_dir``: Local folder used to store downloaded NOAA NetCDF files
    before processing. If omitted, a temporary folder is created and removed
    automatically when the command finishes.
@@ -121,6 +125,9 @@ Command-Line Arguments (``build-cpc-archive``)
 -  ``--overwrite``: Deletes the existing Zarr archive at ``--target_zarr`` and
    rebuilds it from scratch. If not set, the tool resumes and appends only new
    dates.
+-  ``--extend_archive`` (or ``--extend-archive``): Extends an existing archive
+   in place without reusing any pre-cached NetCDF files; raises an error if
+   ``--target_zarr`` does not already exist.
 -  ``--num_workers``: Number of years to download and process in parallel
    (integer, default: number of CPU cores up to ``32``). Set to ``1`` to run
    one year at a time.
@@ -150,6 +157,12 @@ Example Usage
      --end_date 2024-01-10 \
      --cleanup_cache
 
+   # Extend an existing archive up to the latest published day on NASA GES DISC
+   build-imerg-archive \
+     --target_zarr ./data/imerg_daily.zarr \
+     --extend_archive \
+     --cleanup_cache
+
    # Build from a local directory of pre-downloaded V07 .nc4 files
    build-imerg-archive \
      --target_zarr ./data/imerg_daily.zarr \
@@ -167,7 +180,8 @@ Command-Line Arguments (``build-imerg-archive``)
 -  ``--start_date``: First date to include in ``YYYY-MM-DD`` format (default:
    ``2000-06-01``).
 -  ``--end_date``: Last date to include in ``YYYY-MM-DD`` format (default:
-   yesterday UTC).
+   latest published day within 7 days of yesterday UTC; every date up to that
+   day must exist with no interior gaps).
 -  ``--source``: Where to read IMERG data from (choices: ``gesdisc`` or
    ``local``, default: ``gesdisc``).
 
@@ -205,6 +219,9 @@ Command-Line Arguments (``build-imerg-archive``)
    rebuilds it from scratch.
 -  ``--in_place``: Overwrites the requested ``--start_date`` to ``--end_date``
    dates in-place inside an existing Zarr archive.
+-  ``--extend_archive`` (or ``--extend-archive``): Extends an existing archive
+   in place without reusing any pre-cached files; raises an error if
+   ``--target_zarr`` does not already exist.
 -  ``--project``: Google Cloud project ID used when writing to a ``gs://``
    bucket (default: ``None``).
 -  ``--gesdisc_url``: Custom base URL for NASA GES DISC IMERG V07 daily files.
@@ -225,11 +242,13 @@ What to Watch Out For (Common Questions)
    ``build-imerg-archive`` so temporary NetCDF files are deleted as soon as each
    batch is written to the Zarr store.
 
-3. **Safe Incremental Updates**
-   Running any builder against an existing Zarr archive (without
-   ``--overwrite``) automatically resumes from the day after the last date in
-   the archive, verifying strict daily continuity so date gaps are never
-   introduced.
+3. **Safe Incremental Updates (** ``--extend_archive`` **)**
+   Pass ``--extend_archive`` when running ``build-cpc-archive`` or
+   ``build-imerg-archive`` against an existing Zarr archive to append newly
+   published days. It guarantees that the target store already exists, ignores
+   any stale pre-cached files, allows up to 7 days of upstream publication lag
+   at the end of the archive when ``--end_date`` is omitted, and enforces strict
+   daily continuity with zero interior date gaps.
 
 4. **Strict Data Integrity (No Silent Fallbacks)**
 
