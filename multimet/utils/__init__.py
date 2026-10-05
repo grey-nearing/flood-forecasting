@@ -1,20 +1,32 @@
-# Copyright 2026 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""Shared utilities for MultiMet extraction and archive building."""
 
-"""Shared utilities for MultiMet data workflows."""
-
+from multimet.utils.cpc import (
+    CPC_LATS,
+    CPC_LONS,
+    CPC_VARIABLE,
+    EXPECTED_PSL_LATS,
+    EXPECTED_PSL_LONS,
+    NOAA_PSL_URL_TEMPLATE,
+    ensure_psl_cpc_netcdf,
+    process_cpc_netcdf_to_dataset,
+)
+from multimet.utils.earthdata import (
+    DEFAULT_GESDISC_URL,
+    EXPECTED_HHR_START_TOKENS,
+    IMERG_DAILY_SHORT_NAME,
+    IMERG_HHR_SHORT_NAME,
+    IMERG_LATS,
+    IMERG_LONS,
+    IMERG_VARIABLE,
+    LAT_COUNT,
+    LON_COUNT,
+    build_gesdisc_daily_url,
+    download_daily_imerg,
+    parse_imerg_netcdf_to_grid,
+)
 from multimet.utils.gcs import (
+    auto_detect_gcp_project,
+    configure_gcp_project,
     download_directory_from_gcs,
     download_file_from_gcs,
     download_hydroatlas_from_gcs,
@@ -27,6 +39,13 @@ from multimet.utils.gcs import (
     upload_file_to_gcs,
     upload_to_gcs,
 )
+from multimet.utils.geometry import (
+    SUPPORTED_GEOMETRY_EXTENSIONS,
+    find_all_dataset_dirs,
+    find_vector_file_in_dir,
+    get_bounding_box,
+    load_basin_geometries,
+)
 from multimet.utils.http import (
     DEFAULT_CMR_GRANULES_URL,
     EarthdataSession,
@@ -34,6 +53,21 @@ from multimet.utils.http import (
     download_http_file,
     get_earthdata_credentials_from_netrc,
     query_cmr_granules,
+)
+from multimet.utils.climate import (
+    calculate_fao56_penman_monteith_pet,
+    calculate_fao_pm_pet,
+    calculate_knoben_moisture_and_seasonality,
+    compute_caravan_climate_metrics,
+    depth_to_mm,
+    temp_to_celsius,
+)
+from multimet.utils.spatial import (
+    BoundingBox,
+    coerce_bounding_box,
+    find_lat_lon_dims,
+    slice_coordinates_by_bounds,
+    slice_dataset_by_bounds,
 )
 from multimet.utils.storage import (
     decode_zarr_time_index,
@@ -47,33 +81,85 @@ from multimet.utils.storage import (
     write_dataset_batch_in_place,
     write_dataset_batch_to_zarr,
 )
+from multimet.utils.zarr import check_zarr_store_exists
+from multimet.utils.zonal import (
+    MIN_VALID_COVERAGE_FRACTION,
+    ZonalWeightCalculator,
+    ZonalWeightMatrix,
+    weighted_mean_valid,
+    weighted_mean_valid_with_coverage,
+)
 
 __all__ = [
+    "BoundingBox",
+    "CPC_LATS",
+    "CPC_LONS",
+    "CPC_VARIABLE",
     "DEFAULT_CMR_GRANULES_URL",
+    "DEFAULT_GESDISC_URL",
+    "EXPECTED_HHR_START_TOKENS",
+    "EXPECTED_PSL_LATS",
+    "EXPECTED_PSL_LONS",
     "EarthdataSession",
+    "IMERG_DAILY_SHORT_NAME",
+    "IMERG_HHR_SHORT_NAME",
+    "IMERG_LATS",
+    "IMERG_LONS",
+    "IMERG_VARIABLE",
+    "LAT_COUNT",
+    "LON_COUNT",
+    "MIN_VALID_COVERAGE_FRACTION",
+    "NOAA_PSL_URL_TEMPLATE",
+    "SUPPORTED_GEOMETRY_EXTENSIONS",
+    "ZonalWeightCalculator",
+    "ZonalWeightMatrix",
+    "auto_detect_gcp_project",
+    "build_gesdisc_daily_url",
+    "calculate_fao56_penman_monteith_pet",
+    "calculate_fao_pm_pet",
+    "calculate_knoben_moisture_and_seasonality",
     "check_http_url_exists",
+    "check_zarr_store_exists",
+    "coerce_bounding_box",
+    "compute_caravan_climate_metrics",
+    "configure_gcp_project",
     "decode_zarr_time_index",
+    "depth_to_mm",
+    "download_daily_imerg",
     "download_directory_from_gcs",
     "download_file_from_gcs",
     "download_http_file",
     "download_hydroatlas_from_gcs",
+    "ensure_psl_cpc_netcdf",
+    "find_all_dataset_dirs",
+    "find_lat_lon_dims",
+    "find_vector_file_in_dir",
     "gcs_path_exists",
+    "get_bounding_box",
     "get_earthdata_credentials_from_netrc",
     "get_zarr_mapper",
     "inspect_zarr_store",
     "is_gcs_path",
     "is_remote_target",
+    "load_basin_geometries",
     "managed_cache_dir",
     "normalize_gcs_path",
     "parse_cf_time_coordinate",
+    "parse_imerg_netcdf_to_grid",
     "plan_archive_resume",
+    "process_cpc_netcdf_to_dataset",
     "query_cmr_granules",
     "read_bytes_from_gcs",
     "resolve_zarr_target",
+    "slice_coordinates_by_bounds",
+    "slice_dataset_by_bounds",
     "strip_gcs_prefix",
     "sync_gcs_directory",
+    "temp_to_celsius",
     "upload_file_to_gcs",
     "upload_to_gcs",
+    "weighted_mean_valid",
+    "weighted_mean_valid_with_coverage",
     "write_dataset_batch_in_place",
     "write_dataset_batch_to_zarr",
 ]
