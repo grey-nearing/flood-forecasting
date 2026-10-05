@@ -62,8 +62,8 @@ from multimet.timeseries_extractors.config import (
     ProductType,
 )
 from multimet.utils.gcs import configure_gcp_project
-from multimet.timeseries_extractors.spatial import slice_dataset_by_bounds
-from multimet.timeseries_extractors.zonal import ZonalWeightMatrix
+from multimet.utils.spatial import slice_dataset_by_bounds
+from multimet.utils.zonal import ZonalWeightMatrix
 
 logger = logging.getLogger(__name__)
 

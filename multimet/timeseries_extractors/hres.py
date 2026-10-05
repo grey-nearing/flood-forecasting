@@ -39,7 +39,7 @@ from multimet.timeseries_extractors.config import (
     PRODUCT_METADATA_ATTRS,
     Product,
 )
-from multimet.timeseries_extractors.zonal import ZonalWeightCalculator, ZonalWeightMatrix
+from multimet.utils.zonal import ZonalWeightCalculator, ZonalWeightMatrix
 from multimet.utils.zonal import weighted_mean_valid
 
 

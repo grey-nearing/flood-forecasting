@@ -19,8 +19,8 @@ import tempfile
 import numpy as np
 import pytest
 
-from multimet.timeseries_extractors.geometry import load_basin_geometries
-from multimet.timeseries_extractors.zonal import (
+from multimet.utils.geometry import load_basin_geometries
+from multimet.utils.zonal import (
     ZonalWeightCalculator,
     ZonalWeightMatrix,
 )

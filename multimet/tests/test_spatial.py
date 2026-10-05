@@ -21,14 +21,14 @@ import pytest
 import shapely.geometry
 import xarray as xr
 
-from multimet.timeseries_extractors.geometry import load_basin_geometries
-from multimet.timeseries_extractors.spatial import (
+from multimet.utils.geometry import load_basin_geometries
+from multimet.utils.spatial import (
     BoundingBox,
     find_lat_lon_dims,
     slice_coordinates_by_bounds,
     slice_dataset_by_bounds,
 )
-from multimet.timeseries_extractors.zonal import ZonalWeightMatrix
+from multimet.utils.zonal import ZonalWeightMatrix
 
 
 pytestmark = pytest.mark.unit

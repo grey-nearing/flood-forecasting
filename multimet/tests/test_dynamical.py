@@ -33,7 +33,7 @@ from multimet.timeseries_extractors.dynamical import (
     list_catalog_datasets,
     load_dynamical,
 )
-from multimet.timeseries_extractors.geometry import load_basin_geometries
+from multimet.utils.geometry import load_basin_geometries
 from multimet.timeseries_extractors.zarr_writer import MultiMetZarrWriter
 
 

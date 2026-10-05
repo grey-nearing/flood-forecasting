@@ -54,14 +54,6 @@ multimet.timeseries_extractors.era5_land
    :show-inheritance:
    :undoc-members:
 
-multimet.timeseries_extractors.geometry
----------------------------------------
-
-.. automodule:: multimet.timeseries_extractors.geometry
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 multimet.timeseries_extractors.graphcast
 ----------------------------------------
 
@@ -94,14 +86,6 @@ multimet.timeseries_extractors.imerg
    :show-inheritance:
    :undoc-members:
 
-multimet.timeseries_extractors.pet
-----------------------------------
-
-.. automodule:: multimet.timeseries_extractors.pet
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 multimet.timeseries_extractors.runner
 -------------------------------------
 
@@ -110,26 +94,10 @@ multimet.timeseries_extractors.runner
    :show-inheritance:
    :undoc-members:
 
-multimet.timeseries_extractors.spatial
---------------------------------------
-
-.. automodule:: multimet.timeseries_extractors.spatial
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 multimet.timeseries_extractors.zarr_writer
 ------------------------------------------
 
 .. automodule:: multimet.timeseries_extractors.zarr_writer
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-multimet.timeseries_extractors.zonal
-------------------------------------
-
-.. automodule:: multimet.timeseries_extractors.zonal
    :members:
    :show-inheritance:
    :undoc-members:

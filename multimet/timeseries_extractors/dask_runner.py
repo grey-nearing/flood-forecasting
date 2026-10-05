@@ -56,14 +56,14 @@ from multimet.timeseries_extractors.config import (
 from multimet.timeseries_extractors.cpc import CPCExtractor
 from multimet.timeseries_extractors.dynamical import AIFSExtractor, DynamicalIMERGExtractor
 from multimet.timeseries_extractors.era5_land import ERA5LandExtractor
-from multimet.timeseries_extractors.geometry import load_basin_geometries
+from multimet.utils.geometry import load_basin_geometries
 from multimet.timeseries_extractors.graphcast import GraphCastExtractor
 from multimet.timeseries_extractors.hres import HRESExtractor
 from multimet.timeseries_extractors.imerg import IMERGExtractor
-from multimet.timeseries_extractors.spatial import slice_coordinates_by_bounds
+from multimet.utils.spatial import slice_coordinates_by_bounds
 from multimet.utils.gcs import configure_gcp_project
 from multimet.timeseries_extractors.zarr_writer import MultiMetZarrWriter
-from multimet.timeseries_extractors.zonal import ZonalWeightMatrix
+from multimet.utils.zonal import ZonalWeightMatrix
 
 logger = logging.getLogger(__name__)
 
