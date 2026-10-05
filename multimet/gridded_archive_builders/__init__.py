@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     https://www.apache.org/licenses/LICENSE-2.0
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,8 +21,6 @@ gridded precipitation archives that back Open-MultiMet:
   Unified daily gauge-based precipitation (0.5 degree, 1979 to present).
 * :mod:`multimet.gridded_archive_builders.build_imerg_archive` - NASA GPM IMERG
   Early V07 daily precipitation (0.1 degree, 2000 to present).
-* :mod:`multimet.gridded_archive_builders.storage` - Zarr target resolution,
-  batch write, and strict resume primitives.
 """
 
 from __future__ import annotations
@@ -33,7 +31,6 @@ from typing import Any
 __all__ = [
     "build_cpc_archive",
     "build_imerg_archive",
-    "storage",
 ]
 
 _SUBMODULES = frozenset(__all__)

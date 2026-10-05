@@ -157,6 +157,40 @@ class TestGridStandardization:
     with pytest.raises(ValueError, match="2025-01-02"):
       process_cpc_netcdf_to_dataset(str(path), trim_trailing_unpublished=True)
 
+  def test_historical_year_rejects_trailing_all_nan_days(
+      self, sample_year: Path
+  ) -> None:
+    dates = pd.date_range("2015-12-28", "2015-12-31", freq="D")
+    data = np.ones((4, len(PSL_LATS), len(PSL_LONS)), dtype=np.float32)
+    data[3] = -9.96921e36
+    source = xr.Dataset(
+        data_vars={"precip": (["time", "lat", "lon"], data)},
+        coords={"time": dates, "lat": PSL_LATS, "lon": PSL_LONS},
+    )
+    path = sample_year.parent / "precip.2015.nc"
+    source.to_netcdf(path)
+    source.close()
+
+    with pytest.raises(ValueError, match="2015-12-31"):
+      process_cpc_netcdf_to_dataset(
+          str(path),
+          target_start_date=pd.Timestamp("2015-12-28"),
+          expected_year=2015,
+          trim_trailing_unpublished=False,
+      )
+
+  def test_incomplete_calendar_year_raises_value_error(
+      self, sample_year: Path
+  ) -> None:
+    with pytest.raises(ValueError, match="before end of year 2020-12-31"):
+      process_cpc_netcdf_to_dataset(str(sample_year), expected_year=2020)
+
+  def test_mismatched_expected_year_raises_value_error(
+      self, sample_year: Path
+  ) -> None:
+    with pytest.raises(ValueError, match="expected 2019"):
+      process_cpc_netcdf_to_dataset(str(sample_year), expected_year=2019)
+
   def test_already_ascending_latitude_raises_value_error(
       self, sample_year: Path
   ) -> None:

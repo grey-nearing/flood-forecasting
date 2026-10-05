@@ -656,35 +656,9 @@ class ERA5GriddedExtractor:
   @staticmethod
   def _parse_time_coordinate(time_arr: np.ndarray, time_attrs: Dict[str, Any], zarr_uri: str) -> pd.DatetimeIndex:
     """Parses CF-compliant time coordinates without guessing units or epochs."""
-    if np.issubdtype(time_arr.dtype, np.datetime64) or time_arr.dtype.kind in {"U", "S", "O"}:
-      return pd.DatetimeIndex(pd.to_datetime(time_arr))
+    from multimet.utils.storage import parse_cf_time_coordinate
 
-    units = time_attrs.get("units")
-    if not units or "since" not in str(units):
-      raise ValueError(
-          f"Time coordinate in {zarr_uri} lacks a valid CF '<unit> since <epoch>' attribute (got {units!r})."
-      )
-    unit_part, base_str = str(units).split("since", 1)
-    unit_token = unit_part.strip().lower().rstrip("s")
-    unit_map = {
-        "day": "D",
-        "d": "D",
-        "hour": "h",
-        "hr": "h",
-        "h": "h",
-        "minute": "m",
-        "min": "m",
-        "second": "s",
-        "sec": "s",
-        "s": "s",
-    }
-    if unit_token not in unit_map:
-      raise ValueError(
-          f"Unsupported time offset unit {unit_part.strip()!r} in {zarr_uri} (units={units!r})."
-      )
-    return pd.DatetimeIndex(
-        pd.to_datetime(base_str.strip()) + pd.to_timedelta(time_arr, unit=unit_map[unit_token])
-    )
+    return parse_cf_time_coordinate(time_arr, time_attrs, store_label=zarr_uri)
 
   def extract_climate_metrics_for_polygon(
       self,

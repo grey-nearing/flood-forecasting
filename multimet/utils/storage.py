@@ -12,23 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Storage location, batch write, and resume primitives for archive builders.
+"""Shared Zarr storage, CF time decoding, batch write, and resume primitives.
 
 Provides target classification (requiring explicit URI schemes for remote cloud
-stores), batch append/in-place Zarr writers, and strict resume planning that
-verifies existing store integrity and chronological continuity.
+stores), CF-compliant time coordinate decoding, batch append/in-place Zarr
+writers with coordinate/schema verification, strict resume planning that
+verifies existing store integrity and daily contiguity, and managed cache
+directory lifecycle handling.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+import contextlib
 import importlib
 import logging
 import os
 import re
 import shutil
+import tempfile
 from typing import Any
 
 import fsspec
+from multimet.utils.gcs import is_gcs_path, normalize_gcs_path, strip_gcs_prefix
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -68,6 +74,9 @@ def resolve_zarr_target(target: str) -> tuple[str, bool]:
   if not target or not target.strip():
     raise ValueError("Zarr target must be a non-empty string.")
 
+  if is_gcs_path(target):
+    return normalize_gcs_path(target), True
+
   scheme_match = _URI_SCHEME_RE.match(target)
   if scheme_match:
     if scheme_match.group("scheme").lower() == "file":
@@ -93,9 +102,9 @@ def get_zarr_mapper(
   """Resolves a Zarr target into ``(full_url, is_remote, mapper)``."""
   full_url, is_remote = resolve_zarr_target(target_zarr_url)
   if is_remote:
-    if full_url.startswith("gs://"):
+    if is_gcs_path(full_url):
       gcsfs = _load_gcsfs()
-      clean_path = full_url.removeprefix("gs://")
+      clean_path = strip_gcs_prefix(full_url)
       fs_kwargs: dict[str, Any] = {}
       if project:
         fs_kwargs["project"] = project
@@ -125,9 +134,9 @@ def inspect_zarr_store(
   """
   full_url, is_remote, mapper = get_zarr_mapper(target_zarr_url, project)
   if is_remote:
-    if full_url.startswith("gs://"):
+    if is_gcs_path(full_url):
       gcsfs = _load_gcsfs()
-      clean_path = full_url.removeprefix("gs://")
+      clean_path = strip_gcs_prefix(full_url)
       fs_kwargs: dict[str, Any] = {}
       if project:
         fs_kwargs["project"] = project
@@ -164,16 +173,74 @@ def inspect_zarr_store(
   return full_url, is_remote, store_exists, has_consolidated, mapper
 
 
-def decode_zarr_time_index(mapper: Any) -> pd.DatetimeIndex:  # noqa: ANN401
+def parse_cf_time_coordinate(
+    time_arr: np.ndarray,
+    time_attrs: Mapping[str, Any],
+    store_label: str = "<zarr>",
+) -> pd.DatetimeIndex:
+  """Parses CF-compliant time coordinates without guessing units or epochs.
+
+  Args:
+    time_arr: Raw time coordinate array from a Zarr group.
+    time_attrs: Attribute dictionary of the time coordinate array.
+    store_label: Identifier of the store used in error messages.
+
+  Returns:
+    Decoded ``pd.DatetimeIndex``.
+
+  Raises:
+    ValueError: If numeric time offsets lack a valid CF ``<unit> since <epoch>``
+      attribute or use an unsupported unit.
+  """
+  arr = np.asarray(time_arr)
+  if np.issubdtype(arr.dtype, np.datetime64) or arr.dtype.kind in {
+      "U",
+      "S",
+      "O",
+  }:
+    return pd.DatetimeIndex(pd.to_datetime(arr))
+
+  units = time_attrs.get("units")
+  if not units or "since" not in str(units):
+    raise ValueError(
+        f"Time coordinate in {store_label} lacks a valid CF '<unit> since "
+        f"<epoch>' attribute (got {units!r})."
+    )
+  unit_part, base_str = str(units).split("since", 1)
+  unit_token = unit_part.strip().lower().rstrip("s")
+  unit_map = {
+      "day": "D",
+      "d": "D",
+      "hour": "h",
+      "hr": "h",
+      "h": "h",
+      "minute": "m",
+      "min": "m",
+      "second": "s",
+      "sec": "s",
+      "s": "s",
+  }
+  if unit_token not in unit_map:
+    raise ValueError(
+        f"Unsupported time offset unit {unit_part.strip()!r} in {store_label} "
+        f"(units={units!r})."
+    )
+  origin_str = base_str.strip().split()[0] if "days" in str(units) else base_str.strip()
+  return pd.DatetimeIndex(
+      pd.to_datetime(origin_str)
+      + pd.to_timedelta(arr, unit=unit_map[unit_token])
+  )
+
+
+def decode_zarr_time_index(
+    mapper: Any,  # noqa: ANN401
+    time_key: str = "time",
+) -> pd.DatetimeIndex:
   """Reads and decodes the ``time`` coordinate directly from a Zarr group."""
   root = zarr.open_group(mapper, mode="r")
-  raw_time = root["time"][:]
-  attrs = dict(root["time"].attrs)
-  units = attrs.get("units", "")
-  if isinstance(units, str) and "days since" in units:
-    origin = units.split("days since")[-1].strip().split()[0]
-    return pd.to_datetime(raw_time, unit="D", origin=origin)
-  return pd.to_datetime(raw_time)
+  raw_time = np.asarray(root[time_key][:])
+  attrs = dict(root[time_key].attrs)
+  return parse_cf_time_coordinate(raw_time, attrs, store_label=str(mapper))
 
 
 def _is_slice_all_nan(ds: xr.Dataset, time_idx: int) -> bool:
@@ -195,7 +262,7 @@ def plan_archive_resume(
 
   Verifies that:
   1. The existing store's ``time`` coordinate is strictly monotonically
-     increasing with no duplicate dates.
+     increasing, has no duplicate dates, and is contiguous at a 1-day frequency.
   2. The existing store does not end with an all-NaN slice.
   3. Any new dates to append immediately follow ``max(existing_times)`` with no
      date gap.
@@ -209,18 +276,33 @@ def plan_archive_resume(
     Tuple of ``(append_dates, date_to_idx)``.
 
   Raises:
-    ValueError: If the existing store has non-monotonic timestamps, trailing
-      all-NaN slices, or if ``requested_dates`` would create a date gap after
-      the end of the existing store.
+    ValueError: If the existing store has non-monotonic or non-contiguous
+      timestamps, trailing all-NaN slices, or if ``requested_dates`` would
+      create a date gap after the end of the existing store.
   """
   with xr.open_zarr(mapper, consolidated=has_consolidated) as existing_ds:
-    existing_times = pd.DatetimeIndex(pd.to_datetime(existing_ds["time"].values))
+    existing_times = pd.DatetimeIndex(
+        pd.to_datetime(existing_ds["time"].values)
+    )
     if len(existing_times) == 0:
       raise ValueError("Existing Zarr store has an empty time coordinate.")
-    if not existing_times.is_monotonic_increasing or existing_times.has_duplicates:
+    if (
+        not existing_times.is_monotonic_increasing
+        or existing_times.has_duplicates
+    ):
       raise ValueError(
           "Existing Zarr store time coordinate is not strictly monotonically "
           "increasing."
+      )
+    expected_existing = pd.date_range(
+        existing_times[0], existing_times[-1], freq="1D"
+    )
+    if len(existing_times) != len(expected_existing) or not (
+        existing_times == expected_existing
+    ).all():
+      raise ValueError(
+          "Existing Zarr store time coordinate is not strictly contiguous "
+          "daily."
       )
     if _is_slice_all_nan(existing_ds, len(existing_times) - 1):
       last_str = existing_times[-1].strftime("%Y-%m-%d")
@@ -247,6 +329,42 @@ def plan_archive_resume(
       )
 
   return append_dates, date_to_idx
+
+
+def _validate_batch_matches_existing_store(
+    ds_batch: xr.Dataset, root: zarr.Group
+) -> None:
+  """Verifies that ``ds_batch`` spatial coordinates and variables match ``root``."""
+  for coord_name in ("latitude", "longitude"):
+    if coord_name in ds_batch.coords:
+      if coord_name not in root:
+        raise ValueError(
+            f"Target Zarr store is missing coordinate {coord_name!r}."
+        )
+      existing_coord = np.asarray(root[coord_name][:])
+      batch_coord = np.asarray(ds_batch[coord_name].values)
+      if existing_coord.shape != batch_coord.shape or not np.allclose(
+          existing_coord, batch_coord, atol=1e-4, equal_nan=False
+      ):
+        raise ValueError(
+            f"Batch coordinate {coord_name!r} does not match existing Zarr "
+            f"store coordinate (shape {batch_coord.shape} vs "
+            f"{existing_coord.shape})."
+        )
+
+  for var in ds_batch.data_vars:
+    if var not in root:
+      raise ValueError(
+          f"Data variable {var!r} not found in existing Zarr store."
+      )
+    expected_spatial_shape = tuple(ds_batch[var].shape[1:])
+    existing_spatial_shape = tuple(root[var].shape[1:])
+    if existing_spatial_shape != expected_spatial_shape:
+      raise ValueError(
+          f"Spatial shape mismatch for variable {var!r}: batch has "
+          f"{expected_spatial_shape}, existing store has "
+          f"{existing_spatial_shape}."
+      )
 
 
 def write_dataset_batch_to_zarr(
@@ -281,6 +399,7 @@ def write_dataset_batch_to_zarr(
         "Appending %d dates along time dimension...", len(ds_batch["time"])
     )
     root = zarr.open_group(mapper, mode="r")
+    _validate_batch_matches_existing_store(ds_batch, root)
     kept_attrs = {
         k: v for k, v in root.attrs.items() if k not in ds_batch.attrs
     }
@@ -320,6 +439,7 @@ def write_dataset_batch_in_place(
 
   indices = [date_to_idx[t.strftime("%Y-%m-%d")] for t in batch_times]
   root = zarr.open_group(mapper, mode="r+")
+  _validate_batch_matches_existing_store(ds_batch, root)
   is_contiguous = indices == list(
       range(indices[0], indices[0] + len(indices))
   )
@@ -331,3 +451,21 @@ def write_dataset_batch_in_place(
     else:
       for i, target_idx in enumerate(indices):
         root[var][target_idx : target_idx + 1] = vals[i : i + 1]
+
+
+@contextlib.contextmanager
+def managed_cache_dir(
+    cache_dir: str | None,
+    cleanup_cache: bool,
+    prefix: str = "multimet_cache_",
+) -> Iterator[str]:
+  """Context manager for staging cache directories with optional cleanup."""
+  if cache_dir is None:
+    with tempfile.TemporaryDirectory(prefix=prefix) as tmp_dir:
+      yield tmp_dir
+  else:
+    os.makedirs(cache_dir, exist_ok=True)
+    yield str(cache_dir)
+    if cleanup_cache and os.path.exists(cache_dir):
+      shutil.rmtree(cache_dir)
+      _logger.info("Cleaned up cache directory: %s", cache_dir)

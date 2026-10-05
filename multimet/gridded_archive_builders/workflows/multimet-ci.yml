@@ -102,6 +102,7 @@ jobs:
         run: |
           pytest multimet/gridded_archive_builders/test \
             --cov=multimet.gridded_archive_builders \
+            --cov=multimet.utils \
             --cov-report=term-missing \
             --cov-report=xml
 
@@ -128,5 +129,5 @@ jobs:
       # imports, mutable default arguments, ...) rather than the full
       # `select = ["ALL"]` style sweep configured in pyproject.toml, which the
       # rest of the repository does not currently satisfy either.
-      - name: Lint the gridded_archive_builders package
-        run: ruff check multimet/gridded_archive_builders --select E9,F,B --no-cache
+      - name: Lint the gridded_archive_builders and utils packages
+        run: ruff check multimet/gridded_archive_builders multimet/utils --select E9,F,B --no-cache
