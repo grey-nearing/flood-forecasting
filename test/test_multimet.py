@@ -775,6 +775,96 @@ def test_load_basins_subset_restricts_to_those_basins(
 
 @patch('googlehydrology.datasetzoo.multimet.load_basin_file')
 @patch.object(Multimet, '_load_data')
+def test_loaded_basins_tracks_the_subset_not_the_configured_list(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """`loaded_basins` must follow `load_basins`; `_basins` must not.
+
+    Sample metadata stores basin *positions*, not names, and those positions
+    index the loaded subset. Callers resolving them need a list that shrinks
+    with the subset -- `_basins` keeps the full configured list forever, so
+    using it names the wrong basin (or runs off the end) after a subset load.
+    """
+    cfg = get_config('default')
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    assert dataset.loaded_basins == list(sample_basins)
+
+    subset = sample_basins[:1]
+    dataset.load_basins(subset)
+
+    assert dataset.loaded_basins == subset
+    # The divergence that made this property necessary.
+    assert dataset._basins == list(sample_basins)
+    assert dataset.loaded_basins != dataset._basins
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_loaded_basins_raises_when_nothing_is_loaded(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """Better to fail loudly than to hand back a stale basin list."""
+    cfg = get_config('default')
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    dataset.unload_basins()
+
+    with pytest.raises(RuntimeError, match='No basins are loaded'):
+        _ = dataset.loaded_basins
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_per_basin_target_stds_do_not_depend_on_the_loaded_subset(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+):
+    """A basin's NSE target std must be the same in any subset.
+
+    `load_basins` recomputes these, so if the reduction ever picked up a
+    cross-basin dependency, narrowing the loaded set would silently change
+    the NSE loss -- and only for runs that bound their memory, which is
+    exactly the kind of difference nobody would think to look for.
+
+    The reduction is over every dimension except `basin`, so this holds;
+    the test is here to keep it that way.
+    """
+    cfg = get_config('default')
+    cfg.loss = 'NSE'
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    assert dataset._per_basin_target_stds is not None
+    full = dataset._per_basin_target_stds.compute()
+
+    subset = sample_basins[:1]
+    dataset.load_basins(subset)
+    narrowed = dataset._per_basin_target_stds.compute()
+
+    xr.testing.assert_allclose(
+        narrowed.sel(basin=subset), full.sel(basin=subset)
+    )
+
+
+@patch('googlehydrology.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
 def test_unload_basins_clears_data_cache(
     mock_load_data,
     mock_load_basin_file,
@@ -828,8 +918,8 @@ def test_limit_n_basins_defers_load_for_training(
 
 @patch('googlehydrology.datasetzoo.multimet.load_basin_file')
 @patch.object(Multimet, '_load_data')
-@pytest.mark.parametrize('period', ['validation', 'test'])
-def test_limit_n_basins_does_not_defer_for_non_training_periods(
+@pytest.mark.parametrize('period', ['train', 'validation', 'test'])
+def test_limit_n_basins_defers_for_every_period(
     mock_load_data,
     mock_load_basin_file,
     get_config,
@@ -837,27 +927,47 @@ def test_limit_n_basins_does_not_defer_for_non_training_periods(
     mock_load_data_return,
     period,
 ):
-    """limit_n_basins is training-only.
+    """With `limit_n_basins`, no period loads its basins up front.
 
-    The tester and inference paths resolve basins positionally against the
-    loaded set, so a partial load there would silently evaluate the wrong
-    basins. They must keep loading everything.
+    This deliberately inverts an earlier assertion that only training
+    deferred. The reason evaluation could not defer was that basins were
+    resolved by position against a list that did not track what was loaded,
+    so a partial load silently evaluated the wrong basins. Resolution is now
+    by name against `loaded_basins`, which removes that hazard -- and the
+    validation pool is typically as large as the training pool, so leaving
+    it fully resident for the whole run wasted most of the benefit.
+
+    The safety property the old test was really protecting is asserted at
+    the end: a partial load still reports exactly which basins it holds.
     """
     cfg = get_config('default')
     cfg.update_config({'limit_n_basins': 1})
     mock_load_basin_file.return_value = sample_basins
     mock_load_data.return_value = mock_load_data_return
 
-    # Non-training periods load rather than compute the scaler, so a
-    # training dataset has to write one out first.
-    Multimet(cfg=cfg, is_train=True, period='train', compute_scaler=True)
+    is_train = period == 'train'
+    if not is_train:
+        # Non-training periods load rather than compute the scaler, so a
+        # training dataset has to write one out first.
+        Multimet(cfg=cfg, is_train=True, period='train', compute_scaler=True)
 
     dataset = Multimet(
-        cfg=cfg, is_train=False, period=period, compute_scaler=False
+        cfg=cfg,
+        is_train=is_train,
+        period=period,
+        compute_scaler=is_train,
     )
 
-    assert dataset.is_loaded
-    assert list(dataset._dataset.basin.values) == sample_basins
+    assert dataset.defers_basin_load
+    assert not dataset.is_loaded
+
+    # The full graph is still reachable without materializing anything,
+    # which is how the tester computes exclusions before it loads.
+    assert list(dataset.full_dataset.basin.values) == sample_basins
+
+    # And a partial load reports itself honestly.
+    dataset.load_basins(sample_basins[:1])
+    assert dataset.loaded_basins == sample_basins[:1]
 
 
 @patch('googlehydrology.datasetzoo.multimet.load_basin_file')
