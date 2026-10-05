@@ -32,7 +32,7 @@ from multimet.gridded_archive_builders.build_imerg_archive import (
     LON_COUNT,
     build_imerg_archive,
 )
-from multimet.gridded_archive_builders.test.conftest import PSL_LATS, PSL_LONS
+from multimet.tests.conftest import PSL_LATS, PSL_LONS
 import numpy as np
 import pandas as pd
 import pytest
