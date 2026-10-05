@@ -2,7 +2,7 @@ Configuration Arguments
 =======================
 
 This page provides a list of possible configuration arguments. 
-Check out the file `tutorial/config.yml` for an example of how a config file could look like.
+Check out the file ``model/tutorial/configs/train-config.yml`` for an example of how a config file could look like.
 
 General experiment configurations
 ---------------------------------
@@ -28,7 +28,7 @@ Validation settings
 
 -  ``validate_every``: Integer that specifies in which interval a validation is performed. If empty, no validation is done during training.
 -  ``validate_n_random_basins``: Integer specifying how many random basins to use per validation.
--  ``metrics``: List of metrics to calculate. See :py:mod:`googlehydrology.evaluation.metrics`. Can also be a dictionary mapping target variables to lists of metrics.
+-  ``metrics``: List of metrics to calculate. See :py:mod:`model.evaluation.metrics`. Can also be a dictionary mapping target variables to lists of metrics.
 -  ``save_validation_results``: True/False. If True, stores validation results to disk in a Zarr store.
 
 Evaluation settings
@@ -155,11 +155,6 @@ Result files written by evaluation are indexed by the issue date ``D`` and by
 ``time_step``: ``time_step = k >= 1`` is the forecast with ``lead_time = k``
 (valid on ``D + k - 1``), while ``time_step <= 0`` are hindcast days
 (``time_step = 0`` is ``D - 1``).
-
-.. note::
-   Before version 1.13.0, 2D hindcast inputs and targets were shifted one day
-   later relative to forecast inputs, and ``time_step = k`` was valid on
-   ``D + k``. Models trained with earlier versions should be retrained.
 
 Finetune settings
 -----------------
