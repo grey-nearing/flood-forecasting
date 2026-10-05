@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for :mod:`multimet.build_imerg_archive`."""
+"""Unit tests for :mod:`multimet.gridded_archive_builders.build_imerg_archive`."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import h5py
-from multimet import build_imerg_archive as imerg_module
-from multimet.build_imerg_archive import (
+from multimet.gridded_archive_builders import (
+    build_imerg_archive as imerg_module,
+)
+from multimet.gridded_archive_builders.build_imerg_archive import (
     EXPECTED_HHR_START_TOKENS,
     GESDISCImergSource,
     IMERG_LATS,

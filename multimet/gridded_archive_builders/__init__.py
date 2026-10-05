@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MultiMet data workflows for static watershed attributes and gridded archives.
+"""Open-MultiMet gridded precipitation archive builders.
 
-Exposes:
+Contains the ETL pipelines that assemble the unified, analysis-ready daily
+gridded precipitation archives that back Open-MultiMet:
 
-* Static attribute extraction (:class:`StaticAttributesExtractor`,
-  :class:`ERA5ClimateLoader`, :class:`ERA5GriddedExtractor`,
-  :func:`compute_caravan_climate_metrics`).
-* Gridded meteorological archive builders
-  (:mod:`multimet.gridded_archive_builders`).
+* :mod:`multimet.gridded_archive_builders.build_cpc_archive` - NOAA CPC Global
+  Unified daily gauge-based precipitation (0.5 degree, 1979 to present).
+* :mod:`multimet.gridded_archive_builders.build_imerg_archive` - NASA GPM IMERG
+  Early V07 daily precipitation (0.1 degree, 2000 to present).
+* :mod:`multimet.gridded_archive_builders.storage` - Zarr target resolution,
+  batch write, and strict resume primitives.
 """
 
 from __future__ import annotations
@@ -29,33 +31,19 @@ import importlib
 from typing import Any
 
 __all__ = [
-    "StaticAttributesExtractor",
-    "ERA5ClimateLoader",
-    "ERA5GriddedExtractor",
-    "compute_caravan_climate_metrics",
-    "gridded_archive_builders",
+    "build_cpc_archive",
+    "build_imerg_archive",
+    "storage",
 ]
 
-_STATIC_EXPORTS = frozenset({
-    "StaticAttributesExtractor",
-    "ERA5ClimateLoader",
-    "ERA5GriddedExtractor",
-    "compute_caravan_climate_metrics",
-})
-
-_SUBMODULES = frozenset({
-    "gridded_archive_builders",
-})
+_SUBMODULES = frozenset(__all__)
 
 
 def __getattr__(name: str) -> Any:  # noqa: ANN401 - module objects are untyped.
   if name in _SUBMODULES:
     return importlib.import_module(f"{__name__}.{name}")
-  if name in _STATIC_EXPORTS:
-    mod = importlib.import_module(f"{__name__}.static_extractor")
-    return getattr(mod, name)
   raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:
-  return sorted(set(globals()) | _SUBMODULES | _STATIC_EXPORTS)
+  return sorted(set(globals()) | _SUBMODULES)

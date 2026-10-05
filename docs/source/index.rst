@@ -31,5 +31,4 @@ You might also be interested in our `team's webpage <https://sites.research.goog
    tutorial/tutorial
    usage/config
    api/modules
-   api/multimet_modules
    example-configs/example-configs

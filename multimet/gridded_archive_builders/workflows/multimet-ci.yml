@@ -84,24 +84,24 @@ jobs:
 
       - name: Verify the package imports without optional cloud dependencies
         run: |
-          python -c "import multimet; print(sorted(dir(multimet)))"
-          python -m multimet.build_cpc_archive --help
-          python -m multimet.build_imerg_archive --help
+          python -c "import multimet.gridded_archive_builders as gab; print(sorted(dir(gab)))"
+          python -m multimet.gridded_archive_builders.build_cpc_archive --help
+          python -m multimet.gridded_archive_builders.build_imerg_archive --help
 
       # --timeout-method=thread dumps the stack of every thread when a test
       # overruns, which names the offending test instead of leaving a silent
       # hang. The slowest test takes a couple of seconds.
       - name: Run unit tests
-        run: pytest multimet/test -m unit -v -ra --tb=short --timeout=120 --timeout-method=thread
+        run: pytest multimet/gridded_archive_builders/test -m unit -v -ra --tb=short --timeout=120 --timeout-method=thread
 
       - name: Run integration tests
-        run: pytest multimet/test -m integration -v -ra --tb=short --timeout=300 --timeout-method=thread
+        run: pytest multimet/gridded_archive_builders/test -m integration -v -ra --tb=short --timeout=300 --timeout-method=thread
 
       - name: Report coverage
         if: matrix.os == 'ubuntu-latest'
         run: |
-          pytest multimet/test \
-            --cov=multimet \
+          pytest multimet/gridded_archive_builders/test \
+            --cov=multimet.gridded_archive_builders \
             --cov-report=term-missing \
             --cov-report=xml
 
@@ -128,5 +128,5 @@ jobs:
       # imports, mutable default arguments, ...) rather than the full
       # `select = ["ALL"]` style sweep configured in pyproject.toml, which the
       # rest of the repository does not currently satisfy either.
-      - name: Lint the multimet package
-        run: ruff check multimet --select E9,F,B --no-cache
+      - name: Lint the gridded_archive_builders package
+        run: ruff check multimet/gridded_archive_builders --select E9,F,B --no-cache

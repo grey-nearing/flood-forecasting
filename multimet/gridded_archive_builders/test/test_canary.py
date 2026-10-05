@@ -20,8 +20,10 @@ import datetime
 from pathlib import Path
 import urllib.request
 
-from multimet import build_cpc_archive as cpc_module
-from multimet import build_imerg_archive as imerg_module
+from multimet.gridded_archive_builders import build_cpc_archive as cpc_module
+from multimet.gridded_archive_builders import (
+    build_imerg_archive as imerg_module,
+)
 import numpy as np
 import pandas as pd
 import pytest

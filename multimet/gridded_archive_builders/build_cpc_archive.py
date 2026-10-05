@@ -40,7 +40,7 @@ import shutil
 import tempfile
 import time
 
-from multimet import storage
+from multimet.gridded_archive_builders import storage
 import numpy as np
 import pandas as pd
 import requests

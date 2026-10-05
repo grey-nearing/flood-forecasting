@@ -19,9 +19,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from multimet import build_imerg_archive as imerg_module
-from multimet.build_cpc_archive import CPC_VARIABLE, build_cpc_archive
-from multimet.build_imerg_archive import (
+from multimet.gridded_archive_builders import (
+    build_imerg_archive as imerg_module,
+)
+from multimet.gridded_archive_builders.build_cpc_archive import (
+    CPC_VARIABLE,
+    build_cpc_archive,
+)
+from multimet.gridded_archive_builders.build_imerg_archive import (
     IMERG_ATTRS,
     IMERG_VARIABLE,
     build_imerg_archive,
