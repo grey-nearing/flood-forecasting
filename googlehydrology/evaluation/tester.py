@@ -191,6 +191,38 @@ class BaseTester(object):
             compute_scaler=False,
         )
 
+    def _load_basins_for_evaluation(self, basins: list[str]) -> None:
+        """Materialize exactly the basins this evaluation will touch.
+
+        Without `limit_n_basins` the dataset loaded every basin in its own
+        `__init__` and there is nothing to do -- narrowing it here would
+        change the behaviour of runs that never asked for it, and would
+        throw away work on every call.
+
+        With `limit_n_basins` the dataset deferred, and this is where the
+        basin set gets chosen. Validation samples a fresh random subset per
+        call, so the resident set is bounded by `validate_n_random_basins`
+        rather than by the size of the validation pool -- which is the whole
+        point, since that pool can be as large as the training one.
+        """
+        if not self.dataset.defers_basin_load:
+            return
+
+        required = sorted(basins)
+        if self.dataset.is_loaded and self.dataset.loaded_basins == required:
+            # Same subset as last time (the common case for `test`, which
+            # evaluates every basin every call). Reloading would be pure
+            # cost.
+            return
+
+        LOGGER.debug(
+            '[%s] loading %d of %d basins for evaluation',
+            self.period,
+            len(required),
+            len(self.basins),
+        )
+        self.dataset.load_basins(required)
+
     def evaluate(
         self,
         epoch: int = None,
@@ -230,6 +262,8 @@ class BaseTester(object):
             and len(basins) > self.cfg.validate_n_random_basins
         ):
             basins = random.sample(basins, k=self.cfg.validate_n_random_basins)
+
+        self._load_basins_for_evaluation(basins)
 
         # force model to train-mode when doing mc-dropout evaluation
         if self.cfg.mc_dropout:
@@ -546,7 +580,13 @@ class BaseTester(object):
                 'it goes over all the data.'
             )
 
-        dataset = self.dataset._dataset
+        # Deliberately the *full* lazy graph, not `_dataset`: this runs
+        # during `__init__`, before anything is loaded, and it has to see
+        # every candidate basin to decide which to drop. Reading it stays
+        # cheap because the reduction below touches one variable over one
+        # date window. Scaling does not affect the answer -- it is a linear
+        # transform, so NaNs stay NaN.
+        dataset = self.dataset.full_dataset
         observations = dataset.streamflow
         record_dates = dataset.date.values
         record_start, record_end = record_dates.min(), record_dates.max()

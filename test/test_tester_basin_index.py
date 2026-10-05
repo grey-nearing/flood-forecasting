@@ -212,8 +212,8 @@ def trained_run_dir(nan_basin_env) -> Path:
     return next(iter(runs_root.glob('*')))
 
 
-def _evaluate(run_dir: Path, *, skip_obs_all_nan: bool) -> list[str]:
-    """Evaluate and return the basins that made it into the metrics file."""
+def _evaluate_frame(run_dir: Path, **overrides) -> pd.DataFrame:
+    """Evaluate and return the metrics table, sorted by basin."""
     output_dir = run_dir / 'test'
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -222,12 +222,19 @@ def _evaluate(run_dir: Path, *, skip_obs_all_nan: bool) -> list[str]:
     # `run_dir` and wrote the scaler there, so a freshly built Config would
     # point at the wrong directory.
     cfg = Config(run_dir / 'config.yml')
-    cfg.tester_skip_obs_all_nan = skip_obs_all_nan
+    for key, value in overrides.items():
+        setattr(cfg, key, value)
 
     start_evaluation(cfg=cfg, run_dir=run_dir, epoch=1, period='test')
 
     metrics = pd.read_csv(output_dir / 'model_epoch001' / 'test_metrics.csv')
-    return sorted(metrics['basin'].astype(str))
+    return metrics.sort_values('basin').reset_index(drop=True)
+
+
+def _evaluate(run_dir: Path, *, skip_obs_all_nan: bool) -> list[str]:
+    """Evaluate and return the basins that made it into the metrics file."""
+    frame = _evaluate_frame(run_dir, tester_skip_obs_all_nan=skip_obs_all_nan)
+    return sorted(frame['basin'].astype(str))
 
 
 @pytest.mark.slow
@@ -257,3 +264,90 @@ def test_exclusion_drops_only_the_excluded_basin(trained_run_dir):
         f'missing {sorted(set(EXPECTED_EVALUATED) - set(evaluated))}'
     )
     assert NAN_BASIN not in evaluated
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+@pytest.mark.parametrize('lazy_load', [False, True])
+def test_limit_n_basins_does_not_change_evaluation_results(
+    trained_run_dir, lazy_load
+):
+    """Bounding evaluation memory must not change the answer.
+
+    With `limit_n_basins` the tester no longer materializes the whole basin
+    pool up front; it loads only the basins it is about to evaluate. For the
+    `test` period that is still every basin, so the metrics must come out
+    bit-for-bit identical to a run that loaded everything eagerly. If they
+    differ, something about deferring the load has perturbed the data --
+    scaling, ordering, or the sample index.
+
+    Parametrized over both loading modes because they take different paths:
+    eager materializes the subset into memory, lazy keeps it as a graph.
+    """
+    baseline = _evaluate_frame(
+        trained_run_dir,
+        tester_skip_obs_all_nan=True,
+        lazy_load=lazy_load,
+    )
+    limited = _evaluate_frame(
+        trained_run_dir,
+        tester_skip_obs_all_nan=True,
+        lazy_load=lazy_load,
+        limit_n_basins=2,
+    )
+
+    assert list(limited['basin']) == list(baseline['basin'])
+    pd.testing.assert_frame_equal(limited, baseline)
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_tester_defers_loading_until_evaluation(trained_run_dir):
+    """The memory win itself: nothing is resident until we ask for it.
+
+    This is what PR 5 buys. Previously `BaseTester.__init__` materialized
+    every basin in the pool and the trainer then held that tester for the
+    whole run, so the validation set was resident from the first epoch to
+    the last regardless of how few basins each round actually scored.
+    """
+    from googlehydrology.evaluation.tester import RegressionTester
+
+    cfg = Config(trained_run_dir / 'config.yml')
+    cfg.tester_skip_obs_all_nan = True
+    cfg.limit_n_basins = 2
+
+    tester = RegressionTester(
+        cfg=cfg, run_dir=trained_run_dir, period='test', init_model=False
+    )
+
+    # Exclusions were still computed -- over the full pool, off the lazy
+    # graph -- without materializing anything.
+    assert not tester.dataset.is_loaded
+    assert sorted(tester.basins) == EXPECTED_EVALUATED
+
+    # And loading is scoped to exactly what was asked for.
+    tester._load_basins_for_evaluation(EXPECTED_EVALUATED[:3])
+    assert tester.dataset.is_loaded
+    assert tester.dataset.loaded_basins == sorted(EXPECTED_EVALUATED[:3])
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_tester_loads_eagerly_without_limit_n_basins(trained_run_dir):
+    """Runs that did not opt in must be completely unaffected."""
+    from googlehydrology.evaluation.tester import RegressionTester
+
+    cfg = Config(trained_run_dir / 'config.yml')
+    cfg.tester_skip_obs_all_nan = True
+
+    tester = RegressionTester(
+        cfg=cfg, run_dir=trained_run_dir, period='test', init_model=False
+    )
+
+    assert tester.dataset.is_loaded
+    assert tester.dataset.loaded_basins == sorted(TEST_BASINS)
+
+    # A no-op: the helper must not narrow a dataset it did not defer.
+    tester._load_basins_for_evaluation(EXPECTED_EVALUATED[:3])
+    assert tester.dataset.loaded_basins == sorted(TEST_BASINS)
+
