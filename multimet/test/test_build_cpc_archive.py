@@ -19,22 +19,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import pytest
-import xarray as xr
-
 from multimet.build_cpc_archive import (
     CPC_LATS,
     CPC_LONS,
     CPC_VARIABLE,
-    DEFAULT_START_YEAR,
-    build_arg_parser,
     ensure_psl_cpc_netcdf,
     process_cpc_netcdf_to_dataset,
     write_batch_to_zarr,
 )
 from multimet.test.conftest import PSL_LATS, PSL_LONS
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
 
 pytestmark = pytest.mark.unit
 
@@ -48,7 +45,7 @@ def sample_year(write_psl_year: Callable[..., Path]) -> Path:
 
 
 class TestGridStandardization:
-  """The PSL -> Caravan MultiMet spatial rewrite."""
+  """The PSL -> Caravan MultiMet spatial rewrite and input validation."""
 
   def test_output_schema(self, sample_year: Path) -> None:
     dataset = process_cpc_netcdf_to_dataset(str(sample_year))
@@ -62,6 +59,7 @@ class TestGridStandardization:
   def test_latitude_is_flipped_to_ascending(self, sample_year: Path) -> None:
     dataset = process_cpc_netcdf_to_dataset(str(sample_year))
 
+    assert dataset is not None
     np.testing.assert_allclose(dataset["latitude"].values, CPC_LATS)
     assert dataset["latitude"].values[0] == pytest.approx(-89.75)
     assert dataset["latitude"].values[-1] == pytest.approx(89.75)
@@ -70,6 +68,7 @@ class TestGridStandardization:
   def test_longitude_is_rolled_to_signed_range(self, sample_year: Path) -> None:
     dataset = process_cpc_netcdf_to_dataset(str(sample_year))
 
+    assert dataset is not None
     np.testing.assert_allclose(dataset["longitude"].values, CPC_LONS)
     assert dataset["longitude"].values[0] == pytest.approx(-179.75)
     assert dataset["longitude"].values[-1] == pytest.approx(179.75)
@@ -90,6 +89,7 @@ class TestGridStandardization:
     source.close()
 
     dataset = process_cpc_netcdf_to_dataset(str(path))
+    assert dataset is not None
 
     expected_lat = float(PSL_LATS[psl_lat_index])
     raw_lon = float(PSL_LONS[psl_lon_index])
@@ -104,19 +104,106 @@ class TestGridStandardization:
 
   def test_missing_values_become_nan(self, sample_year: Path) -> None:
     dataset = process_cpc_netcdf_to_dataset(str(sample_year))
+    assert dataset is not None
     values = dataset[CPC_VARIABLE].values
 
     assert np.isnan(values[0, 359, 360])
     assert np.count_nonzero(np.isnan(values)) == 1
 
-  def test_negative_sentinels_become_nan(
-      self, write_psl_year: Callable[..., Path]
+  def test_negative_sentinels_become_nan_while_preserving_valid_cells(
+      self, sample_year: Path
   ) -> None:
-    path = write_psl_year(2001, "2001-01-01", "2001-01-01", fill_value=-1.0)
+    dates = pd.date_range("2001-01-01", "2001-01-01", freq="D")
+    data = np.full((1, len(PSL_LATS), len(PSL_LONS)), 5.0, dtype=np.float32)
+    data[0, :180, :] = -1.0
+    source = xr.Dataset(
+        data_vars={"precip": (["time", "lat", "lon"], data)},
+        coords={"time": dates, "lat": PSL_LATS, "lon": PSL_LONS},
+    )
+    path = sample_year.parent / "precip.2001.nc"
+    source.to_netcdf(path)
+    source.close()
 
     dataset = process_cpc_netcdf_to_dataset(str(path))
+    assert dataset is not None
+    vals = dataset[CPC_VARIABLE].values
+    # Raw indices 0..179 (northern hemisphere) become indices 180..359 after flip.
+    assert bool(np.isnan(vals[0, 180:, :]).all())
+    assert np.allclose(vals[0, :180, :], 5.0)
 
-    assert bool(np.isnan(dataset[CPC_VARIABLE].values).all())
+  def test_all_nan_file_raises_value_error(
+      self, write_psl_year: Callable[..., Path]
+  ) -> None:
+    path = write_psl_year(2002, "2002-01-01", "2002-01-02", fill_value=-10.0)
+    with pytest.raises(ValueError, match="no finite precipitation values"):
+      process_cpc_netcdf_to_dataset(str(path), trim_trailing_unpublished=True)
+
+  def test_interior_all_nan_day_raises_value_error(
+      self, sample_year: Path
+  ) -> None:
+    dates = pd.date_range("2025-01-01", "2025-01-04", freq="D")
+    data = np.ones((4, len(PSL_LATS), len(PSL_LONS)), dtype=np.float32)
+    # Day 1 is an interior all-NaN day; day 3 is a trailing unpublished day.
+    data[1] = -9.96921e36
+    data[3] = -9.96921e36
+    source = xr.Dataset(
+        data_vars={"precip": (["time", "lat", "lon"], data)},
+        coords={"time": dates, "lat": PSL_LATS, "lon": PSL_LONS},
+    )
+    path = sample_year.parent / "precip.2025.nc"
+    source.to_netcdf(path)
+    source.close()
+
+    with pytest.raises(ValueError, match="2025-01-02"):
+      process_cpc_netcdf_to_dataset(str(path), trim_trailing_unpublished=True)
+
+  def test_already_ascending_latitude_raises_value_error(
+      self, sample_year: Path
+  ) -> None:
+    dates = pd.date_range("2024-01-01", "2024-01-01", freq="D")
+    data = np.ones((1, len(CPC_LATS), len(PSL_LONS)), dtype=np.float32)
+    source = xr.Dataset(
+        data_vars={"precip": (["time", "lat", "lon"], data)},
+        coords={"time": dates, "lat": CPC_LATS, "lon": PSL_LONS},
+    )
+    path = sample_year.parent / "precip.bad_lat.nc"
+    source.to_netcdf(path)
+    source.close()
+
+    with pytest.raises(ValueError, match="Unexpected latitude coordinates"):
+      process_cpc_netcdf_to_dataset(str(path))
+
+  def test_signed_longitude_input_raises_value_error(
+      self, sample_year: Path
+  ) -> None:
+    dates = pd.date_range("2024-01-01", "2024-01-01", freq="D")
+    data = np.ones((1, len(PSL_LATS), len(CPC_LONS)), dtype=np.float32)
+    source = xr.Dataset(
+        data_vars={"precip": (["time", "lat", "lon"], data)},
+        coords={"time": dates, "lat": PSL_LATS, "lon": CPC_LONS},
+    )
+    path = sample_year.parent / "precip.bad_lon.nc"
+    source.to_netcdf(path)
+    source.close()
+
+    with pytest.raises(ValueError, match="Unexpected longitude coordinates"):
+      process_cpc_netcdf_to_dataset(str(path))
+
+  def test_non_contiguous_dates_raise_value_error(
+      self, sample_year: Path
+  ) -> None:
+    dates = pd.to_datetime(["2024-01-01", "2024-01-03"])
+    data = np.ones((2, len(PSL_LATS), len(PSL_LONS)), dtype=np.float32)
+    source = xr.Dataset(
+        data_vars={"precip": (["time", "lat", "lon"], data)},
+        coords={"time": dates, "lat": PSL_LATS, "lon": PSL_LONS},
+    )
+    path = sample_year.parent / "precip.gap.nc"
+    source.to_netcdf(path)
+    source.close()
+
+    with pytest.raises(ValueError, match="contiguous daily"):
+      process_cpc_netcdf_to_dataset(str(path))
 
   def test_trims_trailing_unpublished_nan_days(
       self, sample_year: Path
@@ -146,6 +233,7 @@ class TestGridStandardization:
       self, sample_year: Path
   ) -> None:
     dataset = process_cpc_netcdf_to_dataset(str(sample_year))
+    assert dataset is not None
     times = pd.to_datetime(dataset["time"].values)
 
     assert list(times) == list(pd.date_range("2020-01-01", "2020-01-03"))
@@ -153,6 +241,7 @@ class TestGridStandardization:
 
   def test_global_metadata_is_attached(self, sample_year: Path) -> None:
     dataset = process_cpc_netcdf_to_dataset(str(sample_year))
+    assert dataset is not None
 
     assert dataset.attrs["product"] == "CPC"
     assert dataset.attrs["spatial_resolution"] == "0.50 degree"
@@ -170,6 +259,7 @@ class TestDateFiltering:
         target_end_date=pd.Timestamp("2020-01-02"),
     )
 
+    assert dataset is not None
     assert len(dataset["time"]) == 1
     assert pd.Timestamp(dataset["time"].values[0]) == pd.Timestamp("2020-01-02")
 
@@ -180,6 +270,7 @@ class TestDateFiltering:
         target_end_date=pd.Timestamp("2020-01-03"),
     )
 
+    assert dataset is not None
     assert len(dataset["time"]) == 3
 
   def test_returns_none_when_no_dates_match(self, sample_year: Path) -> None:
@@ -203,6 +294,7 @@ class TestWriteBatchToZarr:
         target_start_date=pd.Timestamp("2020-01-01"),
         target_end_date=pd.Timestamp("2020-01-01"),
     )
+    assert first is not None
     write_batch_to_zarr(first, target, is_initial_write=True)
 
     with xr.open_zarr(target, consolidated=False) as store:
@@ -214,6 +306,7 @@ class TestWriteBatchToZarr:
         target_start_date=pd.Timestamp("2020-01-02"),
         target_end_date=pd.Timestamp("2020-01-03"),
     )
+    assert rest is not None
     write_batch_to_zarr(rest, target, is_initial_write=False)
 
     with xr.open_zarr(target, consolidated=False) as store:
@@ -227,6 +320,7 @@ class TestWriteBatchToZarr:
   ) -> None:
     target = str(tmp_path / "cpc.zarr")
     full = process_cpc_netcdf_to_dataset(str(sample_year))
+    assert full is not None
 
     write_batch_to_zarr(
         full.isel(time=slice(0, 1)), target, is_initial_write=True
@@ -244,6 +338,7 @@ class TestWriteBatchToZarr:
         str(sample_year),
         target_end_date=pd.Timestamp("2020-01-02"),
     )
+    assert first is not None
 
     write_batch_to_zarr(first, target, is_initial_write=True)
 
@@ -253,7 +348,7 @@ class TestWriteBatchToZarr:
 
 
 class TestEnsurePslNetcdf:
-  """Download caching."""
+  """Download caching and HTTP error handling."""
 
   def test_returns_cached_file_without_downloading(
       self, sample_year: Path, psl_cache: Path, monkeypatch: pytest.MonkeyPatch
@@ -261,60 +356,25 @@ class TestEnsurePslNetcdf:
     def explode(*args: object, **kwargs: object) -> None:
       raise AssertionError("ensure_psl_cpc_netcdf must not hit the network")
 
-    monkeypatch.setattr("urllib.request.urlopen", explode)
+    monkeypatch.setattr("requests.get", explode)
 
     resolved = ensure_psl_cpc_netcdf(2020, cache_dir=str(psl_cache))
 
     assert Path(resolved) == sample_year
 
+  def test_raises_file_not_found_on_http_404(
+      self, psl_cache: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    class _Fake404Response:
+      status_code = 404
 
-class TestCommandLine:
-  """``build-cpc-archive`` argument parsing."""
+      def __enter__(self) -> _Fake404Response:
+        return self
 
-  def test_requires_target_zarr(self) -> None:
-    with pytest.raises(SystemExit):
-      build_arg_parser().parse_args([])
+      def __exit__(self, *args: object) -> None:
+        pass
 
-  def test_defaults_with_target_zarr(self) -> None:
-    args = build_arg_parser().parse_args(["--target_zarr", "/tmp/out.zarr"])
+    monkeypatch.setattr("requests.get", lambda *a, **k: _Fake404Response())
 
-    assert args.target_zarr == "/tmp/out.zarr"
-    assert args.project is None
-    assert args.start_year == DEFAULT_START_YEAR
-    assert args.end_year >= DEFAULT_START_YEAR
-    assert args.start_date is None
-    assert args.overwrite is False
-    assert args.cleanup_cache is False
-
-  def test_explicit_values(self) -> None:
-    args = build_arg_parser().parse_args([
-        "--start_year",
-        "2020",
-        "--end_year",
-        "2021",
-        "--start_date",
-        "2020-06-01",
-        "--end_date",
-        "2021-06-01",
-        "--target_zarr",
-        "/tmp/out.zarr",
-        "--num_workers",
-        "3",
-        "--overwrite",
-        "--cleanup_cache",
-    ])
-
-    assert args.start_year == 2020
-    assert args.end_year == 2021
-    assert args.start_date == "2020-06-01"
-    assert args.end_date == "2021-06-01"
-    assert args.target_zarr == "/tmp/out.zarr"
-    assert args.num_workers == 3
-    assert args.overwrite is True
-    assert args.cleanup_cache is True
-
-  def test_rejects_unknown_flags(self) -> None:
-    with pytest.raises(SystemExit):
-      build_arg_parser().parse_args(
-          ["--target_zarr", "/tmp/out.zarr", "--not_a_real_flag"]
-      )
+    with pytest.raises(FileNotFoundError, match="HTTP 404"):
+      ensure_psl_cpc_netcdf(2099, cache_dir=str(psl_cache))

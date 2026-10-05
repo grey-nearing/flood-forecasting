@@ -12,19 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for Zarr target classification and storage helpers."""
+"""Tests for Zarr target classification, resume planning, and storage helpers."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from multimet import storage
+from multimet.storage import is_remote_target, resolve_zarr_target
+import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 import zarr
-
-from multimet import storage
-from multimet.storage import is_remote_target, resolve_zarr_target
 
 pytestmark = pytest.mark.unit
 
@@ -33,12 +33,12 @@ class TestRemoteTargets:
   """Locations with explicit remote URI schemes."""
 
   def test_explicit_gs_url_is_remote(self) -> None:
-    assert resolve_zarr_target('gs://example-bucket/daily.zarr') == (
-        'gs://example-bucket/daily.zarr',
+    assert resolve_zarr_target("gs://example-bucket/daily.zarr") == (
+        "gs://example-bucket/daily.zarr",
         True,
     )
 
-  @pytest.mark.parametrize('url', ['s3://bucket/x.zarr', 'az://c/x.zarr'])
+  @pytest.mark.parametrize("url", ["s3://bucket/x.zarr", "az://c/x.zarr"])
   def test_other_schemes_are_passed_through(self, url: str) -> None:
     assert resolve_zarr_target(url) == (url, True)
 
@@ -47,24 +47,24 @@ class TestLocalTargets:
   """Locations on the local filesystem (never implicitly rewritten to gs://)."""
 
   def test_posix_absolute_path(self) -> None:
-    assert resolve_zarr_target('/tmp/out/daily.zarr') == (
-        '/tmp/out/daily.zarr',
+    assert resolve_zarr_target("/tmp/out/daily.zarr") == (
+        "/tmp/out/daily.zarr",
         False,
     )
 
   @pytest.mark.parametrize(
-      'path',
-      ['./daily.zarr', '../daily.zarr', 'daily.zarr', 'output/daily.zarr'],
+      "path",
+      ["./daily.zarr", "../daily.zarr", "daily.zarr", "output/daily.zarr"],
   )
   def test_relative_paths_stay_local(self, path: str) -> None:
     assert resolve_zarr_target(path) == (path, False)
 
   def test_home_relative_path(self) -> None:
-    assert resolve_zarr_target('~/daily.zarr') == ('~/daily.zarr', False)
+    assert resolve_zarr_target("~/daily.zarr") == ("~/daily.zarr", False)
 
   def test_file_url_is_unwrapped(self) -> None:
-    assert resolve_zarr_target('file:///tmp/daily.zarr') == (
-        '/tmp/daily.zarr',
+    assert resolve_zarr_target("file:///tmp/daily.zarr") == (
+        "/tmp/daily.zarr",
         False,
     )
 
@@ -73,60 +73,111 @@ class TestWindowsTargets:
   """Regression tests for Windows-style paths."""
 
   @pytest.mark.parametrize(
-      'path',
+      "path",
       [
-          r'C:\Users\runneradmin\AppData\Local\Temp\pytest-0\daily.zarr',
-          r'C:/Users/runneradmin/daily.zarr',
-          r'D:\data\daily.zarr',
-          r'z:\data\daily.zarr',
+          r"C:\Users\runneradmin\AppData\Local\Temp\pytest-0\daily.zarr",
+          r"C:/Users/runneradmin/daily.zarr",
+          r"D:\data\daily.zarr",
+          r"z:\data\daily.zarr",
       ],
   )
   def test_drive_qualified_paths_are_local(self, path: str) -> None:
     assert resolve_zarr_target(path) == (path, False)
 
   def test_unc_path_is_local(self) -> None:
-    path = r'\\fileserver\share\daily.zarr'
+    path = r"\\fileserver\share\daily.zarr"
     assert resolve_zarr_target(path) == (path, False)
 
   def test_relative_windows_path_is_local(self) -> None:
-    path = r'.\output\daily.zarr'
+    path = r".\output\daily.zarr"
     assert resolve_zarr_target(path) == (path, False)
 
   def test_drive_letter_is_not_mistaken_for_a_uri_scheme(self) -> None:
-    assert is_remote_target(r'C:\data\daily.zarr') is False
+    assert is_remote_target(r"C:\data\daily.zarr") is False
 
 
 class TestValidation:
 
   def test_empty_target_is_rejected(self) -> None:
-    with pytest.raises(ValueError, match='non-empty'):
-      resolve_zarr_target('')
+    with pytest.raises(ValueError, match="non-empty"):
+      resolve_zarr_target("")
 
 
-class TestAppendKeepsRootAttributes:
-  """An append must not erase attributes written by the builders."""
+class TestAppendAndResumeIntegrity:
+  """Tests batch writes, in-place writes, and strict resume validation."""
 
-  def test_tracking_attrs_survive_append(self, tmp_path: Path) -> None:
-    target = str(tmp_path / 'a.zarr')
+  def test_append_preserves_custom_root_attrs(self, tmp_path: Path) -> None:
+    target = str(tmp_path / "a.zarr")
 
     def batch(date: str) -> xr.Dataset:
       return xr.Dataset(
-          {'v': (['time'], [1.0])},
-          coords={'time': [pd.Timestamp(date)]},
-          attrs={'title': 'new title'},
+          {"v": (["time"], [1.0])},
+          coords={"time": [pd.Timestamp(date)]},
+          attrs={"title": "new title"},
       )
 
     storage.write_dataset_batch_to_zarr(
-        batch('2025-01-01'), target, is_initial_write=True, consolidated=False
+        batch("2025-01-01"), target, is_initial_write=True, consolidated=False
     )
-    root = zarr.open_group(target, mode='r+')
-    root.attrs['missing_dates'] = ['2024-12-31']
-    root.attrs['title'] = 'old title'
+    root = zarr.open_group(target, mode="r+")
+    root.attrs["custom_attr"] = "preserved"
+    root.attrs["title"] = "old title"
 
     storage.write_dataset_batch_to_zarr(
-        batch('2025-01-02'), target, consolidated=False
+        batch("2025-01-02"), target, consolidated=False
     )
 
-    attrs = dict(zarr.open_group(target, mode='r').attrs)
-    assert attrs['missing_dates'] == ['2024-12-31']
-    assert attrs['title'] == 'new title'
+    attrs = dict(zarr.open_group(target, mode="r").attrs)
+    assert attrs["custom_attr"] == "preserved"
+    assert attrs["title"] == "new title"
+
+  def test_plan_archive_resume_rejects_trailing_all_nan_slice(
+      self, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "trailing_nan.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "x"], [[1.0, 2.0], [np.nan, np.nan]])},
+        coords={"time": pd.date_range("2025-01-01", "2025-01-02"), "x": [0, 1]},
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    with pytest.raises(ValueError, match="trailing NaN"):
+      storage.plan_archive_resume(
+          target, pd.date_range("2025-01-01", "2025-01-03")
+      )
+
+  def test_plan_archive_resume_rejects_date_gap(self, tmp_path: Path) -> None:
+    target = str(tmp_path / "gap.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "x"], [[1.0, 2.0], [3.0, 4.0]])},
+        coords={"time": pd.date_range("2025-01-01", "2025-01-02"), "x": [0, 1]},
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    with pytest.raises(ValueError, match="expected 2025-01-03"):
+      storage.plan_archive_resume(
+          target, pd.date_range("2025-01-04", "2025-01-05")
+      )
+
+  def test_write_dataset_batch_in_place_rejects_missing_target_date(
+      self, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "in_place.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "x"], [[1.0, 2.0]])},
+        coords={"time": [pd.Timestamp("2025-01-01")], "x": [0, 1]},
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    missing_update = xr.Dataset(
+        {"v": (["time", "x"], [[9.0, 9.0]])},
+        coords={"time": [pd.Timestamp("2025-01-02")], "x": [0, 1]},
+    )
+    with pytest.raises(ValueError, match="Dates not found"):
+      storage.write_dataset_batch_in_place(missing_update, target)

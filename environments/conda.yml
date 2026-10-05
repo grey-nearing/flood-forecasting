@@ -28,11 +28,11 @@ dependencies:
   - cuda-toolkit=12.4.*
   - cuda-version=12.4
   - dask=2025.12.0
-  - eccodes
   - fsspec
   - gcsfs=2025.12.*
   - geopandas=1.1.*
   - gh
+  - google-cloud-storage
   - h5netcdf=1.7.3
   - h5py=3.15.1  # Sets the underlying C library "hdf5", letting h5py set it.
   - ipython
@@ -44,19 +44,23 @@ dependencies:
   - numpy=2.4.*
   - pandas=2.3.*
   - parso=0.8.5
+  - pyarrow
   - pydantic=2.12.*
+  - pyogrio
+  - pyproj
   - pytest
   - pytest-cov
   - pytest-xdist
   - python=3.12.*
-  - python-eccodes
   - pytorch=2.5.1
   - pytorch-cuda=12.4
+  - rasterio=1.5.*
   - requests
   - ruamel.yaml=0.18.17
   - ruff
   - scipy=1.16.*
   - seaborn
+  - shapely=2.1.*
   - sphinx=8.2.3
   - sphinx-rtd-theme=3.0.2
   - tensorboard=2.20.*

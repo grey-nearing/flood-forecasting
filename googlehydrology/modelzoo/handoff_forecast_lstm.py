@@ -94,7 +94,10 @@ class HandoffForecastLSTM(BaseModel):
         super(HandoffForecastLSTM, self).__init__(cfg=cfg)
 
         self.overlap_output = False
-        if 'forecast_overlap' in cfg.regularization:
+        if any(
+            (item if isinstance(item, str) else item[0]) == 'forecast_overlap'
+            for item in cfg.regularization
+        ):
             self.overlap_output = True
             if cfg.head not in ['regression']:
                 raise ValueError('Forecast overlap regularization only works with a regression head.')
@@ -479,7 +482,8 @@ class HandoffForecastLSTM(BaseModel):
             dim=-1,
         )
 
-        # We run the exact same logic up to the final temporal state (Day D)
+        # We run the exact same logic up to the final hindcast state, i.e. the
+        # last completed day before the forecast issue date.
         forecast_features = _concat_dynamic_features(
             data['x_d_forecast'], keys=self.forecast_inputs
         )
@@ -495,7 +499,7 @@ class HandoffForecastLSTM(BaseModel):
             dim=-1,
         )
 
-        # Cold start logic internally to propagate up to Day D
+        # Cold-start logic to propagate state up to the end of the hindcast.
         if self.overlap > 0:
             spinup_embeddings = hindcast_embeddings[:, : -self.overlap]
             overlap_embeddings_hindcast = hindcast_embeddings[

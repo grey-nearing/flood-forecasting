@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # Nightly live checks for the upstream weather feeds used by the multimet
-# archive builders: NOAA PSL (CPC), WeatherBench 2, ECMWF Open Data, and NASA
-# Earthdata CMR (IMERG).
+# archive builders: NOAA PSL (CPC) and NASA Earthdata CMR (IMERG).
 #
 # Runs on a daily schedule and via manual workflow_dispatch so transient
 # third-party outages do not block pull requests.
@@ -23,8 +22,7 @@ name: multimet canary
 
 on:
   schedule:
-    # 06:17 UTC daily. Offset from the hour to avoid the scheduling stampede,
-    # and late enough that the ECMWF 00z run has published.
+    # 06:17 UTC daily. Offset from the hour to avoid the scheduling stampede.
     - cron: '17 6 * * *'
   # Allows an on-demand run from the Actions tab, which is the quickest way to
   # confirm an upstream outage has cleared.
@@ -37,9 +35,9 @@ jobs:
   canary:
     name: Upstream feed canaries
     runs-on: ubuntu-latest
-    # Generous relative to the ~5 minute expected runtime, because these steps
+    # Generous relative to the ~2 minute expected runtime, because these steps
     # download real data over the public internet.
-    timeout-minutes: 45
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -71,16 +69,6 @@ jobs:
             "tqdm" \
             "pytest" \
             "pytest-timeout"
-
-      # ecCodes is only needed to decode ECMWF GRIB2. If it cannot be installed
-      # the two decoding canaries skip themselves and the remaining six still
-      # run, so a packaging problem here must not fail the job.
-      - name: Install ecCodes (optional, enables the GRIB decoding canaries)
-        continue-on-error: true
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libeccodes0 libeccodes-tools
-          python -m pip install eccodes
 
       - name: Run canaries
         run: |

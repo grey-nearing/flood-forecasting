@@ -12,27 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Open-MultiMet gridded meteorological archive builders.
+"""MultiMet data workflows for static watershed attributes and gridded archives.
 
-This package contains the ETL pipelines that assemble the unified, analysis
-ready gridded archives that back Open-MultiMet:
+Exposes:
 
-* :mod:`multimet.build_cpc_archive` - NOAA CPC Global Unified daily gauge-based
-  precipitation (0.5 degree, 1979 to present).
-* :mod:`multimet.build_hres_archive` - ECMWF IFS HRES daily surface forecasts
-  (lead days 1..10, 0.25 degree) from public ECMWF Open Data (2024-03-06 to
-  present).
-* :mod:`multimet.build_imerg_archive` - NASA GPM IMERG Early V07 daily
-  precipitation (0.1 degree, 2000 to present).
-* :mod:`multimet.hres_schema` - canonical HRES archive schema (grid, forecast
-  steps, variables, units, and daily aggregation).
-
-Each builder module is independently runnable and exposes a console script
-(``build-cpc-archive`` / ``build-hres-archive`` / ``build-imerg-archive``). See
-``multimet/README.md`` for the full usage guide.
-
-Submodules are imported lazily so that importing :mod:`multimet` stays cheap
-and does not require the optional cloud/GRIB dependencies to be installed.
+* Static attribute extraction (:class:`StaticAttributesExtractor`,
+  :class:`ERA5ClimateLoader`, :class:`ERA5GriddedExtractor`,
+  :func:`compute_caravan_climate_metrics`).
+* Gridded meteorological archive builders (:mod:`multimet.build_cpc_archive`,
+  :mod:`multimet.build_imerg_archive`, and :mod:`multimet.storage`).
 """
 
 from __future__ import annotations
@@ -41,20 +29,37 @@ import importlib
 from typing import Any
 
 __all__ = [
+    "StaticAttributesExtractor",
+    "ERA5ClimateLoader",
+    "ERA5GriddedExtractor",
+    "compute_caravan_climate_metrics",
     "build_cpc_archive",
-    "build_hres_archive",
     "build_imerg_archive",
-    "hres_schema",
+    "storage",
 ]
 
-_SUBMODULES = frozenset(__all__)
+_STATIC_EXPORTS = frozenset({
+    "StaticAttributesExtractor",
+    "ERA5ClimateLoader",
+    "ERA5GriddedExtractor",
+    "compute_caravan_climate_metrics",
+})
+
+_SUBMODULES = frozenset({
+    "build_cpc_archive",
+    "build_imerg_archive",
+    "storage",
+})
 
 
 def __getattr__(name: str) -> Any:  # noqa: ANN401 - module objects are untyped.
   if name in _SUBMODULES:
     return importlib.import_module(f"{__name__}.{name}")
+  if name in _STATIC_EXPORTS:
+    mod = importlib.import_module(f"{__name__}.static_extractor")
+    return getattr(mod, name)
   raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:
-  return sorted(set(globals()) | _SUBMODULES)
+  return sorted(set(globals()) | _SUBMODULES | _STATIC_EXPORTS)

@@ -15,35 +15,24 @@
 """Storage location, batch write, and resume primitives for archive builders.
 
 Provides target classification (requiring explicit URI schemes for remote cloud
-stores), atomic batch append/in-place Zarr writers with retry backoff, and
-self-healing resume planning that distinguishes genuine upstream missing dates
-from operational failures while preventing trailing NaN initialization.
+stores), batch append/in-place Zarr writers, and strict resume planning that
+verifies existing store integrity and chronological continuity.
 """
 
 from __future__ import annotations
 
-import json
+import importlib
 import logging
 import os
 import re
 import shutil
-import time
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import fsspec
 import numpy as np
 import pandas as pd
 import xarray as xr
 import zarr
-
-try:
-  import gcsfs  # type: ignore[import-untyped]
-except ImportError:
-  gcsfs = None
-
-if TYPE_CHECKING:
-  pass
 
 _logger = logging.getLogger(__name__)
 
@@ -52,13 +41,6 @@ _logger = logging.getLogger(__name__)
 _URI_SCHEME_RE = re.compile(r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*)://")
 
 _FILE_SCHEME_PREFIX = "file://"
-
-# Errors that will fail identically on every attempt and must not be retried.
-NON_RETRYABLE_ERRORS = (ImportError, TypeError, ValueError, PermissionError)
-
-
-class UpstreamDataMissingError(FileNotFoundError):
-  """Raised when an upstream archive genuinely has no data published for a date."""
 
 
 def resolve_zarr_target(target: str) -> tuple[str, bool]:
@@ -100,6 +82,11 @@ def is_remote_target(target: str) -> bool:
   return resolve_zarr_target(target)[1]
 
 
+def _load_gcsfs() -> Any:  # noqa: ANN401
+  """Imports ``gcsfs`` when a ``gs://`` target is accessed."""
+  return importlib.import_module("gcsfs")
+
+
 def get_zarr_mapper(
     target_zarr_url: str, project: str | None = None
 ) -> tuple[str, bool, Any]:
@@ -107,11 +94,7 @@ def get_zarr_mapper(
   full_url, is_remote = resolve_zarr_target(target_zarr_url)
   if is_remote:
     if full_url.startswith("gs://"):
-      if gcsfs is None:
-        raise ImportError(
-            "gcsfs is required to access gs:// Zarr targets. Install gcsfs or "
-            "provide a local filesystem path."
-        )
+      gcsfs = _load_gcsfs()
       clean_path = full_url.removeprefix("gs://")
       fs_kwargs: dict[str, Any] = {}
       if project:
@@ -143,6 +126,7 @@ def inspect_zarr_store(
   full_url, is_remote, mapper = get_zarr_mapper(target_zarr_url, project)
   if is_remote:
     if full_url.startswith("gs://"):
+      gcsfs = _load_gcsfs()
       clean_path = full_url.removeprefix("gs://")
       fs_kwargs: dict[str, Any] = {}
       if project:
@@ -206,19 +190,15 @@ def plan_archive_resume(
     mapper: Any,  # noqa: ANN401
     requested_dates: pd.DatetimeIndex,
     has_consolidated: bool = False,
-) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex, dict[str, int]]:
-  """Plans in-place retries and new date appends when resuming an existing store.
+) -> tuple[pd.DatetimeIndex, dict[str, int]]:
+  """Plans new date appends when resuming an existing Zarr store.
 
-  Inspects the existing store for:
-
-  1. Dates recorded in ``attrs["failed_dates"]`` or ``attrs["missing_dates"]``.
-  2. Any trailing all-NaN slices at the end of the existing store (for example,
-     if a store was previously initialized with dates beyond the latest
-     available upstream publication).
-
-  Any such incomplete dates that fall within ``requested_dates`` are scheduled
-  for in-place backfill (`in_place_dates`), and any requested dates after the
-  store's maximum timestamp are scheduled for append (`append_dates`).
+  Verifies that:
+  1. The existing store's ``time`` coordinate is strictly monotonically
+     increasing with no duplicate dates.
+  2. The existing store does not end with an all-NaN slice.
+  3. Any new dates to append immediately follow ``max(existing_times)`` with no
+     date gap.
 
   Args:
     mapper: Zarr store path or fsspec mapper.
@@ -226,85 +206,47 @@ def plan_archive_resume(
     has_consolidated: Whether consolidated metadata is present.
 
   Returns:
-    Tuple of ``(in_place_dates, append_dates, date_to_idx)``.
+    Tuple of ``(append_dates, date_to_idx)``.
+
+  Raises:
+    ValueError: If the existing store has non-monotonic timestamps, trailing
+      all-NaN slices, or if ``requested_dates`` would create a date gap after
+      the end of the existing store.
   """
-  root = zarr.open_group(mapper, mode="r")
-  recorded_missing = set(root.attrs.get("missing_dates", []))
-  recorded_failed = set(root.attrs.get("failed_dates", []))
-  needs_retry = recorded_missing | recorded_failed
-
   with xr.open_zarr(mapper, consolidated=has_consolidated) as existing_ds:
-    existing_times = pd.to_datetime(existing_ds["time"].values)
-    date_to_idx = {
-        t.strftime("%Y-%m-%d"): idx for idx, t in enumerate(existing_times)
-    }
+    existing_times = pd.DatetimeIndex(pd.to_datetime(existing_ds["time"].values))
+    if len(existing_times) == 0:
+      raise ValueError("Existing Zarr store has an empty time coordinate.")
+    if not existing_times.is_monotonic_increasing or existing_times.has_duplicates:
+      raise ValueError(
+          "Existing Zarr store time coordinate is not strictly monotonically "
+          "increasing."
+      )
+    if _is_slice_all_nan(existing_ds, len(existing_times) - 1):
+      last_str = existing_times[-1].strftime("%Y-%m-%d")
+      raise ValueError(
+          f"Existing Zarr store ends with an all-NaN slice at {last_str}. "
+          "Refusing to append to a store with trailing NaN data."
+      )
 
-    # Walk backwards from the end of the store to detect any trailing all-NaN
-    # slices so that an over-extended time axis can self-heal on update runs.
-    for idx in range(len(existing_times) - 1, -1, -1):
-      d_str = existing_times[idx].strftime("%Y-%m-%d")
-      if d_str in needs_retry or _is_slice_all_nan(existing_ds, idx):
-        needs_retry.add(d_str)
-      else:
-        break
-
-  max_existing_time = pd.Timestamp(existing_times.max())
-  in_place_list: list[pd.Timestamp] = []
-  append_list: list[pd.Timestamp] = []
-
-  for dt in requested_dates:
-    d_str = dt.strftime("%Y-%m-%d")
-    if d_str in date_to_idx:
-      if d_str in needs_retry:
-        in_place_list.append(dt)
-    elif dt > max_existing_time:
-      append_list.append(dt)
-
-  return (
-      pd.DatetimeIndex(in_place_list),
-      pd.DatetimeIndex(append_list),
-      date_to_idx,
-  )
-
-
-def update_store_tracking_attrs(
-    mapper: Any,  # noqa: ANN401
-    *,
-    newly_valid_dates: Sequence[str] = (),
-    newly_missing_dates: Sequence[str] = (),
-    newly_failed_dates: Sequence[str] = (),
-) -> None:
-  """Updates ``missing_dates`` and ``failed_dates`` in the Zarr root attrs."""
-  root = zarr.open_group(mapper, mode="r+")
-  missing = set(root.attrs.get("missing_dates", []))
-  failed = set(root.attrs.get("failed_dates", []))
-
-  valid_set = set(newly_valid_dates)
-  missing = (missing - valid_set) | set(newly_missing_dates)
-  failed = (failed - valid_set) | set(newly_failed_dates)
-
-  root.attrs["missing_dates"] = sorted(missing)
-  root.attrs["failed_dates"] = sorted(failed)
-
-
-def write_failure_log(
-    failure_log_path: str | None,
-    *,
-    failed_dates: Sequence[str],
-    missing_dates: Sequence[str],
-) -> None:
-  """Writes a structured JSON log of failed and upstream-missing dates."""
-  if not failure_log_path:
-    return
-  parent = os.path.dirname(os.path.abspath(failure_log_path))
-  if parent:
-    os.makedirs(parent, exist_ok=True)
-  payload = {
-      "failed_dates": sorted(set(failed_dates)),
-      "missing_dates": sorted(set(missing_dates)),
+  date_to_idx = {
+      t.strftime("%Y-%m-%d"): idx for idx, t in enumerate(existing_times)
   }
-  with open(failure_log_path, "w", encoding="utf-8") as f:
-    json.dump(payload, f, indent=2)
+  max_existing_time = pd.Timestamp(existing_times[-1])
+  append_dates = pd.DatetimeIndex(
+      [dt for dt in requested_dates if dt > max_existing_time]
+  )
+  if len(append_dates) > 0:
+    expected_next = max_existing_time + pd.Timedelta(days=1)
+    if pd.Timestamp(append_dates[0]) != expected_next:
+      raise ValueError(
+          f"Cannot resume archive: existing store ends at "
+          f"{max_existing_time.strftime('%Y-%m-%d')}, but first append date is "
+          f"{pd.Timestamp(append_dates[0]).strftime('%Y-%m-%d')} "
+          f"(expected {expected_next.strftime('%Y-%m-%d')})."
+      )
+
+  return append_dates, date_to_idx
 
 
 def write_dataset_batch_to_zarr(
@@ -315,58 +257,38 @@ def write_dataset_batch_to_zarr(
     is_initial_write: bool = False,
     consolidated: bool = True,
     time_chunk_size: int = 1,
-    max_retries: int = 5,
 ) -> None:
-  """Writes or appends a batch ``xr.Dataset`` to a Zarr store with backoff."""
-  for attempt in range(max_retries):
-    try:
-      full_url, _, mapper = get_zarr_mapper(target_zarr_url, project)
-      if is_initial_write:
-        _logger.info("Writing initial Zarr schema to %s...", full_url)
-        encoding = {
-            var: {
-                "chunks": (time_chunk_size,)
-                + tuple(
-                    len(ds_batch[dim])
-                    for dim in ds_batch[var].dims
-                    if dim != "time"
-                )
-            }
-            for var in ds_batch.data_vars
+  """Writes or appends a batch ``xr.Dataset`` to a Zarr store."""
+  full_url, _, mapper = get_zarr_mapper(target_zarr_url, project)
+  if is_initial_write:
+    _logger.info("Writing initial Zarr schema to %s...", full_url)
+    encoding = {
+        var: {
+            "chunks": (time_chunk_size,)
+            + tuple(
+                len(ds_batch[dim])
+                for dim in ds_batch[var].dims
+                if dim != "time"
+            )
         }
-        ds_batch.to_zarr(
-            mapper, mode="w", consolidated=consolidated, encoding=encoding
-        )
-      else:
-        _logger.info(
-            "Appending %d dates along time dimension...", len(ds_batch["time"])
-        )
-        # An xarray append replaces all root attributes with ds_batch.attrs.
-        # Keep attributes written by the builders (such as missing_dates).
-        root = zarr.open_group(mapper, mode="r")
-        kept_attrs = {
-            k: v for k, v in root.attrs.items() if k not in ds_batch.attrs
-        }
-        ds_batch.to_zarr(
-            mapper, mode="a", append_dim="time", consolidated=consolidated
-        )
-        if kept_attrs:
-          zarr.open_group(mapper, mode="r+").attrs.update(kept_attrs)
-      return
-    except NON_RETRYABLE_ERRORS:
-      raise
-    except Exception as err:  # noqa: BLE001
-      wait_secs = 5 * (2**attempt)
-      _logger.warning(
-          "Error writing batch to Zarr (attempt %d/%d): %s. Retrying in %ds...",
-          attempt + 1,
-          max_retries,
-          err,
-          wait_secs,
-      )
-      if attempt == max_retries - 1:
-        raise
-      time.sleep(wait_secs)
+        for var in ds_batch.data_vars
+    }
+    ds_batch.to_zarr(
+        mapper, mode="w", consolidated=consolidated, encoding=encoding
+    )
+  else:
+    _logger.info(
+        "Appending %d dates along time dimension...", len(ds_batch["time"])
+    )
+    root = zarr.open_group(mapper, mode="r")
+    kept_attrs = {
+        k: v for k, v in root.attrs.items() if k not in ds_batch.attrs
+    }
+    ds_batch.to_zarr(
+        mapper, mode="a", append_dim="time", consolidated=consolidated
+    )
+    if kept_attrs:
+      zarr.open_group(mapper, mode="r+").attrs.update(kept_attrs)
 
 
 def write_dataset_batch_in_place(
@@ -375,56 +297,37 @@ def write_dataset_batch_in_place(
     *,
     project: str | None = None,
     date_to_idx: dict[str, int] | None = None,
-    max_retries: int = 5,
 ) -> None:
   """Writes a batch of dates directly in-place into existing Zarr slices."""
-  for attempt in range(max_retries):
-    try:
-      _, _, mapper = get_zarr_mapper(target_zarr_url, project)
-      if date_to_idx is None:
-        time_pd = decode_zarr_time_index(mapper)
-        date_to_idx = {
-            t.strftime("%Y-%m-%d"): i for i, t in enumerate(time_pd)
-        }
+  _, _, mapper = get_zarr_mapper(target_zarr_url, project)
+  if date_to_idx is None:
+    time_pd = decode_zarr_time_index(mapper)
+    date_to_idx = {
+        t.strftime("%Y-%m-%d"): i for i, t in enumerate(time_pd)
+    }
 
-      batch_times = pd.to_datetime(ds_batch["time"].values)
-      missing_dates = [
-          t.strftime("%Y-%m-%d")
-          for t in batch_times
-          if t.strftime("%Y-%m-%d") not in date_to_idx
-      ]
-      if missing_dates:
-        raise ValueError(
-            "Dates not found in target store for in-place write: "
-            f"{missing_dates}"
-        )
+  batch_times = pd.to_datetime(ds_batch["time"].values)
+  missing_dates = [
+      t.strftime("%Y-%m-%d")
+      for t in batch_times
+      if t.strftime("%Y-%m-%d") not in date_to_idx
+  ]
+  if missing_dates:
+    raise ValueError(
+        "Dates not found in target store for in-place write: "
+        f"{missing_dates}"
+    )
 
-      indices = [date_to_idx[t.strftime("%Y-%m-%d")] for t in batch_times]
-      root = zarr.open_group(mapper, mode="r+")
-      is_contiguous = indices == list(
-          range(indices[0], indices[0] + len(indices))
-      )
+  indices = [date_to_idx[t.strftime("%Y-%m-%d")] for t in batch_times]
+  root = zarr.open_group(mapper, mode="r+")
+  is_contiguous = indices == list(
+      range(indices[0], indices[0] + len(indices))
+  )
 
-      for var in ds_batch.data_vars:
-        vals = ds_batch[var].values
-        if is_contiguous:
-          root[var][indices[0] : indices[-1] + 1] = vals
-        else:
-          for i, target_idx in enumerate(indices):
-            root[var][target_idx : target_idx + 1] = vals[i : i + 1]
-      return
-    except NON_RETRYABLE_ERRORS:
-      raise
-    except Exception as err:  # noqa: BLE001
-      wait_secs = 5 * (2**attempt)
-      _logger.warning(
-          "Error writing batch in-place (attempt %d/%d): %s. Retrying in "
-          "%ds...",
-          attempt + 1,
-          max_retries,
-          err,
-          wait_secs,
-      )
-      if attempt == max_retries - 1:
-        raise
-      time.sleep(wait_secs)
+  for var in ds_batch.data_vars:
+    vals = ds_batch[var].values
+    if is_contiguous:
+      root[var][indices[0] : indices[-1] + 1] = vals
+    else:
+      for i, target_idx in enumerate(indices):
+        root[var][target_idx : target_idx + 1] = vals[i : i + 1]

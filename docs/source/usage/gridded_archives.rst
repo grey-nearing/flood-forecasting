@@ -3,8 +3,8 @@ Gridded Weather Archives
 ========================
 
 This guide explains how to use the command-line tools in the :mod:`multimet`
-package to download public gridded weather data and save it in standardized
-daily Zarr archives.
+package to download public gridded precipitation data and save it in
+standardized daily Zarr archives.
 
 .. note::
 
@@ -14,19 +14,19 @@ daily Zarr archives.
    point ``dynamics_data_dir`` in your configuration file to
    ``gs://caravan-multimet/v1.1`` (see :doc:`quickstart`).
 
-   Use these tools only if you want to download raw weather grids directly from
-   NOAA, ECMWF, or NASA and build or update your own Zarr archives.
+   Use these tools only if you want to download raw precipitation grids
+   directly from NOAA or NASA and build or update your own Zarr archives.
 
 --------
 Overview
 --------
 
-Three command-line tools are installed when you run ``pip install -e .`` from
-the repository root:
+Two command-line tools for gridded archive construction are installed when you
+run ``pip install -e .`` from the repository root:
 
 .. list-table::
    :header-rows: 1
-   :widths: 20 45 15 20
+   :widths: 25 40 15 20
 
    * - Command
      - Dataset
@@ -36,19 +36,15 @@ the repository root:
      - NOAA CPC Global Unified Daily Precipitation
      - 0.5° (``360 × 720``)
      - 1979 to present
-   * - ``build-hres-archive``
-     - ECMWF IFS HRES Daily Surface Forecasts (Lead Days 1–10)
-     - 0.25° (``721 × 1440``)
-     - 2024-03-06 to present (earlier years: see section 2)
    * - ``build-imerg-archive``
      - NASA GPM IMERG Early V07 Daily Precipitation
      - 0.1° (``1800 × 3600``)
      - 2000-06-01 to present
 
-Each tool downloads raw files from the upstream weather agency, converts them
-to a consistent daily ``(time, latitude, longitude)`` or
-``(time, lead_time, latitude, longitude)`` grid, replaces missing values with
-``NaN``, and saves the result to the ``--target_zarr`` location you provide.
+Each tool downloads raw files from the upstream weather agency, validates
+coordinates and dimensions, converts them to a consistent daily
+``(time, latitude, longitude)`` grid, replaces missing values with ``NaN``, and
+saves the result to the ``--target_zarr`` location you provide.
 
 -------------
 Prerequisites
@@ -66,13 +62,6 @@ Additional Requirements by Dataset
 
 * **NOAA CPC (** ``build-cpc-archive`` **):** No extra packages or accounts are
   needed.
-* **ECMWF HRES (** ``build-hres-archive`` **):** No account is needed. The
-  ``eccodes`` library is required to read ECMWF's GRIB2 files:
-
-  .. code-block:: bash
-
-     conda install -c conda-forge eccodes python-eccodes
-
 * **NASA GPM IMERG (** ``build-imerg-archive`` **):** Downloading directly from
   NASA GES DISC requires a free `NASA Earthdata Login
   <https://urs.earthdata.nasa.gov/>`_ account. You can provide your credentials
@@ -140,161 +129,8 @@ Command-Line Arguments (``build-cpc-archive``)
 -  ``--source_url_template``: Custom download URL template containing
    ``{year}`` (default: official NOAA PSL URL).
 
----------------------------------------------
-2. ECMWF IFS HRES Daily Surface Forecasts
----------------------------------------------
-
-``build-hres-archive`` builds or updates a daily ``0.25°`` global surface
-forecast archive (``721`` latitudes ``-90.0 .. 90.0`` by ``1440`` longitudes
-``0.0 .. 359.75``, lead days ``1..10``) from **ECMWF Open Data**
-(``gs://ecmwf-open-data``, ``ifs/0p25/oper``, 00:00 UTC run; no account or
-credentials required).
-
-.. note::
-
-   **Historical coverage (2016 onward):** Public ECMWF Open Data at ``0.25°``
-   contains all required surface variables starting on **2024-03-06**. Earlier
-   years (2016–2024) are built separately using the exact same schema and
-   aggregation rules (:mod:`multimet.hres_schema`) and published as a pre-built
-   archive (the public bucket path will be added here once released). Use
-   ``build-hres-archive`` to append new forecast dates to a copy of that
-   archive, or to build a standalone archive from ``2024-03-06`` onward.
-
-Dimensions and Coordinates
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. list-table::
-   :header-rows: 1
-   :widths: 15 30 55
-
-   * - Dimension
-     - Values
-     - Description
-   * - ``time``
-     - Daily (``YYYY-MM-DD``)
-     - Forecast issue date (00:00 UTC run).
-   * - ``lead_time``
-     - ``1 .. 10``
-     - Forecast lead day ``d``, covering hours ``24*(d-1)`` to ``24*d`` after
-       the 00:00 UTC initialization (e.g., lead day 1 covers hours ``+0`` to
-       ``+24`` UTC on the issue date).
-   * - ``latitude``
-     - ``721`` values (``-90.0 .. 90.0``)
-     - South-to-north in ``0.25°`` steps.
-   * - ``longitude``
-     - ``1440`` values (``0.0 .. 359.75``)
-     - Eastward from the prime meridian in ``0.25°`` steps (``0° .. 360°``
-       convention).
-
-Variables
-^^^^^^^^^
-
-All variables are stored as ``float32`` in canonical MultiMet / Caravan units:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 35 55 10
-
-   * - Variable
-     - Description
-     - Units
-   * - ``temperature_2m_mean``
-     - Daily mean 2 m air temperature
-     - ``°C``
-   * - ``temperature_2m_min``
-     - Daily minimum 2 m air temperature
-     - ``°C``
-   * - ``temperature_2m_max``
-     - Daily maximum 2 m air temperature
-     - ``°C``
-   * - ``total_precipitation_sum``
-     - Daily total precipitation (rain and melted snow)
-     - ``mm``
-   * - ``surface_pressure_mean``
-     - Daily mean surface pressure
-     - ``kPa``
-   * - ``surface_net_solar_radiation_mean``
-     - Daily mean surface net shortwave (solar) radiation (positive downward)
-     - ``W/m²``
-   * - ``surface_net_thermal_radiation_mean``
-     - Daily mean surface net longwave (thermal) radiation (positive downward;
-       typically negative due to net radiative cooling)
-     - ``W/m²``
-
-**Daily aggregation:** Temperature and surface pressure statistics (``mean``,
-``min``, ``max``) are computed over the instantaneous forecast steps in each
-24-hour lead window (``24*(d-1) < step <= 24*d``): 8 steps at 3-hour intervals
-for lead days 1–6 (``+3h .. +144h``) and 4 steps at 6-hour intervals for lead
-days 7–10 (``+150h .. +240h``). Precipitation and radiation variables are
-computed by differencing ECMWF's cumulative run totals between steps ``24*d``
-and ``24*(d-1)`` (with step ``0`` equal to ``0``). See
-:mod:`multimet.hres_schema` for the full specification.
-
-Example Usage
-^^^^^^^^^^^^^
-
-.. code-block:: bash
-
-   # Build a local archive for January 2025
-   build-hres-archive \
-     --target_zarr ./data/hres_daily.zarr \
-     --start_date 2025-01-01 \
-     --end_date 2025-01-31
-
-   # Run later without --start_date to append newly published forecasts up to today
-   # (also retries any dates previously recorded as missing)
-   build-hres-archive \
-     --target_zarr ./data/hres_daily.zarr
-
-   # Re-download and overwrite a specific date range in-place
-   build-hres-archive \
-     --target_zarr ./data/hres_daily.zarr \
-     --start_date 2025-01-10 \
-     --end_date 2025-01-12 \
-     --in_place
-
-Each forecast date downloads approximately **110 MB** via byte-range requests
-and takes roughly **1 minute** per worker. Requires the ``eccodes`` library
-(see `Prerequisites`_).
-
-Command-Line Arguments (``build-hres-archive``)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
--  ``--target_zarr`` *(required)*: Path where the output Zarr archive is saved
-   (local folder path or ``gs://`` URI).
--  ``--start_date``: First forecast date to include (``YYYY-MM-DD``, must be
-   ``2024-03-06`` or later).
-
-   -  If omitted when updating an existing archive, defaults to the day after
-      the last date in the archive (or the earliest date ``>= 2024-03-06``
-      listed in ``missing_dates`` / ``failed_dates``, if earlier).
-   -  Required when creating a new archive.
-
--  ``--end_date``: Last forecast date to include (``YYYY-MM-DD``, default:
-   today). Dates that ECMWF has not finished publishing yet are skipped and can
-   be appended on a subsequent run.
--  ``--project``: Google Cloud project ID used when writing to a ``gs://``
-   target archive (default: ``None``). Not needed to read from
-   ``gs://ecmwf-open-data``.
--  ``--ecmwf_open_data_bucket``: Source GCS bucket containing ECMWF Open Data
-   (default: ``ecmwf-open-data``).
--  ``--batch_size``: Number of forecast dates accumulated before each Zarr
-   write (integer, default: ``10``).
--  ``--num_workers``: Number of forecast dates downloaded and decoded in
-   parallel (integer, default: number of CPU cores up to ``8``). Each worker
-   uses up to ~1 GB of RAM. Set to ``1`` for sequential execution.
--  ``--overwrite``: Deletes the existing Zarr archive at ``--target_zarr`` and
-   rebuilds it from scratch starting at ``--start_date``. **Warning:** Do not
-   use ``--overwrite`` on an archive containing pre-``2024-03-06`` history, as
-   those earlier dates cannot be rebuilt from ECMWF Open Data.
--  ``--in_place``: Re-downloads and overwrites the requested ``--start_date``
-   to ``--end_date`` dates in-place inside an existing Zarr archive. All
-   requested dates must already exist in the archive.
--  ``--failure_log``: Optional path where a JSON report of any unpublished
-   (``missing_dates``) dates will be saved.
-
 ------------------------------------------
-3. NASA GPM IMERG Daily Precipitation
+2. NASA GPM IMERG Daily Precipitation
 ------------------------------------------
 
 ``build-imerg-archive`` builds a daily ``0.1°`` global precipitation archive
@@ -314,10 +150,11 @@ Example Usage
      --end_date 2024-01-10 \
      --cleanup_cache
 
-   # Build from a local directory of pre-downloaded V07 .nc4 or .RT-H5 files
+   # Build from a local directory of pre-downloaded V07 .nc4 files
    build-imerg-archive \
      --target_zarr ./data/imerg_daily.zarr \
      --source local \
+     --local_format nc4 \
      --local_dir /path/to/local/imerg_files \
      --start_date 2024-01-01 \
      --end_date 2024-01-10
@@ -334,10 +171,12 @@ Command-Line Arguments (``build-imerg-archive``)
 -  ``--source``: Where to read IMERG data from (choices: ``gesdisc`` or
    ``local``, default: ``gesdisc``).
 
-   -  ``gesdisc``: Downloads official daily V07 NetCDF-4 files from NASA GES
-      DISC over HTTPS.
+   -  ``gesdisc``: Discovers the published daily V07 NetCDF-4 granule via NASA
+      CMR and downloads it from NASA GES DISC over HTTPS.
    -  ``local``: Reads pre-downloaded V07 files from ``--local_dir``.
 
+-  ``--local_format``: Local file format when ``--source local`` is used
+   (choices: ``nc4`` or ``h5``, default: ``nc4``).
 -  ``--local_dir``: Path to a local folder containing pre-downloaded IMERG V07
    daily NetCDF-4 files (``.nc4`` / ``.nc``) or 48 half-hourly HDF5 granules
    (``.RT-H5`` / ``.HDF5``) per day. Required when ``--source local`` is used.
@@ -360,8 +199,8 @@ Command-Line Arguments (``build-imerg-archive``)
    (integer, default: ``4``). Keep between ``4`` and ``8`` when downloading
    from NASA GES DISC to avoid server rate limits.
 -  ``--granule_workers``: Number of parallel threads used to read the 48
-   half-hourly HDF5 files per day when using ``--source local`` (integer,
-   default: ``8``).
+   half-hourly HDF5 files per day when using ``--source local`` with
+   ``--local_format h5`` (integer, default: ``8``).
 -  ``--overwrite``: Deletes the existing Zarr archive at ``--target_zarr`` and
    rebuilds it from scratch.
 -  ``--in_place``: Overwrites the requested ``--start_date`` to ``--end_date``
@@ -369,8 +208,6 @@ Command-Line Arguments (``build-imerg-archive``)
 -  ``--project``: Google Cloud project ID used when writing to a ``gs://``
    bucket (default: ``None``).
 -  ``--gesdisc_url``: Custom base URL for NASA GES DISC IMERG V07 daily files.
--  ``--failure_log``: Optional file path where a JSON report of any missing or
-   failed dates will be saved.
 
 ----------------------------------------------
 What to Watch Out For (Common Questions)
@@ -388,49 +225,24 @@ What to Watch Out For (Common Questions)
    ``build-imerg-archive`` so temporary NetCDF files are deleted as soon as each
    batch is written to the Zarr store.
 
-3. **Safe Incremental Updates and Future End Dates**
+3. **Safe Incremental Updates**
    Running any builder against an existing Zarr archive (without
-   ``--overwrite``) automatically resumes from where the archive left off. If
-   you pass an ``--end_date`` in the future (for example, the end of the
-   current year), unpublished future days at the end of the range are **never**
-   written as empty ``NaN`` slices. The archive stops at the last date that has
-   valid data, so you can re-run the command at any time to append newly
-   published days.
+   ``--overwrite``) automatically resumes from the day after the last date in
+   the archive, verifying strict daily continuity so date gaps are never
+   introduced.
 
-4. **ECMWF HRES Specifics**
-
-   * **Earliest Open Data date (2024-03-06):** ``build-hres-archive`` raises an
-     error if ``--start_date`` is earlier than ``2024-03-06``. Earlier years
-     come from the pre-built archive (see section 2).
-   * **Publication delay (~8 hours):** ECMWF publishes the full ``00:00 UTC``
-     forecast (``+3h`` to ``+240h``) roughly 8 hours after initialization. A
-     forecast date is ingested only when all required steps are present; if
-     today's forecast is still being uploaded, it is skipped and picked up on
-     the next run.
-   * **Schema verification before updating:** Before writing to an existing
-     archive, ``build-hres-archive`` verifies that the archive's variables,
-     units, coordinates, and ``schema_version`` match
-     :mod:`multimet.hres_schema`, raising an error on any mismatch so
-     incompatible archives are never mixed.
-   * **Sub-daily sampling of min / max temperature:** ``temperature_2m_min``
-     and ``temperature_2m_max`` are the minimum and maximum across the 3-hourly
-     (lead days 1–6) or 6-hourly (lead days 7–10) instantaneous forecast steps,
-     rather than continuous 24-hour extremes.
-   * **License:** ECMWF Open Data is published under the `CC-BY-4.0 license
-     <https://creativecommons.org/licenses/by/4.0/>`_. Please attribute ECMWF
-     when redistributing data built with this tool.
-
-5. **Strict Data Integrity (No Silent Fallbacks)**
+4. **Strict Data Integrity (No Silent Fallbacks)**
 
    * **No version mixing in IMERG:** ``build-imerg-archive`` accepts only
      **IMERG Version 07 (V07)** files (variable ``precipitation``). Legacy
      **Version 06 (V06)** files (``precipitationCal``) raise an error immediately
      so different calibration versions are never mixed.
    * **Complete 48-half-hour requirement for local IMERG HDF5 files:** When
-     summing 48 half-hourly ``.RT-H5`` files for a day, all 48 half-hours must
-     be present and valid at a grid cell. If any half-hour is missing at a grid
-     cell, that cell is set to ``NaN`` for the day rather than summing an
-     incomplete day.
-   * **Network or file errors stop the run:** If a file is corrupted or a
-     network error persists after retries, the builder stops with an error
-     rather than writing fake or empty data.
+     summing 48 half-hourly ``.RT-H5`` files for a day (``--local_format h5``),
+     all 48 unique half-hour intervals must be present, and all 48 half-hours
+     must be valid at a grid cell for that cell's daily total to be finite. If
+     any half-hour is missing at a grid cell, that cell is set to ``NaN`` for
+     the day rather than summing an incomplete day.
+   * **Network or file errors stop the run:** If a file is missing, corrupted,
+     or has unexpected coordinates/dimensions, the builder stops immediately
+     with an error rather than writing empty or fallback data.

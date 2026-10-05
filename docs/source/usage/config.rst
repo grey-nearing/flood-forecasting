@@ -94,7 +94,15 @@ Training settings
 -  ``epochs``: Number of training epochs.
 -  ``num_workers``: Number of (parallel) threads used in the data loader.
 -  ``max_updates_per_epoch``: Optional limit on weight updates per epoch. Use `< 1` to go through all data in every epoch.
--  ``clip_gradient_norm``: Max norm for gradient clipping. Leave empty for not clipping.
+-  ``clip_gradient_norm``: Positive float specifying the max norm for gradient
+   clipping. Leave empty to disable clipping. When enabled, each epoch logs the
+   count and percentage of finite pre-clip (unscaled) gradient norms exceeding
+   this threshold, plus the median, 90th, and 99th percentiles (excluding
+   NaN-loss steps and counting non-finite AMP norms separately). With
+   TensorBoard enabled, epoch summaries are also written under
+   ``train/gradient_clipping/{threshold,checked_steps,finite_steps,nonfinite_steps,clipped_steps,clipped_fraction,norm_median,norm_p90,norm_p99}``
+   (``clipped_fraction`` in ``[0, 1]`` and percentiles are omitted when
+   ``finite_steps == 0``).
 -  ``target_noise_std``: Standard deviation of Gaussian noise added to labels during training. Set to zero or
    leave empty to *not* add noise.
 -  ``allow_subsequent_nan_losses``: Number of allowed consecutive NaN losses before stopping.
@@ -115,12 +123,43 @@ Data settings
 -  ``target_variables``: List of target variables to predict.
 -  ``static_attributes``: List of static attributes to use.
 -  ``seq_length``: Hindcast sequence length for forecast models.
--  ``lead_time``: Forecast lead time (integer).
+-  ``lead_time``: Forecast lead time (integer). See `Temporal alignment of forecasts`_ below.
 -  ``predict_last_n``: Number of time steps (counted backwards) used for loss calculation.
 -  ``timestep_counter``: True/False. Adds a counting integer sequence as input for forecasts.
 -  ``nan_handling_method``: ``masked_mean``, ``input_replacing``, or ``attention``. Strategy for handling missing input data.
 -  ``nan_handling_pos_encoding_size``: Size of positional encoding for NaN handling methods.
 -  ``lazy_load``: Whether to access data lazily rather than load all in-memory. Each batch is loaded dynamically. Default: `False`.
+
+Temporal alignment of forecasts
+-------------------------------
+
+Forecast runs follow the Caravan-MultiMet convention (Shalev et al., 2026,
+Section 2.1). All daily data are left-labelled in UTC, so the value stored under
+date ``D`` covers ``[D 00:00, D+1 00:00)``. Forecast products are indexed by
+issue date, and their ``lead_time`` coordinate is 1-indexed: ``lead_time = 1
+day`` on issue date ``D`` covers the same calendar day ``D``, ``lead_time = 2
+days`` covers ``D + 1``, and so on.
+
+For a sample issued on date ``D`` the dataset therefore builds:
+
+-  **Hindcast inputs** (2D nowcast products, and forecast products used as
+   hindcast inputs at their first lead time) covering the ``seq_length``
+   completed days ``[D - seq_length, ..., D - 1]``.
+-  **Forecast inputs** issued on ``D`` across lead times ``1 .. lead_time``,
+   valid on ``[D, ..., D + lead_time - 1]``, optionally preceded by
+   ``forecast_overlap`` days of first-lead-time forecasts ending on ``D - 1``.
+-  **Targets** (and the ``date`` array of a sample) ending on
+   ``D + lead_time - 1``.
+
+Result files written by evaluation are indexed by the issue date ``D`` and by
+``time_step``: ``time_step = k >= 1`` is the forecast with ``lead_time = k``
+(valid on ``D + k - 1``), while ``time_step <= 0`` are hindcast days
+(``time_step = 0`` is ``D - 1``).
+
+.. note::
+   Before version 1.13.0, 2D hindcast inputs and targets were shifted one day
+   later relative to forecast inputs, and ``time_step = k`` was valid on
+   ``D + k``. Models trained with earlier versions should be retrained.
 
 Finetune settings
 -----------------
