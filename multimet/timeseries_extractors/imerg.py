@@ -110,9 +110,6 @@ class IMERGExtractor(BaseExtractor):
     elif source_lower in ("gesdisc", "public", "nasa", "upstream"):
       self.source = "gesdisc"
       self.data_dir = str(data_dir) if data_dir is not None else default_url
-    elif source_lower == "dynamical":
-      self.source = "dynamical"
-      self.data_dir = str(data_dir) if data_dir is not None else ""
     elif source_lower in ("h5", "local"):
       self.source = "h5"
       if data_dir is None or not str(data_dir).strip():
@@ -140,6 +137,8 @@ class IMERGExtractor(BaseExtractor):
 
   def get_daily_file(self, dt: pd.Timestamp) -> str:
     """Finds or downloads the daily IMERG NetCDF4 file for a given date."""
+    import tempfile
+
     dt = pd.to_datetime(dt)
     date_str = dt.strftime("%Y%m%d")
     year = dt.year
@@ -157,7 +156,10 @@ class IMERGExtractor(BaseExtractor):
             return os.path.join(ym_dir, fname)
 
     # 2. Check local cache directory
-    cache_dir = os.environ.get("MULTIMET_IMERG_CACHE", "/tmp/multimet_imerg_cache")
+    cache_dir = os.environ.get(
+        "MULTIMET_IMERG_CACHE",
+        os.path.join(tempfile.gettempdir(), "multimet_imerg_cache"),
+    )
     filename = f"3B-DAY-E.MS.MRG.3IMERG.{date_str}-S000000-E235959.V07B.nc4"
     cached_path = os.path.join(cache_dir, filename)
     if os.path.exists(cached_path) and os.path.getsize(cached_path) > 1000:
@@ -325,26 +327,6 @@ class IMERGExtractor(BaseExtractor):
         "imerg_missing_fraction": missing_out,
     }
 
-  def extract_for_basins_dynamical(
-      self,
-      basins_gdf: gpd.GeoDataFrame,
-      start_dt: pd.Timestamp,
-      end_dt: pd.Timestamp,
-      weights_matrix: Optional[ZonalWeightMatrix] = None,
-      use_bounding_box: bool = True,
-  ) -> xr.Dataset:
-    """Delegates to DynamicalIMERGExtractor for dynamical.org Icechunk catalog."""
-    from multimet.timeseries_extractors.dynamical import DynamicalIMERGExtractor
-
-    dyn_ext = DynamicalIMERGExtractor(data_dir=self.data_dir)
-    return dyn_ext.extract_for_basins(
-        basins_gdf=basins_gdf,
-        start_date=start_dt,
-        end_date=end_dt,
-        weights_matrix=weights_matrix,
-        use_bounding_box=use_bounding_box,
-    )
-
   def extract_day(
       self,
       dt: pd.Timestamp,
@@ -356,6 +338,8 @@ class IMERGExtractor(BaseExtractor):
       use_bounding_box: bool = True,
   ) -> Dict[str, np.ndarray]:
     """Extracts 1 day of IMERG precipitation across basins."""
+    import tempfile
+
     dt = pd.to_datetime(dt)
     if self.source == "archive":
       from multimet.timeseries_extractors.gridded_archive import extract_nowcast_from_archive
@@ -382,7 +366,10 @@ class IMERGExtractor(BaseExtractor):
           use_bounding_box=use_bounding_box,
       )
       cache_dir = os.path.realpath(
-          os.environ.get("MULTIMET_IMERG_CACHE", "/tmp/multimet_imerg_cache")
+          os.environ.get(
+              "MULTIMET_IMERG_CACHE",
+              os.path.join(tempfile.gettempdir(), "multimet_imerg_cache"),
+          )
       )
       real_nc_path = os.path.realpath(nc_path)
       if (
@@ -392,24 +379,6 @@ class IMERGExtractor(BaseExtractor):
       ):
         Path(real_nc_path).unlink(missing_ok=True)
       return res
-    elif self.source in ("dynamical", "cloud"):
-      ds = self.extract_for_basins_dynamical(
-          basins_gdf,
-          start_dt=dt,
-          end_dt=dt,
-          weights_matrix=matrix,
-          use_bounding_box=use_bounding_box,
-      )
-      out = {
-          "imerg_precipitation": ds["imerg_precipitation"].values[:, 0].astype(
-              np.float32
-          )
-      }
-      if "imerg_missing_fraction" in ds.data_vars:
-        out["imerg_missing_fraction"] = ds["imerg_missing_fraction"].values[
-            :, 0
-        ].astype(np.float32)
-      return out
     else:
       imerg_files = resolve_date_to_imerg_files(self.data_dir, dt)
       basin_ids = list(basins_gdf.index)
@@ -456,15 +425,6 @@ class IMERGExtractor(BaseExtractor):
           basins_gdf,
           start_date=start_dt,
           end_date=end_dt,
-          weights_matrix=weights_matrix,
-          use_bounding_box=use_bounding_box,
-      )
-
-    if self.source == "dynamical":
-      return self.extract_for_basins_dynamical(
-          basins_gdf,
-          start_dt,
-          end_dt,
           weights_matrix=weights_matrix,
           use_bounding_box=use_bounding_box,
       )

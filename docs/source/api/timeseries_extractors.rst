@@ -38,26 +38,10 @@ multimet.timeseries_extractors.dask_runner
    :show-inheritance:
    :undoc-members:
 
-multimet.timeseries_extractors.dynamical
-----------------------------------------
-
-.. automodule:: multimet.timeseries_extractors.dynamical
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 multimet.timeseries_extractors.era5_land
 ----------------------------------------
 
 .. automodule:: multimet.timeseries_extractors.era5_land
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-multimet.timeseries_extractors.graphcast
-----------------------------------------
-
-.. automodule:: multimet.timeseries_extractors.graphcast
    :members:
    :show-inheritance:
    :undoc-members:

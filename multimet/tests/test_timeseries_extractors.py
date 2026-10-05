@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the 5 MultiMet extractors in local serial execution."""
+"""Unit tests for the MultiMet extractors in local serial execution."""
 
 from pathlib import Path
 import unittest.mock as mock
@@ -29,10 +29,6 @@ from multimet.timeseries_extractors.config import (
 from multimet.timeseries_extractors.cpc import CPCExtractor
 from multimet.timeseries_extractors.era5_land import ERA5LandExtractor
 from multimet.utils.geometry import load_basin_geometries
-from multimet.timeseries_extractors.graphcast import (
-    GraphCastExtractor,
-    _compute_basin_steps,
-)
 from multimet.timeseries_extractors.hres import (
     HRESExtractor,
     _extract_accumulated_lead,
@@ -230,21 +226,6 @@ def test_hres_lead_differencing(tmp_path, basins_gdf):
       scale=1000.0,
   )
   assert np.allclose(lead2, 15.0, atol=1e-3)
-
-
-def test_graphcast_step_aggregation(basins_gdf):
-  """Tests DeepMind GraphCast 40-step forecast reduction."""
-  extractor = GraphCastExtractor()
-  b_id = basins_gdf.index[0]
-  geom = basins_gdf.loc[b_id].geometry
-  lat_idx, lon_idx, w = extractor.zonal_calc.compute_weights(b_id, geom)
-
-  # 40 forecast steps (6-hourly up to 240 hours)
-  grid_40 = np.full((40, len(extractor.lats), len(extractor.lons)), 2.5, dtype=np.float32)
-  basin_steps = _compute_basin_steps(grid_40, lat_idx, lon_idx, w)
-
-  assert basin_steps.shape == (40,)
-  assert np.allclose(basin_steps, 2.5, atol=1e-4)
 
 
 def test_serial_runner_end_to_end(tmp_path, basins_gdf):
