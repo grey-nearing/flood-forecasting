@@ -31,7 +31,7 @@ from multimet.timeseries_extractors.dask_runner import (
     extract_product_dask,
     init_dask_client,
 )
-from multimet.timeseries_extractors.geometry import load_basin_geometries
+from multimet.utils.geometry import load_basin_geometries
 from multimet.timeseries_extractors.runner import extract_multimet_serial
 from multimet.timeseries_extractors.zarr_writer import MultiMetZarrWriter
 

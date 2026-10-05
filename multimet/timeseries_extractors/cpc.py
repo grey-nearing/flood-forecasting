@@ -31,8 +31,8 @@ import xarray as xr
 
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import DEFAULT_STORAGE_PATHS, Product
-from multimet.timeseries_extractors.spatial import slice_coordinates_by_bounds
-from multimet.timeseries_extractors.zonal import ZonalWeightCalculator, ZonalWeightMatrix
+from multimet.utils.spatial import slice_coordinates_by_bounds
+from multimet.utils.zonal import ZonalWeightCalculator, ZonalWeightMatrix
 
 import netCDF4
 

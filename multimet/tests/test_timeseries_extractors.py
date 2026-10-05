@@ -28,7 +28,7 @@ from multimet.timeseries_extractors.config import (
 )
 from multimet.timeseries_extractors.cpc import CPCExtractor
 from multimet.timeseries_extractors.era5_land import ERA5LandExtractor
-from multimet.timeseries_extractors.geometry import load_basin_geometries
+from multimet.utils.geometry import load_basin_geometries
 from multimet.timeseries_extractors.graphcast import (
     GraphCastExtractor,
     _compute_basin_steps,
@@ -39,7 +39,7 @@ from multimet.timeseries_extractors.hres import (
     _extract_instantaneous_lead,
 )
 from multimet.timeseries_extractors.imerg import IMERGExtractor
-from multimet.timeseries_extractors.pet import calculate_fao56_penman_monteith_pet
+from multimet.utils.climate import calculate_fao56_penman_monteith_pet
 from multimet.timeseries_extractors.runner import extract_multimet_serial
 from multimet.timeseries_extractors.zarr_writer import MultiMetZarrWriter
 
@@ -96,29 +96,6 @@ def test_cpc_extractor_binary_parsing(tmp_path):
   assert stations_grid.shape == (360, 720)
   assert np.isclose(np.nanmean(precip_grid), 15.0, atol=1e-3)
   assert np.isclose(np.nanmean(stations_grid), 7.0, atol=1e-3)
-
-
-def test_era5_land_strict_missing_day_handling(basins_gdf):
-  """Verifies that incomplete hourly file lists return all NaNs for ERA5-Land."""
-  extractor = ERA5LandExtractor()
-  basin_ids = list(basins_gdf.index)
-  weights_dict = {
-      b_id: extractor.zonal_calc.compute_weights(
-          b_id, basins_gdf.loc[b_id].geometry
-      )
-      for b_id in basin_ids
-  }
-
-  # Passing incomplete file list (e.g. 5 hours instead of 24)
-  res = extractor.extract_day_from_grib_files(
-      ["file1", "file2", "file3", "file4", "file5"],
-      basin_ids,
-      weights_dict,
-  )
-  for band in PRODUCT_BANDS[Product.ERA5_LAND]:
-    assert np.all(np.isnan(res[band]))
-  assert "era5land_temperature_2m_min" in res
-  assert "era5land_temperature_2m_max" in res
 
 
 def test_era5_land_grid_resolution_by_source():

@@ -38,7 +38,7 @@ from pathlib import Path
 
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import DEFAULT_STORAGE_PATHS, Product
-from multimet.timeseries_extractors.zonal import ZonalWeightCalculator, ZonalWeightMatrix
+from multimet.utils.zonal import ZonalWeightCalculator, ZonalWeightMatrix
 from multimet.utils.earthdata import (
     EarthdataSession,
     download_daily_imerg,

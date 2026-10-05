@@ -19,7 +19,7 @@ import pytest
 import geopandas as gpd
 from shapely.geometry import Polygon
 
-from multimet.timeseries_extractors.geometry import (
+from multimet.utils.geometry import (
     get_bounding_box,
     load_basin_geometries,
 )
@@ -177,7 +177,7 @@ def test_load_nonexistent_source_raises_error(tmp_path: Path):
 def test_remote_geometry_resolution_and_caching(geojson_path: Path, monkeypatch, tmp_path: Path):
   import fsspec
   from unittest.mock import MagicMock
-  from multimet.timeseries_extractors.geometry import _resolve_geometry_sources
+  from multimet.utils.geometry import _resolve_geometry_sources
 
   mock_fs = MagicMock()
   mock_fs.isdir.return_value = True

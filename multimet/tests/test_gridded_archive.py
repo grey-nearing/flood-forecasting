@@ -35,7 +35,7 @@ from multimet.timeseries_extractors.config import (
 )
 from multimet.timeseries_extractors.cpc import CPCExtractor
 from multimet.timeseries_extractors.era5_land import ERA5LandExtractor
-from multimet.timeseries_extractors.geometry import load_basin_geometries
+from multimet.utils.geometry import load_basin_geometries
 from multimet.timeseries_extractors.gridded_archive import (
     _WARNED_MISSING_VARS,
     GriddedArchiveError,
@@ -46,7 +46,7 @@ from multimet.timeseries_extractors.hres import HRESExtractor
 from multimet.timeseries_extractors.imerg import IMERGExtractor
 from multimet.timeseries_extractors.runner import extract_multimet_serial
 from multimet.timeseries_extractors.zarr_writer import check_zarr_store_exists
-from multimet.timeseries_extractors.zonal import ZonalWeightCalculator, ZonalWeightMatrix
+from multimet.utils.zonal import ZonalWeightCalculator, ZonalWeightMatrix
 
 pytestmark = pytest.mark.unit
 
