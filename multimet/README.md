@@ -1,6 +1,129 @@
-# Extracting Static Attributes for Watersheds (`multimet/static_extractor`)
+# MultiMet Data Workflows (`multimet`)
 
-The `multimet` directory houses data workflows for preparing watershed inputs for OpenHydroNet. Its `multimet.static_extractor` submodule builds the static watershed attribute tables required by the models.
+The `multimet` package provides tools for preparing both **gridded meteorological archives** (`multimet/gridded_archive_builders`) and **static watershed attribute tables** (`multimet/static_extractor`) for OpenHydroNet.
+
+---
+
+## Part 1: Gridded Precipitation Archive Builders (`multimet/gridded_archive_builders`)
+
+The [`multimet/gridded_archive_builders`](gridded_archive_builders/README.md) subpackage includes command-line tools (`build-cpc-archive` and `build-imerg-archive`) to download public gridded precipitation data from NOAA and NASA and save it into standardized daily Zarr archives.
+
+> **Do you need these tools?**
+> If you only want to train or evaluate flood-forecasting models using the published MultiMet dataset, **you do not need to run these tools**. Simply point `dynamics_data_dir` in your training configuration file to `gs://caravan-multimet/v1.1`.
+>
+> Use these tools only if you want to download raw precipitation grids directly from the upstream providers and build or update your own Zarr archives.
+
+### Overview
+
+Two gridded archive command-line tools are installed when you run `pip install -e .` from the root of this repository:
+
+| Command | Dataset | Spatial Grid | Available Dates |
+| --- | --- | --- | --- |
+| `build-cpc-archive` | NOAA CPC Global Unified Daily Precipitation | 0.5° (`360 × 720`) | 1979 to present |
+| `build-imerg-archive` | NASA GPM IMERG Early V07 Daily Precipitation | 0.1° (`1800 × 3600`) | 2000-06-01 to present |
+
+Each tool downloads raw files from the weather agency, validates coordinates and dimensions, converts them onto a consistent daily grid, marks missing values as `NaN`, and saves the result to the `--target_zarr` path you specify.
+
+### Prerequisites
+
+Activate the `googlehydrology` Conda environment and install the repository in editable mode:
+
+```bash
+conda activate googlehydrology
+pip install -e .
+```
+
+#### Additional Requirements by Dataset
+
+* **NOAA CPC (`build-cpc-archive`):** No extra packages or accounts are required.
+* **NASA GPM IMERG (`build-imerg-archive`):** Downloading from NASA GES DISC requires a free [NASA Earthdata Login](https://urs.earthdata.nasa.gov/) account. You can provide your credentials in any of three ways:
+  1. A `~/.netrc` file on your computer with entries for `urs.earthdata.nasa.gov` and `gpm1.gesdisc.eosdis.nasa.gov`.
+  2. Environment variables: `EARTHDATA_TOKEN` (or `EARTHDATA_USERNAME` and `EARTHDATA_PASSWORD`).
+  3. Command-line arguments: `--earthdata_token` (or `--earthdata_username` and `--earthdata_password`).
+
+### 1. NOAA CPC Daily Precipitation (`build-cpc-archive`)
+
+Downloads yearly NetCDF files (`precip.{year}.nc`) from the NOAA Physical Sciences Laboratory, flips latitude so it runs south-to-north (`-89.75` to `+89.75`), shifts longitude to `-179.75` to `+179.75`, and writes the daily variable `cpc_precipitation` (`mm/day`, `float32`).
+
+```bash
+# Build a local archive for 2020 to 2022 and delete temporary downloads
+build-cpc-archive \
+  --target_zarr ./data/cpc_daily.zarr \
+  --start_year 2020 \
+  --end_year 2022 \
+  --cleanup_cache
+
+# Run the same command later to append newly published days
+build-cpc-archive \
+  --target_zarr ./data/cpc_daily.zarr \
+  --cleanup_cache
+```
+
+#### Command-Line Arguments (`build-cpc-archive`)
+
+* `--target_zarr` *(required)*: Path where the output Zarr archive is saved. Use a local folder path (e.g., `./data/cpc.zarr`) or a Google Cloud Storage URI starting with `gs://` (e.g., `gs://my-bucket/cpc.zarr`).
+* `--start_year`: First year to download (integer, default: `1979`).
+* `--end_year`: Last year to download, inclusive (integer, default: current calendar year).
+* `--start_date`: Optional start date filter (`YYYY-MM-DD`) if you only want dates on or after a specific day inside `--start_year`.
+* `--end_date`: Optional end date filter (`YYYY-MM-DD`) if you only want dates on or before a specific day inside `--end_year`.
+* `--cache_dir`: Local folder used to store downloaded NOAA NetCDF files before processing. If omitted, a temporary folder is created and removed automatically when the command finishes.
+* `--cleanup_cache`: Deletes each downloaded NetCDF file as soon as it is written to the Zarr archive. Recommended to save disk space.
+* `--overwrite`: Deletes the existing Zarr archive at `--target_zarr` and rebuilds it from scratch. If not set, the tool resumes and appends only new dates.
+* `--num_workers`: Number of years to download and process in parallel (integer, default: number of CPU cores up to `32`). Set to `1` to run one year at a time.
+* `--project`: Google Cloud project ID used for billing and authentication when `--target_zarr` is a `gs://` bucket (default: `None`).
+* `--source_url_template`: Custom download URL template containing `{year}` (default: official NOAA PSL URL).
+
+### 2. NASA GPM IMERG Daily Precipitation (`build-imerg-archive`)
+
+Builds a daily `0.1°` global precipitation archive (`1800` latitudes `-89.95 .. 89.95` by `3600` longitudes `-179.95 .. 179.95`) from NASA GPM IMERG Early Run Version 07 (V07), saving the variable `imerg_precipitation` (`mm/day`, `float32`).
+
+```bash
+# Download daily V07 files from NASA GES DISC into a local Zarr archive
+build-imerg-archive \
+  --target_zarr ./data/imerg_daily.zarr \
+  --start_date 2024-01-01 \
+  --end_date 2024-01-10 \
+  --cleanup_cache
+
+# Build from a local directory of pre-downloaded V07 .nc4 files
+build-imerg-archive \
+  --target_zarr ./data/imerg_daily.zarr \
+  --source local \
+  --local_format nc4 \
+  --local_dir /path/to/local/imerg_files \
+  --start_date 2024-01-01 \
+  --end_date 2024-01-10
+```
+
+#### Command-Line Arguments (`build-imerg-archive`)
+
+* `--target_zarr` *(required)*: Path where the output Zarr archive is saved (local path or `gs://` URI).
+* `--start_date`: First date to include in `YYYY-MM-DD` format (default: `2000-06-01`).
+* `--end_date`: Last date to include in `YYYY-MM-DD` format (default: yesterday UTC).
+* `--source`: Where to read IMERG data from (choices: `gesdisc` or `local`, default: `gesdisc`).
+  * `gesdisc`: Discovers the published daily V07 NetCDF-4 granule via NASA CMR and downloads it from NASA GES DISC over HTTPS.
+  * `local`: Reads pre-downloaded V07 files from `--local_dir`.
+* `--local_format`: Local file format when `--source local` is used (choices: `nc4` or `h5`, default: `nc4`).
+* `--local_dir`: Path to a local folder containing pre-downloaded IMERG V07 daily NetCDF-4 files (`.nc4` / `.nc`) or 48 half-hourly HDF5 granules (`.RT-H5` / `.HDF5`) per day. Required when `--source local` is used.
+* `--earthdata_token`: NASA Earthdata Bearer token for `--source gesdisc` (can also be set via the `EARTHDATA_TOKEN` environment variable).
+* `--earthdata_username`: NASA Earthdata username (can also be set via `EARTHDATA_USERNAME` or `~/.netrc`).
+* `--earthdata_password`: NASA Earthdata password (can also be set via `EARTHDATA_PASSWORD` or `~/.netrc`).
+* `--netrc_path`: Path to a custom `.netrc` file containing Earthdata credentials (default: `~/.netrc`).
+* `--cache_dir` (or `--local_cache`): Local folder used to stage files downloaded from NASA GES DISC. If omitted, a temporary folder is created and cleaned up automatically on exit.
+* `--cleanup_cache`: Deletes each downloaded NetCDF file immediately after it is processed and removes `--cache_dir` on exit.
+* `--batch_size`: Number of daily grids accumulated before each Zarr write (integer, default: `30`).
+* `--num_workers`: Number of dates downloaded or extracted in parallel (integer, default: `4`). Keep between `4` and `8` when downloading from NASA GES DISC to avoid server rate limits.
+* `--granule_workers`: Number of parallel threads used to read the 48 half-hourly HDF5 files per day when using `--source local` with `--local_format h5` (integer, default: `8`).
+* `--overwrite`: Deletes the existing Zarr archive at `--target_zarr` and rebuilds it from scratch.
+* `--in_place`: Overwrites the requested `--start_date` to `--end_date` dates in-place inside an existing Zarr archive.
+* `--project`: Google Cloud project ID used when writing to a `gs://` bucket (default: `None`).
+* `--gesdisc_url`: Custom base URL for NASA GES DISC IMERG V07 daily files.
+
+---
+
+## Part 2: Extracting Static Attributes for Watersheds (`multimet/static_extractor`)
+
+The `multimet.static_extractor` submodule builds the static watershed attribute tables required by the models.
 
 To predict river flow in a watershed, OpenHydroNet needs a table of unchanging ("static") facts about that watershed—such as its area, elevation, slope, soil type, land cover, and long-term average weather.
 
@@ -39,7 +162,7 @@ Every run requires the `--era5-source` flag to tell the tool how to calculate cl
 
 ---
 
-## Command-Line Usage
+## Command-Line Usage (`static_extractor`)
 
 ### 1. Extract Attributes for One File (`extract-caravan-static`)
 
@@ -170,14 +293,13 @@ extract-caravan-static-batch \
 
 ---
 
-## Using It in Python
+## Using `static_extractor` in Python
 
 ### 1. Extract Attributes from a File to a DataFrame and CSV
 
 ```python
 from multimet.static_extractor import StaticAttributesExtractor
 
-# Using local files on disk (or pass no_download=True with gcs_gdb_uri / gcs_era5_climate_uri to stream in memory)
 extractor = StaticAttributesExtractor(
     gdb_path="/path/to/BasinATLAS_v10.gdb",
     era5_source="hybas",
@@ -249,37 +371,4 @@ benchmark-static-extractor \
     --era5-cache-dir /path/to/era5_climate \
     --workers 14 \
     -o /path/to/benchmark_results/
-
-# Quick check on a sample of 50 basins
-benchmark-static-extractor \
-    --dataset /path/to/benchmark_basins_500.parquet \
-    --gdb-path /path/to/BasinATLAS_v10.gdb \
-    --era5-source hybas \
-    --era5-cache-dir /path/to/era5_climate \
-    --samples 50 \
-    --workers 8 \
-    -o /path/to/benchmark_results/
 ```
-
-This writes three files into `--output-dir`:
-- `benchmark_report.md` — a summary report comparing extracted values to published Caravan values.
-- `benchmark_attribute_metrics.csv` — one row per attribute showing correlation and error metrics.
-- `benchmark_basin_metrics.csv` — one row per basin showing area differences and the attribute with the largest discrepancy.
-
-#### All Flags for `benchmark-static-extractor`
-
-| Flag | Required? | Default | What It Does |
-| :--- | :--- | :--- | :--- |
-| `--dataset` | **Yes** | — | Path to the `.parquet` reference dataset file. |
-| `--gdb-path` | Required unless `--no-download` | `None` | Local path to `BasinATLAS_v10.gdb`, shapefile, or GeoParquet file. |
-| `--era5-source` | **Yes** | — | How to calculate ERA5 climate numbers during the benchmark: `hybas` or `gridded`. |
-| `--output-dir`, `-o` | **Yes** | — | Folder where the benchmark report and CSV tables are saved. |
-| `--era5-cache-dir` | Required if `hybas` (unless `--no-download`) | `None` | Folder containing continental ERA5 climate tables. |
-| `--gridded-era5-uri` | Required if `gridded` | `None` | Google Cloud Storage (`gs://...`) URI or local path for the daily ERA5-Land Zarr dataset. |
-| `--gcs-gdb-uri` | Required if `--no-download` without `--gdb-path` | `None` | Google Cloud Storage (`gs://...`) URI for HydroATLAS data. |
-| `--gcs-era5-climate-uri` | Required if `hybas` with `--no-download` | `None` | Google Cloud Storage (`gs://...`) URI for continental ERA5 climate tables. |
-| `--no-download` | No | Disabled | Stream HydroATLAS and ERA5 data directly from Google Cloud Storage in memory without downloading files to local disk. |
-| `--samples` | No | All basins | Number of basins to sample if you want a quick check instead of running all basins in `--dataset`. |
-| `--regions`, `--datasets` | No | All datasets | Space-separated list of Caravan datasets to include (`camels`, `camelsaus`, `camelsbr`, `camelscl`, `camelsgb`, `hysets`, `lamah`). |
-| `--size-tiers` | No | All sizes | Space-separated list of basin size groups to include (`1_micro`, `2_small`, `3_medium`, `4_large`, `5_macro`). |
-| `--workers` | No | `8` | Number of parallel CPU processes to use. |
