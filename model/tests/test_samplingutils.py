@@ -197,3 +197,64 @@ def test_sample_pointpredictions_dispatch(mock_model, mock_scaler):
             n_samples=5,
             scaler=mock_scaler,
         )
+
+
+@pytest.mark.unit
+def test_sample_cmal_and_deterministic_negative_sample_handling_none_vs_clip(
+    mock_model, mock_scaler
+):
+    # Normalized zero threshold for mock_scaler is -center / scale = -5.0 / 2.0 = -2.5.
+    # Use a strongly negative mu (-10.0) and tiny scale (1e-4) so raw samples/quantiles are < -2.5.
+    data = {
+        'x_d': {'ERA5': torch.zeros(1, 5, 3)},
+        'y': torch.zeros(1, 5, 1),
+    }
+    outputs = {
+        'mu': torch.full((1, 3, 3), -10.0),
+        'b': torch.full((1, 3, 3), 1e-4),
+        'tau': torch.full((1, 3, 3), 0.5),
+        'pi': torch.full((1, 3, 3), 1.0 / 3),
+    }
+
+    # 1. sample_cmal with 'none' leaves negative values unclipped (< -2.5)
+    mock_model.cfg.head = 'cmal'
+    mock_model.cfg.negative_sample_handling = 'none'
+    samples_none = samplingutils.sample_cmal(
+        model=mock_model,
+        data=data,
+        n_samples=20,
+        scaler=mock_scaler,
+        outputs=outputs,
+    )['y_hat']
+    assert torch.all(samples_none < -2.5)
+
+    # 2. sample_cmal with 'clip' clamps values at normalized_zero (-2.5)
+    mock_model.cfg.negative_sample_handling = 'clip'
+    samples_clip = samplingutils.sample_cmal(
+        model=mock_model,
+        data=data,
+        n_samples=20,
+        scaler=mock_scaler,
+        outputs=outputs,
+    )['y_hat']
+    assert torch.allclose(samples_clip, torch.full_like(samples_clip, -2.5))
+
+    # 3. sample_cmal_deterministic with 'none' vs 'clip'
+    mock_model.cfg.head = 'cmal_deterministic'
+    mock_model.cfg.negative_sample_handling = 'none'
+    det_none = samplingutils.sample_cmal_deterministic(
+        model=mock_model,
+        data=data,
+        scaler=mock_scaler,
+        outputs=outputs,
+    )['y_hat']
+    assert torch.all(det_none < -2.5)
+
+    mock_model.cfg.negative_sample_handling = 'clip'
+    det_clip = samplingutils.sample_cmal_deterministic(
+        model=mock_model,
+        data=data,
+        scaler=mock_scaler,
+        outputs=outputs,
+    )['y_hat']
+    assert torch.allclose(det_clip, torch.full_like(det_clip, -2.5))

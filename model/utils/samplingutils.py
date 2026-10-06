@@ -111,8 +111,18 @@ def _handle_negative_values(
 ) -> torch.Tensor:
     """Handle negative samples that arise while sampling from the uncertainty estimates.
 
-    Currently supports (a) 'clip' for directly clipping values at zero and (b) 'truncate' for resampling values
-    that are below zero.
+    Currently supports (a) 'clip' for directly clipping values at physical zero
+    (``normalized_zero``), (b) 'truncate' for resampling values that are below zero,
+    and (c) 'none' (or ``None`` / omitted) to leave CMAL draws and summary statistics
+    completely unclipped.
+
+    When ``negative_sample_handling: 'clip'`` is configured, clamping at physical zero
+    (``normalized_zero``) is applied inside ``model.sample()`` (``sample_cmal`` and
+    ``sample_cmal_deterministic``). Therefore, during evaluation
+    (``BaseTester.evaluate``), evaluation metrics (``NSE``, ``KGE``, etc.) are
+    computed after clipping and sample reduction (``tester_sample_reduction``),
+    whereas losses (``cmalloss``) are computed on the raw distribution parameters
+    before sampling or clipping.
 
     Parameters
     ----------
@@ -258,9 +268,14 @@ def sample_mcd(
     Note: Calling this function will force the model to train mode (`model.train()`) and not set it back to its original
     state.
 
-    The negative sample handling currently supports (a) 'clip' for directly clipping sample_points at zero and (b)
-    'truncate' for resampling sample_points that are below zero. The mode can be defined by the config argument
-    'negative_sample_handling'.
+    The negative sample handling supports (a) 'clip' for directly clipping sample_points at physical zero
+    (``normalized_zero``), (b) 'truncate' for resampling sample_points that are below zero, and (c) 'none'
+    (or ``None`` / omitted) to leave CMAL draws completely unclipped. The mode can be defined by the config
+    argument ``negative_sample_handling``. When ``negative_sample_handling: 'clip'`` is configured, clamping at
+    physical zero (``normalized_zero``) is applied inside ``model.sample()`` (``sample_cmal`` and
+    ``sample_cmal_deterministic``). Therefore, during evaluation (``BaseTester.evaluate``), evaluation metrics
+    (``NSE``, ``KGE``, etc.) are computed after clipping and sample reduction (``tester_sample_reduction``),
+    whereas losses (``cmalloss``) are computed on the raw distribution parameters before sampling or clipping.
 
     Parameters
     ----------
@@ -337,6 +352,15 @@ def sample_cmal_deterministic(
     outputs: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Sample 10 point predictions with the Countable Mixture of Asymmetric Laplacians (CMAL) head.
+
+    Setting ``negative_sample_handling: 'none'`` (or omitting it / ``None``) leaves
+    CMAL summary statistics completely unclipped. When ``negative_sample_handling: 'clip'``
+    is configured, clamping at physical zero (``normalized_zero``) is applied inside
+    ``model.sample()`` (``sample_cmal`` and ``sample_cmal_deterministic``). Therefore,
+    during evaluation (``BaseTester.evaluate``), evaluation metrics (``NSE``, ``KGE``,
+    etc.) are computed after clipping and sample reduction (``tester_sample_reduction``),
+    whereas losses (``cmalloss``) are computed on the raw distribution parameters
+    before sampling or clipping.
 
     Note: If the config setting 'mc_dropout' is true this function will force the model to train mode (`model.train()`)
     and not set it back to its original state.

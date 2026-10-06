@@ -303,13 +303,10 @@ class MaskedRMSELoss(BaseLoss):
         **kwargs,
     ):
         mask = ~torch.isnan(ground_truth['y'])
-        loss = torch.sqrt(
-            0.5
-            * torch.mean(
-                (prediction['y_hat'][mask] - ground_truth['y'][mask]) ** 2
-            )
-        )
-        return loss
+        diff = prediction['y_hat'][mask] - ground_truth['y'][mask]
+        if diff.numel() == 0:
+            return torch.mean(diff)
+        return torch.linalg.vector_norm(diff) / (2.0 * diff.numel()) ** 0.5
 
 
 class MaskedNSELoss(BaseLoss):
@@ -396,6 +393,7 @@ class MaskedCMALLoss(BaseLoss):
             output_size_per_target=cfg.n_distributions,
         )
         self.eps = eps  # stability epsilon
+        self._eps = 1e-5
 
     def _get_loss(
         self,
@@ -403,28 +401,35 @@ class MaskedCMALLoss(BaseLoss):
         ground_truth: dict[str, torch.Tensor],
         **kwargs,
     ):
-        y = ground_truth['y'].squeeze(-1)
-        mask = ~torch.isnan(y)
-        if not torch.any(mask):
-            return prediction['mu'].sum() * 0.0
+        with torch.amp.autocast(
+            device_type=prediction['mu'].device.type, enabled=False
+        ):
+            y = ground_truth['y'].squeeze(-1)
+            mask = ~torch.isnan(y)
+            if not torch.any(mask):
+                return prediction['mu'].float().sum() * 0.0
 
-        y = y[mask].unsqueeze(-1)
-        m = prediction['mu'][mask]
-        b = prediction['b'][mask]
-        t = prediction['tau'][mask]
-        p = prediction['pi'][mask]
+            y = y[mask].unsqueeze(-1).float()
+            m = prediction['mu'][mask].float()
+            b = torch.clamp(prediction['b'][mask].float(), min=self._eps)
+            t = torch.clamp(
+                prediction['tau'][mask].float(),
+                min=self._eps,
+                max=1.0 - self._eps,
+            )
+            p = prediction['pi'][mask].float()
 
-        error = y - m
-        log_like = (
-            torch.log(t)
-            + torch.log(1.0 - t)
-            - torch.log(b)
-            - torch.max(t * error, (t - 1.0) * error) / b
-        )
-        log_weights = torch.log(p + self.eps)
+            error = y - m
+            log_like = (
+                torch.log(t)
+                + torch.log(1.0 - t)
+                - torch.log(b)
+                - torch.max(t * error, (t - 1.0) * error) / b
+            )
+            log_weights = torch.log(p + self.eps)
 
-        result = torch.logsumexp(log_weights + log_like, dim=-1)
-        return -torch.mean(result)
+            result = torch.logsumexp(log_weights + log_like, dim=-1)
+            return -torch.mean(result)
 
 
 def _get_predict_last_n(cfg: Config) -> dict:
