@@ -423,11 +423,11 @@ class TestMaaSServerEndpoints(unittest.TestCase):
 
   @classmethod
   def setUpClass(cls):
-    cls.port = 8991
-    cls.server = socketserver.TCPServer(("127.0.0.1", cls.port), EarthkitHydroHandler)
+    cls.server = socketserver.TCPServer(("127.0.0.1", 0), EarthkitHydroHandler)
+    cls.port = int(cls.server.server_address[1])
     cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
     cls.thread.start()
-    time.sleep(0.5)
+    time.sleep(0.1)
 
   @classmethod
   def tearDownClass(cls):
