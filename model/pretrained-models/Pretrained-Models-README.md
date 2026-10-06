@@ -83,8 +83,8 @@ learning_rate_drop_factor: 0.9
 learning_rate_epochs_drop: 5
 
 # --- Dataset Paths & Temporal Splits ---
-targets_data_dir: /path/to/your/Caravan-nc
-statics_data_dir: /path/to/your/Caravan-nc
+targets_data_dir: /path/to/your/Caravan-zarr
+statics_data_dir: /path/to/your/Caravan-zarr
 dynamics_data_dir: gs://caravan-multimet/v1.1
 
 train_basin_file: /path/to/your/local_finetune_basins.txt
