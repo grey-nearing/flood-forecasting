@@ -51,25 +51,95 @@ except ImportError:
     HydroDelineator = None
     _find_merit_shp = None
 
+from maas.config import (
+    CAMA_GRID_RES_DEG,
+    FLOODHUB_BASE_URL,
+    GEOGLOWS_BASE_URL,
+    GLOFAS_BASE_URL,
+    JAXA_STAC_CATALOG_URL,
+    OPEN_METEO_ELEVATION_URL,
+    TODAYS_EARTH_API_URL_ENV,
+    TODAYS_EARTH_SOURCE,
+    TODAYS_EARTH_TIMEOUT_S,
+    MaaSConfig,
+    haversine_km as _haversine_km,
+)
+from maas.engine import (
+    MaaSEngine,
+    SQLiteCache,
+    channel_half_width_m as _channel_half_width_m,
+    daily_series as _daily_series,
+    depth_color as _depth_color,
+    reach_exceedance_summary as _reach_exceedance_summary,
+    window_peak as _window_peak,
+)
+from maas.floodhub import (
+    FH_LEVEL_COLORS as _FH_LEVEL_COLORS,
+    FH_LEVEL_LABELS as _FH_LEVEL_LABELS,
+    FH_LEVEL_ORDER as _FH_LEVEL_ORDER,
+    FH_SEVERITY_LABELS as _FH_SEVERITY_LABELS,
+    FH_SEVERITY_MAP as _FH_SEVERITY_MAP,
+    FH_SEVERITY_RANK as _FH_SEVERITY_RANK,
+    FH_SEVERITY_TO_RISK as _FH_SEVERITY_TO_RISK,
+    FH_TREND_MAP as _FH_TREND_MAP,
+    FLOODHUB_GAUGE_SEARCH_RADIUS_KM,
+    derive_floodhub_severity_from_forecast as _derive_fh_severity_from_forecast,
+    geom_area_km2 as _geom_area_km2,
+    kml_rings as _kml_rings,
+    kml_to_geometry as _kml_to_geometry,
+    normalize_floodhub_severity as _normalize_fh_severity,
+    normalize_floodhub_trend as _normalize_fh_trend,
+    round_geojson_coords as _round_coords,
+)
+from maas.geoglows import (
+    parse_geoglows_return_periods_payload as _parse_geoglows_return_periods,
+)
+from maas.networks import (
+    cama_cell_area_km2 as _cell_area_km2,
+    cama_cell_id as _cama_cell_id,
+    cama_cell_polygon as _cama_cell_polygon,
+    glofas_cell_center as _glofas_cell_center,
+    is_geoglows_river_id as _is_geoglows_river_id,
+    snap_cama_cell as _snap_cama_cell,
+)
+from maas.thresholds import (
+    EULER_GAMMA as _EULER_GAMMA,
+    EXCEEDANCE_CLASSES as _EXCEEDANCE_CLASSES,
+    INDEX_FLOOD_CV as _INDEX_FLOOD_CV,
+    INDEX_FLOOD_MAF_RATIO as _INDEX_FLOOD_MAF_RATIO,
+    RETURN_PERIOD_YEARS,
+    RISK_RANK as _RISK_RANK,
+    UNASSESSED_COLOR as _UNASSESSED_COLOR,
+    UNASSESSED_LABEL as _UNASSESSED_LABEL,
+    classify_exceedance as _classify_exceedance,
+    compute_empirical_weibull_return_periods,
+    compute_gumbel_return_periods as _gumbel_return_periods,
+    compute_return_periods,
+    estimate_return_period_years as _estimate_return_period_yrs,
+    ev1_fit_line as _ev1_fit_line,
+    extract_annual_maxima as _annual_maxima,
+    gumbel_frequency_factor as _gumbel_frequency_factor,
+    gumbel_quantile_from_return_periods as _gumbel_quantile_from_return_periods,
+    known_return_levels as _known_return_levels,
+    scaled_index_flood_return_periods as _scaled_return_periods,
+    thresholds_from_return_periods as _thresholds_from_return_periods,
+)
+from maas.todays_earth import (
+    CAMA_FLDOUT_SHARE as _CAMA_FLDOUT_SHARE,
+    CAMA_FLOODPLAIN_K as _CAMA_FLOODPLAIN_K,
+    TE_CATALOG_TOKENS as _TE_CATALOG_TOKENS,
+    TODAYS_EARTH_EMULATION_NOTE,
+    emulate_camaflood_physics,
+    extract_te_series as _te_series,
+    format_todays_earth_forecast,
+     parse_todays_earth_payload,
+    route_floodplain_excess as _route_floodplain_excess,
+)
+
 logger = logging.getLogger(__name__)
 
 # Default API Key read from environment for FloodForecasting v1 API
 DEFAULT_FLOODHUB_KEY = os.environ.get("FLOODHUB_API_KEY", "")
-FLOODHUB_BASE_URL = "https://floodforecasting.googleapis.com/v1"
-GEOGLOWS_BASE_URL = "https://geoglows.ecmwf.int/api/v2"
-GLOFAS_BASE_URL = "https://flood-api.open-meteo.com/v1/flood"
-
-# JAXA Earth API public STAC catalog (Cloud-Optimized GeoTIFF collections).
-# It is probed for a Today's Earth (TE-Global CaMa-Flood) collection; none is
-# published there as of 2026-09 (the documented `/api/stac/v1` path is 404).
-JAXA_STAC_CATALOG_URL = "https://data.earth.jaxa.jp/stac/cog/v1/catalog.json"
-# Optional operator-provided TE-Global point-forecast endpoint. The JSON
-# contract is documented in `fetch_todays_earth_forecast()`.
-TODAYS_EARTH_API_URL_ENV = "TODAYS_EARTH_API_URL"
-TODAYS_EARTH_TIMEOUT_S = 6
-TODAYS_EARTH_SOURCE = "JAXA Today's Earth (TE-Global CaMa-Flood)"
-CAMA_GRID_RES_DEG = 0.25
-OPEN_METEO_ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
 
 WATERSHED_CACHE_DB = DATA_DIR / "cache" / "maas_watershed_cache.sqlite"
 FLOOD_CACHE_DB = DATA_DIR / "cache" / "maas_flood_cache.sqlite"
@@ -643,159 +713,9 @@ def _flood_cache_put(cache_key: str, payload: Dict[str, Any]) -> None:
     logger.debug("Flood SQLite cache write failed for %s: %s", cache_key, e)
 
 
-def _gumbel_frequency_factor(return_period_yrs: float) -> float:
-  """EV1 (Gumbel) frequency factor K_T for the method of moments (Chow, 1951)."""
-  t = float(return_period_yrs)
-  return -(math.sqrt(6.0) / math.pi) * (_EULER_GAMMA + math.log(math.log(t / (t - 1.0))))
-
-
-def _annual_maxima(times: List[Any], values: List[Any], min_valid_days: int = 300) -> List[float]:
-  """Calendar-year maxima of a daily series (years with >= min_valid_days valid values)."""
-  by_year: Dict[str, List[float]] = {}
-  for t, v in zip(times, values):
-    fv = _safe_float_or_none(v)
-    if fv is None or fv < 0:
-      continue
-    year = str(t)[:4]
-    if year.isdigit():
-      by_year.setdefault(year, []).append(fv)
-  return [max(vals) for _, vals in sorted(by_year.items()) if len(vals) >= min_valid_days]
-
-
-def _gumbel_return_periods(annual_maxima: List[float]) -> Optional[Dict[str, float]]:
-  """Fits EV1 by moments to annual maxima; returns {'return_period_T': Q_T} in m³/s."""
-  n = len(annual_maxima)
-  if n < 8:
-    return None
-  mean = sum(annual_maxima) / n
-  if mean <= 1e-3:
-    return None
-  std = math.sqrt(max(sum((x - mean) ** 2 for x in annual_maxima) / (n - 1), 0.0))
-  return {
-      f"return_period_{t}": round(max(mean + _gumbel_frequency_factor(t) * std, 0.0), 2)
-      for t in RETURN_PERIOD_YEARS
-  }
-
-
-def _ev1_fit_line(rps: Dict[str, Any]) -> Optional[Tuple[float, float]]:
-  """Least-squares EV1 line Q = a + b K_T through known `return_period_T` levels."""
-  pts = []
-  for key, val in (rps or {}).items():
-    if not str(key).startswith("return_period_"):
-      continue
-    try:
-      t = float(str(key).rsplit("_", 1)[1])
-    except ValueError:
-      continue
-    fv = _safe_float_or_none(val)
-    if fv is not None and t > 1.0:
-      pts.append((_gumbel_frequency_factor(t), fv))
-  if len(pts) < 2:
-    return None
-  n = len(pts)
-  mean_k = sum(p[0] for p in pts) / n
-  mean_q = sum(p[1] for p in pts) / n
-  sxx = sum((p[0] - mean_k) ** 2 for p in pts)
-  if sxx <= 1e-12:
-    return None
-  slope = sum((p[0] - mean_k) * (p[1] - mean_q) for p in pts) / sxx
-  return mean_q - slope * mean_k, slope
-
-
-def _gumbel_quantile_from_return_periods(rps: Dict[str, Any], return_period_yrs: float) -> Optional[float]:
-  """Interpolates Q_T from known return levels via the EV1 line Q = a + b K_T."""
-  line = _ev1_fit_line(rps)
-  if line is None:
-    return None
-  return round(max(line[0] + line[1] * _gumbel_frequency_factor(return_period_yrs), 0.0), 2)
-
-
-def _known_return_levels(rps: Dict[str, Any]) -> List[Tuple[float, float]]:
-  """Sorted, strictly increasing (T, Q_T) pairs (T >= 2 yr, Q_T > 0) from `return_period_T` keys."""
-  pts = []
-  for key, val in (rps or {}).items():
-    if not str(key).startswith("return_period_"):
-      continue
-    try:
-      t = float(str(key).rsplit("_", 1)[1])
-    except ValueError:
-      continue
-    fv = _safe_float_or_none(val)
-    if fv is not None and fv > 0 and t >= 2.0:
-      pts.append((t, fv))
-  levels: List[Tuple[float, float]] = []
-  for t, q in sorted(pts):
-    if not levels or q > levels[-1][1]:
-      levels.append((t, q))
-  return levels
-
-
-def _estimate_return_period_yrs(value: Optional[float], rps: Dict[str, Any]) -> Optional[float]:
-  """Estimates the return period (years) of a flow value from the model's known return levels.
-
-  The EV1 reduced variate K_T is interpolated piecewise-linearly between consecutive known
-  levels, so the estimate is exact at each level and consistent with `_classify_exceedance`;
-  above the highest level it is extrapolated along the last segment (capped at 1000 yr).
-  Flows below the lowest (2-yr) level return None ("< 2-yr"): the levels describe annual
-  maxima, and inverting the unbounded EV1 lower tail there gives misleading 1-2 yr values
-  (e.g. ~1.6-yr for 0.6 m³/s where the 2-yr level is 48 m³/s).
-  """
-  if value is None:
-    return None
-  levels = _known_return_levels(rps)
-  v = float(value)
-  if len(levels) < 2 or v < levels[0][1]:
-    return None
-  ks = [(_gumbel_frequency_factor(t), q) for t, q in levels]
-  (k0, q0), (k1, q1) = ks[-2], ks[-1]
-  for (ka, qa), (kb, qb) in zip(ks, ks[1:]):
-    if v <= qb:
-      (k0, q0), (k1, q1) = (ka, qa), (kb, qb)
-      break
-  k = k0 + (v - q0) * (k1 - k0) / (q1 - q0)
-  u = -(math.pi / math.sqrt(6.0)) * k - _EULER_GAMMA
-  if u > 30.0:
-    return 1.0
-  if u < -30.0:
-    return 1000.0
-  denom = 1.0 - math.exp(-math.exp(u))
-  if denom <= 1e-12:
-    return 1000.0
-  return round(min(max(1.0 / denom, 1.0), 1000.0), 1)
-
-
-def _scaled_return_periods(reference_flow: float) -> Dict[str, float]:
-  """Deterministic index-flood return periods scaled from a reference flow (m³/s)."""
-  maf = max(float(reference_flow or 0.0), 0.1) * _INDEX_FLOOD_MAF_RATIO
-  return {
-      f"return_period_{t}": round(max(maf * (1.0 + _gumbel_frequency_factor(t) * _INDEX_FLOOD_CV), 0.0), 2)
-      for t in RETURN_PERIOD_YEARS
-  }
-
-
-def _thresholds_from_return_periods(rps: Dict[str, Any], source: str) -> Dict[str, Any]:
-  """Maps return-period levels onto the MaaS 2/5/20/100-yr threshold contract."""
-  return {
-      "warning_2yr": rps.get("return_period_2"),
-      "danger_5yr": rps.get("return_period_5"),
-      "extreme_20yr": rps.get("return_period_20"),
-      "extreme_100yr": rps.get("return_period_100"),
-      "source": source,
-      "unit": "m³/s",
-  }
-
-
 def _series_median(values: List[Any]) -> Optional[float]:
   valid = sorted(v for v in (_safe_float_or_none(x) for x in values) if v is not None and v >= 0)
   return valid[len(valid) // 2] if valid else None
-
-
-def _glofas_cell_center(lat: float, lon: float, res: float = 0.05) -> Tuple[float, float]:
-  """Centre of the GloFAS v4 0.05° grid cell containing (lat, lon)."""
-  return (
-      round(math.floor(lat / res) * res + res / 2.0, 3),
-      round(math.floor(lon / res) * res + res / 2.0, 3),
-  )
 
 
 def fetch_glofas_return_periods(lat: float, lon: float) -> Dict[str, Any]:
@@ -2833,7 +2753,7 @@ def get_unified_maas_forecast(
 
   # --- Date-aligned daily timeline for charting ---
   series_daily: Dict[str, Dict[str, Dict[str, float]]] = {}
-  if fh_fc and fh_fc.get("status") == "live":
+  if fh_fc and fh_fc.get("data"):
     series_daily["floodhub"] = {"central": _daily_series(fh_fc.get("data"), "discharge")}
   if gl:
     series_daily["glofas"] = {
