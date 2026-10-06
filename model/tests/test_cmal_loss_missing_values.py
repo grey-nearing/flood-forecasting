@@ -12,27 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import MagicMock
-
 import pytest
 import torch
 
 from model.training.loss import MaskedCMALLoss
+from model.utils.config import Config
 
 
-def _config() -> MagicMock:
-    cfg = MagicMock()
-    cfg.predict_last_n = 2
-    cfg.no_loss_frequencies = []
-    cfg.target_variables = ['streamflow']
-    cfg.target_loss_weights = None
-    cfg.n_distributions = 3
-    return cfg
+def _cmal_config(minimal_config: Config) -> Config:
+    minimal_config.update_config(
+        {
+            'predict_last_n': 2,
+            'no_loss_frequencies': [],
+            'target_variables': ['streamflow'],
+            'target_loss_weights': None,
+            'n_distributions': 3,
+        }
+    )
+    return minimal_config
 
 
 @pytest.mark.unit
-def test_cmal_loss_masks_individual_missing_timesteps():
-    loss_fn = MaskedCMALLoss(_config())
+def test_cmal_loss_masks_individual_missing_timesteps(minimal_config):
+    loss_fn = MaskedCMALLoss(_cmal_config(minimal_config))
 
     mu = torch.zeros(2, 2, 3)
     b = torch.ones(2, 2, 3)
@@ -49,8 +51,8 @@ def test_cmal_loss_masks_individual_missing_timesteps():
 
 
 @pytest.mark.unit
-def test_cmal_loss_all_missing_is_differentiable_zero():
-    loss_fn = MaskedCMALLoss(_config())
+def test_cmal_loss_all_missing_is_differentiable_zero(minimal_config):
+    loss_fn = MaskedCMALLoss(_cmal_config(minimal_config))
 
     mu = torch.zeros(2, 2, 3, requires_grad=True)
     prediction = {
@@ -68,9 +70,10 @@ def test_cmal_loss_all_missing_is_differentiable_zero():
     assert total_loss.item() == 0.0
     assert torch.equal(mu.grad, torch.zeros_like(mu))
 
+
 @pytest.mark.unit
-def test_cmal_loss_is_finite_when_every_sequence_has_a_gap():
-    loss_fn = MaskedCMALLoss(_config())
+def test_cmal_loss_is_finite_when_every_sequence_has_a_gap(minimal_config):
+    loss_fn = MaskedCMALLoss(_cmal_config(minimal_config))
 
     mu = torch.zeros(2, 2, 3)
     b = torch.ones(2, 2, 3)
