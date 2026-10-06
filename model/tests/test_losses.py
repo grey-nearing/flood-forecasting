@@ -25,7 +25,6 @@ from model.training.loss import (
     MaskedMSELoss,
     MaskedNSELoss,
     MaskedRMSELoss,
-    _get_predict_last_n,
 )
 from model.training.regularization import BaseRegularization
 
@@ -42,23 +41,10 @@ class DummyRegularization(BaseRegularization):
 def dummy_config():
     cfg = MagicMock()
     cfg.predict_last_n = 10
-    cfg.no_loss_frequencies = []
     cfg.target_variables = ['streamflow']
     cfg.target_loss_weights = None
     cfg.n_distributions = 3
     return cfg
-
-
-@pytest.mark.unit
-def test_get_predict_last_n():
-    cfg_int = MagicMock(predict_last_n=5)
-    assert _get_predict_last_n(cfg_int) == {'': 5}
-
-    cfg_single_dict = MagicMock(predict_last_n={'1D': 7})
-    assert _get_predict_last_n(cfg_single_dict) == {'': 7}
-
-    cfg_multi_dict = MagicMock(predict_last_n={'1D': 7, '1h': 24})
-    assert _get_predict_last_n(cfg_multi_dict) == {'1D': 7, '1h': 24}
 
 
 @pytest.mark.unit
@@ -193,28 +179,3 @@ def test_loss_with_regularization(dummy_config):
     assert np.isclose(total_loss.item(), 1.0)
     assert 'dummy_reg' in all_losses
     assert all_losses['dummy_reg'].item() == 2.0
-
-
-@pytest.mark.unit
-def test_multi_frequency_loss():
-    cfg = MagicMock()
-    cfg.predict_last_n = {'1D': 2, '1h': 4}
-    cfg.no_loss_frequencies = ['1h']  # Exclude 1h from loss
-    cfg.target_variables = ['streamflow']
-    cfg.target_loss_weights = None
-
-    loss_fn = MaskedMSELoss(cfg)
-
-    prediction = {
-        'y_hat_1D': torch.tensor([[[2.0], [3.0]]]),
-        'y_hat_1h': torch.tensor([[[10.0], [10.0], [10.0], [10.0]]]),
-    }
-    data = {
-        'y_1D': torch.tensor([[[1.0], [3.0]]]),
-        'y_1h': torch.tensor([[[0.0], [0.0], [0.0], [0.0]]]),
-    }
-
-    total_loss, _ = loss_fn(prediction, data)
-    # Only 1D considered: (2-1)^2 = 1, (3-3)^2 = 0 -> Mean = 0.5
-    # Scaled loss: 0.5 * 0.5 = 0.25
-    assert np.isclose(total_loss.item(), 0.25)

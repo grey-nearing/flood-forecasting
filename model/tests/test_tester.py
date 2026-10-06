@@ -177,15 +177,7 @@ def test_evaluate_synchronizes_configured_cuda_device():
     """_evaluate must synchronize `self.device`, not only the default GPU."""
     from unittest.mock import MagicMock, patch
     import torch
-    from model.evaluation.tester import (
-        RegressionTester,
-        _values_to_cpu,
-    )
-
-    tensors = {'1D': torch.tensor([[1.5, 2.5]])}
-    cpu_tensors = _values_to_cpu(tensors)
-    assert cpu_tensors['1D'].device.type == 'cpu'
-    torch.testing.assert_close(cpu_tensors['1D'], tensors['1D'])
+    from model.evaluation.tester import RegressionTester
 
     tester = object.__new__(RegressionTester)
     tester.device = torch.device('cuda:2')
@@ -236,7 +228,6 @@ def test_evaluate_synchronizes_configured_cuda_device():
                 model=model,
                 loader=_FakeLoader(),
                 basins=['basin_A'],
-                frequencies=['1D'],
             )
         )
 
@@ -244,8 +235,35 @@ def test_evaluate_synchronizes_configured_cuda_device():
     assert len(results) == 1
     assert results[0]['basin'] == 'basin_A'
     torch.testing.assert_close(
-        results[0]['preds']['1D'], torch.full((2, 2, 1), 4.0)
+        results[0]['preds'], torch.full((2, 2, 1), 4.0)
     )
     torch.testing.assert_close(
-        results[0]['obs']['1D'], torch.full((2, 2, 1), 3.0)
+        results[0]['obs'], torch.full((2, 2, 1), 3.0)
     )
+
+
+def test_metrics_to_dataframe():
+    """metrics_to_dataframe extracts single- and multi-target metrics per basin."""
+    from model.evaluation.utils import metrics_to_dataframe
+
+    single_results = {
+        'basin_A': {'NSE': 0.85, 'RMSE': 1.2},
+        'basin_B': {'NSE': 0.40},
+    }
+    df_single = metrics_to_dataframe(
+        single_results, metrics=['NSE', 'RMSE'], targets=['streamflow']
+    )
+    assert df_single.index.name == 'basin'
+    assert list(df_single.index) == ['basin_A', 'basin_B']
+    assert df_single.loc['basin_A', 'NSE'] == pytest.approx(0.85)
+    assert df_single.loc['basin_A', 'RMSE'] == pytest.approx(1.2)
+    assert np.isnan(df_single.loc['basin_B', 'RMSE'])
+
+    multi_results = {
+        'basin_A': {'q1_NSE': 0.9, 'q2_NSE': 0.7},
+    }
+    df_multi = metrics_to_dataframe(
+        multi_results, metrics=['NSE'], targets=['q1', 'q2']
+    )
+    assert df_multi.loc['basin_A', 'q1_NSE'] == pytest.approx(0.9)
+    assert df_multi.loc['basin_A', 'q2_NSE'] == pytest.approx(0.7)
