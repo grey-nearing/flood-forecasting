@@ -1,86 +1,94 @@
-# **Google Flood Hub: Pre-trained OpenHydroNet Weights**
+# Google FloodHub: Pre-Trained OpenHydroNet Weights
 
-This directory contains a pre-trained model run (`google-floodhub-settings-110-epochs`) based on the Google Flood Hub architecture (Mean Embedding Forecast LSTM). This release is intended to accelerate hydrological research, enable warm-started fine-tuning for local catchments, and support Prediction in Ungauged Basins (PUB) experiments.
+This directory (`model/pretrained-models/`) contains a pre-trained global model run (`google-floodhub-settings-110-epochs`) using the Google FloodHub architecture (`mean_embedding_forecast_lstm` in `model`). Use these weights to warm-start fine-tuning on local watersheds or to run spatial generalization (Prediction in Ungauged Basins) experiments.
 
-🚨 **CRITICAL METHODOLOGICAL CAVEAT \- READ BEFORE USING** 🚨
+> **IMPORTANT — Methodological Caveat (Read Before Using):**
+>
+> **This model was trained on the full historical period (1982–2023) without a temporal holdout split.**
+>
+> Because the model saw the entire 1982–2023 timeline during training, **do not evaluate temporal forecasting skill on the 1982–2023 period for basins in the training list.** Evaluating on in-sample dates and basins causes data leakage and produces artificially inflated metrics. See **Appropriate & Inappropriate Use Cases** below.
 
-**This model was trained on the FULL historical data period (1982-2023). There is NO temporal holdout/test split.**
+---
 
-Because the model has seen the entire historical timeline during training, **you cannot use these weights to evaluate temporal forecasting performance on historical datasets.** Any standard evaluation of this model on the 1982-2023 period will result in fundamentally invalid, artificially inflated performance metrics due to in-sample evaluation (data leakage).
+## 1. Model Overview
 
-Please see the **"Appropriate Use Cases"** section below for instructions on how to properly utilize these weights for scientifically rigorous research.
+We provide a pre-trained global baseline model trained on the Caravan-MultiMet dataset (excluding the CHIRPS precipitation product):
 
-## **1\. Model Overview**
+### Full Basin Baseline (`google-floodhub-settings-110-epochs`)
 
-We are releasing a pre-trained global baseline model trained on the MultiMet Caravan dataset configuration (excluding the CHIRPS precipitation product):
+- **Model Architecture:** `mean_embedding_forecast_lstm` (`model.modelzoo.mean_embedding_forecast_lstm.MeanEmbeddingForecastLSTM`)
+- **Reference Configuration:** [`model/example-configs/floodhub-settings-config.yml`](../example-configs/floodhub-settings-config.yml)
+- **Training Basin List:** `15,955` listed basins (`10,137` evaluable basins with streamflow observations) in [`model/example-configs/multimet-basins-list-without-chirps.txt`](../example-configs/multimet-basins-list-without-chirps.txt)
 
-### **Full Basin Baseline (`google-floodhub-settings-110-epochs`)**
+---
 
-* **Purpose:** A generalized global baseline that captures the widest possible variety of hydrological behaviors, topologies, and climates available in the dataset.  
-* **Configuration:** [`../example-configs/floodhub-settings-config.yml`](../example-configs/floodhub-settings-config.yml)  
-* **Training Data:** The complete standard basin list (`15,955` listed basins; `10,137` evaluable basins with observations).  
-  * [`../example-configs/multimet-basins-list-without-chirps.txt`](../example-configs/multimet-basins-list-without-chirps.txt)
+## 2. Contents of the Release
 
-## **2\. Contents of the Release**
+The runtime directory `model/pretrained-models/google-floodhub-settings-110-epochs/` includes all files required by the `openhydronet` (`model`) package:
 
-To ensure seamless integration with the OpenHydroNet framework, we are releasing the complete runtime directory (`google-floodhub-settings-110-epochs/`) rather than an isolated weight file. The folder contains:
+- **Model Weights (`model_epoch110.pt`):** Trained neural network parameters saved at epoch 110.
+- **Pre-Computed Scalers (`scaler.zarr/`):** Feature and target normalization statistics (`center`, `scale`, `mean`, `std`) computed across the global training dataset. When you fine-tune this model, `model` automatically loads `scaler.zarr` so your local inputs are normalized identically to the pre-trained features.
+- **Run Configuration (`config.yml`):** Exact hyperparameters, dynamic input products, and static catchment attributes used for the run.
+- **In-Sample Evaluation Metrics (`test/model_epoch110/test_metrics.csv`):** Full-dataset (`10,137`-basin) in-sample metrics for verification.
 
-* **Model Weights (`model_epoch110.pt`):** The trained neural network parameters at epoch 110.  
-* **Pre-Computed Scalers (`scaler.zarr/`):** The exact feature and target scalers (mean/std) computed across the global training dataset. *This is critical:* when you fine-tune this model on local data, OpenHydroNet will load this scaler to ensure your local inputs are normalized consistently with the pre-trained features.  
-* **Original Configuration (`config.yml`):** The exact hyperparameters, input variable lists, and static attributes used to generate the run, ensuring full reproducibility.  
-* **Evaluation Metrics (`test/model_epoch110/test_metrics.csv`):** Full-dataset (`10,137`-basin) in-sample evaluation metrics.
+---
 
-## **3\. Appropriate & Inappropriate Use Cases**
+## 3. Appropriate & Inappropriate Use Cases
 
-To ensure the integrity of your research, please adhere to the following usage guidelines.
+### Inappropriate Uses (Do Not Do This)
 
-### **❌ Inappropriate Uses (Do Not Do This)**
+- **Historical Benchmarking on Training Basins:** Running evaluation on the 1982–2023 training period for basins included in `multimet-basins-list-without-chirps.txt` and reporting NSE, KGE, or other skill scores.
+- **Unvalidated Operational Deployment:** Using these weights directly for live flood forecasting without local validation and fine-tuning.
 
-* **Historical Benchmarking:** Running standard inference on the training period (1982-2023) and reporting the NSE/KGE or other skill scores.  
-* **Direct Operational Deployment:** Using these exact weights for live forecasting without rigorous local validation and fine-tuning.
+### Appropriate Uses (Recommended)
 
-### **✅ Appropriate Uses (Recommended)**
+- **Fine-Tuning (Transfer Learning):** Initializing a model from `google-floodhub-settings-110-epochs` and fine-tuning on a local dataset with a dedicated temporal validation and test split.
+- **Spatial Generalization (Prediction in Ungauged Basins):** Evaluating the model on basins that were completely excluded from `multimet-basins-list-without-chirps.txt`.
+- **Forward Inference After 2023:** Running inference on new observations and forecasts strictly after the training cutoff (`31/12/2023`).
 
-* **Fine-Tuning (Transfer Learning):** Using this model to initialize a network, followed by training on a localized, heavily instrumented dataset (e.g., with local weather radar or higher resolution DEMs).  
-* **Spatial Generalization (PUB):** Evaluating the model on *spatially held-out* basins. If you have basins that were completely excluded from the training list, you can evaluate the model's ability to generalize to those ungauged locations during the 1982-2023 period.  
-* **Future Inference:** Running forward-looking inference on data generated strictly after the training period cutoff (post-2023).
+---
 
-## **4\. How to Use for Fine-Tuning**
+## 4. How to Use for Fine-Tuning
 
-The primary intended use case for this model is transfer learning via fine-tuning. The OpenHydroNet codebase supports this, with an example given in the tutorial directory **(`model/tutorial/OpenHydroNet_Tutorial.ipynb`)**.
+You can warm-start a fine-tuning run from `google-floodhub-settings-110-epochs` by setting `base_run_dir` in a fine-tuning YAML configuration file. A step-by-step walkthrough is also provided in [`model/tutorial/OpenHydroNet_Tutorial.ipynb`](../tutorial/OpenHydroNet_Tutorial.ipynb) and [`model/tutorial/configs/finetune-config.yml`](../tutorial/configs/finetune-config.yml).
 
-Instead of initializing random weights, you can have your new model load our pre-trained weights and pre-computed scalers by setting the `base_run_dir` parameter in a new fine-tuning config file. Please follow the procedure outlined in the tutorial.
+### Example Fine-Tuning Configuration
 
-### **Example Fine-Tuning Configuration**
+Create a configuration file for your local basins (for example, `finetune_config.yml`) and point `base_run_dir` to `model/pretrained-models/google-floodhub-settings-110-epochs`:
 
-Create a new configuration file for your local basins (e.g., `finetune_config.yml`). Add the `base_run_dir` argument pointing to the extracted run directory you downloaded from this repository:
+```yaml
+# Example fine-tuning configuration (update paths and dates for your dataset)
 
-\# Please note that this is just an example of a fine tuning config file.  
-\# You will need to modify this for your own data.
+# --- Fine-tuning arguments ---
+base_run_dir: model/pretrained-models/google-floodhub-settings-110-epochs
+checkpoint_path: model/pretrained-models/google-floodhub-settings-110-epochs/model_epoch110.pt
+finetune_modules:
+  - statics_embedding
 
-\# \--- Fine-Tuning specific arguments \---  
-\# Point this to the directory containing the pre-trained model  
-base\_run\_dir: /path/to/downloaded/google-floodhub-settings-110-epochs
+epochs: 30
+initial_learning_rate: 0.0001
+learning_rate_strategy: ReduceLROnPlateau
 
-\# Fine-tuning parameters  
-epochs: 30                    \# Require fewer epochs since we are warm-starting  
-initial\_learning\_rate: 0.0001 \# Use a lower learning rate to avoid destroying pre-trained features  
-learning\_rate\_strategy: ReduceLROnPlateau
+# --- Dataset splits and paths ---
+train_basin_file: /path/to/your/local_finetune_basins.txt
+train_start_date: 01/01/1990
+train_end_date: 31/12/2015
 
-\# \--- Standard configurations \---  
-train\_basin\_file: /path/to/your/local\_finetune\_basins.txt  
-train\_start\_date: 01/01/1990  
-train\_end\_date: 31/12/2015
+validation_basin_file: /path/to/your/local_finetune_basins.txt
+validation_start_date: 01/01/2016
+validation_end_date: 31/12/2019
 
-\# FOR FINE-TUNING, YOU MUST HAVE A VALID TEST SPLIT  
-test\_basin\_file: /path/to/your/local\_finetune\_basins.txt  
-test\_start\_date: 01/01/2016  
-test\_end\_date: 31/12/2023
+test_basin_file: /path/to/your/local_finetune_basins.txt
+test_start_date: 01/01/2020
+test_end_date: 31/12/2023
+```
 
-**To run the fine-tuning process:**
+Run fine-tuning with the `run` CLI (after activating `conda activate openhydronet`):
 
-run finetune \--config-file finetune\_config.yml
+```bash
+run finetune --config-file finetune_config.yml
+```
 
-### **Note on Data Scaling**
+### Note on Data Scaling
 
-When fine-tuning using `base_run_dir`, OpenHydroNet will automatically load the dataset Scaler from our pre-trained directory. It is strictly required that the new fine-tuning dataset uses the exact same input variables as the pre-trained model.
+When fine-tuning with `base_run_dir`, the `model` package loads `scaler.zarr` from `base_run_dir`. Your fine-tuning dataset must provide the same dynamic input variables, static attributes, and target variables expected by the pre-trained model.

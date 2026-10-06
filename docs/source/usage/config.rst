@@ -1,8 +1,8 @@
 Configuration Arguments
 =======================
 
-This page provides a list of possible configuration arguments. 
-Check out the file ``model/tutorial/configs/train-config.yml`` for an example of how a config file could look like.
+This page lists all supported YAML configuration arguments in OpenHydroNet.
+See ``model/tutorial/configs/train-config.yml`` and ``model/example-configs/floodhub-settings-config.yml`` for complete working examples.
 
 General experiment configurations
 ---------------------------------
@@ -20,14 +20,16 @@ General experiment configurations
 -  ``test_end_date``: End date of the test period (``DD/MM/YYYY``).
 -  ``seed``: Fixed random seed. If empty, a random seed is generated.
 -  ``device``: Device to use, e.g., ``cuda:0``, ``cpu``, or ``mps``.
--  ``cache``: A dictionary with keys ``enabled`` (bool) and ``byte_limit`` (int) to control opportunistic caching of data.
+-  ``logging_level``: Console and log-file verbosity level (``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``, or ``CRITICAL``). Default: ``INFO``.
+-  ``detect_anomaly``: True/False. If ``True``, enables PyTorch autograd anomaly detection (``torch.autograd.set_detect_anomaly(True)``) to pinpoint operations that produce ``NaN`` or ``Inf`` gradients during training. Default: ``False``.
+-  ``cache``: A dictionary with keys ``enabled`` (bool) and ``byte_limit`` (int) to control opportunistic in-memory caching of data.
 -  ``use_swap_memory``: True/False. Whether to enable ``distributed.p2p.storage.disk`` explicitly for dask.
 
 Validation settings
 -------------------
 
--  ``validate_every``: Integer that specifies in which interval a validation is performed. If empty, no validation is done during training.
--  ``validate_n_random_basins``: Integer specifying how many random basins to use per validation.
+-  ``validate_every``: Integer that specifies in which interval (in epochs) a validation is performed. If empty, no validation is done during training.
+-  ``validate_n_random_basins``: Integer specifying how many random basins to use per validation (use ``-1`` or ``0`` to validate on all basins).
 -  ``metrics``: List of metrics to calculate. See :py:mod:`model.evaluation.metrics`. Can also be a dictionary mapping target variables to lists of metrics.
 -  ``save_validation_results``: True/False. If True, stores validation results to disk in a Zarr store.
 
@@ -36,6 +38,10 @@ Evaluation settings
 
 -  ``inference_mode``: True/False. If True, saves observed data and model output to disk and does not skip dates with missing observations.
 -  ``tester_sample_reduction``: ``mean`` or ``median``. How to reduce multiple samples (e.g., from MC-Dropout or CMAL) during evaluation.
+-  ``tester_skip_obs_all_nan``: True/False. If True, skips basins whose target observations are entirely ``NaN`` over the evaluation period.
+-  ``clip_targets_to_zero``: List of target variable names (e.g., ``[streamflow]``) for which negative predictions are clipped to zero during evaluation.
+-  ``hot_start_path``: Optional path to a saved LSTM state file (``.npz``) or a directory of per-basin state files (``state_<basin>.npz`` or ``<basin>.npz``) used to warm-start the model's hidden and cell states before running evaluation or inference. Requires ``batch_size: 1``.
+-  ``save_state``: True/False. If ``True``, saves each basin's final LSTM hidden and cell states to ``<run_dir>/hot_start_states/state_<basin>.npz`` at the end of validation, evaluation, or inference. Default: ``False``.
 
 General model configuration
 ---------------------------
@@ -45,8 +51,9 @@ General model configuration
 -  ``hidden_size``: Hidden size of the model (number of LSTM states).
 -  ``initial_forget_bias``: Initial value of the forget gate bias. A larger value (like 3) helps the model learn long-timescale dependencies.
 -  ``output_dropout``: Dropout applied to the output of the LSTM.
--  ``weight_init_opts``: List of weight initialization options (e.g., ``lstm-ih-xavier``, ``fc-xavier``).
--  ``compile``: True/False. Whether to compile the model using ``torch.compile``. This 
+-  ``weight_init_opts``: List of weight initialization options (``lstm-ih-xavier``, ``lstm-hh-orthogonal``, ``fc-xavier``).
+-  ``compile``: True/False. Whether to compile the model using ``torch.compile`` to speed up training and inference. Default: ``True``.
+-  ``checkpoint_path``: Optional path to a pre-trained model checkpoint file (``model_epochXXX.pt``) used to initialize model weights before training or fine-tuning.
 
 Regression head
 ~~~~~~~~~~~~~~~
@@ -55,10 +62,10 @@ Regression head
 
 CMAL head
 ~~~~~~~~~
--  ``n_distributions``: Number of distributions for the CMAL head.
+-  ``n_distributions``: Number of asymmetric Laplacian mixture components for the CMAL head.
 -  ``n_samples``: Number of samples generated per time-step.
 -  ``cmal_deterministic``: True/False. Use deterministic 10-point sampling (mean + 9 quantiles) for CMAL.
--  ``negative_sample_handling``: Approach for handling negative sampling. Possible values are `none` for doing nothing, `clip` for clipping the values at zero, and `truncate` for resampling values that were drawn below zero. If the last option is chosen, the additional argument `negative_sample_max_retries` controls how often the values are resampled.
+-  ``negative_sample_handling``: Approach for handling negative sampling. Possible values are ``none`` for doing nothing, ``clip`` for clipping the values at zero, and ``truncate`` for resampling values that were drawn below zero. If the last option is chosen, the additional argument ``negative_sample_max_retries`` controls how often the values are resampled.
 -  ``negative_sample_max_retries``: Max retries for ``truncate`` sampling.
 
 Forecast Model settings
@@ -74,7 +81,7 @@ Used for static/dynamic inputs or specific model components like ``state_handoff
 
 -  ``type``: (default ``fc``): Type of the embedding net. Currently, only ``fc`` for fully-connected net is supported.
 -  ``hiddens``: List of integers that define the number of neurons per layer in the fully connected network. The last number is the number of output neurons. Must have at least length one.
--  ``activation``: activation function of the network. Supported values are: ``tanh``, ``sigmoid``, ``linear``, and ``relu``.
+-  ``activation``: Activation function of the network (single string or list of strings matching ``hiddens``). Supported values are: ``tanh``, ``sigmoid``, ``linear``, and ``relu``.
 -  ``dropout``: Dropout rate.
 
 Available keys for embeddings: ``statics_embedding``, ``dynamics_embedding``, ``hindcast_embedding``, ``forecast_embedding``.
@@ -93,7 +100,7 @@ Training settings
 -  ``batch_size``: Mini-batch size.
 -  ``epochs``: Number of training epochs.
 -  ``num_workers``: Number of (parallel) threads used in the data loader.
--  ``max_updates_per_epoch``: Optional limit on weight updates per epoch. Use `< 1` to go through all data in every epoch.
+-  ``max_updates_per_epoch``: Optional limit on weight updates per epoch. Use ``< 1`` to go through all data in every epoch.
 -  ``clip_gradient_norm``: Positive float specifying the max norm for gradient
    clipping. Leave empty to disable clipping. When enabled, each epoch logs the
    count and percentage of finite pre-clip (unscaled) gradient norms exceeding
@@ -113,22 +120,60 @@ Training settings
 Data settings
 -------------
 
--  ``dataset``: Dataset class to use (currently only ``multimet`` is supported, but users can add their own).
+-  ``dataset``: Dataset class to use (currently ``multimet`` is built-in, and custom classes can be registered via :py:func:`model.datasetzoo.register_dataset`).
 -  ``data_dir``: Root directory of the dataset.
--  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir``: Optional overrides for specific data types.
+-  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir`` (or ``statics_data_path``, ``dynamics_data_path``, ``targets_data_path``): Optional directory/path overrides for static attributes, dynamic forcings, and target streamflow data.
 -  ``load_as_csv``: True/False. Whether to force loading data from CSVs instead of binary formats (e.g., NetCDF/Zarr).
--  ``dynamic_inputs``: List of dynamic input variables.
--  ``forecast_inputs``: Dynamic features for the forecast period (used in forecast models).
--  ``hindcast_inputs``: Dynamic features for the hindcast period (used in forecast models).
--  ``target_variables``: List of target variables to predict.
--  ``static_attributes``: List of static attributes to use.
--  ``seq_length``: Hindcast sequence length for forecast models.
+-  ``hindcast_inputs``: Nested dictionary mapping meteorological product names to lists of dynamic input variables used during the historical hindcast period.
+-  ``forecast_inputs``: Nested dictionary mapping meteorological forecast product names to lists of dynamic input variables used during the forecast rollout period.
+-  ``union_mapping``: Optional dictionary mapping primary dynamic features (keys) to fallback features (values) used to fill missing (``NaN``) timestamps, for example ``{cpc_precipitation: era5land_total_precipitation}``.
+
+   .. code-block:: yaml
+
+      hindcast_inputs:
+        hres:
+          - hres_temperature_2m
+          - hres_total_precipitation
+        imerg:
+          - imerg_precipitation
+        cpc:
+          - cpc_precipitation
+
+      forecast_inputs:
+        hres:
+          - hres_temperature_2m
+          - hres_total_precipitation
+        graphcast:
+          - graphcast_temperature_2m
+          - graphcast_total_precipitation
+
+      union_mapping:
+        cpc_precipitation: era5land_total_precipitation
+        imerg_precipitation: era5land_total_precipitation
+        hres_temperature_2m: era5land_temperature_2m
+        hres_total_precipitation: era5land_total_precipitation
+
+-  ``custom_normalization``: Optional dictionary mapping feature names to custom normalization settings. Each feature entry can specify ``centering`` and/or ``scaling`` statistics chosen from ``mean``, ``std``, ``median``, ``min``, ``max``, ``minmax``, or ``none`` (defaults are ``centering: mean`` and ``scaling: std``):
+
+   .. code-block:: yaml
+
+      custom_normalization:
+        cpc_precipitation:
+          centering: min
+          scaling: minmax
+        frac_snow:
+          centering: none
+          scaling: none
+
+-  ``target_variables``: List of target variables to predict (e.g., ``[streamflow]``).
+-  ``static_attributes``: List of static catchment attributes to use.
+-  ``seq_length``: Hindcast sequence length (in timesteps) for forecast models.
 -  ``lead_time``: Forecast lead time (integer). See `Temporal alignment of forecasts`_ below.
--  ``predict_last_n``: Number of time steps (counted backwards) used for loss calculation.
+-  ``predict_last_n``: Number of time steps (counted backwards from the end of the combined sequence) used for loss and evaluation calculation.
 -  ``timestep_counter``: True/False. Adds a counting integer sequence as input for forecasts.
 -  ``nan_handling_method``: ``masked_mean``, ``input_replacing``, or ``attention``. Strategy for handling missing input data.
 -  ``nan_handling_pos_encoding_size``: Size of positional encoding for NaN handling methods.
--  ``lazy_load``: Whether to access data lazily rather than load all in-memory. Each batch is loaded dynamically. Default: `False`.
+-  ``lazy_load``: Whether to access data lazily rather than load all in-memory. Each batch is loaded dynamically. Default: ``False``.
 
 Temporal alignment of forecasts
 -------------------------------
@@ -161,10 +206,10 @@ Finetune settings
 
 Ignored if ``mode != finetune``
 
--  ``finetune_modules``: List of model parts that will be trained
+-  ``base_run_dir``: Path to the pre-trained model run directory containing ``config.yml``, ``scaler.zarr``, and ``model_epochXXX.pt``.
+-  ``finetune_modules``: List (or dictionary) of model module parts that will be trained
    during fine-tuning. Only parts listed here will be
-   updated during finetuning. Check the documentation of each model to see a list
-   of available module parts.
+   updated during fine-tuning; all other weights are frozen.
 
 Logger settings
 ---------------
@@ -180,12 +225,12 @@ Logger settings
    validations.
 
 -  ``log_loss_every_nth_update``: Refresh rate of logging of the loss value
-   every n iterations. For example for `20`, the loss logging would be
+   every n iterations. For example for ``20``, the loss logging would be
    updated every 20 iterations (updates) during training. Logging loss has
    performance cost (waits to transfer memory from GPU to CPU instead of
-   additional iterations). For example, for multimet_mean_embedding_forecast,
+   additional iterations). For example, for ``mean_embedding_forecast_lstm``,
    a value of 5 saves 50ms per iteration on average which translates to 1.5h
-   given 2000 updates for 30 epocs.
+   given 2000 updates for 30 epochs.
 
 -  ``save_git_diff``: If set to True and OpenHydroNet is a git repository
    with uncommitted changes, the git diff will be stored in the run directory.
