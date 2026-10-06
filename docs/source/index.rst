@@ -15,6 +15,7 @@ The :doc:`modelzoo <usage/models>` lists the models available in this repository
 The :doc:`catchment delineation guide <usage/catchment_delineation>` explains how to extract watershed boundary polygons directly from DEM flow direction grids.
 If you are working with your own watersheds, the :doc:`static attribute extractor guide <usage/static_extractor>` shows how to create Caravan-compatible static attribute tables from watershed boundary files.
 The :doc:`gridded weather archives <usage/gridded_archives>` guide explains how to download and build daily gridded precipitation archives from NOAA CPC and NASA GPM IMERG.
+The :doc:`return periods guide <usage/return_periods>` explains how to compute flood frequency quantiles and return periods using the USGS Bulletin 17C algorithm.
 Finally, the :doc:`API docs <api/model>` show in-depth information on all modules, classes, and functions within OpenHydroNet.
 
 You might also be interested in our `team's webpage <https://sites.research.google/gr/floodforecasting/>`_.
@@ -29,6 +30,7 @@ You might also be interested in our `team's webpage <https://sites.research.goog
    usage/models
    usage/gridded_archives
    usage/multimet_extractor
+   usage/return_periods
    tutorial/tutorial
    usage/config
    api/modules
