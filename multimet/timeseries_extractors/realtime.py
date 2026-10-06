@@ -17,7 +17,7 @@
 Fetches the newest operational forecasts and recent spin-up forcing series directly
 from live public upstream feeds and writes/appends them into MultiMet Caravan-schema
 Zarr stores (``<output_dir>/<PRODUCT>/timeseries.zarr``) ready for execution by
-``googlehydrology``'s ``Multimet`` dataset class.
+``openhydronet``'s ``Multimet`` dataset class.
 
 Supported operational modes
 ---------------------------
@@ -31,7 +31,7 @@ Supported operational modes
    days (``24h..240h``) on the forecast issue window.
 
 2. **Hot-Start (``mode="hotstart"``)**:
-   Inspects the existing per-product Zarr stores (and/or a saved ``googlehydrology``
+   Inspects the existing per-product Zarr stores (and/or a saved ``openhydronet``
    hot-start state ``.npz`` file/directory) to determine the last valid date per
    product, automatically re-fetching any trailing ``NaN`` dates caused by upstream
    publication latency alongside newly elapsed days up to ``t0`` and updating the
@@ -134,7 +134,7 @@ class RealtimeFetchResult(Mapping[str, str]):
 def read_hot_start_state_date(
     hot_start_state_path: Union[str, os.PathLike],
 ) -> pd.Timestamp:
-  """Extracts the saved state timestamp from a ``googlehydrology`` hot-start ``.npz`` file or directory.
+  """Extracts the saved state timestamp from an ``openhydronet`` hot-start ``.npz`` file or directory.
 
   Supports either a single ``state_<basin>.npz`` file or a directory containing
   one or more ``*.npz`` files. When multiple basin state files are present in a
@@ -543,7 +543,7 @@ class RealtimeForcingFetcher:
         ``hotstart`` when no existing Zarr store is present).
       products: Sequence of products to fetch (defaults to
         ``("HRES", "IMERG", "CPC")``).
-      hot_start_state_path: Optional path to a saved ``googlehydrology``
+      hot_start_state_path: Optional path to a saved ``openhydronet``
         hot-start ``.npz`` state file or directory of ``*.npz`` files.
       spinup_only_lead_1d: When ``True`` (default), historical HRES dates before
         the forecast issue window only download ``step=24h`` (``lead_time=1D``),
@@ -694,7 +694,7 @@ def fetch_realtime_multimet(
     reference_date: Forecast issue date ``t0`` (``"YYYY-MM-DD"`` or ``"latest"``).
     lookback_days: Optional override for spin-up / catch-up lookback days.
     products: Products to fetch (defaults to ``("HRES", "IMERG", "CPC")``).
-    hot_start_state_path: Optional path to ``googlehydrology`` hot-start state
+    hot_start_state_path: Optional path to ``openhydronet`` hot-start state
       ``.npz`` file or directory.
     imerg_source: ``"gesdisc"`` (NASA GES DISC HTTP with Earthdata Login).
     hres_bucket: GCS bucket name for ECMWF Open Data (default ``"ecmwf-open-data"``).
@@ -803,7 +803,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
       "--hot_start_state",
       type=str,
       default=None,
-      help="Optional path to googlehydrology hot-start .npz state file or directory.",
+      help="Optional path to openhydronet hot-start .npz state file or directory.",
   )
   parser.add_argument(
       "--imerg_source",
