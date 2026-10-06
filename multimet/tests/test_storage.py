@@ -1,0 +1,300 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for Zarr target classification, resume planning, and storage helpers."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from multimet.utils import storage
+from multimet.utils.storage import (
+    is_remote_target,
+    parse_cf_time_coordinate,
+    resolve_zarr_target,
+)
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+import zarr
+
+pytestmark = pytest.mark.unit
+
+
+class TestRemoteTargets:
+  """Locations with explicit remote URI schemes."""
+
+  def test_explicit_gs_url_is_remote(self) -> None:
+    assert resolve_zarr_target("gs://example-bucket/daily.zarr") == (
+        "gs://example-bucket/daily.zarr",
+        True,
+    )
+
+  @pytest.mark.parametrize("url", ["s3://bucket/x.zarr", "az://c/x.zarr"])
+  def test_other_schemes_are_passed_through(self, url: str) -> None:
+    assert resolve_zarr_target(url) == (url, True)
+
+
+class TestLocalTargets:
+  """Locations on the local filesystem (never implicitly rewritten to gs://)."""
+
+  def test_posix_absolute_path(self) -> None:
+    assert resolve_zarr_target("/tmp/out/daily.zarr") == (
+        "/tmp/out/daily.zarr",
+        False,
+    )
+
+  @pytest.mark.parametrize(
+      "path",
+      ["./daily.zarr", "../daily.zarr", "daily.zarr", "output/daily.zarr"],
+  )
+  def test_relative_paths_stay_local(self, path: str) -> None:
+    assert resolve_zarr_target(path) == (path, False)
+
+  def test_home_relative_path(self) -> None:
+    assert resolve_zarr_target("~/daily.zarr") == ("~/daily.zarr", False)
+
+  def test_file_url_is_unwrapped(self) -> None:
+    assert resolve_zarr_target("file:///tmp/daily.zarr") == (
+        "/tmp/daily.zarr",
+        False,
+    )
+
+
+class TestWindowsTargets:
+  """Regression tests for Windows-style paths."""
+
+  @pytest.mark.parametrize(
+      "path",
+      [
+          r"C:\Users\runneradmin\AppData\Local\Temp\pytest-0\daily.zarr",
+          r"C:/Users/runneradmin/daily.zarr",
+          r"D:\data\daily.zarr",
+          r"z:\data\daily.zarr",
+      ],
+  )
+  def test_drive_qualified_paths_are_local(self, path: str) -> None:
+    assert resolve_zarr_target(path) == (path, False)
+
+  def test_unc_path_is_local(self) -> None:
+    path = r"\\fileserver\share\daily.zarr"
+    assert resolve_zarr_target(path) == (path, False)
+
+  def test_relative_windows_path_is_local(self) -> None:
+    path = r".\output\daily.zarr"
+    assert resolve_zarr_target(path) == (path, False)
+
+  def test_drive_letter_is_not_mistaken_for_a_uri_scheme(self) -> None:
+    assert is_remote_target(r"C:\data\daily.zarr") is False
+
+
+class TestValidation:
+
+  def test_empty_target_is_rejected(self) -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+      resolve_zarr_target("")
+
+
+class TestCFTimeCoordinateParsing:
+  """Tests CF time coordinate decoding across units and missing metadata."""
+
+  def test_parses_hours_since_epoch(self) -> None:
+    arr = np.array([0, 24, 48], dtype=np.int64)
+    idx = parse_cf_time_coordinate(
+        arr, {"units": "hours since 2024-01-01 00:00:00"}
+    )
+    assert list(idx) == list(pd.date_range("2024-01-01", "2024-01-03"))
+
+  def test_rejects_numeric_time_without_units(self) -> None:
+    arr = np.array([0, 1, 2], dtype=np.int64)
+    with pytest.raises(ValueError, match="lacks a valid CF"):
+      parse_cf_time_coordinate(arr, {})
+
+
+class TestAppendAndResumeIntegrity:
+  """Tests batch writes, in-place writes, and strict resume validation."""
+
+  def test_append_preserves_custom_root_attrs(self, tmp_path: Path) -> None:
+    target = str(tmp_path / "a.zarr")
+
+    def batch(date: str) -> xr.Dataset:
+      return xr.Dataset(
+          {"v": (["time"], [1.0])},
+          coords={"time": [pd.Timestamp(date)]},
+          attrs={"title": "new title"},
+      )
+
+    storage.write_dataset_batch_to_zarr(
+        batch("2025-01-01"), target, is_initial_write=True, consolidated=False
+    )
+    root = zarr.open_group(target, mode="r+")
+    root.attrs["custom_attr"] = "preserved"
+    root.attrs["title"] = "old title"
+
+    storage.write_dataset_batch_to_zarr(
+        batch("2025-01-02"), target, consolidated=False
+    )
+
+    attrs = dict(zarr.open_group(target, mode="r").attrs)
+    assert attrs["custom_attr"] == "preserved"
+    assert attrs["title"] == "new title"
+
+  def test_plan_archive_resume_rejects_trailing_all_nan_slice(
+      self, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "trailing_nan.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "x"], [[1.0, 2.0], [np.nan, np.nan]])},
+        coords={
+            "time": pd.date_range("2025-01-01", "2025-01-02"),
+            "x": [0, 1],
+        },
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    with pytest.raises(ValueError, match="trailing NaN"):
+      storage.plan_archive_resume(
+          target, pd.date_range("2025-01-01", "2025-01-03")
+      )
+
+  def test_plan_archive_resume_rejects_interior_date_gap(
+      self, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "interior_gap.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "x"], [[1.0, 2.0], [3.0, 4.0]])},
+        coords={
+            "time": pd.to_datetime(["2025-01-01", "2025-01-03"]),
+            "x": [0, 1],
+        },
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    with pytest.raises(ValueError, match="strictly contiguous daily"):
+      storage.plan_archive_resume(
+          target, pd.date_range("2025-01-01", "2025-01-04")
+      )
+
+  def test_plan_archive_resume_rejects_date_gap(self, tmp_path: Path) -> None:
+    target = str(tmp_path / "gap.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "x"], [[1.0, 2.0], [3.0, 4.0]])},
+        coords={
+            "time": pd.date_range("2025-01-01", "2025-01-02"),
+            "x": [0, 1],
+        },
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    with pytest.raises(ValueError, match="expected 2025-01-03"):
+      storage.plan_archive_resume(
+          target, pd.date_range("2025-01-04", "2025-01-05")
+      )
+
+  def test_write_dataset_batch_in_place_rejects_missing_target_date(
+      self, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "in_place.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "x"], [[1.0, 2.0]])},
+        coords={"time": [pd.Timestamp("2025-01-01")], "x": [0, 1]},
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    missing_update = xr.Dataset(
+        {"v": (["time", "x"], [[9.0, 9.0]])},
+        coords={"time": [pd.Timestamp("2025-01-02")], "x": [0, 1]},
+    )
+    with pytest.raises(ValueError, match="Dates not found"):
+      storage.write_dataset_batch_in_place(missing_update, target)
+
+  def test_write_dataset_batch_rejects_mismatched_spatial_coordinates(
+      self, tmp_path: Path
+  ) -> None:
+    target = str(tmp_path / "coord_check.zarr")
+    ds = xr.Dataset(
+        {"v": (["time", "latitude", "longitude"], np.ones((1, 2, 2)))},
+        coords={
+            "time": [pd.Timestamp("2025-01-01")],
+            "latitude": [-10.0, 10.0],
+            "longitude": [-20.0, 20.0],
+        },
+    )
+    storage.write_dataset_batch_to_zarr(
+        ds, target, is_initial_write=True, consolidated=False
+    )
+
+    flipped_lat_batch = xr.Dataset(
+        {"v": (["time", "latitude", "longitude"], np.ones((1, 2, 2)))},
+        coords={
+            "time": [pd.Timestamp("2025-01-01")],
+            "latitude": [10.0, -10.0],
+            "longitude": [-20.0, 20.0],
+        },
+    )
+    with pytest.raises(ValueError, match="latitude"):
+      storage.write_dataset_batch_in_place(flipped_lat_batch, target)
+    with pytest.raises(ValueError, match="latitude"):
+      storage.write_dataset_batch_to_zarr(
+          flipped_lat_batch, target, is_initial_write=False, consolidated=False
+      )
+
+
+class TestHttpUrlExists:
+  """Tests ``multimet.utils.http.check_http_url_exists``."""
+
+  def test_returns_true_on_200_and_false_on_404_and_raises_on_401(
+      self, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    from multimet.utils import http as http_utils
+
+    class _FakeResp:
+
+      def __init__(self, code: int):
+        self.status_code = code
+
+      def __enter__(self) -> _FakeResp:
+        return self
+
+      def __exit__(self, *args: object) -> None:
+        pass
+
+      def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+          raise RuntimeError(f"HTTP {self.status_code}")
+
+    status_to_return = 200
+    monkeypatch.setattr(
+        http_utils.requests,
+        "get",
+        lambda *a, **k: _FakeResp(status_to_return),
+    )
+    assert http_utils.check_http_url_exists("https://example.com/a.nc") is True
+
+    status_to_return = 404
+    assert http_utils.check_http_url_exists("https://example.com/a.nc") is False
+
+    status_to_return = 401
+    with pytest.raises(PermissionError, match="HTTP 401"):
+      http_utils.check_http_url_exists("https://example.com/a.nc")
+

@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.abspath('.'))
 sys.path.insert(0, os.path.abspath('../../'))
 # -- Project information -----------------------------------------------------
 about = {}
-with open('../../googlehydrology/__about__.py', 'r') as fp:
+with open('../../model/__about__.py', 'r') as fp:
     exec(fp.read(), about)
 
 project = 'OpenHydroNet'
@@ -81,16 +81,17 @@ html_theme = 'sphinx_rtd_theme'
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+html_static_path = []
 
 # -- Napoleon autodoc options -------------------------------------------------
 napoleon_numpy_docstring = True
+napoleon_use_ivar = True
 nbsphinx_execute = 'never'
 
 def copy_notebooks(app):
     """Copies notebooks from the tutorial directory to the source directory."""
     root = Path(__file__).parent.parent.parent
-    examples_dir = root / 'tutorial'
+    examples_dir = root / 'model' / 'tutorial'
     tutorial_dir = root / 'docs' / 'source' / 'tutorial'
     
     # Mapping: Source relative to tutorial/ -> Destination relative to tutorial/

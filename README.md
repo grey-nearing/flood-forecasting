@@ -1,178 +1,100 @@
-# **OpenHydroNet: Riverine Flood Forecasting**
+# OpenHydroNet: Riverine Flood Forecasting
 
-## **🌊 This repository implements the state-of-the-art models that power [Google FloodHub](https://sites.research.google/floods/).**
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/model/tutorial/OpenHydroNet_Tutorial.ipynb)
+[![Documentation](https://img.shields.io/badge/docs-readthedocs-blue.svg)](https://openhydronet.readthedocs.io/)
 
-This is not an officially supported Google product. This project is not eligible for the Google Open Source Software Vulnerability Rewards Program.
+OpenHydroNet (`google-research/flood-forecasting`) provides open-source implementations of the deep learning streamflow forecasting models and hydrological data pipelines that power [Google FloodHub](https://sites.research.google/floods/). Built on [NeuralHydrology](https://github.com/neuralhydrology/neuralhydrology), it trains and runs sequence models that combine historical weather (*hindcasts*) and predicted future weather (*forecasts*) from multiple meteorological sources across global watersheds.
 
-The repository provides open-source replication of Google’s global flood-forecasting models. By open-sourcing these models, we aim to foster transparency, enable in-house integration in production systems, and accelerate academic research.
+> *This is not an officially supported Google product. This project is not eligible for the Google Open Source Software Vulnerability Rewards Program.*
 
-This repository is a fork of [NeuralHydrology](https://github.com/neuralhydrology/neuralhydrology), which has been heavily modified and extended to support forecast sequences using the specific model architectures that are used operationally in the Google FloodHub.
+## Quick Links
 
-## 📖 Documentation
+- **Documentation:** [openhydronet.readthedocs.io](https://openhydronet.readthedocs.io/)
+- **Interactive Colab Tutorial:** [`model/tutorial/OpenHydroNet_Tutorial.ipynb`](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/model/tutorial/OpenHydroNet_Tutorial.ipynb) ([YouTube Video Walkthrough](https://www.youtube.com/watch?v=431Kr3mxidU))
+- **Pre-Built Caravan-MultiMet Dataset:** `gs://caravan-multimet/v1.1` ([Shalev et al., 2026](https://arxiv.org/abs/2601.04886))
+- **Pre-Trained Global FloodHub Weights:** [`model/pretrained-models/Pretrained-Models-README.md`](./model/pretrained-models/Pretrained-Models-README.md)
 
-Detailed instructions on how to configure, train, and evaluate OpenHydroNet models can be found on our documentation page:
-👉 **[openhydronet.readthedocs.io](https://openhydronet.readthedocs.io/)**
+---
 
-Watch our high-level video introduction to the interactive tutorial on YouTube:
-[OpenHydroNet Tutorial Video](https://www.youtube.com/watch?v=431Kr3mxidU)
+## Repository Components & Subpackages
 
-## **Models**
+| Component | Path | Description & Subpackage Documentation |
+| :--- | :--- | :--- |
+| **Core Forecasting Models** | [`model/`](./model/) | Deep learning streamflow forecasting models (`MeanEmbeddingForecastLSTM`, `HandoffForecastLSTM`), training, evaluation, inference, and pre-trained global FloodHub checkpoints ([`Pretrained-Models-README.md`](./model/pretrained-models/Pretrained-Models-README.md)). |
+| **MultiMet Data Pipelines** | [`multimet/`](./multimet/) | End-to-end meteorological and static data pipelines ([`multimet/README.md`](./multimet/README.md)):<br>• **Gridded Archive Builders** ([`README.md`](./multimet/gridded_archive_builders/README.md)): CLI builders (`build-cpc-archive`, `build-imerg-archive`) for constructing and updating global Zarr weather archives (CPC, IMERG).<br>• **Timeseries Extractors** ([`README.md`](./multimet/timeseries_extractors/README.md)): Area-weighted catchment timeseries extraction from gridded archives (`ERA5-Land`, `IMERG`, `CPC`, `HRES`, `CHIRPS`, `CHIRPS-GEFS`) and real-time operational forecasts (`multimet-realtime`).<br>• **Static Attribute Extractor** ([`multimet/static_extractor/`](./multimet/static_extractor/)): HydroATLAS/Caravan static watershed attribute extraction. |
+| **Catchment Delineation** | [`multimet/catchment_delineation/`](./multimet/catchment_delineation/) | Global 90m (`3-arcsec`) flow-direction watershed polygon delineation and pour-point snapping (`delineate-catchment`) ([`README.md`](./multimet/catchment_delineation/README.md)). |
+| **Return Periods** | [`return_periods/`](./return_periods/) | USGS Bulletin 17C flood frequency analysis (`MGBT` low-outlier screening and `EMA` Log-Pearson Type III fitting) ([`README.md`](./return_periods/README.md)). |
 
-This repository contains implementations of the core models used in Google's production forecasting systems.
+---
 
-### **Mean-Embedding-Forecast-LSTM**
+## Installation
 
-The [Mean Embedding Forecast LSTM](https://github.com/google-research/flood-forecasting/blob/main/googlehydrology/modelzoo/mean_embedding_forecast_lstm.py) is a forecasting model that uses separate embedding networks for hindcast and forecast inputs. It aggregates these inputs using masked means before passing them into respective LSTMs for the hindcast and forecast periods.
-
-* **Status:** **Current production model** (as of December 2025\) for [Google FloodHub](https://sites.research.google/floods/).  
-* **Reference:** Gauch, Martin, et al. "[How to deal with missing input data](https://hess.copernicus.org/articles/29/6221/2025/)." *Hydrology and Earth System Sciences* (2025).
-
-### **Handoff-Forecast-LSTM**
-
-The [State Handoff Forecast LSTM](https://github.com/google-research/flood-forecasting/blob/main/googlehydrology/modelzoo/handoff_forecast_lstm.py) is a forecasting model that uses a state-handoff to transition from a hindcast sequence (LSTM) model to a forecast sequence (LSTM) model. The hindcast model runs from the past up to the present (the issue time of the forecast) and then passes the cell state and hidden state of the LSTM into a (nonlinear) handoff network, which is used to initialize a new LSTM that rolls out over the forecast period.
-
-* **Status:** Former production model for [Google FloodHub](https://sites.research.google/floods/).  
-* **Reference:** Nearing, Grey, et al. "[Global prediction of extreme floods in ungauged watersheds](https://www.nature.com/articles/s41586-024-07145-1)." *Nature* (2024).
-
-## **Installation**
-
-We recommend using **Conda** to manage dependencies like PyTorch and CUDA.
-
-1. **Create and Activate the Environment:**  
-
-
-   ```
-   # Create the environment from the file in the repo  
-   conda env create -f environments/conda.yml
-
-   # Activate the environment (MANDATORY)  
-   conda activate googlehydrology  
-   ```
-    
-3. Install the Package:  
-   Install in editable mode so that changes to the source code are reflected immediately:  
-
-
-   ```
-   # Run from the root of the repository  
-   pip install -e .
-   ```
-
-## **🚀 Tutorial Notebook**
-
-The most direct way to explore this repository is through our interactive tutorial: [**OpenHydroNet Tutorial Notebook**](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/tutorial/OpenHydroNet_Tutorial.ipynb).
-
-**What you will learn:**
-
-* **Model Evaluation:** Load pre-trained Google Hydrology models and calculate performance metrics (NSE, KGE) on real-world basin data.  
-* **Fine-Tuning for Performance:** Learn how to fine-tune the `static_embedding_fc` layer. This is a powerful technique for improving predictions on "outlier" basins (e.g., basins with unusual sizes or geology) without retraining the entire model.
-* **Visualizing Results:** Compare model hydrographs against observed discharge data.
-
-**Run it now:** 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/tutorial/OpenHydroNet_Tutorial.ipynb)
-
-## **Data Setup**
-
-OpenHydroNet standardizes entirely on the high-performance, cloud-native **Zarr** format for streamflow targets, static attributes, meteorological forcings, and normalizer scalers.
-
-### **1. Caravan Data (Zarr Format)**
-
-Caravan data is structured into modular Zarr stores:
-* `attributes.zarr`: Catchment static attributes (area, elevation, soil, geology).
-* `streamflow.zarr`: Gauge streamflow observations.
-
-If you have downloaded the legacy Caravan NetCDF/CSV dataset from [Zenodo](https://doi.org/10.5281/zenodo.6522634), convert it to Zarr in a single step using the built-in CLI:
+Use **Conda** to install Python, PyTorch, geospatial libraries, and command-line tools. Installing the repository in editable mode registers the `openhydronet` package (`model`, `multimet`, and `return_periods` modules) along with the `run`, `delineate-catchment`, and `multimet-realtime` CLI entry points:
 
 ```bash
-run convert-caravan --caravan-dir ~/data/Caravan-nc --output-dir ~/data/Caravan-zarr
+# 1. Create and activate the Conda environment
+conda env create -f environments/conda.yml
+conda activate openhydronet
+
+# 2. Install the openhydronet package in editable mode from the repository root
+pip install -e .
 ```
 
-### **2. MultiMet Dynamics Data**
+---
 
-The MultiMet meteorological forcing data extension is accessed directly from **Google Cloud Storage** or local disk. Point your configuration to: `gs://caravan-multimet/v1.1` (or your local dynamics directory).
+## Forecasting Models (`model/`)
 
-### **3\. Catchment Delineation (Creating Polygons for New Gauges)**
+- **Mean-Embedding-Forecast-LSTM (`mean_embedding_forecast_lstm`):** Embeds each meteorological input product separately and combines available products using a masked mean before running the hindcast (historical) and forecast (future) LSTMs ([`model/modelzoo/mean_embedding_forecast_lstm.py`](./model/modelzoo/mean_embedding_forecast_lstm.py)).
+  - **Status:** Current operational model (as of December 2025) for [Google FloodHub](https://sites.research.google/floods/).
+  - **Reference:** Gauch, Martin, et al. "[How to deal with missing input data](https://hess.copernicus.org/articles/29/6221/2025/)." *Hydrology and Earth System Sciences* (2025).
+- **Handoff-Forecast-LSTM (`handoff_forecast_lstm`):** Runs a hindcast LSTM over historical inputs up to the forecast issue time, then passes the hidden and cell states through a nonlinear handoff network to initialize a forecast LSTM ([`model/modelzoo/handoff_forecast_lstm.py`](./model/modelzoo/handoff_forecast_lstm.py)).
+  - **Status:** Former operational model for [Google FloodHub](https://sites.research.google/floods/).
+  - **Reference:** Nearing, Grey, et al. "[Global prediction of extreme floods in ungauged watersheds](https://www.nature.com/articles/s41586-024-07145-1)." *Nature* (2024).
 
-If you have latitude and longitude coordinates for streamflow gauges and need their upstream watershed boundary polygons and drainage areas ($\text{km}^2$), use the `delineate-catchment` command-line tool included in this repository. It traces upstream drainage areas across 90-meter flow-direction map tiles and writes polygons in Caravan-compatible GeoParquet, GeoJSON, or Shapefile format for downstream MultiMet and static attribute extraction.
+---
 
-* **Package Guide & CLI Reference:** [`catchment_delineation/README.md`](catchment_delineation/README.md)
-* **Official Documentation:** [`docs/source/usage/catchment_delineation.rst`](docs/source/usage/catchment_delineation.rst)
-* **MultiMet Forcing Data:** See **MultiMet Data** above (`gs://caravan-multimet/v1.1`).
+## Data Setup
 
-## **Usage**
-
-The package installs the run command as the primary entry point.
-
-### **Training a Model**
-   
+1. **Tutorial Sample Data:** A 5-basin Caravan sample dataset in Zarr format is included at `model/tutorial/Caravan-zarr` for running the tutorial notebook and quickstart configurations.
+2. **Full Caravan Dataset:** Download the Caravan NetCDF dataset from [Zenodo](https://doi.org/10.5281/zenodo.6522634). To convert Caravan NetCDF/CSV folders into Zarr stores (`attributes.zarr` and `streamflow.zarr`), run:
+   ```bash
+   run convert-caravan --caravan-dir ~/data/Caravan-nc --output-dir ~/data/Caravan-zarr
    ```
-   run train --config-file /path/to/your/training_config_file.yml
-   ```
+3. **MultiMet Dynamic Forcings:** Stream meteorological forcings directly from Google Cloud Storage by setting `dynamics_data_dir: gs://caravan-multimet/v1.1` in your YAML configuration file (or point to a local Zarr directory).
 
-### **Evaluation**
+---
 
-Calculate performance metrics (NSE, KGE) on the test set:
-   
-   ```
-   run evaluate --run-dir /path/to/your/model_run/
-   ```
+## Training, Evaluation, and Inference
 
-### **Inference**
-
-Generate predictions (without skipping NaN observations):
-   
-   ```
-   run infer --run-dir /path/to/your/model_run/
-   ```
-
-## **Configuration**
-
-Experiments are defined by YAML files. Update the following paths in your config (e.g., tutorial/training-config.yml):
-
-* run\_dir: Where weights and logs are saved.  
-* train\_basin\_file: Path to the list of basin IDs.  
-* data\_dir: Path to your root directory containing `attributes.zarr`, `streamflow.zarr`, and dynamic meteorological data (e.g., `~/data/Caravan-zarr`).
-* statics\_data\_path / targets\_data\_path: Optional paths to individual component Zarr stores.
-* dynamics\_data\_path: Path to forcing data (e.g., `gs://caravan-multimet/v1.1` or local directory).
-
-### **Example Configurations**
-
-The `~/flood-forecasting/example-configs` directory contains reference YAML files that define the experimental setups for different model architectures and datasets.
-
-* **`floodhub-settings-config.yml`**  
-  * **Model Architecture:** `mean_embedding_forecast_lstm`  
-  * **Dataset:** MultiMet (Global Caravan dataset)  
-  * **Description:** This configuration is designed to replicate the training settings of the current (2025) operational FloodHub model as closely as possible within this open-source framework.  
-* **`handoff-forecast-lstm-config.yml`**  
-  * **Model Architecture:** `handoff_forecast_lstm`  
-  * **Dataset:** MultiMet (Global Caravan dataset)  
-  * **Description:** Provides the settings used for the former operational model. This configuration aligns with the methodology described in the *Nature* (2024) paper for global ungauged flood prediction.  
-* **`camels-multimet-mean-embedding-forecast-lstm-config.yml`**  
-  * **Model Architecture:** `mean_embedding_forecast_lstm`  
-  * **Dataset:** CAMELS-US (531 basins)  
-  * **Description:** A benchmarking configuration for the Mean-Embedding model tailored for the CAMELS-US dataset. It is optimized for evaluating model stability and performance on a standard hydrological benchmark. Our team uses this as a reference point during model development, and it is included in this repository because this is what we use to ensure that any changes to the repository work as expected.  
-* **`camels-multimet-handoff-forecast-lstm-config.yml`**  
-  * **Model Architecture:** `handoff_forecast_lstm`  
-  * **Dataset:** CAMELS-US (531 basins)  
-  * **Description:** A benchmarking configuration for the State Handoff model tailored for the CAMELS-US dataset, used to compare the handoff approach against other architectures on US-based basin data.
-
-## **Extracting Static Attributes for Your Own Watersheds**
-
-To run OpenHydroNet models on a watershed, the model needs a table of static watershed characteristics (such as area, elevation, slope, soil type, land cover, and long-term average climate). For basins in the published [Caravan](https://www.nature.com/articles/s41597-023-01975-w) dataset, these tables are already included.
-
-If you want to run models on **your own watersheds**, this repository includes a static data workflow (`multimet/static_extractor`) that takes a map file of your watershed boundaries (`.geojson`, `.shp`, or `.gpkg`) and builds a Caravan-compatible CSV table of static attributes using the community [HydroATLAS](https://www.hydrosheds.org/hydroatlas) and [ERA5-Land](https://cds.climate.copernicus.eu/) datasets.
+Experiments are configured with YAML files (see [`model/tutorial/configs/train-config.yml`](./model/tutorial/configs/train-config.yml)):
 
 ```bash
-extract-caravan-static \
-    --input /path/to/watershed_polygons.geojson \
-    --output /path/to/extracted_caravan_attributes.csv \
-    --gdb-path /path/to/BasinATLAS_v10.gdb \
-    --era5-source hybas \
-    --era5-cache-dir /path/to/era5_climate
+# Train a model
+run train --config-file model/tutorial/configs/train-config.yml
+
+# Fine-tune a pre-trained model
+run finetune --config-file model/tutorial/configs/finetune-config.yml
+
+# Evaluate performance metrics (NSE, KGE) on the test split (pass --assimilate to enable latent embedding data assimilation)
+run evaluate --run-dir /path/to/your/model_run/
+
+# Generate predictions across all dates without skipping missing observations
+run infer --run-dir /path/to/your/model_run/
 ```
 
-👉 **Full Usage Guide & Command-Line Flags:** See [`multimet/README.md`](multimet/README.md).
+### Reference Configurations & Pre-Trained Checkpoints
 
-## **Issue Reporting**
+- **Example Configs ([`model/example-configs/`](./model/example-configs/)):**
+  - [`model/example-configs/floodhub-settings-config.yml`](./model/example-configs/floodhub-settings-config.yml): Global Caravan-MultiMet training configuration for `mean_embedding_forecast_lstm`.
+  - [`model/example-configs/handoff-forecast-lstm-config.yml`](./model/example-configs/handoff-forecast-lstm-config.yml): Global Caravan-MultiMet training configuration for `handoff_forecast_lstm`.
+  - [`model/example-configs/camels-multimet-mean-embedding-forecast-lstm-config.yml`](./model/example-configs/camels-multimet-mean-embedding-forecast-lstm-config.yml): CAMELS-US (531 basins) benchmark configuration for `mean_embedding_forecast_lstm`.
+  - [`model/example-configs/camels-multimet-mean-embedding-forecast-lstm-assimilation-config.yml`](./model/example-configs/camels-multimet-mean-embedding-forecast-lstm-assimilation-config.yml): CAMELS-US configuration with gradient-based latent embedding data assimilation for `mean_embedding_forecast_lstm`.
+  - [`model/example-configs/camels-multimet-handoff-forecast-lstm-config.yml`](./model/example-configs/camels-multimet-handoff-forecast-lstm-config.yml): CAMELS-US (531 basins) benchmark configuration for `handoff_forecast_lstm`.
+- **Pre-Trained Checkpoints ([`model/pretrained-models/`](./model/pretrained-models/)):**
+  - `model/pretrained-models/google-floodhub-settings-110-epochs/`: Pre-trained global `mean_embedding_forecast_lstm` checkpoint (`model_epoch110.pt`), feature/target normalizer (`scaler.zarr`), and run config (`config.yml`). See [`model/pretrained-models/Pretrained-Models-README.md`](./model/pretrained-models/Pretrained-Models-README.md) for usage and fine-tuning instructions.
 
-If you encounter bugs, please use the [GitHub Issue Tracker](https://github.com/google-research/flood-forecasting/issues). Provide a clear description, steps to reproduce, and the expected behavior.
+---
+
+## Issue Reporting
+
+If you encounter bugs, please open an issue on the [GitHub Issue Tracker](https://github.com/google-research/flood-forecasting/issues) with a clear description, steps to reproduce, and expected behavior.
