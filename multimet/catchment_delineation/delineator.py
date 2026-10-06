@@ -1206,11 +1206,14 @@ class DemDelineator:
         catchment_id: str | None = None,
         expected_area_km2: float | None = None,
         area_tolerance: float = 0.50,
+        *,
+        strict: bool = False,
     ) -> tuple[dict[str, Any] | None, str | None]:
         """Delineate without try/except while propagating FileNotFoundError."""
-        cov_err = self._check_coord_coverage(lat, lon)
-        if cov_err is not None:
-            return None, cov_err
+        if not strict:
+            cov_err = self._check_coord_coverage(lat, lon)
+            if cov_err is not None:
+                return None, cov_err
 
         if expected_area_km2 is not None:
             (
@@ -1230,7 +1233,7 @@ class DemDelineator:
                 snap_window_cells=snap_window_cells,
                 max_cells=max_cells,
                 catchment_id=catchment_id,
-                raise_on_mismatch=False,
+                raise_on_mismatch=strict,
             )
             if total_accum < 0:
                 return None, self._last_coverage_error or 'Area hint mismatch.'
@@ -1248,8 +1251,8 @@ class DemDelineator:
                 best_r,
                 best_c,
                 max_cells=max_cells,
-                abort_on_limit=False,
-                abort_on_coverage=False,
+                abort_on_limit=strict,
+                abort_on_coverage=strict,
             )
             if total_accum < 0:
                 return (
@@ -1285,52 +1288,19 @@ class DemDelineator:
         area_tolerance: float = 0.50,
     ) -> dict[str, Any]:
         """Delineate the upstream catchment draining to (lat, lon)."""
-        if expected_area_km2 is not None:
-            (
-                outlet_lat,
-                outlet_lon,
-                best_r,
-                best_c,
-                _,
-                snap_dist_m,
-                visited_tiles,
-                total_accum,
-            ) = self._delineate_with_area_hint(
-                lat=lat,
-                lon=lon,
-                expected_area_km2=expected_area_km2,
-                area_tolerance=area_tolerance,
-                snap_window_cells=snap_window_cells,
-                max_cells=max_cells,
-                catchment_id=catchment_id,
-                raise_on_mismatch=True,
-            )
-        else:
-            (
-                outlet_lat,
-                outlet_lon,
-                best_r,
-                best_c,
-                start_key,
-                snap_dist_m,
-            ) = self.snap_outlet(lat, lon, snap_window_cells=snap_window_cells)
-            visited_tiles, total_accum = self._traverse_upstream_bfs(
-                start_key, best_r, best_c, max_cells=max_cells
-            )
-
-        return self._build_feature_from_visited(
+        feat, _ = self._delineate_safe(
             lat=lat,
             lon=lon,
-            outlet_lat=outlet_lat,
-            outlet_lon=outlet_lon,
-            best_r=best_r,
-            best_c=best_c,
-            snap_dist_m=snap_dist_m,
-            visited_tiles=visited_tiles,
-            total_accum=total_accum,
+            snap_window_cells=snap_window_cells,
+            max_cells=max_cells,
             simplify_tolerance=simplify_tolerance,
             catchment_id=catchment_id,
+            expected_area_km2=expected_area_km2,
+            area_tolerance=area_tolerance,
+            strict=True,
         )
+        assert feat is not None
+        return feat
 
     delineate_point = delineate
 

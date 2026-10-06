@@ -695,6 +695,25 @@ def test_build_benchmark_dataset_cli_explicit_args(tmp_path: Path) -> None:
             ]
         )
 
+    # Sibling coordinates.csv must NOT be implicitly read when --coords-csv is omitted,
+    # and empty matched basins must raise ValueError instead of writing a 0-row file.
+    sibling_csv = shapes_dir / 'coordinates.csv'
+    sibling_csv.write_text(coords_csv.read_text(encoding='utf-8'), encoding='utf-8')
+    with pytest.raises(
+        ValueError, match='No valid benchmark basins matched'
+    ):
+        build_bench_main(
+            [
+                '--shapes',
+                str(shapes_dir),
+                '--world-geojson',
+                str(world_path),
+                '--output',
+                str(out_pq),
+            ]
+        )
+    assert not out_pq.exists()
+
     rc = build_bench_main(
         [
             '--shapes',
