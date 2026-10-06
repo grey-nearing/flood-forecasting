@@ -44,9 +44,12 @@ setup(
         'multimet.timeseries_extractors',
         'return_periods',
         'return_periods.tools',
+        'frontend',
+        'frontend.tools',
     ],
     package_data={
         'return_periods': ['*.csv'],
+        'frontend': ['static/*', 'sample_data/*'],
     },
     url='https://openhydronet.readthedocs.io',
     project_urls={
@@ -75,6 +78,7 @@ setup(
             'extract-static-attributes-batch=multimet.static_extractor.batch_runner:main',
             'benchmark-static-extractor=multimet.static_extractor.benchmark:main',
             'benchmark-return-periods=return_periods.tools.run_caravan_usgs_benchmark:main',
+            'openhydronet-ui=frontend.server:main',
         ]
     },
     python_requires='>=3.12',

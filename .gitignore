@@ -15,3 +15,4 @@ openhydronet.egg-info/*
 .idea/*
 .ipynb_checkpoints/
 docs/build/*
+frontend/data/*
