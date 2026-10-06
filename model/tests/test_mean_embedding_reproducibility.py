@@ -38,6 +38,7 @@ from model.utils.configutils import flatten_feature_list
 # A separate interpreter is required: changing os.environ in-process does not
 # change the hash seed that Python selected at startup.
 _PROCESS_CODE = """
+import json
 import sys
 from pathlib import Path
 import torch
@@ -49,29 +50,39 @@ from model.modelzoo.mean_embedding_forecast_lstm import (
 from model.training import get_loss_obj
 
 torch.set_num_threads(1)
-cfg = Config(Path(sys.argv[1]))
-torch.manual_seed(cfg.seed)
-model = MeanEmbeddingForecastLSTM(cfg)
-initial = {k: v.detach().clone() for k, v in model.state_dict().items()}
-torch.manual_seed(99)
-data = {
-    'x_s': torch.rand(2, len(cfg.static_attributes)),
-    'x_d_hindcast': {
-        name: torch.rand(2, cfg.seq_length, 1)
-        for name in flatten_feature_list(cfg.hindcast_inputs)
-    },
-    'x_d_forecast': {
-        name: torch.rand(2, cfg.seq_length + cfg.lead_time, 1)
-        for name in flatten_feature_list(cfg.forecast_inputs)
-    },
-    'y': torch.rand(2, cfg.seq_length + cfg.lead_time, 1),
-}
-predictions = model(data)
-loss, _ = get_loss_obj(cfg)(predictions, data)
-loss.backward()
-gradients = {k: v.grad.detach().clone() for k, v in model.named_parameters()}
-torch.save({'weights': initial, 'predictions': predictions,
-            'gradients': gradients, 'loss': loss}, sys.argv[2])
+config_paths = json.loads(sys.argv[1])
+results = {}
+for layout, config_path in config_paths.items():
+    cfg = Config(Path(config_path))
+    torch.manual_seed(cfg.seed)
+    model = MeanEmbeddingForecastLSTM(cfg)
+    initial = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    torch.manual_seed(99)
+    data = {
+        'x_s': torch.rand(2, len(cfg.static_attributes)),
+        'x_d_hindcast': {
+            name: torch.rand(2, cfg.seq_length, 1)
+            for name in flatten_feature_list(cfg.hindcast_inputs)
+        },
+        'x_d_forecast': {
+            name: torch.rand(2, cfg.seq_length + cfg.lead_time, 1)
+            for name in flatten_feature_list(cfg.forecast_inputs)
+        },
+        'y': torch.rand(2, cfg.seq_length + cfg.lead_time, 1),
+    }
+    predictions = model(data)
+    loss, _ = get_loss_obj(cfg)(predictions, data)
+    loss.backward()
+    gradients = {
+        k: v.grad.detach().clone() for k, v in model.named_parameters()
+    }
+    results[layout] = {
+        'weights': initial,
+        'predictions': predictions,
+        'gradients': gradients,
+        'loss': loss,
+    }
+torch.save(results, sys.argv[2])
 """
 
 
@@ -145,42 +156,72 @@ def test_embedding_groups_follow_config_order(
     assert list(model.shared_embeddings_fc) == ['sharedtwo', 'sharedone']
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize('layout', ['dict', 'nested', 'flat'])
-def test_hash_seed_does_not_change_model_or_gradients(
-    tmp_path: Path,
-    layout: str,
-) -> None:
-    """Compare weights, predictions, and gradients across interpreters."""
-    cfg = _config(tmp_path, layout)
-    options = cfg.as_dict()
-    options['run_dir'] = str(cfg.run_dir)
-    config_path = tmp_path / 'model.yml'
-    config_path.write_text(json.dumps(options), encoding='utf-8')
-    snapshots = []
+@pytest.fixture(scope='module')
+def hash_seed_snapshots(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[str, list[dict]]:
+    """Run fresh interpreters for each PYTHONHASHSEED in parallel."""
+    work_dir = tmp_path_factory.mktemp('hash_seed_repro')
+    layouts = ('dict', 'nested', 'flat')
+    config_paths: dict[str, str] = {}
+    for layout in layouts:
+        layout_dir = work_dir / layout
+        layout_dir.mkdir(parents=True, exist_ok=True)
+        cfg = _config(layout_dir, layout)
+        options = cfg.as_dict()
+        options['run_dir'] = str(cfg.run_dir)
+        config_path = layout_dir / 'model.yml'
+        config_path.write_text(json.dumps(options), encoding='utf-8')
+        config_paths[layout] = str(config_path)
+
+    config_arg = json.dumps(config_paths)
+    pythonpath = str(Path(model_pkg.__file__).resolve().parents[1])
+    procs: list[tuple[Path, subprocess.Popen]] = []
     for hash_seed in ('1', '7', '19'):
-        output = tmp_path / f'state-{hash_seed}.pt'
+        output = work_dir / f'state-{hash_seed}.pt'
         env = os.environ.copy()
         env['PYTHONHASHSEED'] = hash_seed
         # Use the active installation, also when testing an installed wheel.
-        env['PYTHONPATH'] = str(
-            Path(model_pkg.__file__).resolve().parents[1]
-        )
-        subprocess.run(  # noqa: S603 - Fixed interpreter and test code.
+        env['PYTHONPATH'] = pythonpath
+        proc = subprocess.Popen(  # noqa: S603 - Fixed interpreter and test code.
             [
                 sys.executable,
                 '-c',
                 _PROCESS_CODE,
-                str(config_path),
+                config_arg,
                 str(output),
             ],
             env=env,
-            cwd=tmp_path,
-            check=True,
-            capture_output=True,
-            timeout=90,
+            cwd=work_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        snapshots.append(torch.load(output, weights_only=True))
+        procs.append((output, proc))
+
+    by_layout: dict[str, list[dict]] = {layout: [] for layout in layouts}
+    for output, proc in procs:
+        stdout, stderr = proc.communicate(timeout=90)
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode,
+                proc.args,
+                output=stdout,
+                stderr=stderr,
+            )
+        loaded = torch.load(output, weights_only=True)
+        for layout in layouts:
+            by_layout[layout].append(loaded[layout])
+    return by_layout
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('layout', ['dict', 'nested', 'flat'])
+def test_hash_seed_does_not_change_model_or_gradients(
+    hash_seed_snapshots: dict[str, list[dict]],
+    layout: str,
+) -> None:
+    """Compare weights, predictions, and gradients across interpreters."""
+    snapshots = hash_seed_snapshots[layout]
     reference = snapshots[0]
     for actual in snapshots[1:]:
         for section in ('weights', 'predictions', 'gradients'):
