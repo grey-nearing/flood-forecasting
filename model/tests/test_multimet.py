@@ -563,6 +563,42 @@ def test_forecast_dataset_per_basin_target_stds(
     assert 'per_basin_target_stds' not in sample_mse
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ('da_loss', 'expected'), [('NSE', True), ('nse', True), ('MSE', False)]
+)
+@patch('model.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_forecast_dataset_per_basin_target_stds_for_assimilation_loss(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+    da_loss,
+    expected,
+):
+    """An NSE assimilation loss provides the stds like an NSE training loss."""
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+    cfg = get_config('default')
+    cfg.loss = 'mse'
+    cfg.update_config(
+        {
+            'assimilation_config': {
+                'assimilation_components': ['static_embedding'],
+                'assimilation_window': 1,
+                'initial_learning_rate': 0.1,
+                'loss': da_loss,
+            }
+        }
+    )
+
+    sample = Multimet(cfg=cfg, is_train=True, period='train')[0]
+
+    assert ('per_basin_target_stds' in sample) is expected
+
+
 @patch('model.datasetzoo.multimet.load_basin_file')
 @patch.object(Multimet, '_load_data')
 def test_forecast_dataset_timestep_counter(
@@ -1231,46 +1267,21 @@ def test_single_store_dynamics_with_unrelated_subdirs_and_strict_validation(
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
     assert len(dataset) == 4
 
-    # Missing hindcast feature in single-store mode must raise ValueError immediately
+    # Missing hindcast or forecast feature in single-store mode must raise ValueError immediately
     # (never fall through to multi-product lookup)
-    cfg_missing_hind = get_config('single_store_missing_hind')
-    cfg_missing_hind.train_basin_file.write_text('\n'.join(basins) + '\n')
-    cfg_missing_hind.update_config(
-        {
-            'statics_data_dir': statics_dir,
-            'targets_data_dir': targets_dir,
-            'dynamics_data_dir': dynamics_dir,
-            'hindcast_inputs': ['completely_missing_hindcast'],
-            'forecast_inputs': ['hres_3d'],
-            'train_start_date': ['01/01/2000'],
-            'train_end_date': ['02/01/2000'],
-        }
-    )
-    with pytest.raises(
-        ValueError,
-        match='Requested hindcast features.*completely_missing_hindcast.*not found',
-    ):
-        Multimet(cfg=cfg_missing_hind, is_train=True, period='train')
-
-    # Missing forecast feature in single-store mode must raise ValueError immediately
-    cfg_missing_fore = get_config('single_store_missing_fore')
-    cfg_missing_fore.train_basin_file.write_text('\n'.join(basins) + '\n')
-    cfg_missing_fore.update_config(
-        {
-            'statics_data_dir': statics_dir,
-            'targets_data_dir': targets_dir,
-            'dynamics_data_dir': dynamics_dir,
-            'hindcast_inputs': ['era5land_2d'],
-            'forecast_inputs': ['completely_missing_forecast'],
-            'train_start_date': ['01/01/2000'],
-            'train_end_date': ['02/01/2000'],
-        }
-    )
-    with pytest.raises(
-        ValueError,
-        match='Requested forecast features.*completely_missing_forecast.*not found',
-    ):
-        Multimet(cfg=cfg_missing_fore, is_train=True, period='train')
+    for override, match in [
+        (
+            {'hindcast_inputs': ['completely_missing_hindcast']},
+            'Requested hindcast features.*completely_missing_hindcast.*not found',
+        ),
+        (
+            {'forecast_inputs': ['completely_missing_forecast']},
+            'Requested forecast features.*completely_missing_forecast.*not found',
+        ),
+    ]:
+        cfg_missing = Config({**cfg.as_dict(), **override})
+        with pytest.raises(ValueError, match=match):
+            Multimet(cfg=cfg_missing, is_train=True, period='train')
 
     # Missing dynamics .zarr or directory raises FileNotFoundError
     with pytest.raises(

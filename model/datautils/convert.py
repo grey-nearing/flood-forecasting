@@ -89,10 +89,19 @@ def convert_caravan_attributes(
             df = pd.read_csv(csv_file)
             if 'gauge_id' in df.columns:
                 df = df.set_index('gauge_id')
-            elif df.index.name != 'gauge_id' and 'basin' in df.columns:
+            elif 'basin' in df.columns:
                 df = df.set_index('basin')
+            else:
+                raise ValueError(
+                    f"Expected 'gauge_id' or 'basin' column in {csv_file}"
+                )
             df.index.name = 'basin'
 
+            if df.index.duplicated().any():
+                dup_basins = sorted(set(df.index[df.index.duplicated()]))
+                raise ValueError(
+                    f'Duplicate basin IDs {dup_basins} in {csv_file}'
+                )
             if df.columns.duplicated().any():
                 dup_cols = sorted(set(df.columns[df.columns.duplicated()]))
                 raise ValueError(
@@ -105,9 +114,6 @@ def convert_caravan_attributes(
                     f'in {csv_file.parent}'
                 )
             seen_columns.update(df.columns)
-
-            num_cols = df.select_dtypes(include=[np.number]).columns
-            df[num_cols] = df[num_cols].astype(np.float32)
             table_dfs.append(df)
 
         sub_df = pd.concat(table_dfs, axis=1)
@@ -115,6 +121,14 @@ def convert_caravan_attributes(
 
     combined_df = pd.concat(subdataset_dfs, axis=0)
     combined_df.index.name = 'basin'
+    if combined_df.index.duplicated().any():
+        dup_basins = sorted(
+            set(combined_df.index[combined_df.index.duplicated()])
+        )
+        raise ValueError(
+            f'Duplicate basin IDs {dup_basins} across subdatasets in '
+            f'{attributes_dir}'
+        )
     num_cols = combined_df.select_dtypes(include=[np.number]).columns
     combined_df[num_cols] = combined_df[num_cols].astype(np.float32)
 

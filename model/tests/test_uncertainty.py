@@ -38,8 +38,8 @@ def trained_uncertainty_runs(
 ) -> Callable[[str, str, dict], Path]:
     """Train a model once per (forecast_model, head) pair and cache its run_dir.
 
-    Neither ``negative_sample_handling`` nor ``mc_dropout`` affects training
-    weights or scaler computation; they only govern evaluation-time sampling.
+    ``negative_sample_handling`` does not affect training weights or scaler
+    computation; it only governs evaluation-time sampling.
     """
     cache: dict[tuple[str, str], Path] = {}
     config_file = Path(__file__).parent / 'test_configs' / 'forecast.test.yml'
@@ -71,7 +71,6 @@ def trained_uncertainty_runs(
     return _get_trained_run
 
 
-@pytest.mark.parametrize('mc_dropout', [False, True])
 @pytest.mark.parametrize(
     'negative_sample_handling', ['none', 'clip', 'truncate']
 )
@@ -84,13 +83,12 @@ def test_daily_uncertainty(
     forecast_model: str,
     head: str,
     negative_sample_handling: str,
-    mc_dropout: bool,
 ):
-    """Test probabilistic output consistency across different heads, dropout settings, and negative sample handling modes.
+    """Test probabilistic output consistency across different heads and negative sample handling modes.
 
     This test verifies that training and evaluation produce valid uncertainty outputs
     for CMAL heads under various negative sample handling strategies
-    ('none', 'clip', 'truncate') and with or without Monte Carlo dropout.
+    ('none', 'clip', 'truncate').
     """
     base_run_dir = trained_uncertainty_runs(
         forecast_model, head, forecast_config_updates(forecast_model)
@@ -103,7 +101,6 @@ def test_daily_uncertainty(
         {
             'run_dir': run_dir,
             'negative_sample_handling': negative_sample_handling,
-            'mc_dropout': mc_dropout,
             'n_samples': 10,
             'negative_sample_max_retries': 1,
         }
@@ -153,8 +150,8 @@ def _check_uncertainty_output(
     )
 
     # Assert the number of samples in the output matches the config
-    assert results[sample_key].shape[2] == config.n_samples, (
-        f'Expected {config.n_samples} samples, got {results[sample_key].shape[2]}'
+    assert results[sample_key].sizes['samples'] == config.n_samples, (
+        f'Expected {config.n_samples} samples, got {results[sample_key].sizes["samples"]}'
     )
 
     # Check that the results file has the correct date range

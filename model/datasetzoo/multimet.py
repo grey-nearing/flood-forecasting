@@ -32,7 +32,6 @@ from dask.sizeof import sizeof
 from torch.utils.data import Dataset
 
 from model.datasetzoo.caravan import (
-    _is_zarr_store,
     load_caravan_attributes,
     load_caravan_timeseries,
     load_caravan_timeseries_together,
@@ -67,6 +66,17 @@ TENSOR_VARS = [
     'basin_index',
 ]
 MULTIMET_MINIMUM_LEAD_TIME = 1
+
+def _needs_per_basin_target_stds(cfg: Config) -> bool:
+    """Whether the training loss or the data assimilation loss is NSE."""
+    if cfg.loss.lower() == 'nse':
+        return True
+    assimilation_config = cfg.assimilation_config
+    return (
+        assimilation_config is not None
+        and assimilation_config.loss.lower() == 'nse'
+    )
+
 
 class MultimetDataLoader(torch.utils.data.DataLoader):
     """Custom DataLoader that handles lazy data loading.
@@ -202,8 +212,6 @@ class Multimet(Dataset):
 
         # Validating samples depends on whether we are training or testing.
         self.is_train = is_train
-        # TODO (future) :: Necessary for tester. Remove dependency if possible.
-        self.frequencies = ['1D']
 
         self._period = period
         if period not in ['train', 'validation', 'test']:
@@ -366,7 +374,7 @@ class Multimet(Dataset):
         # TODO (future) :: Find a better way to decide whether to calculate these. At least keep a list of
         # losses that require them somewhere like `training.__init__.py`. Perhaps simply always calculate.
         self._per_basin_target_stds = None
-        if cfg.loss.lower() in ['nse']:
+        if _needs_per_basin_target_stds(cfg):
             LOGGER.debug('create per_basin_target_stds')
             self._per_basin_target_stds = self._dataset[
                 self._target_features
@@ -1014,8 +1022,6 @@ def _find_single_dynamics_zarr_path(dynamics_path: Path | str) -> Path | None:
         return p
     if not p.exists():
         raise FileNotFoundError(f'Dynamics data path not found: {p}')
-    if _is_zarr_store(p):
-        return p
     if (p / 'timeseries.zarr').exists():
         return p / 'timeseries.zarr'
     return None
@@ -1030,9 +1036,6 @@ def _find_product_zarr_path(dynamics_path: Path | str, product: str) -> Path:
     candidate = p / product / 'timeseries.zarr'
     if candidate.exists():
         return candidate
-    product_dir = p / product
-    if product_dir.exists() and _is_zarr_store(product_dir):
-        return product_dir
     raise FileNotFoundError(
         f"Zarr store for product '{product}' not found at {candidate}"
     )

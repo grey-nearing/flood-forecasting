@@ -173,6 +173,18 @@ def test_convert_caravan_attributes_duplicate_columns_raises(tmp_path: Path):
             tmp_path / 'dup_attributes', tmp_path / 'out.zarr'
         )
 
+    no_id_root = tmp_path / 'no_id_attributes' / 'camelsus'
+    no_id_root.mkdir(parents=True)
+    pd.DataFrame({'area': [100.0]}).to_csv(
+        no_id_root / 'table1.csv', index=False
+    )
+    with pytest.raises(
+        ValueError, match="Expected 'gauge_id' or 'basin' column"
+    ):
+        convert_caravan_attributes(
+            tmp_path / 'no_id_attributes', tmp_path / 'out_no_id.zarr'
+        )
+
 
 def test_convert_caravan_missing_dirs_raise_file_not_found(
     mock_caravan_directory: Path, tmp_path: Path
