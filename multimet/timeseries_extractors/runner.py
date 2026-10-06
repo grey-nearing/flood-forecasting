@@ -14,9 +14,9 @@
 
 """Local serial execution runner for MultiMet meteorological forcing extraction.
 
-Enables extraction of the 5 core meteorological products (ERA5-Land, CPC, IMERG,
-HRES, and GraphCast) over arbitrary catchment geometries and time intervals
-in a local serial workflow without distributed dependencies.
+Enables extraction of the 4 core meteorological products (ERA5-Land, CPC, IMERG,
+and HRES) over arbitrary catchment geometries and time intervals in a local
+serial workflow without distributed dependencies.
 """
 
 from __future__ import annotations
@@ -38,7 +38,6 @@ from multimet.timeseries_extractors.cpc import CPCExtractor
 from multimet.timeseries_extractors.era5_land import ERA5LandExtractor
 from multimet.utils.geometry import load_basin_geometries
 from multimet.utils.gcs import configure_gcp_project
-from multimet.timeseries_extractors.graphcast import GraphCastExtractor
 from multimet.timeseries_extractors.hres import HRESExtractor
 from multimet.timeseries_extractors.imerg import IMERGExtractor
 from multimet.timeseries_extractors.zarr_writer import MultiMetZarrWriter
@@ -51,7 +50,6 @@ PRODUCT_MAP: Dict[str, tuple[Product, type[BaseExtractor]]] = {
     "ERA5_LAND": (Product.ERA5_LAND, ERA5LandExtractor),
     "IMERG": (Product.IMERG, IMERGExtractor),
     "HRES": (Product.HRES, HRESExtractor),
-    "GRAPHCAST": (Product.GRAPHCAST, GraphCastExtractor),
 }
 
 
@@ -104,8 +102,8 @@ def extract_multimet_serial(
   Args:
     basins: Catchment geometry source (file path, GeoDataFrame, or GeoJSON dict).
     output_dir: Directory where extracted consolidated Zarr stores will be saved.
-    products: Products to extract (defaults to all 5 core products:
-      CPC, ERA5_LAND, IMERG, HRES, GRAPHCAST).
+    products: Products to extract (defaults to all 4 core products:
+      CPC, ERA5_LAND, IMERG, HRES).
     start_date: Required start date string (YYYY-MM-DD) or Timestamp.
     end_date: Required end date string (YYYY-MM-DD) or Timestamp.
     source: Source mode: 'archive' (gridded Zarr archives), 'public'/'upstream'
@@ -223,10 +221,6 @@ def extract_multimet_serial(
         extractor = IMERGExtractor(data_dir=prod_archive_uri, source="archive")
       elif prod_name == "HRES":
         extractor = HRESExtractor(data_dir=prod_archive_uri, source="archive")
-      elif prod_name == "GRAPHCAST":
-        extractor = GraphCastExtractor(
-            data_dir=prod_archive_uri, source="archive"
-        )
       else:
         extractor = extractor_cls(data_dir=prod_archive_uri)
     elif prod_name == "CPC":
@@ -259,15 +253,6 @@ def extract_multimet_serial(
           else source_lower
       )
       extractor = HRESExtractor(
-          data_dir=norm_data_dirs.get(prod_name), source=src
-      )
-    elif prod_name == "GRAPHCAST":
-      src = (
-          "wb2"
-          if source_lower in ("public", "auto", "upstream")
-          else source_lower
-      )
-      extractor = GraphCastExtractor(
           data_dir=norm_data_dirs.get(prod_name), source=src
       )
     else:

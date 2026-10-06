@@ -66,7 +66,7 @@ flood-forecasting/
 1. **One Subpackage per Distinct Workflow:**
    - `multimet/catchment_delineation/`: High-resolution (`90m` / 3-arcsec) D8 flow-direction watershed delineation (`delineate-catchment`) and global polygon accuracy benchmarking (`benchmark-catchment`).
    - `multimet/gridded_archive_builders/`: CLI builders and incremental extenders (`build-cpc-archive`, `build-imerg-archive`) that download native-resolution daily precipitation grids from NOAA PSL and NASA GES DISC and write standardized `(time, latitude, longitude)` Zarr stores.
-   - `multimet/timeseries_extractors/`: Catchment-polygon zonal averaging extractors (`CPC`, `IMERG`, `ERA5-Land`, `HRES`, `GraphCast`, and `dynamical.org` forecast catalogs) with serial and Dask runners (`extract-multimet`, `extract-multimet-dask`).
+   - `multimet/timeseries_extractors/`: Catchment-polygon zonal averaging extractors (`CPC`, `IMERG`, `ERA5-Land`, and `HRES`) with serial and Dask runners (`extract-multimet`, `extract-multimet-dask`).
    - `multimet/static_extractor/`: Static catchment attribute extractor (`extract-caravan-static`, `extract-static-attributes`, `extract-caravan-static-batch`, `benchmark-static-extractor`) computing HydroATLAS Level 12 summaries and long-term Caravan climate signatures.
 
 2. **`multimet/utils/` is the Single Source of Truth for Shared Helpers:**
