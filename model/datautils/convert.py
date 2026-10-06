@@ -14,7 +14,6 @@
 
 """Utilities to convert legacy Caravan NetCDF/CSV into unified Zarr format."""
 
-import itertools
 import logging
 from pathlib import Path
 from typing import Sequence
@@ -50,48 +49,74 @@ def convert_caravan_attributes(
     attributes_dir = Path(attributes_dir)
     output_zarr_path = Path(output_zarr_path)
 
-    # Find all attribute CSV files
-    if subdatasets:
-        csv_files = []
-        for sub in subdatasets:
-            sub_dir = (
-                attributes_dir / sub
-                if (attributes_dir / sub).is_dir()
-                else attributes_dir
-            )
-            csv_files.extend(list(sub_dir.glob('*.csv')))
-    else:
-        csv_files = list(attributes_dir.glob('**/*.csv'))
+    if not attributes_dir.exists():
+        raise FileNotFoundError(
+            f'Attributes directory not found: {attributes_dir}'
+        )
 
-    if not csv_files:
+    # Group attribute CSV files by subdataset directory
+    if subdatasets:
+        csv_groups: list[list[Path]] = []
+        for sub in subdatasets:
+            sub_dir = attributes_dir / sub
+            if not sub_dir.is_dir():
+                raise FileNotFoundError(
+                    f'Subdataset directory not found: {sub_dir}'
+                )
+            sub_csvs = sorted(sub_dir.glob('*.csv'))
+            if not sub_csvs:
+                raise FileNotFoundError(
+                    f'No attribute CSV files found in {sub_dir}'
+                )
+            csv_groups.append(sub_csvs)
+    else:
+        all_csvs = sorted(attributes_dir.glob('**/*.csv'))
+        by_parent: dict[Path, list[Path]] = {}
+        for csv_file in all_csvs:
+            by_parent.setdefault(csv_file.parent, []).append(csv_file)
+        csv_groups = list(by_parent.values())
+
+    if not csv_groups:
         raise FileNotFoundError(
             f'No attribute CSV files found in {attributes_dir}'
         )
 
-    # Process each CSV
-    dfs = []
-    for csv_file in csv_files:
-        df = pd.read_csv(csv_file)
-        if 'gauge_id' in df.columns:
-            df = df.set_index('gauge_id')
-        elif df.index.name != 'gauge_id' and 'basin' in df.columns:
-            df = df.set_index('basin')
-        df.index.name = 'basin'
+    subdataset_dfs: list[pd.DataFrame] = []
+    for group_files in csv_groups:
+        table_dfs: list[pd.DataFrame] = []
+        seen_columns: set[str] = set()
+        for csv_file in group_files:
+            df = pd.read_csv(csv_file)
+            if 'gauge_id' in df.columns:
+                df = df.set_index('gauge_id')
+            elif df.index.name != 'gauge_id' and 'basin' in df.columns:
+                df = df.set_index('basin')
+            df.index.name = 'basin'
 
-        # Cast float columns to float32
-        num_cols = df.select_dtypes(include=[np.number]).columns
-        df[num_cols] = df[num_cols].astype(np.float32)
-        dfs.append(df)
+            if df.columns.duplicated().any():
+                dup_cols = sorted(set(df.columns[df.columns.duplicated()]))
+                raise ValueError(
+                    f'Duplicate attribute columns {dup_cols} in {csv_file}'
+                )
+            overlap = sorted(seen_columns.intersection(df.columns))
+            if overlap:
+                raise ValueError(
+                    f'Duplicate attribute columns {overlap} across CSV files '
+                    f'in {csv_file.parent}'
+                )
+            seen_columns.update(df.columns)
 
-    if not dfs:
-        raise ValueError(
-            f'Could not extract valid attribute data from {attributes_dir}'
-        )
+            num_cols = df.select_dtypes(include=[np.number]).columns
+            df[num_cols] = df[num_cols].astype(np.float32)
+            table_dfs.append(df)
 
-    # Merge dataframes
-    combined_df = dfs[0]
-    for df in dfs[1:]:
-        combined_df = combined_df.combine_first(df)
+        sub_df = pd.concat(table_dfs, axis=1)
+        subdataset_dfs.append(sub_df)
+
+    combined_df = pd.concat(subdataset_dfs, axis=0)
+    combined_df.index.name = 'basin'
+    num_cols = combined_df.select_dtypes(include=[np.number]).columns
+    combined_df[num_cols] = combined_df[num_cols].astype(np.float32)
 
     ds = combined_df.to_xarray()
 
@@ -125,6 +150,11 @@ def convert_caravan_timeseries(
     """
     timeseries_dir = Path(timeseries_dir)
     output_zarr_path = Path(output_zarr_path)
+
+    if not timeseries_dir.exists():
+        raise FileNotFoundError(
+            f'Timeseries directory not found: {timeseries_dir}'
+        )
 
     # Find all NC files first, then fallback to CSV files
     nc_files = sorted(list(timeseries_dir.glob('**/*.nc')))
@@ -210,25 +240,26 @@ def convert_caravan_to_zarr(
     """
     caravan_dir = Path(caravan_dir)
     output_dir = Path(output_dir)
+
+    if not caravan_dir.exists():
+        raise FileNotFoundError(f'Caravan directory not found: {caravan_dir}')
+
+    attr_dir = caravan_dir / 'attributes'
+    if not attr_dir.is_dir():
+        raise FileNotFoundError(
+            f'Caravan attributes directory not found: {attr_dir}'
+        )
+
+    ts_dir = caravan_dir / 'timeseries' / 'netcdf'
+    if not ts_dir.is_dir():
+        raise FileNotFoundError(
+            f'Caravan timeseries directory not found: {ts_dir}'
+        )
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Attributes
-    attr_dir = (
-        caravan_dir / 'attributes'
-        if (caravan_dir / 'attributes').exists()
-        else caravan_dir
-    )
     attr_ds = convert_caravan_attributes(
         attr_dir, output_dir / 'attributes.zarr'
-    )
-
-    # Timeseries / Targets
-    ts_dir = (
-        caravan_dir / 'timeseries' / 'netcdf'
-        if (caravan_dir / 'timeseries' / 'netcdf').exists()
-        else caravan_dir / 'timeseries'
-        if (caravan_dir / 'timeseries').exists()
-        else caravan_dir
     )
     ts_ds = convert_caravan_timeseries(
         ts_dir, output_dir / 'streamflow.zarr', variables=variables
