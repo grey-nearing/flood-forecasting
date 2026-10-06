@@ -35,6 +35,13 @@ import xarray as xr
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import Product
 from multimet.timeseries_extractors.cpc import CPCExtractor
+from multimet.timeseries_extractors.dynamical import (
+    AIFSExtractor,
+    DynamicalIMERGExtractor,
+    GEFSExtractor,
+    GFSExtractor,
+    IFSEnsExtractor,
+)
 from multimet.timeseries_extractors.era5_land import ERA5LandExtractor
 from multimet.utils.geometry import load_basin_geometries
 from multimet.utils.gcs import configure_gcp_project
@@ -45,11 +52,23 @@ from multimet.utils.zonal import ZonalWeightMatrix
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SERIAL_PRODUCTS: tuple[str, ...] = (
+    "CPC",
+    "ERA5_LAND",
+    "IMERG",
+    "HRES",
+)
+
 PRODUCT_MAP: Dict[str, tuple[Product, type[BaseExtractor]]] = {
     "CPC": (Product.CPC, CPCExtractor),
     "ERA5_LAND": (Product.ERA5_LAND, ERA5LandExtractor),
     "IMERG": (Product.IMERG, IMERGExtractor),
     "HRES": (Product.HRES, HRESExtractor),
+    "AIFS": (Product.AIFS, AIFSExtractor),
+    "GFS": (Product.GFS, GFSExtractor),
+    "GEFS": (Product.GEFS, GEFSExtractor),
+    "IFS_ENS": (Product.IFS_ENS, IFSEnsExtractor),
+    "DYNAMICAL_IMERG": (Product.DYNAMICAL_IMERG, DynamicalIMERGExtractor),
 }
 
 
@@ -161,7 +180,7 @@ def extract_multimet_serial(
   basins_gdf = load_basin_geometries(basins, id_column=id_column)
 
   if products is None:
-    target_prods = list(PRODUCT_MAP.keys())
+    target_prods = list(DEFAULT_SERIAL_PRODUCTS)
   else:
     target_prods = []
     for p in products:
@@ -209,6 +228,11 @@ def extract_multimet_serial(
           source="archive",
       )
     elif is_archive_mode or prod_name in norm_archive_stores:
+      if prod_name in ("AIFS", "GFS", "GEFS", "IFS_ENS", "DYNAMICAL_IMERG"):
+        raise ValueError(
+            f"Product {prod_name} reads from the dynamical.org Icechunk "
+            "catalog and does not support source='archive'."
+        )
       if not prod_archive_uri:
         raise ValueError(
             f"Product {prod_name} in archive mode requires an explicit store "
@@ -222,7 +246,7 @@ def extract_multimet_serial(
       elif prod_name == "HRES":
         extractor = HRESExtractor(data_dir=prod_archive_uri, source="archive")
       else:
-        extractor = extractor_cls(data_dir=prod_archive_uri)
+        extractor = extractor_cls(data_dir=prod_archive_uri, source="archive")
     elif prod_name == "CPC":
       src = (
           "psl"

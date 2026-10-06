@@ -780,3 +780,162 @@ def test_cli_arg_parser_and_main(tmp_path, monkeypatch):
   assert summary["end_date"] == "2026-09-27"
 
 
+def _build_real_dynamical_forecast_loader(
+    dataset_id: str,
+    dates,
+    basins_gdf,
+    step_hours: int = 6,
+    t2m_val: float = 18.0,
+    pr_mm_day: float = 3.0,
+) -> dynamical_mod.DynamicalDataLoader:
+  """Builds a real DynamicalDataLoader backed by an in-memory forecast Dataset."""
+  minx, miny, maxx, maxy = basins_gdf.total_bounds
+  lats = np.linspace(maxy + 0.5, miny - 0.5, 5, dtype=np.float64)
+  lons = np.linspace(minx - 0.5, maxx + 0.5, 5, dtype=np.float64)
+  init_times = pd.to_datetime([f"{d}T00:00:00" for d in dates])
+  lead_td = pd.to_timedelta(range(0, 241, step_hours), unit="h")
+
+  shape = (len(init_times), len(lead_td), len(lats), len(lons))
+  t2m = np.full(shape, t2m_val, dtype=np.float32)
+  pr = np.full(shape, pr_mm_day / 86400.0, dtype=np.float32)
+  pr[:, 0, :, :] = np.nan
+  u10 = np.full(shape, 1.5, dtype=np.float32)
+  v10 = np.full(shape, -0.5, dtype=np.float32)
+
+  ds = xr.Dataset(
+      data_vars={
+          "temperature_2m": (
+              ["init_time", "lead_time", "latitude", "longitude"],
+              t2m,
+          ),
+          "precipitation_surface": (
+              ["init_time", "lead_time", "latitude", "longitude"],
+              pr,
+          ),
+          "wind_u_10m": (
+              ["init_time", "lead_time", "latitude", "longitude"],
+              u10,
+          ),
+          "wind_v_10m": (
+              ["init_time", "lead_time", "latitude", "longitude"],
+              v10,
+          ),
+      },
+      coords={
+          "init_time": init_times,
+          "lead_time": lead_td,
+          "latitude": lats,
+          "longitude": lons,
+      },
+  )
+  return dynamical_mod.DynamicalDataLoader(
+      dataset_id, cache_dataset=False, ds=ds
+  )
+
+
+def test_realtime_coldstart_and_hotstart_dynamical_forecasts(tmp_path, basins_gdf):
+  """Verifies Cold-Start and Hot-Start fetching for AIFS and GFS dynamical.org forecasts."""
+  out_dir = tmp_path / "dyn_realtime"
+  dates_run1 = ["2026-04-10", "2026-04-11", "2026-04-12", "2026-04-13"]
+  aifs_loader_1 = _build_real_dynamical_forecast_loader(
+      "ecmwf-aifs-single-forecast",
+      dates_run1,
+      basins_gdf,
+      step_hours=6,
+      t2m_val=14.0,
+      pr_mm_day=2.0,
+  )
+  gfs_loader_1 = _build_real_dynamical_forecast_loader(
+      "noaa-gfs-forecast",
+      dates_run1,
+      basins_gdf,
+      step_hours=3,
+      t2m_val=16.0,
+      pr_mm_day=4.0,
+  )
+
+  # 1. Cold-Start with AIFS and GFS (reference_date="2026-04-13", lookback_days=3)
+  cold_res = fetch_realtime_multimet(
+      basins=basins_gdf,
+      output_dir=out_dir,
+      mode="coldstart",
+      reference_date="2026-04-13",
+      lookback_days=3,
+      products=["AIFS", "GFS"],
+      spinup_only_lead_1d=True,
+      full_forecast_days=1,
+      dynamical_loaders={"AIFS": aifs_loader_1, "GFS": gfs_loader_1},
+  )
+  assert set(cold_res.keys()) == {"AIFS", "GFS"}
+
+  with xr.open_zarr(cold_res["AIFS"]) as ds_aifs:
+    assert len(ds_aifs["date"]) == 4  # 2026-04-10 .. 2026-04-13
+    # Spin-up dates 2026-04-10..12 have lead 1D valid and leads 2D..10D NaN
+    assert np.allclose(ds_aifs["aifs_temperature_2m"].values[:, :3, 0], 14.0)
+    assert np.all(np.isnan(ds_aifs["aifs_temperature_2m"].values[:, :3, 1:]))
+    assert np.allclose(ds_aifs["aifs_missing_fraction"].values[:, :3, 0], 0.0)
+    assert np.allclose(ds_aifs["aifs_missing_fraction"].values[:, :3, 1:], 1.0)
+    # Forecast issue date 2026-04-13 has all 10 lead days valid
+    assert np.allclose(ds_aifs["aifs_temperature_2m"].values[:, 3, :], 14.0)
+    assert np.allclose(ds_aifs["aifs_total_precipitation"].values[:, 3, :], 2.0)
+    assert np.allclose(ds_aifs["aifs_missing_fraction"].values[:, 3, :], 0.0)
+
+  # 2. Hot-Start advancing to 2026-04-15
+  dates_run2 = [
+      "2026-04-10",
+      "2026-04-11",
+      "2026-04-12",
+      "2026-04-13",
+      "2026-04-14",
+      "2026-04-15",
+  ]
+  aifs_loader_2 = _build_real_dynamical_forecast_loader(
+      "ecmwf-aifs-single-forecast",
+      dates_run2,
+      basins_gdf,
+      step_hours=6,
+      t2m_val=20.0,
+      pr_mm_day=6.0,
+  )
+  gfs_loader_2 = _build_real_dynamical_forecast_loader(
+      "noaa-gfs-forecast",
+      dates_run2,
+      basins_gdf,
+      step_hours=3,
+      t2m_val=22.0,
+      pr_mm_day=8.0,
+  )
+
+  hot_res = fetch_realtime_multimet(
+      basins=basins_gdf,
+      output_dir=out_dir,
+      mode="hotstart",
+      reference_date="2026-04-15",
+      products=["AIFS", "GFS"],
+      spinup_only_lead_1d=True,
+      full_forecast_days=1,
+      dynamical_loaders={"AIFS": aifs_loader_2, "GFS": gfs_loader_2},
+  )
+  assert hot_res.product_windows["AIFS"] == (
+      pd.Timestamp("2026-04-13"),
+      pd.Timestamp("2026-04-15"),
+  )
+
+  with xr.open_zarr(hot_res["GFS"]) as ds_gfs:
+    assert len(ds_gfs["date"]) == 6  # 2026-04-10 .. 2026-04-15
+    # 2026-04-13 (index 3) preserved its full 10-day forecast from Run 1 (16.0 C)
+    assert np.allclose(ds_gfs["gfs_temperature_2m"].values[:, 3, :], 16.0)
+    # 2026-04-14 (index 4) has lead 1D valid (22.0 C)
+    assert np.allclose(ds_gfs["gfs_temperature_2m"].values[:, 4, 0], 22.0)
+    # 2026-04-15 (index 5) has all 10 lead days valid (22.0 C, 8.0 mm/day)
+    assert np.allclose(ds_gfs["gfs_temperature_2m"].values[:, 5, :], 22.0)
+    assert np.allclose(ds_gfs["gfs_total_precipitation"].values[:, 5, :], 8.0)
+    assert np.allclose(ds_gfs["gfs_missing_fraction"].values[:, 5, :], 0.0)
+
+  # 3. Auto-discovering reference_date="latest" with no forecast product raises ValueError
+  fetcher = RealtimeForcingFetcher(out_dir)
+  with pytest.raises(
+      ValueError, match="Cannot auto-discover latest forecast initialization date"
+  ):
+    fetcher.resolve_reference_date("latest", products=["IMERG", "CPC"])
+

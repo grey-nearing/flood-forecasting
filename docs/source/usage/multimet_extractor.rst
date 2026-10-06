@@ -6,7 +6,7 @@ The **MultiMet Forcing Extractor** (``multimet.timeseries_extractors``) is a hig
 Supported Meteorological Products
 ---------------------------------
 
-The extractor supports **4 core products**, each including a companion ``<prefix>_missing_fraction`` audit variable recording the area-weighted fraction ``[0.0, 1.0]`` of missing (``NaN``) pixels per catchment and timestep:
+The extractor supports **4 core Open-MultiMet products** plus **4 operational forecast products via dynamical.org**, each including a companion ``<prefix>_missing_fraction`` audit variable recording the area-weighted fraction ``[0.0, 1.0]`` of missing (``NaN``) pixels per catchment and timestep:
 
 1. **ERA5-Land (ECMWF)** (``ERA5_LAND``):
    Daily global reanalysis at 0.1° resolution (1801 × 3600). Extracted **exclusively from a user-supplied ERA5-Land gridded Zarr archive** (``source="archive"``) to prevent silent substitution with coarser 0.25° ERA5 products. Extracts **17 harmonized variables** including daily mean, daily minimum (``era5land_temperature_2m_min``), and daily maximum (``era5land_temperature_2m_max``) 2m air temperature (°C), dewpoint (°C), surface pressure (kPa), total precipitation (mm/day), net solar and thermal radiation fluxes (W/m²), 10m wind components (m/s), 4-layer volumetric soil water (m³/m³), snow depth water equivalent (mm), and **FAO-56 Penman-Monteith** potential evapotranspiration (PET), plus ``era5land_missing_fraction``.
@@ -16,6 +16,13 @@ The extractor supports **4 core products**, each including a companion ``<prefix
    Global satellite-derived precipitation nowcast at 0.1° resolution (1800 × 3600). Extracts ``imerg_precipitation`` (mm/day) and ``imerg_missing_fraction``. Supports user-supplied gridded Zarr archives (``--source archive``), NASA GES DISC HTTP downloads (``--source public``), and dynamical.org Icechunk catalogs.
 4. **ECMWF IFS HRES** (``HRES``):
    Operational high-resolution numerical weather prediction (NWP) 10-day forecasts at 0.25° resolution (721 × 1440). Extracts incremental daily forecast precipitation, daily mean temperature, surface pressure, and radiation fluxes, plus ``hres_missing_fraction``. Supports user-supplied gridded Zarr archives (``--source archive``), ECMWF Open Data on GCS (``gs://ecmwf-open-data``, ``--source open_data``), and explicit Zarr/GRIB stores.
+5. **dynamical.org Operational Forecast Products** (``AIFS``, ``GFS``, ``GEFS``, ``IFS_ENS``):
+   Operational 10-day deterministic and ensemble forecasts at 0.25° resolution (721 × 1440) streamed from the `dynamical.org catalog <https://dynamical.org/catalog/>`_ via Icechunk:
+
+   * **ECMWF AIFS Single** (``AIFS``): ``ecmwf-aifs-single-forecast`` (``aifs_*``).
+   * **NOAA GFS** (``GFS``): ``noaa-gfs-forecast`` (``gfs_*``), supporting mixed 1-hourly and 3-hourly lead-time step durations via exact duration-weighted integration.
+   * **NOAA GEFS** (``GEFS``): ``noaa-gefs-forecast-35-day`` (``gefs_*``), supporting explicit ``ensemble_member`` selection (integer member index or ``"mean"``).
+   * **ECMWF IFS ENS** (``IFS_ENS``): ``ecmwf-ifs-ens-forecast-15-day-0-25-degree`` (``ifs_ens_*``), supporting explicit ``ensemble_member`` selection (integer member index or ``"mean"``).
 
 Data-Quality & Provenance Guarantees
 ------------------------------------
