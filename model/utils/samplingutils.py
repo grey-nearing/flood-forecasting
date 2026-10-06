@@ -108,8 +108,18 @@ def _handle_negative_values(
 ) -> torch.Tensor:
     """Handle negative samples that arise while sampling from the uncertainty estimates.
 
-    Currently supports (a) 'clip' for directly clipping values at zero and (b) 'truncate' for resampling values
-    that are below zero.
+    Currently supports (a) 'clip' for directly clipping values at physical zero
+    (``normalized_zero``), (b) 'truncate' for resampling values that are below zero,
+    and (c) 'none' (or ``None`` / omitted) to leave CMAL draws and summary statistics
+    completely unclipped.
+
+    When ``negative_sample_handling: 'clip'`` is configured, clamping at physical zero
+    (``normalized_zero``) is applied inside ``model.sample()`` (``sample_cmal`` and
+    ``sample_cmal_deterministic``). Therefore, during evaluation
+    (``BaseTester.evaluate``), evaluation metrics (``NSE``, ``KGE``, etc.) are
+    computed after clipping and sample reduction (``tester_sample_reduction``),
+    whereas losses (``cmalloss``) are computed on the raw distribution parameters
+    before sampling or clipping.
 
     Parameters
     ----------
@@ -197,6 +207,15 @@ def sample_cmal_deterministic(
     outputs: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Sample 10 point predictions with the Countable Mixture of Asymmetric Laplacians (CMAL) head.
+
+    Setting ``negative_sample_handling: 'none'`` (or omitting it / ``None``) leaves
+    CMAL summary statistics completely unclipped. When ``negative_sample_handling: 'clip'``
+    is configured, clamping at physical zero (``normalized_zero``) is applied inside
+    ``model.sample()`` (``sample_cmal`` and ``sample_cmal_deterministic``). Therefore,
+    during evaluation (``BaseTester.evaluate``), evaluation metrics (``NSE``, ``KGE``,
+    etc.) are computed after clipping and sample reduction (``tester_sample_reduction``),
+    whereas losses (``cmalloss``) are computed on the raw distribution parameters
+    before sampling or clipping.
 
     Parameters
     ----------

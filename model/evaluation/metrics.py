@@ -751,6 +751,7 @@ def missed_peaks(
 
     # count missed peaks
     missed_events = 0
+    valid_peaks = 0
 
     for idx in peaks_obs_times:
         # skip peaks at the start and end of the sequence and peaks around missing observations
@@ -769,13 +770,14 @@ def missed_peaks(
         ):
             continue
 
+        valid_peaks += 1
         nearby_peak_sim_index = np.where(
             np.abs(peaks_sim_times - idx) <= window
         )[0]
         if len(nearby_peak_sim_index) == 0:
             missed_events += 1
 
-    return missed_events / len(peaks_obs_times)
+    return missed_events / valid_peaks if valid_peaks > 0 else np.nan
 
 
 def mean_absolute_percentage_peak_error(
