@@ -50,7 +50,7 @@ def get_tester(
     elif cfg.head.lower() in ['regression', '']:
         Tester = RegressionTester
     else:
-        NotImplementedError(
+        raise NotImplementedError(
             f'No evaluation method implemented for {cfg.head} head'
         )
 

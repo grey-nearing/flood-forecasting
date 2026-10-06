@@ -45,7 +45,7 @@ from model.evaluation.utils import (
     get_samples_indexes,
     metrics_to_dataframe,
 )
-from model.modelzoo import get_model
+from model.modelzoo import get_model, load_model_weights
 from model.modelzoo.basemodel import BaseModel
 from model.training import get_loss_obj, get_regularization_obj
 from model.training.logger import Logger, do_log_figures
@@ -176,15 +176,7 @@ class BaseTester(object):
         weight_file = self._get_weight_file(epoch)
 
         LOGGER.info('Using the model weights from %s', weight_file)
-        state_dict = torch.load(
-            weight_file, map_location=self.device, weights_only=True
-        )
-        # Drop `_orig_mod.` prefix introduced by torch.compile.
-        state_dict = {
-            k.removeprefix('_orig_mod.'): v for k, v in state_dict.items()
-        }
-        model_to_load = getattr(self.model, '_orig_mod', self.model)
-        model_to_load.load_state_dict(state_dict)
+        load_model_weights(self.model, weight_file, self.device)
 
     def _get_dataset_all(self) -> Dataset:
         """Get dataset for all basins."""

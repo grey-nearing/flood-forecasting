@@ -261,6 +261,7 @@ def plan_archive_resume(
   """Plans new date appends when resuming an existing Zarr store.
 
   Verifies that:
+
   1. The existing store's ``time`` coordinate is strictly monotonically
      increasing, has no duplicate dates, and is contiguous at a 1-day frequency.
   2. The existing store does not end with an all-NaN slice.
