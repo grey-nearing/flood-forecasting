@@ -31,16 +31,6 @@ from model.utils.tqdm import AutoRefreshTqdm as tqdm
 LOGGER = logging.getLogger(__name__)
 
 
-def _is_zarr_store(p: Path) -> bool:
-    """Returns True if `p` is a Zarr store path or contains Zarr metadata."""
-    return (
-        p.suffix == '.zarr'
-        or (p / '.zgroup').exists()
-        or (p / 'zarr.json').exists()
-        or (p / '.zmetadata').exists()
-    )
-
-
 def _resolve_zarr_store(
     path: Path | str, canonical_zarr_name: str
 ) -> Path | str | None:
@@ -62,8 +52,6 @@ def _resolve_zarr_store(
         return p
     if not p.exists():
         raise FileNotFoundError(f'Data path not found: {p}')
-    if _is_zarr_store(p):
-        return p
     candidate = p / canonical_zarr_name
     if candidate.exists():
         return candidate
@@ -101,12 +89,7 @@ def load_caravan_attributes(
     zarr_store = _resolve_zarr_store(data_dir, 'attributes.zarr')
     if zarr_store is not None:
         LOGGER.debug('Loading attributes from Zarr store: %s', zarr_store)
-        store_path = (
-            zarr_store.as_posix()
-            if isinstance(zarr_store, Path)
-            else str(zarr_store)
-        )
-        ds = xarray.open_zarr(store_path, chunks='auto')
+        ds = xarray.open_zarr(zarr_store, chunks='auto')
         if features:
             missing_features = sorted(
                 set(features) - (set(ds.data_vars) | set(ds.coords))
@@ -213,12 +196,7 @@ def load_caravan_timeseries(
     zarr_store = _resolve_zarr_store(data_dir, 'streamflow.zarr')
     if zarr_store is not None:
         LOGGER.debug('Loading timeseries from Zarr store: %s', zarr_store)
-        store_path = (
-            zarr_store.as_posix()
-            if isinstance(zarr_store, Path)
-            else str(zarr_store)
-        )
-        ds = xarray.open_zarr(store_path, chunks='auto')
+        ds = xarray.open_zarr(zarr_store, chunks='auto')
         if target_features:
             missing_targets = sorted(set(target_features) - set(ds.data_vars))
             if missing_targets:
