@@ -35,6 +35,9 @@ addopts = [
     "--strict-markers",
     "--tb=short",
     "-ra",
+    "-n=auto",
+    "--maxprocesses=4",
+    "--dist=loadscope",
 ]
 markers = [
     "unit: fast unit tests",

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from pathlib import Path
@@ -344,6 +345,29 @@ def upload_file_to_gcs(local_path: Union[str, Path], gcs_uri: str) -> None:
   fs.put(str(local_p), strip_gcs_prefix(normalized_uri))
 
 
+@functools.lru_cache(maxsize=1)
+def _gcloud_default_project() -> Optional[str]:
+  """Queries gcloud CLI once per process for the default project."""
+  if not shutil.which("gcloud"):
+    return None
+  try:
+    res = subprocess.run(
+        ["gcloud", "config", "get-value", "project"],
+        capture_output=True,
+        text=True,
+        timeout=2.0,
+        check=False,
+    )
+  except (subprocess.TimeoutExpired, OSError):
+    return None
+  if res.returncode == 0:
+    proj = res.stdout.strip()
+    if proj and proj != "(unset)":
+      logger.debug("Auto-detected GCP project from gcloud config: %s", proj)
+      return proj
+  return None
+
+
 def auto_detect_gcp_project(
     explicit_project: Optional[str] = None,
 ) -> Optional[str]:
@@ -375,21 +399,7 @@ def auto_detect_gcp_project(
     if val and val.strip():
       return val.strip()
 
-  if shutil.which("gcloud"):
-    res = subprocess.run(
-        ["gcloud", "config", "get-value", "project"],
-        capture_output=True,
-        text=True,
-        timeout=2.0,
-        check=False,
-    )
-    if res.returncode == 0:
-      proj = res.stdout.strip()
-      if proj and proj != "(unset)":
-        logger.debug("Auto-detected GCP project from gcloud config: %s", proj)
-        return proj
-
-  return None
+  return _gcloud_default_project()
 
 
 def configure_gcp_project(project: Optional[str] = None) -> Optional[str]:
