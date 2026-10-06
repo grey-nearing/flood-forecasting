@@ -13,9 +13,9 @@ The extractor supports **4 core products**, each including a companion ``<prefix
 2. **CPC Global Unified Precipitation (NOAA PSL)** (``CPC``):
    Daily gauge-based precipitation analysis at 0.5° resolution (360 × 720). Extracts both ``cpc_precipitation`` (mm/day) and ``cpc_num_stations`` (reporting rain-gauge station count per grid cell), plus ``cpc_missing_fraction``. Supports both user-supplied gridded Zarr archives (``--source archive``) and direct NOAA PSL NetCDF / CPC binary files (``--source public`` / ``--source local``).
 3. **IMERG Early V07 (NASA GPM)** (``IMERG``):
-   Global satellite-derived precipitation nowcast at 0.1° resolution (1800 × 3600). Extracts ``imerg_precipitation`` (mm/day) and ``imerg_missing_fraction``. Supports user-supplied gridded Zarr archives (``--source archive``) and NASA GES DISC HTTP downloads (``--source public``).
+   Global satellite-derived precipitation nowcast at 0.1° resolution (1800 × 3600). Extracts ``imerg_precipitation`` (mm/day) and ``imerg_missing_fraction``. Supports user-supplied gridded Zarr archives (``--source archive``), NASA GES DISC HTTP downloads (``--source public``), and dynamical.org Icechunk catalogs.
 4. **ECMWF IFS HRES** (``HRES``):
-   Operational high-resolution numerical weather prediction (NWP) 10-day forecasts at 0.25° resolution (721 × 1440). Extracts incremental daily forecast precipitation, daily mean temperature, surface pressure, and radiation fluxes, plus ``hres_missing_fraction``. Supports user-supplied gridded Zarr archives (``--source archive``) and explicit Zarr/GRIB stores.
+   Operational high-resolution numerical weather prediction (NWP) 10-day forecasts at 0.25° resolution (721 × 1440). Extracts incremental daily forecast precipitation, daily mean temperature, surface pressure, and radiation fluxes, plus ``hres_missing_fraction``. Supports user-supplied gridded Zarr archives (``--source archive``), ECMWF Open Data on GCS (``gs://ecmwf-open-data``, ``--source open_data``), and explicit Zarr/GRIB stores.
 
 Data-Quality & Provenance Guarantees
 ------------------------------------
@@ -70,3 +70,39 @@ Command-Line Interface (CLI)
       --archive-store ERA5_LAND=gs://<your-bucket>/data/era5_land/daily_surface.zarr \
       --archive-store IMERG=gs://<your-bucket>/gridded-data-archives/IMERG/daily_surface.zarr \
       --archive-store HRES=gs://<your-bucket>/gridded-data-archives/HRES/daily_surface.zarr
+
+Real-Time Operational Forcing Fetcher (``multimet-realtime``)
+-------------------------------------------------------------
+
+``RealtimeForcingFetcher`` and ``fetch_realtime_multimet`` orchestrate live operational forcing extraction across ``HRES`` (``gs://ecmwf-open-data``), ``IMERG`` (``dynamical.org`` or NASA GES DISC), and ``CPC`` (NOAA PSL) in two operational modes:
+
+* **Cold-Start (``mode="coldstart"``)**: Fetches a 365-day historical spin-up window (``[t0 - 365d, t0]``) plus the 10-day operational forecast issued on ``t0``. By default, historical spin-up dates prior to the forecast issue window download only ``step=24h`` (``lead_time=1D``) to reduce Cold-Start HRES download volume by 10x.
+* **Hot-Start (``mode="hotstart"``)**: Inspects existing Zarr stores (and/or a saved ``googlehydrology`` ``.npz`` state file or directory) to find the latest valid date across all bands and basins, automatically re-fetching and healing trailing ``NaN`` dates caused by upstream publication latency alongside newly elapsed days up to ``t0``.
+
+.. code-block:: python
+
+    from multimet.timeseries_extractors import fetch_realtime_multimet
+
+    # Cold-Start: 365-day spin-up + 10-day forecast
+    cold_res = fetch_realtime_multimet(
+        basins="multimet/tests/test_data/shapefiles/us/us_basin_shapes.geojson",
+        output_dir="/tmp/realtime_forcing",
+        mode="coldstart",
+        reference_date="latest",
+    )
+
+    # Hot-Start: incremental catch-up + trailing NaN healing
+    hot_res = fetch_realtime_multimet(
+        basins="multimet/tests/test_data/shapefiles/us/us_basin_shapes.geojson",
+        output_dir="/tmp/realtime_forcing",
+        mode="hotstart",
+        reference_date="latest",
+    )
+
+.. code-block:: bash
+
+    multimet-realtime \
+      --basins_path multimet/tests/test_data/shapefiles/us/us_basin_shapes.geojson \
+      --output_dir /tmp/realtime_forcing \
+      --mode coldstart \
+      --reference_date latest
