@@ -31,7 +31,7 @@ from model.datasetzoo.multimet import MultimetDataLoader
 from model.datautils.utils import load_basin_file
 from model.evaluation import get_tester
 from model.evaluation.tester import BaseTester
-from model.modelzoo import get_model
+from model.modelzoo import get_model, load_model_weights
 from model.training import (
     get_loss_obj,
     get_optimizer,
@@ -116,7 +116,9 @@ class BaseTrainer(object):
 
     def _get_optimizer(self) -> torch.optim.Optimizer:
         return get_optimizer(
-            model=self.model, cfg=self.cfg, is_gpu=self.device.type == 'cuda'
+            model_or_params=self.model,
+            cfg=self.cfg,
+            is_gpu=self.device.type == 'cuda',
         )
 
     def _get_loss_obj(self) -> loss.BaseLoss:
@@ -330,6 +332,9 @@ class BaseTrainer(object):
                     metrics=self.cfg.metrics,
                     model=self.model,
                     experiment_logger=self.experiment_logger.valid(),
+                    # Validation during training never assimilates, even if
+                    # the run config sets `assimilate: true` for evaluation.
+                    data_assimilation=False,
                 )
 
                 valid_metrics = {
@@ -396,14 +401,7 @@ class BaseTrainer(object):
 
     def _load_model_weights(self, checkpoint_path: Path | str) -> None:
         """Loads model state_dict while handling torch.compile prefixes."""
-        state_dict = torch.load(
-            str(checkpoint_path), map_location=self.device, weights_only=True
-        )
-        state_dict = {
-            k.removeprefix('_orig_mod.'): v for k, v in state_dict.items()
-        }
-        target_model = getattr(self.model, '_orig_mod', self.model)
-        target_model.load_state_dict(state_dict)
+        load_model_weights(self.model, checkpoint_path, self.device)
 
     def _save_weights_and_optimizer(self, epoch: int):
         weight_path = self.cfg.run_dir / f'model_epoch{epoch:03d}.pt'

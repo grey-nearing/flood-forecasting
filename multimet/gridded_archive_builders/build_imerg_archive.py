@@ -173,6 +173,7 @@ def parse_imerg_netcdf_to_grid(
   """Reads a NASA IMERG V07 daily NetCDF-4 file into a (lat, lon) float32 grid.
 
   Strictly validates:
+
   - Required V07 precipitation variable (``precipitation``; rejects legacy V06
     ``precipitationCal``)
   - Required ``lat`` and ``lon`` coordinates matching ``IMERG_LATS`` /

@@ -6,14 +6,17 @@ description: >-
   checks for phantom/fake/masked/imputed data, removal of try/except error
   suppression, mathematical and autograd rigor, pretrained model weight and
   evaluation hygiene, non-trivial test and mock audits, object-oriented design
-  and redundancy checks, Google Python readability, documentation rules, and
-  author-facing review tone. Use whenever reviewing a PR or auditing code
-  changes before merge.
+  and redundancy checks, strict avoidance of review-based scope creep (opening
+  GitHub issues for unrelated findings), Google Python readability,
+  documentation rules, and author-facing review tone. Use whenever reviewing a
+  PR or auditing code changes before merge.
 ---
 
 # Pull Request Review Standards & Checklist (`flood-forecasting`)
 
 Whenever asked to perform a thorough PR review in this repository, load this skill alongside [`skills/algorithm-rules-and-norms.md`](./algorithm-rules-and-norms.md), [`skills/testing.md`](./testing.md), [`skills/repo-organization.md`](./repo-organization.md), [`skills/documentation.md`](./documentation.md), and the Google Python `readability` skill, and evaluate every change against the following nine mandatory pillars.
+
+> **Core Review Boundary — Avoid Review-Based Scope Creep:** Keep every PR review strictly focused on the **core purpose and diff of the PR**. Do **not** expand a PR's scope by requesting or bundling fixes for pre-existing, adjacent, or unrelated issues discovered during review. If you discover any bug, norm violation, or improvement opportunity outside the core purpose of the PR, **open a separate GitHub issue** rather than addressing it in the PR.
 
 ---
 
@@ -131,8 +134,10 @@ Evaluate how the PR fits into the broader codebase (see [`skills/repo-organizati
    - Verify files live in their canonical package/subpackage locations (`model/`, `multimet/<subpackage>/`, `return_periods/`), tests live in `<package>/tests/`, and auxiliary scripts live in `<package>/tools/` (never in root `scripts/` or `tools/` folders, and never with subpackage `.github/workflows/`).
    - Ensure all input and output paths are required explicitly via caller arguments or CLI flags—flag and remove any hardcoded `/cns/`, `/tmp/`, local user paths, or implicit default output paths.
    - Remove dead code, unused archival paths, vestigial multi-frequency code, out-of-scope product code (e.g., unfinished HRES/ERA5 code in a CPC/IMERG PR), and temporary working-note `.md` plan files in the repository root.
-4. **PR Scope Discipline:**
-   - Keep repository-organization and renaming PRs strictly separate from functional or algorithmic code fixes. If a review of a structural PR uncovers pre-existing code bugs, open tracked GitHub issues for those bugs rather than bundling functional changes into the reorganization PR.
+4. **PR Scope Discipline & Zero Review-Induced Scope Creep:**
+   - **Stay focused on the core purpose of the PR:** Reviews and review-driven fixes must be scoped strictly to the problem, feature, or refactor that the PR is designed to solve.
+   - **Never cause review-based scope creep:** Do not ask the author (or modify the PR branch during a review) to fix unrelated bugs, clean up untouched code in the same file, refactor adjacent modules, or add unrelated features/tests.
+   - **Prefer opening GitHub issues for non-related discoveries:** Whenever a review uncovers a pre-existing bug, norm violation, tech-debt item, or follow-up improvement outside the core scope of the PR (for example, uncovering a functional bug during a repository-organization/renaming PR, or spotting an unrelated issue in an adjacent helper), **open a tracked GitHub issue** (`gh issue create`) for that finding instead of bundling it into the PR.
 
 ---
 

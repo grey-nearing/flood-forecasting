@@ -23,7 +23,6 @@ def _cmal_config(minimal_config: Config) -> Config:
     minimal_config.update_config(
         {
             'predict_last_n': 2,
-            'no_loss_frequencies': [],
             'target_variables': ['streamflow'],
             'target_loss_weights': None,
             'n_distributions': 3,
