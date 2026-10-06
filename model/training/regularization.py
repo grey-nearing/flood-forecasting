@@ -50,12 +50,10 @@ class BaseRegularization(torch.nn.Module):
         Parameters
         ----------
         prediction : dict[str, torch.Tensor]
-            Dictionary of predicted variables for each frequency. If more than one frequency is predicted,
-            the keys must have suffixes ``_{frequency}``. For the required keys, refer to the documentation
+            Dictionary of predicted variables. For the required keys, refer to the documentation
             of the concrete loss.
         ground_truth : dict[str, torch.Tensor]
-            Dictionary of ground truth variables for each frequency. If more than one frequency is predicted,
-            the keys must have suffixes ``_{frequency}``. For the required keys, refer to the documentation
+            Dictionary of ground truth variables. For the required keys, refer to the documentation
             of the concrete loss.
         other_model_data : dict[str, torch.Tensor]
             Dictionary of all remaining keys-value pairs in the prediction dictionary that are not directly linked to
@@ -90,8 +88,6 @@ class ForecastOverlapMSERegularization(BaseRegularization):
         other_model_output: dict[str, dict[str, torch.Tensor]],
     ) -> torch.Tensor:
         """Calculate the squared difference between hindcast and forecast model during overlap.
-
-        Does not work with multi-frequency models.
 
         Parameters
         ----------

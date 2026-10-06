@@ -201,8 +201,6 @@ class Multimet(Dataset):
 
         # Validating samples depends on whether we are training or testing.
         self.is_train = is_train
-        # TODO (future) :: Necessary for tester. Remove dependency if possible.
-        self.frequencies = ['1D']
 
         self._period = period
         if period not in ['train', 'validation', 'test']:
