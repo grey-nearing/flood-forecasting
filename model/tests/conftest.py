@@ -264,7 +264,7 @@ def tiny_mean_embedding_model(
         xr.Dataset(
             {'streamflow': ('parameter', [0.0, 1.0, 0.0, 1.0])},
             coords={'parameter': ['center', 'scale', 'mean', 'std']},
-        ).to_netcdf(tmp_path / 'scaler.nc', engine='scipy')
+        ).to_zarr(tmp_path / 'scaler.zarr', mode='w')
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(0)
             model = MeanEmbeddingForecastLSTM(cfg)
