@@ -15,7 +15,7 @@
 # How to install:
 # conda env create -f environments/environment_cpu.yml
 
-name: googlehydrology
+name: openhydronet
 channels:
   - pytorch
   - conda-forge

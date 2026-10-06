@@ -3,7 +3,7 @@ name: algorithm-rules-and-norms
 description: >-
   Non-negotiable algorithmic rules, data-integrity invariants, error-handling
   norms, spatial/temporal alignment assumptions, and cache-safety requirements
-  across all googlehydrology, multimet, and return_periods code. Use whenever
+  across all model, multimet, and return_periods code. Use whenever
   writing, modifying, or reviewing algorithms and data pipelines.
 ---
 

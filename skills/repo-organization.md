@@ -17,19 +17,22 @@ This skill defines the package layout, subpackage boundaries, helper-tool placem
 
 ## 1. Top-Level Repository Layout
 
-The repository is organized into self-contained top-level Python packages (`googlehydrology/`, `multimet/`, `return_periods/`) plus shared documentation, environment specifications, agent skills, and CI workflows:
+The repository is organized into self-contained top-level Python packages (`model/`, `multimet/`, `return_periods/`) plus shared documentation, environment specifications, agent skills, and CI workflows:
 
 ```text
 flood-forecasting/
 ├── .github/workflows/             # All GitHub Actions CI workflows (root-only)
-├── googlehydrology/               # Core deep-learning hydrological modeling package
+├── model/                         # Core deep-learning hydrological modeling package
 │   ├── datasetzoo/                # Dataset loaders (Caravan, MultiMet, CAMELS, ...)
 │   ├── datautils/                 # Scalers, normalization, climate/unit utilities
 │   ├── evaluation/                # Testers, metrics, uncertainty & data assimilation
 │   ├── modelzoo/                  # Neural network architectures (CudaLSTM, Handoff, MeanEmbedding, ...)
 │   ├── training/                  # Trainers, loss functions, regularizers, logger
 │   ├── utils/                     # Config parser, command-line scheduler, custom errors
-│   └── tests/                     # Co-located hydrology model tests (Issue #17)
+│   ├── example-configs/           # Reference YAML configs (FloodHub, State Handoff, CAMELS)
+│   ├── pretrained-models/         # Pre-trained FloodHub model weights, scalers & configs
+│   ├── tutorial/                  # Interactive OpenHydroNet Tutorial notebook, configs & sample data
+│   └── tests/                     # Co-located hydrology model unit & integration tests
 ├── multimet/                      # Multi-source meteorological, static & spatial data pipelines
 │   ├── catchment_delineation/     # Global DEM flow routing & watershed polygon delineation
 │   │   └── tools/                 # DEM tile slicing & benchmark dataset builder scripts
@@ -47,9 +50,6 @@ flood-forecasting/
 ├── pyproject.toml                 # Ruff linter and Pytest configuration
 └── setup.py                       # Package installation and console_scripts entry points
 ```
-
-> **Ongoing Consolidation (Issue #17):**
-> Model-specific assets (`pretrained-models/`, `tutorial/`, `example-configs/`) and hydrology model tests in `test/` are being consolidated into `googlehydrology/` (`googlehydrology/tests/`) so every top-level package is completely self-contained.
 
 ---
 
