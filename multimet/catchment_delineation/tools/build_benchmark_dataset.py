@@ -34,6 +34,34 @@ _TIER_LARGE_MAX_KM2: float = 10000.0
 _MAX_SAMPLES_PER_TIER: int = 45
 _TARGET_PER_CONTINENT: int = 200
 
+_ID_CANDIDATES: tuple[str, ...] = (
+    'gauge_id',
+    'Unnamed: 0',
+    'index',
+    'id',
+    'station_id',
+)
+_LAT_CANDIDATES: tuple[str, ...] = (
+    'latitude',
+    'lat',
+    'gauge_lat',
+    'CARAVAN:gauge_lat',
+    'caravan:gauge_lat',
+)
+_LON_CANDIDATES: tuple[str, ...] = (
+    'longitude',
+    'lon',
+    'gauge_lon',
+    'CARAVAN:gauge_lon',
+    'caravan:gauge_lon',
+)
+_AREA_CANDIDATES: tuple[str, ...] = (
+    'calculated_drain_area',
+    'reference_area_km2',
+    'area_km2',
+    'area',
+)
+
 
 def compute_geodesic_area(geom: BaseGeometry) -> float:
     """Compute approximate spherical area in km2 for a WGS84 geometry."""
@@ -64,93 +92,247 @@ def get_size_tier(area_km2: float) -> str:
     return '5_macro'
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Build benchmark parquet from user-supplied input data directory."""
+def _resolve_shapefiles(shape_inputs: list[str | Path]) -> list[Path]:
+    """Expand --shapes files and directories without hidden fallback paths."""
+    shp_paths: list[Path] = []
+    for raw in shape_inputs:
+        p = Path(raw).expanduser().resolve()
+        if not p.exists():
+            raise FileNotFoundError(f'Shapefile path does not exist: {p}')
+        if p.is_dir():
+            matched = sorted(p.rglob('*_basin_shapes.shp'))
+            if not matched:
+                raise FileNotFoundError(
+                    f'No *_basin_shapes.shp files found in directory: {p}'
+                )
+            shp_paths.extend(matched)
+        elif p.is_file():
+            shp_paths.append(p)
+        else:
+            raise FileNotFoundError(f'Invalid shapefile path: {p}')
+    if not shp_paths:
+        raise FileNotFoundError('No shapefiles found from --shapes arguments.')
+    return shp_paths
+
+
+def _find_first_col(
+    columns: list[str], candidates: tuple[str, ...]
+) -> str | None:
+    for cand in candidates:
+        if cand in columns:
+            return cand
+    return None
+
+
+def _load_coords_csv(csv_path: Path) -> pd.DataFrame:
+    """Load and normalize a single coordinate CSV table."""
+    if not csv_path.exists() or not csv_path.is_file():
+        raise FileNotFoundError(f'Coordinate CSV does not exist: {csv_path}')
+    df = pd.read_csv(csv_path)
+    cols = list(df.columns)
+
+    id_col = _find_first_col(cols, _ID_CANDIDATES)
+    lat_col = _find_first_col(cols, _LAT_CANDIDATES)
+    lon_col = _find_first_col(cols, _LON_CANDIDATES)
+    area_col = _find_first_col(cols, _AREA_CANDIDATES)
+    if id_col is None or lat_col is None or lon_col is None:
+        raise KeyError(
+            f'Coordinate CSV {csv_path} must contain ID, latitude, and '
+            f'longitude columns. Found: {cols}'
+        )
+
+    norm = pd.DataFrame(
+        {
+            'gauge_id': df[id_col].astype(str),
+            'latitude': pd.to_numeric(df[lat_col], errors='coerce'),
+            'longitude': pd.to_numeric(df[lon_col], errors='coerce'),
+            'calculated_drain_area': (
+                pd.to_numeric(df[area_col], errors='coerce')
+                if area_col is not None
+                else float('nan')
+            ),
+        }
+    ).dropna(subset=['gauge_id', 'latitude', 'longitude'])
+
+    stripped = norm.copy()
+    stripped['gauge_id'] = (
+        stripped['gauge_id'].str.lower().str.removeprefix('caravan_')
+    )
+    combined = pd.concat([norm, stripped], ignore_index=True)
+    return combined.drop_duplicates(subset=['gauge_id'], keep='first')
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description='Build stratified reference watershed benchmark dataset.'
     )
     parser.add_argument(
-        '--data-dir',
-        type=str,
+        '--shapes',
+        nargs='+',
         required=True,
-        help='Explicit root directory containing source reference shapefiles.',
+        help=(
+            'One or more shapefile paths or directories containing '
+            '*_basin_shapes.shp.'
+        ),
+    )
+    parser.add_argument(
+        '--coords-csv',
+        nargs='*',
+        default=[],
+        help='Optional explicit path(s) to coordinate CSV files.',
+    )
+    parser.add_argument(
+        '--world-geojson',
+        type=Path,
+        required=True,
+        help='Explicit path to world continents GeoJSON file.',
     )
     parser.add_argument(
         '--output',
-        type=str,
+        type=Path,
         required=True,
         help='Explicit output file path (.parquet).',
     )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Build benchmark parquet from explicit user-supplied input paths."""
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
-    data_dir = Path(args.data_dir).expanduser().resolve()
+    shp_paths = _resolve_shapefiles(args.shapes)
+    world_path = Path(args.world_geojson).expanduser().resolve()
+    if not world_path.exists() or not world_path.is_file():
+        raise FileNotFoundError(
+            f'World GeoJSON file does not exist: {world_path}'
+        )
+
+    csv_paths: list[Path] = []
+    for raw_csv in args.coords_csv or []:
+        cp = Path(raw_csv).expanduser().resolve()
+        if not cp.exists() or not cp.is_file():
+            raise FileNotFoundError(f'Coordinate CSV does not exist: {cp}')
+        if cp not in csv_paths:
+            csv_paths.append(cp)
+
+    for shp_p in shp_paths:
+        sibling_csv = shp_p.parent / 'coordinates.csv'
+        if (
+            sibling_csv.exists()
+            and sibling_csv.is_file()
+            and sibling_csv not in csv_paths
+        ):
+            csv_paths.append(sibling_csv)
+
+    coords_frames = [_load_coords_csv(cp) for cp in csv_paths]
+    coords_df = (
+        pd.concat(coords_frames, ignore_index=True).drop_duplicates(
+            subset=['gauge_id'], keep='first'
+        )
+        if coords_frames
+        else pd.DataFrame(
+            columns=[
+                'gauge_id',
+                'latitude',
+                'longitude',
+                'calculated_drain_area',
+            ]
+        )
+    )
+
+    world = gpd.read_file(world_path)
     out_file = Path(args.output).expanduser().resolve()
-    if not data_dir.is_dir():
-        raise FileNotFoundError(f'Input data_dir does not exist: {data_dir}')
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
-    world = gpd.read_file(data_dir / 'input/naturalearth_lowres.geojson')
-    grdc_attr = (
-        pd.read_csv(
-            data_dir / 'input/attributes/grdc_attributes.csv', index_col=0
-        )
-        .reset_index()
-        .rename(columns={'index': 'gauge_id'})
-    )
-    grdc_attr = grdc_attr[
-        ['gauge_id', 'latitude', 'longitude', 'calculated_drain_area']
-    ].dropna()
-    grdc_shapes = gpd.read_file(
-        data_dir
-        / 'caravan_shapefiles/caravan_extensions/grdc/grdc_basin_shapes.shp'
-    )
-    grdc_merged = grdc_shapes.merge(grdc_attr, on='gauge_id')
+    merged_frames: list[pd.DataFrame] = []
+    for shp_p in shp_paths:
+        shapes_gdf = gpd.read_file(shp_p)
+        shp_cols = list(shapes_gdf.columns)
+        id_col = _find_first_col(shp_cols, _ID_CANDIDATES)
+        if id_col is None:
+            raise KeyError(
+                f'Shapefile {shp_p} is missing a gauge_id column. Found: {shp_cols}'
+            )
+        if id_col != 'gauge_id':
+            shapes_gdf = shapes_gdf.rename(columns={id_col: 'gauge_id'})
+        shapes_gdf['gauge_id'] = shapes_gdf['gauge_id'].astype(str)
 
-    pts = [
-        Point(xy)
-        for xy in zip(
-            grdc_merged['longitude'], grdc_merged['latitude'], strict=True
+        shp_lat_col = _find_first_col(shp_cols, _LAT_CANDIDATES)
+        shp_lon_col = _find_first_col(shp_cols, _LON_CANDIDATES)
+        shp_area_col = _find_first_col(shp_cols, _AREA_CANDIDATES)
+
+        if not coords_df.empty:
+            merged = shapes_gdf[['gauge_id', 'geometry']].merge(
+                coords_df, on='gauge_id', how='left'
+            )
+        else:
+            merged = shapes_gdf[['gauge_id', 'geometry']].copy()
+            merged['latitude'] = float('nan')
+            merged['longitude'] = float('nan')
+            merged['calculated_drain_area'] = float('nan')
+
+        if shp_lat_col is not None and shp_lon_col is not None:
+            merged['latitude'] = merged['latitude'].fillna(
+                pd.to_numeric(shapes_gdf[shp_lat_col], errors='coerce')
+            )
+            merged['longitude'] = merged['longitude'].fillna(
+                pd.to_numeric(shapes_gdf[shp_lon_col], errors='coerce')
+            )
+        if shp_area_col is not None:
+            merged['calculated_drain_area'] = merged[
+                'calculated_drain_area'
+            ].fillna(pd.to_numeric(shapes_gdf[shp_area_col], errors='coerce'))
+
+        merged = merged.dropna(
+            subset=['gauge_id', 'latitude', 'longitude', 'geometry']
+        ).copy()
+        if merged.empty:
+            continue
+
+        missing_area = merged['calculated_drain_area'].isna()
+        if missing_area.any():
+            merged.loc[missing_area, 'calculated_drain_area'] = merged.loc[
+                missing_area, 'geometry'
+            ].apply(compute_geodesic_area)
+
+        pts = [
+            Point(xy)
+            for xy in zip(merged['longitude'], merged['latitude'], strict=True)
+        ]
+        pts_gdf = gpd.GeoDataFrame(
+            merged[['gauge_id']], geometry=pts, crs='EPSG:4326'
         )
+        joined = gpd.sjoin(
+            pts_gdf,
+            world[['continent', 'geometry']],
+            how='left',
+            predicate='within',
+        ).drop_duplicates(subset=['gauge_id'])
+        merged = merged.merge(
+            joined[['gauge_id', 'continent']], on='gauge_id', how='left'
+        ).dropna(subset=['continent'])
+        if not merged.empty:
+            merged_frames.append(merged)
+
+    export_cols = [
+        'gauge_id',
+        'continent',
+        'hemisphere',
+        'size_tier',
+        'latitude',
+        'longitude',
+        'reference_area_km2',
+        'geometry_wkt',
     ]
-    grdc_pts_gdf = gpd.GeoDataFrame(
-        grdc_merged[['gauge_id']], geometry=pts, crs='EPSG:4326'
-    )
-    grdc_joined = gpd.sjoin(
-        grdc_pts_gdf,
-        world[['continent', 'geometry']],
-        how='left',
-        predicate='within',
-    ).drop_duplicates(subset=['gauge_id'])
-    grdc_merged = grdc_merged.merge(
-        grdc_joined[['gauge_id', 'continent']], on='gauge_id'
-    ).dropna(subset=['continent'])
+    if not merged_frames:
+        empty_df = pd.DataFrame(columns=export_cols)
+        empty_df.to_parquet(out_file, index=False)
+        return 0
 
-    camelsind_shapes = gpd.read_file(
-        data_dir / 'caravan_shapefiles/caravan_google_internal_extensions/'
-        'camelsind/camelsind_basin_shapes.shp'
+    all_basins = pd.concat(merged_frames, ignore_index=True).drop_duplicates(
+        subset=['gauge_id'], keep='first'
     )
-    caravan_coords = pd.read_csv(
-        data_dir / 'input/attributes/caravan_coordinates.csv'
-    )
-    caravan_coords['gauge_id_short'] = (
-        caravan_coords['gauge_id'].str.lower().str.replace('caravan_', '')
-    )
-    camelsind_merged = camelsind_shapes.merge(
-        caravan_coords[
-            ['gauge_id_short', 'CARAVAN:gauge_lat', 'CARAVAN:gauge_lon']
-        ],
-        left_on='gauge_id',
-        right_on='gauge_id_short',
-    ).rename(
-        columns={
-            'CARAVAN:gauge_lat': 'latitude',
-            'CARAVAN:gauge_lon': 'longitude',
-        }
-    )
-    camelsind_merged['continent'] = 'Asia'
-    camelsind_merged['calculated_drain_area'] = camelsind_merged[
-        'geometry'
-    ].apply(compute_geodesic_area)
 
     continents = [
         'Africa',
@@ -168,22 +350,14 @@ def main(argv: list[str] | None = None) -> int:
         'continent',
         'geometry',
     ]
-    candidates = []
+    candidates: list[pd.DataFrame] = []
 
     for cont in continents:
-        if cont == 'Asia':
-            pool = pd.concat(
-                [
-                    camelsind_merged[cols],
-                    grdc_merged[grdc_merged['continent'] == 'Asia'][cols],
-                ],
-                ignore_index=True,
-            )
-        else:
-            pool = grdc_merged[grdc_merged['continent'] == cont][cols].copy()
-
+        pool = all_basins[all_basins['continent'] == cont][cols].copy()
+        if pool.empty:
+            continue
         pool['size_tier'] = pool['calculated_drain_area'].apply(get_size_tier)
-        sampled_cont = []
+        sampled_cont: list[pd.DataFrame] = []
         for tier in sorted(pool['size_tier'].unique()):
             sub = pool[pool['size_tier'] == tier]
             n_take = min(len(sub), _MAX_SAMPLES_PER_TIER)
@@ -211,16 +385,6 @@ def main(argv: list[str] | None = None) -> int:
     final_df['geometry_wkt'] = final_df['geometry'].apply(lambda g: g.wkt)
     final_df['reference_area_km2'] = final_df['calculated_drain_area'].round(2)
 
-    export_cols = [
-        'gauge_id',
-        'continent',
-        'hemisphere',
-        'size_tier',
-        'latitude',
-        'longitude',
-        'reference_area_km2',
-        'geometry_wkt',
-    ]
     out_df = final_df[export_cols].copy()
     out_df.to_parquet(out_file, index=False)
     sys.stdout.write(
