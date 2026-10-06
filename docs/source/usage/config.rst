@@ -35,7 +35,7 @@ Evaluation settings
 -------------------
 
 -  ``inference_mode``: True/False. If True, saves observed data and model output to disk and does not skip dates with missing observations.
--  ``tester_sample_reduction``: ``mean`` or ``median``. How to reduce multiple samples (e.g., from MC-Dropout or CMAL) during evaluation.
+-  ``tester_sample_reduction``: ``mean`` or ``median``. How to reduce multiple samples (e.g., from CMAL) during evaluation.
 
 General model configuration
 ---------------------------
@@ -51,7 +51,6 @@ General model configuration
 Regression head
 ~~~~~~~~~~~~~~~
 -  ``output_activation``: Activation on the output neuron (``linear``, ``relu``, ``softplus``).
--  ``mc_dropout``: True/False. Whether Monte-Carlo dropout is used during inference.
 
 CMAL head
 ~~~~~~~~~
