@@ -276,7 +276,9 @@ def beta_kge(obs: DataArray, sim: DataArray) -> float:
 
 
 def kge(
-    obs: DataArray, sim: DataArray, weights: list[float] = [1.0, 1.0, 1.0]
+    obs: DataArray,
+    sim: DataArray,
+    weights: list[float] | None = None,
 ) -> float:
     r"""Calculate the Kling-Gupta Efficieny [#]_
 
@@ -309,6 +311,8 @@ def kge(
         80-91.
 
     """
+    if weights is None:
+        weights = [1.0, 1.0, 1.0]
     if len(weights) != 3:
         raise ValueError('Weights of the KGE must be a list of three values')
 

@@ -12,13 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
 
 from model.datautils.scaler import Scaler
 from model.utils import cmal_deterministic
 from model.utils.config import Config
+
+if TYPE_CHECKING:
+    from model.modelzoo.basemodel import BaseModel
 
 
 def sample_pointpredictions(
@@ -268,7 +271,7 @@ def sample_cmal_deterministic(
             values,
             # Unused: 'clip' never resamples, and a summary statistic
             # cannot be redrawn.
-            sample_values=lambda _: values,
+            sample_values=lambda _, vals=values: vals,
             # generate_predictions collapses every target into a single
             # mixture, so values only ever holds target 0.
             normalized_zero=normalized_zeros[0],
@@ -413,8 +416,13 @@ def sample_cmal(
         b_sub = torch.gather(b_exp, dim=3, index=choices).squeeze(-1)
         t_sub = torch.gather(t_exp, dim=3, index=choices).squeeze(-1)
 
-        def sample_values(ids: torch.Tensor) -> torch.Tensor:
-            return _sample_asymmetric_laplacians(ids, m_sub, b_sub, t_sub)
+        def sample_values(
+            ids: torch.Tensor,
+            m_s: torch.Tensor = m_sub,
+            b_s: torch.Tensor = b_sub,
+            t_s: torch.Tensor = t_sub,
+        ) -> torch.Tensor:
+            return _sample_asymmetric_laplacians(ids, m_s, b_s, t_s)
 
         # Generate an initial value for every single pos via a mask of all `True`s,
         # with the _sample_asymmetric_laplacians helper.

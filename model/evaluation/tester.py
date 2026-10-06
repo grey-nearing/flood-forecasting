@@ -200,7 +200,7 @@ class BaseTester(object):
         self,
         epoch: int = None,
         save_results: bool = True,
-        metrics: list | dict = [],
+        metrics: list | dict | None = None,
         model: torch.nn.Module = None,
         experiment_logger: Logger = None,
         data_assimilation: bool | None = None,
@@ -225,6 +225,8 @@ class BaseTester(object):
             `_data_assimilation`. By default, the `assimilate` config value
             is used.
         """
+        if metrics is None:
+            metrics = []
         if data_assimilation is None:
             data_assimilation = self.cfg.assimilate
         if data_assimilation and self.assimilation is None:
@@ -411,11 +413,22 @@ class BaseTester(object):
                             sim = xarray.where(sim < 0, 0, sim)
 
                         if 'samples' in sim.dims:
+                            is_cmal_det = (
+                                self.cfg.head.lower() == 'cmal_deterministic'
+                            )
                             match self.cfg.tester_sample_reduction:
                                 case TesterSamplesReduction.MEAN:
-                                    sim = sim.mean(dim='samples')
+                                    sim = (
+                                        sim.isel(samples=0)
+                                        if is_cmal_det
+                                        else sim.mean(dim='samples')
+                                    )
                                 case TesterSamplesReduction.MEDIAN:
-                                    sim = sim.median(dim='samples')
+                                    sim = (
+                                        sim.isel(samples=5)
+                                        if is_cmal_det
+                                        else sim.median(dim='samples')
+                                    )
                                 case _:
                                     msg = f'Supported {self.cfg.tester_sample_reduction=}'
                                     raise KeyError(msg)
@@ -666,10 +679,12 @@ class BaseTester(object):
         self,
         model: BaseModel,
         loader: MultimetDataLoader,
-        basins: set[str] = set(),
+        basins: set[str] | None = None,
         data_assimilation: bool = False,
         suffix: str = '',
     ):
+        if basins is None:
+            basins = set()
         predict_last_n = self.cfg.predict_last_n
 
         # Data assimilation optimizes model components with autograd and thus
