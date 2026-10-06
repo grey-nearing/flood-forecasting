@@ -74,7 +74,10 @@ setup(
             'extract-caravan-static-batch=multimet.static_extractor.batch_runner:main',
             'extract-static-attributes-batch=multimet.static_extractor.batch_runner:main',
             'benchmark-static-extractor=multimet.static_extractor.benchmark:main',
+            'benchmark-gridded-archive=multimet.gridded_archive_builders.benchmark:main',
+            'benchmark-timeseries-extractor=multimet.timeseries_extractors.benchmark:main',
             'benchmark-return-periods=return_periods.tools.run_caravan_usgs_benchmark:main',
+            'benchmark-model=model.evaluation.benchmark:main',
         ]
     },
     python_requires='>=3.12',
