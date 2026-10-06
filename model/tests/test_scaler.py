@@ -15,7 +15,6 @@
 """Unit tests for Scaler."""
 
 import os
-from unittest.mock import patch
 
 import dask
 import numpy as np
@@ -30,9 +29,6 @@ from model.datautils.scaler import (
     _calc_stats,
     _calc_types,
 )
-
-# Set a fixed seed for reproducible tests
-np.random.seed(42)
 
 # --- Fixtures for Test Data and Scaler Instances ---
 
