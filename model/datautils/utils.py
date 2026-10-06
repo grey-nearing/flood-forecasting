@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import functools
 import re
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -73,79 +71,6 @@ def load_basin_file(basin_file: Path) -> list[str]:
     return basins
 
 
-def sort_frequencies(frequencies: list[str]) -> list[str]:
-    """Sort the passed frequencies from low to high frequencies.
-
-    Use `pandas frequency strings
-    <https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#timeseries-offset-aliases>`_
-    to define frequencies. Note: The strings need to include values, e.g., '1D' instead of 'D'.
-
-    Parameters
-    ----------
-    frequencies : list[str]
-        List of pandas frequency identifiers to be sorted.
-
-    Returns
-    -------
-    list[str]
-        Sorted list of pandas frequency identifiers.
-
-    Raises
-    ------
-    ValueError
-        If a pair of frequencies in `frequencies` is not comparable via `compare_frequencies`.
-    """
-    return sorted(frequencies, key=functools.cmp_to_key(compare_frequencies))
-
-
-def infer_frequency(index: pd.DatetimeIndex | np.ndarray) -> str:
-    """Infer the frequency of an index of a pandas DataFrame/Series or xarray DataArray.
-
-    Parameters
-    ----------
-    index : pd.DatetimeIndex | np.ndarray
-        DatetimeIndex of a DataFrame/Series or array of datetime values.
-
-    Returns
-    -------
-    str
-        Frequency of the index as a `pandas frequency string
-        <https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#timeseries-offset-aliases>`_
-
-    Raises
-    ------
-    ValueError
-        If the frequency cannot be inferred from the index or is zero.
-    """
-    native_frequency = pd.infer_freq(index)
-    if native_frequency is None:
-        raise ValueError(
-            f'Cannot infer a legal frequency from dataset: {native_frequency}.'
-        )
-    if (
-        native_frequency[0] not in '0123456789'
-    ):  # add a value to the unit so to_timedelta works
-        native_frequency = f'1{native_frequency}'
-
-    # pd.Timedelta doesn't understand weekly (W) frequencies, so we convert them to the equivalent multiple of 7D.
-    weekly_freq = re.match(
-        r'(\d+)W(-(MON|TUE|WED|THU|FRI|SAT|SUN))?$', native_frequency
-    )
-    if weekly_freq is not None:
-        n = int(weekly_freq[1]) * 7
-        native_frequency = f'{n}D'
-
-    # Assert that the frequency corresponds to a positive time delta. We first add one offset to the base datetime
-    # to make sure it's aligned with the frequency. Otherwise, adding an offset of e.g. 0Y would round up to the
-    # nearest year-end, so we'd incorrectly miss a frequency of zero.
-    base_datetime = pd.to_datetime('2001-01-01 00:00:00') + to_offset(
-        native_frequency
-    )
-    if base_datetime >= base_datetime + to_offset(native_frequency):
-        raise ValueError('Inferred dataset frequency is zero or negative.')
-    return native_frequency
-
-
 def infer_datetime_coord(xr: DataArray | Dataset) -> str:
     """Checks for coordinate with 'date' in its name and returns the name.
 
@@ -175,36 +100,6 @@ def infer_datetime_coord(xr: DataArray | Dataset) -> str:
         )
 
     return candidates[0]
-
-
-def compare_frequencies(freq_one: str, freq_two: str) -> int:
-    """Compare two frequencies.
-
-    Note that only frequencies that work with `get_frequency_factor` can be compared.
-
-    Parameters
-    ----------
-    freq_one : str
-        First frequency.
-    freq_two : str
-        Second frequency.
-
-    Returns
-    -------
-    int
-        -1 if `freq_one` is lower than `freq_two`, +1 if it is larger, 0 if they are equal.
-
-    Raises
-    ------
-    ValueError
-        If the two frequencies are not comparable via `get_frequency_factor`.
-    """
-    freq_factor = get_frequency_factor(freq_one, freq_two)
-    if freq_factor < 1:
-        return 1
-    if freq_factor > 1:
-        return -1
-    return 0
 
 
 def get_frequency_factor(freq_one: str, freq_two: str) -> float:

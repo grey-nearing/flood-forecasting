@@ -25,10 +25,8 @@ def _model_with_handling(handling):
     model = MagicMock()
     model.parameters.side_effect = lambda: iter([torch.zeros(1)])
     model.cfg.head = 'cmal_deterministic'
-    model.cfg.mc_dropout = False
     model.cfg.target_variables = ['streamflow']
-    model.cfg.use_frequencies = ['1D']
-    model.cfg.predict_last_n = {'1D': 2}
+    model.cfg.predict_last_n = 2
     model.cfg.negative_sample_handling = handling
     return model
 

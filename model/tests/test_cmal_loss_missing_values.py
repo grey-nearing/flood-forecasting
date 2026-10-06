@@ -23,7 +23,6 @@ from model.training.loss import MaskedCMALLoss
 def _config() -> MagicMock:
     cfg = MagicMock()
     cfg.predict_last_n = 2
-    cfg.no_loss_frequencies = []
     cfg.target_variables = ['streamflow']
     cfg.target_loss_weights = None
     cfg.n_distributions = 3
