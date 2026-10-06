@@ -51,6 +51,7 @@ else:
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import (
     FORECAST_LEAD_DAYS,
+    MISSING_FRACTION_VAR,
     PRODUCT_BANDS,
     PRODUCT_METADATA_ATTRS,
     Product,
@@ -110,23 +111,31 @@ class DynamicalDataLoader:
       dataset_id: str,
       auto_open: bool = True,
       cache_dataset: bool = True,
+      ds: Optional[xr.Dataset] = None,
   ):
     """Initializes the loader for a given dynamical.org dataset.
 
     Args:
       dataset_id: Identifier of the dataset in dynamical.org (e.g.
         'nasa-imerg-analysis-early', 'noaa-gfs-forecast', 'noaa-hrrr-analysis').
-      auto_open: Whether to immediately open the Icechunk Zarr store.
-      cache_dataset: Whether to cache and reuse the opened xr.Dataset across instances.
+      auto_open: Whether to immediately open the Icechunk Zarr store when ``ds``
+        is not provided.
+      cache_dataset: Whether to cache and reuse the opened xr.Dataset across
+        instances.
+      ds: Optional pre-loaded ``xr.Dataset`` (e.g. for local or hermetic testing).
     """
-    if not (cache_dataset and dataset_id in _GLOBAL_DATASET_CACHE) and dynamical_catalog is None:
+    if (
+        ds is None
+        and not (cache_dataset and dataset_id in _GLOBAL_DATASET_CACHE)
+        and dynamical_catalog is None
+    ):
       raise ImportError(
           "dynamical_catalog is required. Install via: pip install dynamical-catalog icechunk"
       )
 
     self.dataset_id = dataset_id
     self.cache_dataset = cache_dataset
-    self._ds: Optional[xr.Dataset] = None
+    self._ds: Optional[xr.Dataset] = ds
 
     self.grid_type: str = "geographic_1d"
     self.spatial_dims: Tuple[str, str] = ("latitude", "longitude")
@@ -146,7 +155,9 @@ class DynamicalDataLoader:
     self.crs_wkt: Optional[str] = None
     self._transformer: Optional[pyproj.Transformer] = None
 
-    if auto_open:
+    if self._ds is not None:
+      self._analyze_schema()
+    elif auto_open:
       self.open()
 
   @property
@@ -161,6 +172,10 @@ class DynamicalDataLoader:
     if self.cache_dataset and self.dataset_id in _GLOBAL_DATASET_CACHE:
       self._ds = _GLOBAL_DATASET_CACHE[self.dataset_id]
     else:
+      if dynamical_catalog is None:
+        raise ImportError(
+            "dynamical_catalog is required. Install via: pip install dynamical-catalog icechunk"
+        )
       self._ds = dynamical_catalog.open(self.dataset_id)
       if self.cache_dataset:
         _GLOBAL_DATASET_CACHE[self.dataset_id] = self._ds
@@ -191,8 +206,8 @@ class DynamicalDataLoader:
 
     # CRS detection
     self.crs_wkt = None
-    if "spatial_ref" in ds.coords and hasattr(ds.spatial_ref, "attrs"):
-      self.crs_wkt = ds.spatial_ref.attrs.get("crs_wkt")
+    if "spatial_ref" in ds.coords:
+      self.crs_wkt = ds["spatial_ref"].attrs.get("crs_wkt")
     elif "crs" in ds.attrs:
       self.crs_wkt = ds.attrs.get("crs")
 
@@ -402,13 +417,13 @@ class DynamicalDataLoader:
     if variables is not None:
       if isinstance(variables, str):
         variables = [variables]
-      valid_vars = [v for v in variables if v in ds.data_vars]
-      if not valid_vars:
+      missing_vars = [v for v in variables if v not in ds.data_vars]
+      if missing_vars:
         raise KeyError(
-            f"None of requested variables {variables} found in dataset {self.dataset_id}. "
-            f"Available variables: {list(ds.data_vars.keys())}"
+            f"Requested variable(s) {missing_vars} not found in dataset "
+            f"{self.dataset_id!r}. Available variables: {list(ds.data_vars.keys())}"
         )
-      subset = ds[valid_vars]
+      subset = ds[list(variables)]
     else:
       subset = ds
 
@@ -714,7 +729,13 @@ class DynamicalIMERGExtractor(BaseExtractor):
   ):
     prod = product if product is not None else Product.DYNAMICAL_IMERG
     super().__init__(prod)
-    self.source = source
+    self.source = source.lower().strip() if source else "dynamical"
+    if self.source in ("archive", "gridded_archive", "zarr_archive"):
+      raise ValueError(
+          "DynamicalIMERGExtractor reads from the dynamical.org Icechunk "
+          "catalog and does not support source='archive'; use IMERGExtractor "
+          "with source='archive' for gridded Zarr archives."
+      )
     self.dataset_id = dataset_id
     self.loader = loader if loader is not None else DynamicalDataLoader(dataset_id)
     self.lats: Optional[np.ndarray] = None
@@ -722,9 +743,10 @@ class DynamicalIMERGExtractor(BaseExtractor):
     self._init_coords()
 
   def _init_coords(self) -> None:
-    if self.loader._ds is not None and "latitude" in self.loader._ds.coords:
-      self.lats = self.loader._ds.latitude.values
-      self.lons = self.loader._ds.longitude.values
+    ds = self.loader.ds
+    if "latitude" in ds.coords:
+      self.lats = ds.latitude.values
+      self.lons = ds.longitude.values
 
   def extract_for_basins(
       self,
@@ -733,11 +755,10 @@ class DynamicalIMERGExtractor(BaseExtractor):
       end_date: Optional[Union[str, pd.Timestamp]] = None,
       weights_matrix: Optional[ZonalWeightMatrix] = None,
       use_bounding_box: bool = True,
-      require_complete_day: bool = True,
       **kwargs,
   ) -> xr.Dataset:
     """Extracts daily accumulated IMERG precipitation for given basins."""
-    del use_bounding_box, kwargs
+    del kwargs
     if start_date is None or end_date is None:
       raise ValueError(
           "DynamicalIMERGExtractor.extract_for_basins requires both start_date "
@@ -763,6 +784,7 @@ class DynamicalIMERGExtractor(BaseExtractor):
         end_date=end_dt.strftime("%Y-%m-%d"),
         buffer=0.1,
         compute=True,
+        use_bounding_box=use_bounding_box,
     )
 
     if "time" in sub_ds.dims and len(sub_ds.time) > 0:
@@ -802,7 +824,7 @@ class DynamicalIMERGExtractor(BaseExtractor):
       daily_times = pd.to_datetime(daily_depth.time.values)
       for t_idx, t_val in enumerate(daily_times):
         dt_day = pd.to_datetime(t_val.strftime("%Y-%m-%d"))
-        if require_complete_day and day_step_counts.get(dt_day, 0) < 48:
+        if day_step_counts.get(dt_day, 0) < 48:
           continue
         if dt_day in date_idx:
           d_pos = date_idx.get_loc(dt_day)
@@ -839,40 +861,446 @@ class DynamicalIMERGExtractor(BaseExtractor):
   ) -> Dict[str, np.ndarray]:
     """Extracts 1 day of IMERG precipitation across basins."""
     ds = self.extract_for_basins(
-        basins_gdf, start_date=dt, end_date=dt, weights_matrix=weights_matrix
+        basins_gdf,
+        start_date=dt,
+        end_date=dt,
+        weights_matrix=weights_matrix,
+        **kwargs,
     )
-    return {"imerg_precipitation": ds["imerg_precipitation"].values[:, 0]}
+    return {band: ds[band].values[:, 0] for band in ds.data_vars}
 
 
-class AIFSExtractor(BaseExtractor):
-  """MultiMet BaseExtractor for ECMWF AIFS single-forecast via dynamical.org.
+DYNAMICAL_FORECAST_DATASETS: Dict[str, Tuple[Product, str, str]] = {
+    "AIFS": (Product.AIFS, "ecmwf-aifs-single-forecast", "aifs"),
+    "GFS": (Product.GFS, "noaa-gfs-forecast", "gfs"),
+    "GEFS": (Product.GEFS, "noaa-gefs-forecast-35-day", "gefs"),
+    "IFS_ENS": (
+        Product.IFS_ENS,
+        "ecmwf-ifs-ens-forecast-15-day-0-25-degree",
+        "ifs_ens",
+    ),
+}
 
-  Extracts 10-day medium-range forecasts initialized at 00:00:00 UTC,
-  aggregates 6-hourly lead steps (steps 1..40) into 10 daily lead steps,
-  and applies exact zonal weighting over basin geometries.
+_DYNAMICAL_FORECAST_SOURCE_VARS: Tuple[str, ...] = (
+    "temperature_2m",
+    "precipitation_surface",
+    "wind_u_10m",
+    "wind_v_10m",
+)
+
+
+def _validate_ensemble_member(ensemble_member: Any) -> Union[int, str]:
+  """Validates that ensemble_member is either a non-negative integer or 'mean'."""
+  if isinstance(ensemble_member, bool):
+    raise ValueError(
+        f"Invalid ensemble_member {ensemble_member!r}; expected a non-negative "
+        "int or 'mean'."
+    )
+  if isinstance(ensemble_member, (int, np.integer)):
+    idx = int(ensemble_member)
+    if idx < 0:
+      raise ValueError(
+          f"Invalid ensemble_member {ensemble_member!r}; integer index must be >= 0."
+      )
+    return idx
+  if isinstance(ensemble_member, str) and ensemble_member.strip().lower() == "mean":
+    return "mean"
+  raise ValueError(
+      f"Invalid ensemble_member {ensemble_member!r}; expected a non-negative "
+      "int or 'mean'."
+  )
+
+
+def _lead_times_to_seconds(lead_coord: Union[xr.DataArray, np.ndarray]) -> np.ndarray:
+  """Converts a lead_time coordinate array into elapsed seconds from initialization."""
+  vals = (
+      lead_coord.values
+      if isinstance(lead_coord, xr.DataArray)
+      else np.asarray(lead_coord)
+  )
+  if np.issubdtype(vals.dtype, np.timedelta64):
+    return (vals / np.timedelta64(1, "s")).astype(np.float64)
+  return np.asarray(vals, dtype=np.float64) * 3600.0
+
+
+def find_latest_dynamical_forecast_date(
+    dataset_id: str = "ecmwf-aifs-single-forecast",
+    reference_date: Optional[Union[str, pd.Timestamp]] = None,
+    max_lookback_days: int = 7,
+    require_full_10d: bool = True,
+    lead_days: int = 10,
+    loader: Optional[DynamicalDataLoader] = None,
+) -> pd.Timestamp:
+  """Finds the newest published 00z forecast initialization date in a dynamical.org store.
+
+  Walks backwards from ``reference_date`` (defaulting to current UTC date) up to
+  ``max_lookback_days`` and probes all 4 required forecast variables at a grid
+  pixel at the 24h lead step (and at the terminal ``lead_days * 24h`` step when
+  ``require_full_10d=True``) to verify that the 00:00:00 UTC initialization has
+  been ingested and contains valid (finite) values.
+
+  Args:
+    dataset_id: Identifier of the forecast dataset in ``dynamical_catalog``
+      (e.g. ``"ecmwf-aifs-single-forecast"``, ``"noaa-gfs-forecast"``).
+    reference_date: Optional upper-bound date to start searching backwards from.
+      Defaults to current UTC date.
+    max_lookback_days: Maximum number of days to search backwards.
+    require_full_10d: If True, requires both the 24h step and the terminal
+      ``lead_days * 24h`` step to be finite.
+    lead_days: Number of forecast lead days required when ``require_full_10d=True``.
+    loader: Optional pre-opened :class:`DynamicalDataLoader`.
+
+  Returns:
+    Floor-normalized ``pd.Timestamp`` of the latest valid 00z forecast run.
+
+  Raises:
+    FileNotFoundError: If no valid 00z forecast initialization is found within
+      the lookback window.
   """
+  if reference_date is None:
+    ref_dt = pd.Timestamp.now("UTC").tz_localize(None).floor("D")
+  else:
+    ts = pd.to_datetime(reference_date)
+    if ts.tzinfo is not None:
+      ts = ts.tz_convert("UTC").tz_localize(None)
+    ref_dt = ts.floor("D")
+
+  active_loader = (
+      loader if loader is not None else DynamicalDataLoader(dataset_id)
+  )
+  ds = active_loader.ds
+  time_dim = active_loader.time_dim
+  if time_dim not in ds.coords:
+    raise FileNotFoundError(
+        f"Temporal coordinate {time_dim!r} not found in dynamical dataset {dataset_id!r}."
+    )
+  if "lead_time" not in ds.coords:
+    raise FileNotFoundError(
+        f"Coordinate 'lead_time' not found in dynamical dataset {dataset_id!r}."
+    )
+
+  missing_vars = [
+      v for v in _DYNAMICAL_FORECAST_SOURCE_VARS if v not in ds.data_vars
+  ]
+  if missing_vars:
+    raise FileNotFoundError(
+        f"Required forecast variable(s) {missing_vars} not found in dynamical "
+        f"dataset {dataset_id!r}; available: {list(ds.data_vars.keys())}."
+    )
+
+  raw_times = pd.DatetimeIndex(
+      pd.to_datetime(ds[time_dim].values).tz_localize(None)
+  )
+  earliest_dt = ref_dt - pd.Timedelta(days=max(0, int(max_lookback_days)))
+  is_00z = (raw_times.hour == 0) & (raw_times.minute == 0)
+  in_window = (raw_times >= earliest_dt) & (raw_times <= ref_dt + pd.Timedelta(hours=23, minutes=59))
+  candidate_indices = np.where(is_00z & in_window)[0][::-1]
+
+  if len(candidate_indices) == 0:
+    raise FileNotFoundError(
+        f"No 00z forecast initialization found in dynamical.org dataset "
+        f"{dataset_id!r} within {max_lookback_days} days of "
+        f"{ref_dt.strftime('%Y-%m-%d')}."
+    )
+
+  lead_sec = _lead_times_to_seconds(ds["lead_time"])
+  idx_24h = int(np.argmin(np.abs(lead_sec - 86400.0)))
+  if not np.isclose(lead_sec[idx_24h], 86400.0, atol=1.0):
+    raise FileNotFoundError(
+        f"24-hour lead step (86400s) not found in dynamical.org dataset "
+        f"{dataset_id!r}."
+    )
+  probe_lead_indices: List[int] = [idx_24h]
+  if require_full_10d:
+    target_sec = float(lead_days) * 86400.0
+    idx_end = int(np.argmin(np.abs(lead_sec - target_sec)))
+    if not np.isclose(lead_sec[idx_end], target_sec, atol=1.0):
+      raise FileNotFoundError(
+          f"Terminal {lead_days}-day lead step ({target_sec:.0f}s) not found in "
+          f"dynamical.org dataset {dataset_id!r} (max lead={lead_sec.max():.0f}s)."
+      )
+    if idx_end not in probe_lead_indices:
+      probe_lead_indices.append(idx_end)
+
+  sp_dim0, sp_dim1 = active_loader.spatial_dims
+
+  for t_idx in candidate_indices:
+    all_vars_valid = True
+    for var_name in _DYNAMICAL_FORECAST_SOURCE_VARS:
+      isel_kwargs: Dict[str, Any] = {
+          time_dim: int(t_idx),
+          "lead_time": probe_lead_indices,
+          sp_dim0: 0,
+          sp_dim1: 0,
+      }
+      if active_loader.has_ensemble and "ensemble_member" in ds[var_name].dims:
+        isel_kwargs["ensemble_member"] = 0
+      vals = np.asarray(
+          ds[var_name].isel(**isel_kwargs).compute().values,
+          dtype=np.float32,
+      )
+      if vals.size == 0 or not bool(np.all(np.isfinite(vals))):
+        all_vars_valid = False
+        break
+    if all_vars_valid:
+      return pd.Timestamp(raw_times[t_idx]).floor("D")
+
+  raise FileNotFoundError(
+      f"No populated 00z forecast run found in dynamical.org dataset "
+      f"{dataset_id!r} within {max_lookback_days} days of "
+      f"{ref_dt.strftime('%Y-%m-%d')} (require_full_10d={require_full_10d})."
+  )
+
+
+class DynamicalForecastExtractor(BaseExtractor):
+  """MultiMet BaseExtractor for dynamical.org medium-range forecast datasets.
+
+  Extracts multi-day forecasts initialized at 00:00:00 UTC from dynamical.org
+  Icechunk stores (e.g. ECMWF AIFS, NOAA GFS, NOAA GEFS, ECMWF IFS ENS),
+  aggregates sub-daily lead steps over each 24-hour window
+  ``((d - 1) * 24h, d * 24h]`` into daily lead steps ``1..D`` weighted by step
+  duration, and applies exact zonal weighting over basin geometries with
+  area-weighted ``missing_fraction`` tracking.
+
+  Supports both uniform sub-daily step spacing (e.g. 6-hourly AIFS, 3-hourly
+  GEFS) and non-uniform step spacing (e.g. GFS 1-hourly steps for days 1..5
+  followed by 3-hourly steps for days 6..10). Incomplete 24-hour windows or windows
+  containing any ``NaN`` sub-daily step strictly evaluate to ``NaN`` (never
+  imputing partial days).
+  """
+
+  DEFAULT_PRODUCT: Product = Product.AIFS
+  DEFAULT_DATASET_ID: str = "ecmwf-aifs-single-forecast"
+  DEFAULT_BAND_PREFIX: str = "aifs"
 
   def __init__(
       self,
+      product: Optional[Union[Product, str]] = None,
       source: str = "dynamical",
-      dataset_id: str = "ecmwf-aifs-single-forecast",
+      dataset_id: Optional[str] = None,
+      band_prefix: Optional[str] = None,
+      lead_days: Optional[int] = None,
+      ensemble_member: Union[int, str] = 0,
+      data_dir: Optional[Union[str, os.PathLike]] = None,
       loader: Optional[DynamicalDataLoader] = None,
       **kwargs,
   ):
-    super().__init__(Product.AIFS)
-    self.source = source
-    self.dataset_id = dataset_id
-    self.loader = (
-        loader if loader is not None else DynamicalDataLoader(dataset_id)
+    del kwargs
+    if product is None:
+      prod_enum = self.DEFAULT_PRODUCT
+    elif isinstance(product, Product):
+      prod_enum = product
+    else:
+      prod_enum = Product[str(product).strip().upper()]
+
+    super().__init__(prod_enum)
+    self.source = source.lower().strip() if source else "dynamical"
+    if self.source in ("archive", "gridded_archive", "zarr_archive"):
+      raise ValueError(
+          f"{self.__class__.__name__} ({prod_enum.value}) reads from the "
+          "dynamical.org Icechunk catalog and does not support source='archive'."
+      )
+    self.data_dir = str(data_dir) if data_dir is not None else None
+
+    default_meta = DYNAMICAL_FORECAST_DATASETS.get(prod_enum.value)
+    self.dataset_id = (
+        dataset_id
+        or (default_meta[1] if default_meta else None)
+        or self.DEFAULT_DATASET_ID
+    )
+    self.band_prefix = (
+        band_prefix
+        or (default_meta[2] if default_meta else None)
+        or self.DEFAULT_BAND_PREFIX
+    )
+    self.lead_days = int(
+        lead_days
+        if lead_days is not None
+        else FORECAST_LEAD_DAYS.get(prod_enum, 10)
+    )
+    self.ensemble_member: Union[int, str] = _validate_ensemble_member(
+        ensemble_member
+    )
+    self.loader: DynamicalDataLoader = (
+        loader if loader is not None else DynamicalDataLoader(self.dataset_id)
     )
     self.lats: Optional[np.ndarray] = None
     self.lons: Optional[np.ndarray] = None
     self._init_coords()
 
   def _init_coords(self) -> None:
-    if self.loader._ds is not None and "latitude" in self.loader._ds.coords:
-      self.lats = self.loader._ds.latitude.values
-      self.lons = self.loader._ds.longitude.values
+    ds = self.loader.ds
+    if "latitude" in ds.coords:
+      self.lats = ds.latitude.values
+      self.lons = ds.longitude.values
+
+  def _lead_slice_for_days(self, max_lead_days: int) -> slice:
+    """Computes the integer lead_time index slice covering ``0h .. max_lead_days * 24h``."""
+    target_sec = float(max_lead_days) * 86400.0
+    ds = self.loader.ds
+    if "lead_time" not in ds.coords:
+      raise ValueError(
+          f"Coordinate 'lead_time' not found in dynamical dataset {self.dataset_id!r}."
+      )
+    lead_sec = _lead_times_to_seconds(ds["lead_time"])
+    stop_idx = int(np.searchsorted(lead_sec, target_sec, side="right"))
+    if stop_idx <= 0:
+      raise ValueError(
+          f"No lead_time steps <= {target_sec:.0f}s found in dynamical dataset "
+          f"{self.dataset_id!r}."
+      )
+    return slice(0, stop_idx)
+
+  def _extract_window(
+      self,
+      basins_gdf: gpd.GeoDataFrame,
+      w_start: pd.Timestamp,
+      w_end: pd.Timestamp,
+      max_lead_days: int,
+      date_idx: pd.DatetimeIndex,
+      data_dict: Dict[str, np.ndarray],
+      missing_fraction: np.ndarray,
+      weights_matrix: Optional[ZonalWeightMatrix],
+      use_bounding_box: bool,
+  ) -> Optional[ZonalWeightMatrix]:
+    """Loads and reduces a single temporal/lead window into ``data_dict`` and ``missing_fraction``."""
+    lead_slice = self._lead_slice_for_days(max_lead_days)
+
+    ensemble_arg: Optional[int] = None
+    if self.loader.has_ensemble and isinstance(self.ensemble_member, int):
+      ensemble_arg = self.ensemble_member
+
+    sub_ds = self.loader.load_spatial_subset(
+        watersheds=basins_gdf,
+        variables=list(_DYNAMICAL_FORECAST_SOURCE_VARS),
+        start_date=w_start.strftime("%Y-%m-%d"),
+        end_date=w_end.strftime("%Y-%m-%d"),
+        lead_time_slice=lead_slice,
+        ensemble_members=ensemble_arg,
+        buffer=0.1,
+        compute=False,
+        use_bounding_box=use_bounding_box,
+    )
+
+    if "init_time" in sub_ds.dims and len(sub_ds.init_time) > 0:
+      init_times = pd.to_datetime(sub_ds.init_time.values)
+      is_00z = (init_times.hour == 0) & (init_times.minute == 0)
+      sub_ds = sub_ds.isel(init_time=is_00z)
+
+    if "init_time" not in sub_ds.dims or len(sub_ds.init_time) == 0:
+      return weights_matrix
+
+    sub_ds = sub_ds.compute()
+
+    if "ensemble_member" in sub_ds.dims:
+      assert self.ensemble_member == "mean"
+      sub_ds = sub_ds.mean(dim="ensemble_member", skipna=False)
+
+    if len(sub_ds.lead_time) < 2:
+      return weights_matrix
+
+    sub_lats = sub_ds.latitude.values
+    sub_lons = sub_ds.longitude.values
+
+    if (
+        weights_matrix is not None
+        and weights_matrix.grid_shape == (len(sub_lats), len(sub_lons))
+        and np.allclose(weights_matrix.lats, sub_lats)
+        and np.allclose(weights_matrix.lons, sub_lons)
+    ):
+      matrix = weights_matrix
+    else:
+      dlat = (
+          abs(float(sub_lats[1] - sub_lats[0])) if len(sub_lats) > 1 else 0.25
+      )
+      dlon = (
+          abs(float(sub_lons[1] - sub_lons[0])) if len(sub_lons) > 1 else 0.25
+      )
+      matrix = ZonalWeightMatrix.from_geodataframe(
+          basins_gdf,
+          sub_lats,
+          sub_lons,
+          cell_res_lat=dlat,
+          cell_res_lon=dlon,
+      )
+
+    lead_sec = _lead_times_to_seconds(sub_ds["lead_time"])
+    prev_sec = np.concatenate([[0.0], lead_sec[:-1]])
+    dt_sec = lead_sec - prev_sec
+
+    t2m_raw = np.asarray(sub_ds["temperature_2m"].values, dtype=np.float32)
+    pr_raw = np.asarray(sub_ds["precipitation_surface"].values, dtype=np.float32)
+    u_raw = np.asarray(sub_ds["wind_u_10m"].values, dtype=np.float32)
+    v_raw = np.asarray(sub_ds["wind_v_10m"].values, dtype=np.float32)
+
+    red_t2m, miss_t2m = matrix.reduce_4d_with_coverage(t2m_raw)
+    red_pr, miss_pr = matrix.reduce_4d_with_coverage(pr_raw)
+    red_u, miss_u = matrix.reduce_4d_with_coverage(u_raw)
+    red_v, miss_v = matrix.reduce_4d_with_coverage(v_raw)
+    step_miss = np.maximum.reduce([miss_t2m, miss_pr, miss_u, miss_v])
+
+    t2m_band = f"{self.band_prefix}_temperature_2m"
+    pr_band = f"{self.band_prefix}_total_precipitation"
+    u_band = f"{self.band_prefix}_u_component_of_wind_10m"
+    v_band = f"{self.band_prefix}_v_component_of_wind_10m"
+
+    sub_init_times = pd.to_datetime(sub_ds.init_time.values)
+    for lt_day in range(1, max_lead_days + 1):
+      t_start = float(lt_day - 1) * 86400.0
+      t_end = float(lt_day) * 86400.0
+      step_idx = np.where((lead_sec > t_start) & (lead_sec <= t_end))[0]
+      if len(step_idx) == 0 or step_idx[0] == 0:
+        continue
+      if not np.isclose(lead_sec[step_idx[0] - 1], t_start, atol=1.0):
+        continue
+      if not np.isclose(lead_sec[step_idx[-1]], t_end, atol=1.0):
+        continue
+      w_sec = dt_sec[step_idx].astype(np.float32)
+      if not bool(np.all(w_sec > 0.0)):
+        continue
+      total_dt = float(np.sum(w_sec))
+      if not np.isclose(total_dt, 86400.0, atol=1.0):
+        continue
+      w_norm = (w_sec / total_dt).astype(np.float32)
+      lt_pos = lt_day - 1
+
+      for t_idx, t_val in enumerate(sub_init_times):
+        dt_day = pd.to_datetime(t_val.strftime("%Y-%m-%d"))
+        if dt_day not in date_idx:
+          continue
+        d_pos = date_idx.get_loc(dt_day)
+
+        # Strict duration-weighted aggregation (np.sum propagates NaN if any
+        # sub-daily step in the 24h window is missing/NaN).
+        day_t2m = np.sum(
+            red_t2m[:, t_idx, step_idx] * w_norm[np.newaxis, :], axis=-1
+        )
+        day_pr = np.sum(
+            red_pr[:, t_idx, step_idx] * w_sec[np.newaxis, :], axis=-1
+        )
+        day_pr = np.where(np.isnan(day_pr), np.nan, np.maximum(0.0, day_pr))
+        day_u = np.sum(
+            red_u[:, t_idx, step_idx] * w_norm[np.newaxis, :], axis=-1
+        )
+        day_v = np.sum(
+            red_v[:, t_idx, step_idx] * w_norm[np.newaxis, :], axis=-1
+        )
+        day_miss = np.max(step_miss[:, t_idx, step_idx], axis=-1)
+        any_nan = (
+            np.isnan(day_t2m)
+            | np.isnan(day_pr)
+            | np.isnan(day_u)
+            | np.isnan(day_v)
+        )
+        day_miss = np.where(any_nan, 1.0, day_miss).astype(np.float32)
+
+        data_dict[t2m_band][:, d_pos, lt_pos] = day_t2m
+        data_dict[pr_band][:, d_pos, lt_pos] = day_pr
+        data_dict[u_band][:, d_pos, lt_pos] = day_u
+        data_dict[v_band][:, d_pos, lt_pos] = day_v
+        missing_fraction[:, d_pos, lt_pos] = day_miss
+
+    return matrix
 
   def extract_for_basins(
       self,
@@ -881,120 +1309,80 @@ class AIFSExtractor(BaseExtractor):
       end_date: Optional[Union[str, pd.Timestamp]] = None,
       weights_matrix: Optional[ZonalWeightMatrix] = None,
       use_bounding_box: bool = True,
+      spinup_only_before: Optional[Union[str, pd.Timestamp]] = None,
       **kwargs,
   ) -> xr.Dataset:
-    """Extracts 10-day daily AIFS forecasts for given basins."""
+    """Extracts daily forecasts (lead days 1..D) for given basins."""
     del kwargs
     if start_date is None or end_date is None:
       raise ValueError(
-          "AIFSExtractor.extract_for_basins requires both start_date and "
-          "end_date to be explicitly provided."
+          f"{self.__class__.__name__}.extract_for_basins requires both "
+          "start_date and end_date to be explicitly provided."
       )
     basin_ids = list(basins_gdf.index)
-    start_dt = pd.to_datetime(start_date)
-    end_dt = pd.to_datetime(end_date)
+    start_dt = pd.to_datetime(start_date).floor("D")
+    end_dt = pd.to_datetime(end_date).floor("D")
     date_idx = pd.date_range(start_dt, end_dt, freq="D")
-    lead_steps = FORECAST_LEAD_DAYS[Product.AIFS]  # 10 days
+    lead_steps = self.lead_days
     lead_time_idx = pd.to_timedelta(range(1, lead_steps + 1), unit="D")
 
     shape = (len(basin_ids), len(date_idx), lead_steps)
-    data_dict = {
-        "aifs_temperature_2m": np.full(shape, np.nan, dtype=np.float32),
-        "aifs_total_precipitation": np.full(shape, np.nan, dtype=np.float32),
-        "aifs_u_component_of_wind_10m": np.full(
-            shape, np.nan, dtype=np.float32
+    expected_bands = PRODUCT_BANDS.get(
+        self.product,
+        (
+            f"{self.band_prefix}_temperature_2m",
+            f"{self.band_prefix}_total_precipitation",
+            f"{self.band_prefix}_u_component_of_wind_10m",
+            f"{self.band_prefix}_v_component_of_wind_10m",
         ),
-        "aifs_v_component_of_wind_10m": np.full(
-            shape, np.nan, dtype=np.float32
-        ),
-    }
-
-    # Load geographically clipped forecast cube from Icechunk: 41 steps (0..40 = 0..240h)
-    sub_ds = self.loader.load_spatial_subset(
-        watersheds=basins_gdf,
-        variables=[
-            "temperature_2m",
-            "precipitation_surface",
-            "wind_u_10m",
-            "wind_v_10m",
-        ],
-        start_date=start_dt.strftime("%Y-%m-%d"),
-        end_date=end_dt.strftime("%Y-%m-%d"),
-        lead_time_slice=slice(0, 41),
-        buffer=0.1,
-        compute=True,
-        use_bounding_box=use_bounding_box,
     )
+    data_dict: Dict[str, np.ndarray] = {
+        band: np.full(shape, np.nan, dtype=np.float32)
+        for band in expected_bands
+    }
+    missing_fraction = np.ones(shape, dtype=np.float32)
 
-    if "init_time" in sub_ds.dims and len(sub_ds.init_time) > 0:
-      init_times = pd.to_datetime(sub_ds.init_time.values)
-      is_00z = init_times.hour == 0
-      sub_ds = sub_ds.isel(init_time=is_00z)
+    windows: List[Tuple[pd.Timestamp, pd.Timestamp, int]] = []
+    if spinup_only_before is not None:
+      cutoff_dt = pd.to_datetime(spinup_only_before).floor("D")
+      if start_dt < cutoff_dt:
+        spinup_end = min(end_dt, cutoff_dt - pd.Timedelta(days=1))
+        windows.append((start_dt, spinup_end, 1))
+      if end_dt >= cutoff_dt:
+        forecast_start = max(start_dt, cutoff_dt)
+        windows.append((forecast_start, end_dt, lead_steps))
+    else:
+      windows.append((start_dt, end_dt, lead_steps))
 
-    if len(sub_ds.init_time) > 0 and len(sub_ds.lead_time) >= 41:
-      sub_lats = sub_ds.latitude.values
-      sub_lons = sub_ds.longitude.values
+    active_matrix = weights_matrix
+    for w_start, w_end, w_max_leads in windows:
+      active_matrix = self._extract_window(
+          basins_gdf=basins_gdf,
+          w_start=w_start,
+          w_end=w_end,
+          max_lead_days=w_max_leads,
+          date_idx=date_idx,
+          data_dict=data_dict,
+          missing_fraction=missing_fraction,
+          weights_matrix=active_matrix,
+          use_bounding_box=use_bounding_box,
+      )
 
-      if (
-          weights_matrix is not None
-          and weights_matrix.grid_shape == (len(sub_lats), len(sub_lons))
-          and np.allclose(weights_matrix.lats, sub_lats)
-          and np.allclose(weights_matrix.lons, sub_lons)
-      ):
-        matrix = weights_matrix
-      else:
-        dlat = (
-            abs(float(sub_lats[1] - sub_lats[0]))
-            if len(sub_lats) > 1
-            else 0.25
-        )
-        dlon = (
-            abs(float(sub_lons[1] - sub_lons[0]))
-            if len(sub_lons) > 1
-            else 0.25
-        )
-        matrix = ZonalWeightMatrix.from_geodataframe(
-            basins_gdf,
-            sub_lats,
-            sub_lons,
-            cell_res_lat=dlat,
-            cell_res_lon=dlon,
-        )
-
-      # 4D Zonal Reduction: (T, 41, H, W) -> (N_basins, T, 41)
-      red_t2m = matrix.reduce_4d(sub_ds["temperature_2m"].values)
-      red_pr = matrix.reduce_4d(sub_ds["precipitation_surface"].values)
-      red_u = matrix.reduce_4d(sub_ds["wind_u_10m"].values)
-      red_v = matrix.reduce_4d(sub_ds["wind_v_10m"].values)
-
-      sub_init_times = pd.to_datetime(sub_ds.init_time.values)
-      for t_idx, t_val in enumerate(sub_init_times):
-        dt_day = pd.to_datetime(t_val.strftime("%Y-%m-%d"))
-        if dt_day in date_idx:
-          d_pos = date_idx.get_loc(dt_day)
-          for lt_day in range(1, lead_steps + 1):
-            lt_pos = lt_day - 1
-            s_slice = slice((lt_day - 1) * 4 + 1, lt_day * 4 + 1)
-            data_dict["aifs_temperature_2m"][:, d_pos, lt_pos] = np.mean(
-                red_t2m[:, t_idx, s_slice], axis=-1
-            )
-            data_dict["aifs_total_precipitation"][:, d_pos, lt_pos] = (
-                np.mean(red_pr[:, t_idx, s_slice], axis=-1) * 86400.0
-            )
-            data_dict["aifs_u_component_of_wind_10m"][:, d_pos, lt_pos] = (
-                np.mean(red_u[:, t_idx, s_slice], axis=-1)
-            )
-            data_dict["aifs_v_component_of_wind_10m"][:, d_pos, lt_pos] = (
-                np.mean(red_v[:, t_idx, s_slice], axis=-1)
-            )
-
-    data_vars = {
+    data_vars: Dict[str, Any] = {
         band: (
             ["basin", "date", "lead_time"],
             data_dict[band].astype(np.float32),
         )
-        for band in PRODUCT_BANDS[Product.AIFS]
+        for band in expected_bands
     }
+    missing_var = MISSING_FRACTION_VAR.get(
+        self.product, f"{self.band_prefix}_missing_fraction"
+    )
+    data_vars[missing_var] = (
+        ["basin", "date", "lead_time"],
+        missing_fraction.astype(np.float32),
+    )
+
     ds = xr.Dataset(
         data_vars=data_vars,
         coords={
@@ -1003,8 +1391,8 @@ class AIFSExtractor(BaseExtractor):
             "lead_time": lead_time_idx.values,
         },
     )
-    if Product.AIFS in PRODUCT_METADATA_ATTRS:
-      ds.attrs.update(PRODUCT_METADATA_ATTRS[Product.AIFS])
+    if self.product in PRODUCT_METADATA_ATTRS:
+      ds.attrs.update(PRODUCT_METADATA_ATTRS[self.product])
     ds.attrs["dynamical_dataset_id"] = self.dataset_id
     return ds
 
@@ -1015,11 +1403,71 @@ class AIFSExtractor(BaseExtractor):
       weights_matrix: Optional[ZonalWeightMatrix] = None,
       **kwargs,
   ) -> Dict[str, np.ndarray]:
-    """Extracts 1 forecast initialization date across 10 lead days for AIFS."""
+    """Extracts 1 forecast initialization date across lead days."""
     ds = self.extract_for_basins(
-        basins_gdf, start_date=dt, end_date=dt, weights_matrix=weights_matrix
+        basins_gdf,
+        start_date=dt,
+        end_date=dt,
+        weights_matrix=weights_matrix,
+        **kwargs,
     )
     return {band: ds[band].values[:, 0, :] for band in ds.data_vars}
+
+
+class AIFSExtractor(DynamicalForecastExtractor):
+  """MultiMet BaseExtractor for ECMWF AIFS single-forecast via dynamical.org.
+
+  Extracts 10-day medium-range forecasts initialized at 00:00:00 UTC,
+  aggregates 6-hourly lead steps (steps 1..40) into 10 daily lead steps,
+  and applies exact zonal weighting over basin geometries.
+  """
+
+  DEFAULT_PRODUCT = Product.AIFS
+  DEFAULT_DATASET_ID = "ecmwf-aifs-single-forecast"
+  DEFAULT_BAND_PREFIX = "aifs"
+
+
+class GFSExtractor(DynamicalForecastExtractor):
+  """MultiMet BaseExtractor for NOAA GFS operational forecasts via dynamical.org.
+
+  Extracts 10-day medium-range forecasts initialized at 00:00:00 UTC from
+  ``noaa-gfs-forecast``, duration-weighting 1-hourly steps (lead days 1..5,
+  ``1h..120h``) and 3-hourly steps (lead days 6..10, ``123h..240h``) into 10
+  daily lead steps, and applies exact zonal weighting over basin geometries.
+  """
+
+  DEFAULT_PRODUCT = Product.GFS
+  DEFAULT_DATASET_ID = "noaa-gfs-forecast"
+  DEFAULT_BAND_PREFIX = "gfs"
+
+
+class GEFSExtractor(DynamicalForecastExtractor):
+  """MultiMet BaseExtractor for NOAA GEFS forecasts via dynamical.org.
+
+  Extracts 10-day forecasts initialized at 00:00:00 UTC from
+  ``noaa-gefs-forecast-35-day`` (selecting control member ``0`` by default, or
+  ``ensemble_member="mean"`` for the 31-member ensemble mean), aggregating
+  3-hourly steps into 10 daily lead steps.
+  """
+
+  DEFAULT_PRODUCT = Product.GEFS
+  DEFAULT_DATASET_ID = "noaa-gefs-forecast-35-day"
+  DEFAULT_BAND_PREFIX = "gefs"
+
+
+class IFSEnsExtractor(DynamicalForecastExtractor):
+  """MultiMet BaseExtractor for ECMWF IFS Ensemble (ENS) forecasts via dynamical.org.
+
+  Extracts 10-day forecasts initialized at 00:00:00 UTC from
+  ``ecmwf-ifs-ens-forecast-15-day-0-25-degree`` (selecting control member ``0``
+  by default, or ``ensemble_member="mean"`` for the 51-member ensemble mean),
+  duration-weighting 3-hourly steps (lead days 1..6) and 6-hourly steps (lead
+  days 7..10) into 10 daily lead steps.
+  """
+
+  DEFAULT_PRODUCT = Product.IFS_ENS
+  DEFAULT_DATASET_ID = "ecmwf-ifs-ens-forecast-15-day-0-25-degree"
+  DEFAULT_BAND_PREFIX = "ifs_ens"
 
 
 def load_dynamical(

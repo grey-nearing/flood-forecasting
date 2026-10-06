@@ -67,8 +67,15 @@ _LAZY_SYMBOLS = {
     "read_hot_start_state_date": "multimet.timeseries_extractors.realtime",
     "DynamicalDataLoader": "multimet.timeseries_extractors.dynamical",
     "DynamicalExtractor": "multimet.timeseries_extractors.dynamical",
+    "DynamicalForecastExtractor": "multimet.timeseries_extractors.dynamical",
     "DynamicalIMERGExtractor": "multimet.timeseries_extractors.dynamical",
     "AIFSExtractor": "multimet.timeseries_extractors.dynamical",
+    "GFSExtractor": "multimet.timeseries_extractors.dynamical",
+    "GEFSExtractor": "multimet.timeseries_extractors.dynamical",
+    "IFSEnsExtractor": "multimet.timeseries_extractors.dynamical",
+    "find_latest_dynamical_forecast_date": (
+        "multimet.timeseries_extractors.dynamical"
+    ),
     "load_dynamical": "multimet.timeseries_extractors.dynamical",
     "BoundingBox": "multimet.utils.spatial",
     "find_lat_lon_dims": "multimet.utils.spatial",
