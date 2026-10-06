@@ -118,7 +118,7 @@ def get_regularization_obj(
 ) -> list[regularization.BaseRegularization]:
     """Get list of regularization objects.
 
-    Currently, only the 'tie_frequencies' regularization is implemented.
+    Currently, only the 'forecast_overlap' regularization is implemented.
 
     Parameters
     ----------

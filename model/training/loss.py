@@ -34,11 +34,10 @@ class BaseLoss(torch.nn.Module):
         The run configuration.
     prediction_keys : list[str]
         List of keys that will be predicted. During the forward pass, the passed `prediction` dict
-        must contain these keys. Note that the keys listed here should be without frequency identifier.
+        must contain these keys.
     ground_truth_keys : list[str]
         List of ground truth keys that will be needed to compute the loss. During the forward pass, the
-        passed `data` dict must contain these keys. Note that the keys listed here should be without
-        frequency identifier.
+        passed `data` dict must contain these keys.
     additional_data : list[str], optional
         Additional list of keys that will be taken from `data` in the forward pass to compute the loss.
         For instance, this parameter can be used to pass the variances that are needed to compute an NSE.
@@ -58,12 +57,7 @@ class BaseLoss(torch.nn.Module):
         output_size_per_target: int = 1,
     ):
         super(BaseLoss, self).__init__()
-        self._predict_last_n = _get_predict_last_n(cfg)
-        self._frequencies = [
-            f
-            for f in self._predict_last_n.keys()
-            if f not in cfg.no_loss_frequencies
-        ]
+        self._predict_last_n = cfg.predict_last_n
         self._output_size_per_target = output_size_per_target
 
         self._regularization_terms = []
@@ -103,12 +97,10 @@ class BaseLoss(torch.nn.Module):
         Parameters
         ----------
         prediction : dict[str, torch.Tensor]
-            Dictionary of predictions for each frequency. If more than one frequency is predicted,
-            the keys must have suffixes ``_{frequency}``. For the required keys, refer to the documentation
+            Dictionary of predictions. For the required keys, refer to the documentation
             of the concrete loss.
         data : dict[str, torch.Tensor]
-            Dictionary of ground truth data for each frequency. If more than one frequency is predicted,
-            the keys must have suffixes ``_{frequency}``. For the required keys, refer to the documentation
+            Dictionary of ground truth data. For the required keys, refer to the documentation
             of the concrete loss.
 
         Returns
@@ -122,47 +114,24 @@ class BaseLoss(torch.nn.Module):
         kwargs = {key: data[key] for key in self._additional_data}
 
         losses = []
-        prediction_sub, ground_truth_sub = {}, {}
-        for freq in self._frequencies:
-            if self._predict_last_n[freq] == 0:
-                continue  # no predictions for this frequency
-            freq_suffix = '' if freq == '' else f'_{freq}'
+        # apply predict_last_n for all outputs at once
+        prediction_sub, ground_truth_sub = self._subset_in_time(
+            {key: prediction[key] for key in self._prediction_keys},
+            {key: data[key] for key in self._ground_truth_keys},
+            self._predict_last_n,
+        )
 
-            # apply predict_last_n and mask for all outputs of this frequency at once
-            freq_pred, freq_gt = self._subset_in_time(
-                {
-                    key: prediction[f'{key}{freq_suffix}']
-                    for key in self._prediction_keys
-                },
-                {
-                    key: data[f'{key}{freq_suffix}']
-                    for key in self._ground_truth_keys
-                },
-                self._predict_last_n[freq],
+        for n_target, weight in enumerate(self._target_weights):
+            # subset the model outputs and ground truth corresponding to this particular target
+            target_pred, target_gt = self._subset_target(
+                prediction_sub, ground_truth_sub, n_target
             )
 
-            # remember subsets for multi-frequency component
-            prediction_sub.update(
-                {
-                    f'{key}{freq_suffix}': freq_pred[key]
-                    for key in freq_pred.keys()
-                }
-            )
-            ground_truth_sub.update(
-                {f'{key}{freq_suffix}': freq_gt[key] for key in freq_gt.keys()}
-            )
+            # model hook to subset additional data, which might be different for different losses
+            kwargs_sub = self._subset_additional_data(kwargs, n_target)
 
-            for n_target, weight in enumerate(self._target_weights):
-                # subset the model outputs and ground truth corresponding to this particular target
-                target_pred, target_gt = self._subset_target(
-                    freq_pred, freq_gt, n_target
-                )
-
-                # model hook to subset additional data, which might be different for different losses
-                kwargs_sub = self._subset_additional_data(kwargs, n_target)
-
-                loss = self._get_loss(target_pred, target_gt, **kwargs_sub)
-                losses.append(loss * weight)
+            loss = self._get_loss(target_pred, target_gt, **kwargs_sub)
+            losses.append(loss * weight)
 
         loss = torch.sum(torch.stack(losses))
         total_loss = loss.clone()
@@ -425,14 +394,3 @@ class MaskedCMALLoss(BaseLoss):
 
         result = torch.logsumexp(log_weights + log_like, dim=-1)
         return -torch.mean(result)
-
-
-def _get_predict_last_n(cfg: Config) -> dict:
-    predict_last_n = cfg.predict_last_n
-    if isinstance(predict_last_n, int):
-        predict_last_n = {'': predict_last_n}
-    if len(predict_last_n) == 1:
-        predict_last_n = {
-            '': list(predict_last_n.values())[0]
-        }  # if there's only one frequency, we omit its identifier
-    return predict_last_n
