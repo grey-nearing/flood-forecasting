@@ -119,3 +119,85 @@ def test_convert_caravan_to_zarr_full(
         'camelsus_0101',
         'camelsus_0102',
     }
+
+
+def test_convert_caravan_attributes_multi_table_and_subdatasets(tmp_path: Path):
+    attr_root = tmp_path / 'attributes'
+    sub1 = attr_root / 'camelsus'
+    sub2 = attr_root / 'camelsgb'
+    sub1.mkdir(parents=True)
+    sub2.mkdir(parents=True)
+
+    pd.DataFrame({
+        'gauge_id': ['camelsus_01', 'camelsus_02'],
+        'area': [100.0, 200.0],
+    }).to_csv(sub1 / 'attributes_other.csv', index=False)
+    pd.DataFrame({
+        'gauge_id': ['camelsus_01', 'camelsus_02'],
+        'p_mean': [3.1, 4.2],
+    }).to_csv(sub1 / 'attributes_caravan.csv', index=False)
+
+    pd.DataFrame({
+        'gauge_id': ['camelsgb_01'],
+        'area': [50.0],
+        'p_mean': [2.5],
+    }).to_csv(sub2 / 'attributes_all.csv', index=False)
+
+    out_zarr = tmp_path / 'out_attributes.zarr'
+    ds = convert_caravan_attributes(
+        attr_root, out_zarr, subdatasets=['camelsus', 'camelsgb']
+    )
+    assert set(ds.coords['basin'].values) == {
+        'camelsus_01',
+        'camelsus_02',
+        'camelsgb_01',
+    }
+    assert set(ds.data_vars) == {'area', 'p_mean'}
+
+
+def test_convert_caravan_attributes_duplicate_columns_raises(tmp_path: Path):
+    attr_root = tmp_path / 'dup_attributes' / 'camelsus'
+    attr_root.mkdir(parents=True)
+
+    pd.DataFrame({
+        'gauge_id': ['camelsus_01'],
+        'area': [100.0],
+    }).to_csv(attr_root / 'table1.csv', index=False)
+    pd.DataFrame({
+        'gauge_id': ['camelsus_01'],
+        'area': [999.0],
+    }).to_csv(attr_root / 'table2.csv', index=False)
+
+    with pytest.raises(ValueError, match='Duplicate attribute columns'):
+        convert_caravan_attributes(
+            tmp_path / 'dup_attributes', tmp_path / 'out.zarr'
+        )
+
+
+def test_convert_caravan_missing_dirs_raise_file_not_found(
+    mock_caravan_directory: Path, tmp_path: Path
+):
+    with pytest.raises(FileNotFoundError, match='Attributes directory not found'):
+        convert_caravan_attributes(
+            tmp_path / 'nonexistent_attrs', tmp_path / 'out.zarr'
+        )
+
+    with pytest.raises(FileNotFoundError, match='Subdataset directory not found'):
+        convert_caravan_attributes(
+            mock_caravan_directory / 'attributes',
+            tmp_path / 'out.zarr',
+            subdatasets=['missing_subdataset'],
+        )
+
+    incomplete_caravan = tmp_path / 'incomplete_caravan'
+    incomplete_caravan.mkdir()
+    with pytest.raises(
+        FileNotFoundError, match='Caravan attributes directory not found'
+    ):
+        convert_caravan_to_zarr(incomplete_caravan, tmp_path / 'out_dir')
+
+    (incomplete_caravan / 'attributes').mkdir()
+    with pytest.raises(
+        FileNotFoundError, match='Caravan timeseries directory not found'
+    ):
+        convert_caravan_to_zarr(incomplete_caravan, tmp_path / 'out_dir')
