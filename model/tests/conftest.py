@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import gc
 import logging
 from pathlib import Path
 from typing import Callable
@@ -25,39 +24,28 @@ from model.utils.config import Config
 from model.tests import Fixture
 
 torch._dynamo.config.suppress_errors = True
+torch._dynamo.config.disable = True
 
 
-def _cleanup_all_open_resources():
-    """Closes all logging handlers, open matplotlib figures, and forces GC."""
+def _cleanup_all_open_resources() -> None:
+    """Close all logging FileHandlers and open matplotlib figures."""
     for handler in list(logging.root.handlers):
         if isinstance(handler, logging.FileHandler):
             handler.close()
             logging.root.removeHandler(handler)
     for logger in list(logging.Logger.manager.loggerDict.values()):
-        if isinstance(logger, logging.Logger):
+        if isinstance(logger, logging.Logger) and logger.handlers:
             for handler in list(logger.handlers):
                 if isinstance(handler, logging.FileHandler):
                     handler.close()
                     logger.removeHandler(handler)
-    plt.close('all')
-    try:
-        from model.datasetzoo.multimet import _open_zarr
-
-        _open_zarr.cache_clear()
-    except Exception:
-        pass
-    gc.collect()
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_teardown(item, nextitem):
-    """Run resource cleanup before any fixtures are torn down."""
-    _cleanup_all_open_resources()
+    if plt.get_fignums():
+        plt.close('all')
 
 
 @pytest.fixture(autouse=True)
-def cleanup_resources_after_test():
-    """Closes all logging handlers, open matplotlib figures, and forces GC."""
+def cleanup_resources_after_test() -> None:
+    """Close all logging FileHandlers and open figures after each test."""
     yield
     _cleanup_all_open_resources()
 
