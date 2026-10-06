@@ -115,6 +115,8 @@ def compute_continuous_metrics(
     y_true: np.ndarray, y_pred: np.ndarray
 ) -> Dict[str, float]:
   """Computes statistical validation metrics between reference and extracted continuous attributes."""
+  ref_nan_count = int(np.isnan(y_true).sum())
+  pred_nan_when_ref_valid = int((~np.isnan(y_true) & np.isnan(y_pred)).sum())
   mask = ~(np.isnan(y_true) | np.isnan(y_pred))
   y_t = y_true[mask]
   y_p = y_pred[mask]
@@ -122,6 +124,8 @@ def compute_continuous_metrics(
   if n < 2:
     return {
         "n": n,
+        "ref_nan_count": ref_nan_count,
+        "pred_nan_when_ref_valid": pred_nan_when_ref_valid,
         "pearson_r": np.nan,
         "spearman_rho": np.nan,
         "r2": np.nan,
@@ -165,6 +169,8 @@ def compute_continuous_metrics(
 
   return {
       "n": n,
+      "ref_nan_count": ref_nan_count,
+      "pred_nan_when_ref_valid": pred_nan_when_ref_valid,
       "pearson_r": round(float(pearson_r_val), 5),
       "spearman_rho": round(float(spearman_rho_val), 5),
       "r2": round(float(r2_val), 5),
@@ -180,17 +186,32 @@ def compute_categorical_metrics(
     y_true: np.ndarray, y_pred: np.ndarray
 ) -> Dict[str, Any]:
   """Computes classification accuracy for discrete majority attributes."""
+  ref_nan_count = int(np.isnan(y_true).sum())
+  ref_valid_count = int((~np.isnan(y_true)).sum())
+  pred_nan_when_ref_valid = int((~np.isnan(y_true) & np.isnan(y_pred)).sum())
   mask = ~(np.isnan(y_true) | np.isnan(y_pred))
   y_t = y_true[mask].astype(int)
   y_p = y_pred[mask].astype(int)
   n = len(y_t)
   if n == 0:
-    return {"n": 0, "accuracy_pct": np.nan, "classes_count": 0}
-  acc = float(np.mean(y_t == y_p) * 100.0)
+    return {
+        "n": 0,
+        "ref_nan_count": ref_nan_count,
+        "pred_nan_when_ref_valid": pred_nan_when_ref_valid,
+        "accuracy_pct": np.nan,
+        "unconditional_accuracy_pct": 0.0 if ref_valid_count > 0 else np.nan,
+        "classes_count": 0,
+    }
+  matches = int(np.sum(y_t == y_p))
+  acc = float(matches / n * 100.0)
+  uncond_acc = float(matches / ref_valid_count * 100.0) if ref_valid_count > 0 else np.nan
   num_classes = len(np.unique(np.concatenate([y_t, y_p])))
   return {
       "n": n,
+      "ref_nan_count": ref_nan_count,
+      "pred_nan_when_ref_valid": pred_nan_when_ref_valid,
       "accuracy_pct": round(acc, 2),
+      "unconditional_accuracy_pct": round(uncond_acc, 2),
       "classes_count": num_classes,
   }
 
@@ -229,11 +250,29 @@ def _worker_evaluate_basin(args: tuple) -> Dict[str, Any]:
       gcs_era5_climate_uri=gcs_era5_climate_uri,
       no_download=no_download,
   )
+  if geom_wkt is None or pd.isna(geom_wkt) or not str(geom_wkt).strip():
+    return {
+        "gauge_id": gauge_id,
+        "dataset": dataset,
+        "size_tier": size_tier,
+        "country": country,
+        "ref_area_km2": ref_area_km2,
+        "calc_area_km2": np.nan,
+        "area_bias_pct": np.nan,
+        "abs_area_err_pct": np.nan,
+        "subbasins_count": 0,
+        "elapsed_sec": round(time.time() - t0, 3),
+        "extracted_attrs": {},
+        "status": str(row_dict.get("delineation_status", "MISSING_GEOMETRY")),
+    }
   geom = shapely.wkt.loads(geom_wkt)
+  if not geom.is_valid:
+    geom = geom.buffer(0)
   res = ext.extract_attributes_for_polygon(
       geom,
       catchment_id=gauge_id,
-      era5_source=era5_source,
+      era5_source=None if era5_source == "none" else era5_source,
+      _skip_climate=(era5_source == "none"),
   )
   elapsed = time.time() - t0
 
@@ -310,9 +349,9 @@ def run_benchmark(
     raise ValueError("gdb_path (or gcs_gdb_uri with no_download=True) must be explicitly provided.")
   if not output_dir:
     raise ValueError("output_dir must be explicitly provided.")
-  if not era5_source or era5_source.lower() not in {"hybas", "gridded"}:
+  if not era5_source or era5_source.lower() not in {"hybas", "gridded", "none"}:
     raise ValueError(
-        "era5_source must be explicitly specified as either 'hybas' or 'gridded'."
+        "era5_source must be explicitly specified as 'hybas', 'gridded', or 'none'."
     )
   era5_source = era5_source.lower()
   ds_path = Path(dataset_path).resolve()
@@ -347,7 +386,7 @@ def run_benchmark(
   print("Initializing extractor...")
   StaticAttributesExtractor(
       gdb_path=gdb_path,
-      era5_source=era5_source,
+      era5_source=None if era5_source == "none" else era5_source,
       era5_cache_dir=era5_cache_dir,
       gridded_era5_uri=gridded_era5_uri,
       gcs_gdb_uri=gcs_gdb_uri,
@@ -402,6 +441,10 @@ def run_benchmark(
 
   ref_cols = [c for c in df.columns if c.startswith("ref_") and c != "ref_area_km2"]
   attr_names = [c.replace("ref_", "") for c in ref_cols]
+  if era5_source == "none":
+    attr_names = [
+        a for a in attr_names if get_attribute_category(a) != "Caravan ERA5 Climate"
+    ]
 
   attr_rows = []
   for attr in attr_names:
@@ -428,6 +471,8 @@ def run_benchmark(
           "category": cat,
           "type": "categorical",
           "n": cat_res["n"],
+          "ref_nan_count": cat_res["ref_nan_count"],
+          "pred_nan_when_ref_valid": cat_res["pred_nan_when_ref_valid"],
           "pearson_r": np.nan,
           "spearman_rho": np.nan,
           "r2": np.nan,
@@ -437,6 +482,7 @@ def run_benchmark(
           "med_rel_error_pct": np.nan,
           "max_rel_error_pct": np.nan,
           "accuracy_pct": cat_res["accuracy_pct"],
+          "unconditional_accuracy_pct": cat_res["unconditional_accuracy_pct"],
           "classes_count": cat_res["classes_count"],
       })
     else:
@@ -446,6 +492,8 @@ def run_benchmark(
           "category": cat,
           "type": "continuous",
           "n": cont_res["n"],
+          "ref_nan_count": cont_res["ref_nan_count"],
+          "pred_nan_when_ref_valid": cont_res["pred_nan_when_ref_valid"],
           "pearson_r": cont_res["pearson_r"],
           "spearman_rho": cont_res["spearman_rho"],
           "r2": cont_res["r2"],
@@ -455,6 +503,7 @@ def run_benchmark(
           "med_rel_error_pct": cont_res["med_rel_error_pct"],
           "max_rel_error_pct": cont_res["max_rel_error_pct"],
           "accuracy_pct": np.nan,
+          "unconditional_accuracy_pct": np.nan,
           "classes_count": np.nan,
       })
 
@@ -551,13 +600,21 @@ def run_benchmark(
   print(f"Total Wall-Clock Time        : {total_wall_time:.2f}s ({time_per_basin:.3f}s / basin)")
   success_pct = (100.0 * successful / total_basins) if total_basins else 0.0
   print(f"Successful Extractions       : {successful} / {total_basins} ({success_pct:.1f}%)")
-  print(f"Total Attributes Checked     : {len(attr_metrics_df)} (196 HydroATLAS + 14 Caravan ERA5)")
-  print(f"Continuous Attributes Mean r : {mean_r:.4f}")
+  n_era5_checked = int((attr_metrics_df["category"] == "Caravan ERA5 Climate").sum())
+  n_hydro_checked = len(attr_metrics_df) - n_era5_checked
+  total_pred_nan_when_ref_valid = int(attr_metrics_df["pred_nan_when_ref_valid"].sum())
+  attrs_with_pred_nan = int((attr_metrics_df["pred_nan_when_ref_valid"] > 0).sum())
+  total_ref_nan = int(attr_metrics_df["ref_nan_count"].sum())
+  penalized_mean_r = float(cont_metrics["pearson_r"].fillna(0.0).mean())
+  uncond_cat_acc = float(cat_metrics["unconditional_accuracy_pct"].mean())
+  print(f"Total Attributes Checked     : {len(attr_metrics_df)} ({n_hydro_checked} HydroATLAS + {n_era5_checked} Caravan ERA5)")
+  print(f"Missing Preds (Ref Valid)    : {total_pred_nan_when_ref_valid} cells across {attrs_with_pred_nan} / {len(attr_metrics_df)} attributes (Ref NaN={total_ref_nan})")
+  print(f"Continuous Attributes Mean r : {mean_r:.4f} (Penalized NaN->0.0: {penalized_mean_r:.4f})")
   print(f"Continuous Attributes Med r  : {median_r:.5f}")
   print(f"Attributes with r >= 0.99    : {pct_r_99:.1f}% ({int((cont_metrics['pearson_r'] >= 0.99).sum())} / {len(cont_metrics)})")
   print(f"Attributes with r >= 0.95    : {pct_r_95:.1f}%")
   print(f"Attributes with r >= 0.90    : {pct_r_90:.1f}%")
-  print(f"Categorical Majority Acc     : {mean_cat_acc:.2f}%")
+  print(f"Categorical Majority Acc     : {mean_cat_acc:.2f}% (Unconditional NaN=wrong: {uncond_cat_acc:.2f}%)")
   print(f"Median Basin Area Error      : {med_area_err:.2f}%")
   print(f"Maximum Basin Area Error     : {max_area_err:.2f}% (Basin: {worst_area_basin})")
   print(f"Median Attribute Rel Error   : {med_attr_err:.2f}%")
@@ -751,7 +808,8 @@ def _generate_markdown_report(
       f"- **Total Basins Evaluated**: {total_basins}",
       f"- **Extraction Success Rate**: {successful} / {total_basins} ({(100.0 * successful / total_basins if total_basins else 0.0):.1f}%)",
       f"- **Total Benchmark Runtime**: {total_wall_time:.2f}s ({time_per_basin:.3f}s / basin)",
-      f"- **Continuous Attributes Mean Pearson r**: **{mean_r:.4f}**",
+      f"- **Missing Predictions When Reference Valid (`pred_nan_when_ref_valid`)**: **{int(cont_metrics['pred_nan_when_ref_valid'].sum())}** continuous cells across **{int((cont_metrics['pred_nan_when_ref_valid'] > 0).sum())}** continuous attributes (Reference NaNs: `{int(cont_metrics['ref_nan_count'].sum())}`)",
+      f"- **Continuous Attributes Mean Pearson r**: **{mean_r:.4f}** (Penalized `NaN -> 0.0`: **{float(cont_metrics['pearson_r'].fillna(0.0).mean()):.4f}**)",
       f"- **Continuous Attributes Median Pearson r**: **{median_r:.5f}**",
       f"- **Attributes with r >= 0.99**: **{pct_r_99:.1f}%** ({int((cont_metrics['pearson_r'] >= 0.99).sum())} / {len(cont_metrics)})",
       f"- **Attributes with r >= 0.95**: **{pct_r_95:.1f}%**",
@@ -835,8 +893,8 @@ def main(args=None):
       "--era5-source",
       type=str,
       required=True,
-      choices=["hybas", "gridded"],
-      help="ERA5 data source: 'hybas' (precomputed subbasins) or 'gridded' (Zarr).",
+      choices=["hybas", "gridded", "none"],
+      help="ERA5 data source: 'hybas' (precomputed subbasins), 'gridded' (Zarr), or 'none' (HydroATLAS only).",
   )
   parser.add_argument(
       "-o",

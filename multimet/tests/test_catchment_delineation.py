@@ -733,3 +733,103 @@ def test_build_benchmark_dataset_cli_explicit_args(tmp_path: Path) -> None:
     assert set(df['gauge_id']) == {'camels_001', 'camels_002'}
     assert 'geometry_wkt' in df.columns
     assert 'reference_area_km2' in df.columns
+
+
+@pytest.mark.unit
+def test_benchmark_caravan_columns_and_save_geometries(tmp_path: Path) -> None:
+    """Verify benchmark supports ref_area_km2, dataset, computed hemisphere, and --save-geometries."""
+    from multimet.catchment_delineation.benchmark import main as bench_main
+
+    tiles_dir = tmp_path / 'tiles'
+    _write_synthetic_tile(tiles_dir)
+    bench_pq = tmp_path / 'bench_caravan.parquet'
+    pd.DataFrame(
+        {
+            'gauge_id': ['valid_1', 'ooc_1'],
+            'dataset': ['camels', 'camels'],
+            'size_tier': ['1_micro', '1_micro'],
+            'latitude': [39.6828, 65.0],
+            'longitude': [-88.7729, -150.0],
+            'ref_area_km2': [0.03, 100.0],
+            'geometry_wkt': [
+                box(-88.78, 39.68, -88.77, 39.69).wkt,
+                box(-150.1, 64.9, -149.9, 65.1).wkt,
+            ],
+        }
+    ).to_parquet(bench_pq, index=False)
+
+    out_pq = tmp_path / 'out_bench.parquet'
+    rc = bench_main(
+        [
+            '--dataset',
+            str(bench_pq),
+            '--tiles-dir',
+            str(tiles_dir),
+            '--workers',
+            '1',
+            '--save-geometries',
+            '--output',
+            str(out_pq),
+        ]
+    )
+    assert rc == 0
+    res_df = pd.read_parquet(out_pq)
+    assert 'del_geometry_wkt' in res_df.columns
+    v_row = res_df[res_df['gauge_id'] == 'valid_1'].iloc[0]
+    o_row = res_df[res_df['gauge_id'] == 'ooc_1'].iloc[0]
+    assert v_row['continent'] == 'camels'
+    assert v_row['hemisphere'] == 'NW'
+    assert isinstance(v_row['del_geometry_wkt'], str) and v_row['del_geometry_wkt'].startswith(('POLYGON', 'MULTIPOLYGON'))
+    assert o_row['del_geometry_wkt'] is None or pd.isna(o_row['del_geometry_wkt'])
+
+
+@pytest.mark.unit
+def test_benchmark_area_hint_failure_vs_out_of_coverage_unconditional_metrics(
+    tmp_path: Path,
+) -> None:
+    """Verify AREA_HINT_FAILURE is distinguished from OUT_OF_COVERAGE and counted as 0.0 in unconditional metrics."""
+    from multimet.catchment_delineation.benchmark import summarize_results
+
+    tiles_dir = tmp_path / 'tiles'
+    _write_synthetic_tile(tiles_dir)
+    bench_pq = tmp_path / 'bench_uncond.parquet'
+    pd.DataFrame(
+        {
+            'gauge_id': ['succ_1', 'hint_fail_1', 'ooc_1'],
+            'continent': ['North America', 'North America', 'North America'],
+            'hemisphere': ['NW', 'NW', 'NW'],
+            'size_tier': ['1_micro', '4_large', '1_micro'],
+            'latitude': [39.6828, 39.6828, 65.0],
+            'longitude': [-88.7729, -88.7729, -150.0],
+            'reference_area_km2': [0.03, 5000.0, 100.0],
+            'geometry_wkt': [
+                box(-88.78, 39.68, -88.77, 39.69).wkt,
+                box(-89.0, 39.0, -88.0, 40.0).wkt,
+                box(-150.1, 64.9, -149.9, 65.1).wkt,
+            ],
+        }
+    ).to_parquet(bench_pq, index=False)
+
+    res_df = run_benchmark(
+        dataset_path=bench_pq, tiles_dir=tiles_dir, workers=1, use_area_hint=True
+    )
+    succ_row = res_df[res_df['gauge_id'] == 'succ_1'].iloc[0]
+    fail_row = res_df[res_df['gauge_id'] == 'hint_fail_1'].iloc[0]
+    ooc_row = res_df[res_df['gauge_id'] == 'ooc_1'].iloc[0]
+
+    assert succ_row['status'] == 'SUCCESS'
+    assert fail_row['status'].startswith('AREA_HINT_FAILURE:')
+    assert ooc_row['status'].startswith('OUT_OF_COVERAGE:')
+    assert math.isnan(fail_row['iou'])
+    assert fail_row['iou_unconditional'] == 0.0
+    assert math.isnan(ooc_row['iou_unconditional'])
+
+    summary = summarize_results(res_df)
+    assert summary['total_basins'] == 3
+    assert summary['in_coverage_basins'] == 2
+    assert summary['successful_basins'] == 1
+    assert summary['area_hint_failure_basins'] == 1
+    assert summary['out_of_coverage_basins'] == 1
+    assert summary['unconditional_mean_iou'] == pytest.approx(
+        float(succ_row['iou']) / 2.0, abs=1e-4
+    )
