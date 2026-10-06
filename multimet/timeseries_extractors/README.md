@@ -4,7 +4,7 @@ The `multimet.timeseries_extractors` subpackage reduces gridded meteorology to c
 
 ## Supported Meteorological Products
 
-The extractor supports **4 core products**, operating either against user-supplied **Open-MultiMet Gridded Zarr Archives** (`--source archive --archive-store PRODUCT=URI`) or directly against **third-party agency upstream feeds** (`--source public`, for CPC, IMERG, and HRES):
+The extractor supports **4 core Open-MultiMet products** plus **4 operational forecast products via dynamical.org**, operating either against user-supplied **Open-MultiMet Gridded Zarr Archives** (`--source archive --archive-store PRODUCT=URI`) or directly against **third-party agency upstream feeds / dynamical.org catalogs** (`--source public`):
 
 | Product | Type | Native Grid | Forecast Lead | Variables Extracted | Supported Sources |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -12,6 +12,10 @@ The extractor supports **4 core products**, operating either against user-suppli
 | **CPC Global Precip** (`CPC`) | Daily Gauge | $0.5^\circ$ (360 $\times$ 720) | N/A | **2 variables**: `cpc_precipitation` ($\text{mm/day}$) and `cpc_num_stations` (reporting rain-gauge count per cell) + `cpc_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`), NOAA PSL NetCDF (`https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/`), or local CPC binary grids |
 | **IMERG Early V07** (`IMERG`) | Daily / Half-Hourly Satellite | $0.1^\circ$ (1800 $\times$ 3600) | N/A | `imerg_precipitation` ($\text{mm/day}$) + `imerg_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`), NASA GES DISC (`GPM_3IMERGDE.07`), or dynamical.org Icechunk catalog |
 | **ECMWF IFS HRES** (`HRES`) | Operational NWP Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **5 variables** (`hres_total_precipitation`, `hres_temperature_2m`, `hres_surface_pressure`, `hres_surface_net_solar_radiation`, `hres_surface_net_thermal_radiation`) + `hres_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`), ECMWF Open Data (`gs://ecmwf-open-data`, `--source open_data`), or explicit Zarr/GRIB store (`data_dir`) |
+| **ECMWF AIFS Single** (`AIFS`) | AI Weather Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **4 variables** (`aifs_total_precipitation`, `aifs_temperature_2m`, `aifs_u_component_of_wind_10m`, `aifs_v_component_of_wind_10m`) + `aifs_missing_fraction` | dynamical.org Icechunk catalog (`ecmwf-aifs-single-forecast`, `--source public`) |
+| **NOAA GFS** (`GFS`) | Operational NWP Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **4 variables** (`gfs_total_precipitation`, `gfs_temperature_2m`, `gfs_u_component_of_wind_10m`, `gfs_v_component_of_wind_10m`) + `gfs_missing_fraction` | dynamical.org Icechunk catalog (`noaa-gfs-forecast`, `--source public`) |
+| **NOAA GEFS** (`GEFS`) | Operational Ensemble Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **4 variables** (`gefs_total_precipitation`, `gefs_temperature_2m`, `gefs_u_component_of_wind_10m`, `gefs_v_component_of_wind_10m`) + `gefs_missing_fraction` | dynamical.org Icechunk catalog (`noaa-gefs-forecast-35-day`, `--source public`, configurable `ensemble_member`) |
+| **ECMWF IFS ENS** (`IFS_ENS`) | Operational Ensemble Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **4 variables** (`ifs_ens_total_precipitation`, `ifs_ens_temperature_2m`, `ifs_ens_u_component_of_wind_10m`, `ifs_ens_v_component_of_wind_10m`) + `ifs_ens_missing_fraction` | dynamical.org Icechunk catalog (`ecmwf-ifs-ens-forecast-15-day-0-25-degree`, `--source public`, configurable `ensemble_member`) |
 
 ---
 
