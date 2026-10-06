@@ -331,7 +331,7 @@ Timeline for Sample Issued on Date D (00:00 UTC) with seq_length=S, lead_time=L,
 | **`x_d_forecast`** | `dict[str, torch.Tensor]` (`float32`) | `{feature_name: (B, O + L, 1)}` | • **Forecast horizon (`L` steps):** 3D forecast features sliced at issue date `date = D` across `lead_time = [1 day .. L days]`, valid on **`[D, D + 1, ..., D + L - 1]`**.<br>• **Historical overlap (`O` steps, when `forecast_overlap = O > 0`):** Prepends `lead_time = 1 day` (`isel(lead_time=0)`) from issue dates `[D - O .. D - 1]` before the `L` forecast steps, yielding length `O + L`.<br>• If `timestep_counter: True`, includes `"forecast_counter"` of shape `(B, O + L, 1)` containing `[1, ..., 1]` ($O$ times) followed by `[1, 2, ..., L]`. |
 | **`y`** | `torch.Tensor` (`float32`) | `(B, S, F_target)` | Target variables (`streamflow`) on valid dates **`[D + L - S, ..., D + L - 1]`**. Loss and evaluation subset the trailing `predict_last_n` steps (`y[:, -predict_last_n:, :]`). |
 | **`date`** | `np.ndarray` (`datetime64[ns]`) | `(B, S)` | Valid dates **`[D + L - S, ..., D + L - 1]`** matching `y`. Note that the last date `date[:, -1]` is $D + L - 1$, from which `BaseTester` recovers the forecast issue date $D = \text{date}[:, -1] - (L - 1)\text{ days}$. |
-| **`basin_index`** | `torch.Tensor` (`int`) | `(B,)` | Integer index of each sample's basin in `dataset._basins`. |
+| **`basin_index`** | `torch.Tensor` (`int64`) | `(B,)` | Integer index of each sample's basin in `dataset._basins`. |
 | **`per_basin_target_stds`** | `torch.Tensor` (`float32`) | `(B, 1, F_target)` | Present when `loss: nse`; per-basin standard deviation of target variables for basin-normalized NSE loss. |
 
 ### 7.4 Cold-Start vs. Hot-Start Realtime Forecast Data & State Persistence

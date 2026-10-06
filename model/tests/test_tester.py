@@ -13,12 +13,20 @@
 # limitations under the License.
 
 from math import ceil
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+import torch
+from torch import nn
 
 from model.datasetzoo.multimet import SampleIndexer
+from model.evaluation import get_tester
+from model.evaluation.tester import RegressionTester
 from model.evaluation.utils import BasinBatchSampler
+from model.modelzoo import load_model_weights
+from model.utils.config import Config
 
 
 @pytest.fixture
@@ -175,10 +183,6 @@ def test_sampler_with_batch_size_larger_than_samples():
 
 def test_evaluate_synchronizes_configured_cuda_device():
     """_evaluate must synchronize `self.device`, not only the default GPU."""
-    from unittest.mock import MagicMock, patch
-    import torch
-    from model.evaluation.tester import RegressionTester
-
     tester = object.__new__(RegressionTester)
     tester.device = torch.device('cuda:2')
     tester.cfg = MagicMock(
@@ -267,3 +271,64 @@ def test_metrics_to_dataframe():
     )
     assert df_multi.loc['basin_A', 'q1_NSE'] == pytest.approx(0.9)
     assert df_multi.loc['basin_A', 'q2_NSE'] == pytest.approx(0.7)
+
+
+def test_get_tester_raises_not_implemented_for_unsupported_head(
+    tmp_path: Path,
+) -> None:
+    """Unsupported head in get_tester raises NotImplementedError."""
+    cfg = Config(
+        {'head': 'unsupported_head_type'},
+        dev_mode=True,
+    )
+
+    with pytest.raises(
+        NotImplementedError,
+        match='No evaluation method implemented for unsupported_head_type head',
+    ):
+        get_tester(cfg=cfg, run_dir=tmp_path, period='test', init_model=False)
+
+
+class _CompiledWrapper(nn.Module):
+    """Wrapper mimicking torch.compile OptimizedModule's _orig_mod attribute."""
+
+    def __init__(self, inner: nn.Module) -> None:
+        super().__init__()
+        self._orig_mod = inner
+
+
+def test_load_model_weights_strips_orig_mod_prefix(tmp_path: Path) -> None:
+    """load_model_weights loads compiled and uncompiled checkpoints cleanly."""
+    source_linear = nn.Linear(3, 2, bias=True)
+    compiled_state_dict = {
+        f'_orig_mod.{k}': torch.full_like(v, 2.5)
+        for k, v in source_linear.state_dict().items()
+    }
+    compiled_ckpt_path = tmp_path / 'model_epoch001.pt'
+    torch.save(compiled_state_dict, compiled_ckpt_path)
+
+    # 1. Load compiled checkpoint (_orig_mod.* keys) into uncompiled model.
+    uncompiled_target = nn.Linear(3, 2, bias=True)
+    load_model_weights(uncompiled_target, compiled_ckpt_path, device='cpu')
+    for param in uncompiled_target.parameters():
+        torch.testing.assert_close(param.data, torch.full_like(param.data, 2.5))
+
+    # 2. Load compiled checkpoint (_orig_mod.* keys) into compiled wrapper.
+    wrapped_inner = nn.Linear(3, 2, bias=True)
+    wrapped_target = _CompiledWrapper(wrapped_inner)
+    load_model_weights(wrapped_target, compiled_ckpt_path, device='cpu')
+    for param in wrapped_inner.parameters():
+        torch.testing.assert_close(param.data, torch.full_like(param.data, 2.5))
+
+    # 3. Load uncompiled checkpoint into compiled wrapper.
+    uncompiled_state_dict = {
+        k: torch.full_like(v, -1.25)
+        for k, v in source_linear.state_dict().items()
+    }
+    uncompiled_ckpt_path = tmp_path / 'model_epoch002.pt'
+    torch.save(uncompiled_state_dict, uncompiled_ckpt_path)
+    load_model_weights(wrapped_target, uncompiled_ckpt_path, device='cpu')
+    for param in wrapped_inner.parameters():
+        torch.testing.assert_close(
+            param.data, torch.full_like(param.data, -1.25)
+        )
