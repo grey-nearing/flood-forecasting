@@ -598,8 +598,8 @@ def test_run_cli_entrypoints(integration_data_env, tmp_path):
 
 
 def run_cli(argv: list[str]) -> None:
-    """Run the ``googlehydrology`` CLI in-process with the given arguments."""
-    with patch.object(sys, 'argv', ['googlehydrology', *argv]):
+    """Run the ``run`` CLI in-process with the given arguments."""
+    with patch.object(sys, 'argv', ['run', *argv]):
         run._main()  # noqa: SLF001
 
 
