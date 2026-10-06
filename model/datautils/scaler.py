@@ -96,9 +96,11 @@ class Scaler:
         self,
         scaler_dir: Path,
         calculate_scaler,
-        custom_normalization: dict[str, dict[str, float]] = {},
+        custom_normalization: dict[str, dict[str, float]] | None = None,
         dataset: xr.Dataset | None = None,
     ):
+        if custom_normalization is None:
+            custom_normalization = {}
         # Consistency check.
         if not calculate_scaler and dataset is not None:
             raise ValueError(

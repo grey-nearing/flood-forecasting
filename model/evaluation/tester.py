@@ -195,7 +195,7 @@ class BaseTester(object):
         self,
         epoch: int = None,
         save_results: bool = True,
-        metrics: list | dict = [],
+        metrics: list | dict | None = None,
         model: torch.nn.Module = None,
         experiment_logger: Logger = None,
     ) -> dict:
@@ -214,6 +214,8 @@ class BaseTester(object):
         experiment_logger : Logger, optional
             Logger can be passed during training to log metrics
         """
+        if metrics is None:
+            metrics = []
         if model is None:
             if self.init_model:
                 self._load_weights(epoch=epoch)
@@ -423,11 +425,23 @@ class BaseTester(object):
                                 sim = xarray.where(sim < 0, 0, sim)
 
                             if 'samples' in sim.dims:
+                                is_cmal_det = (
+                                    self.cfg.head.lower()
+                                    == 'cmal_deterministic'
+                                )
                                 match self.cfg.tester_sample_reduction:
                                     case TesterSamplesReduction.MEAN:
-                                        sim = sim.mean(dim='samples')
+                                        sim = (
+                                            sim.isel(samples=0)
+                                            if is_cmal_det
+                                            else sim.mean(dim='samples')
+                                        )
                                     case TesterSamplesReduction.MEDIAN:
-                                        sim = sim.median(dim='samples')
+                                        sim = (
+                                            sim.isel(samples=5)
+                                            if is_cmal_det
+                                            else sim.median(dim='samples')
+                                        )
                                     case _:
                                         msg = f'Supported {self.cfg.tester_sample_reduction=}'
                                         raise KeyError(msg)
@@ -672,8 +686,10 @@ class BaseTester(object):
         model: BaseModel,
         loader: MultimetDataLoader,
         frequencies: list[str],
-        basins: set[str] = set(),
+        basins: set[str] | None = None,
     ):
+        if basins is None:
+            basins = set()
         predict_last_n = self.cfg.predict_last_n
         if isinstance(predict_last_n, int):
             predict_last_n = {
