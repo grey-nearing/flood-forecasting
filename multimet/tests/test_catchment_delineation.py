@@ -535,3 +535,201 @@ def test_expected_area_hint_failure_logs_loudly_and_produces_no_polygon(
     )
     assert rc == 1
     assert not out_file.exists()
+
+
+@pytest.mark.unit
+def test_missing_local_tile_raises_file_not_found_in_delineate_point_and_area_hint(
+    tmp_path: Path,
+) -> None:
+    """Missing local tile in tiles_dir raises FileNotFoundError in direct and area-hint paths."""
+    assert not issubclass(CatchmentCoverageError, FileNotFoundError)
+
+    empty_dir = tmp_path / 'empty_tiles'
+    empty_dir.mkdir()
+    delin_empty = DemDelineator(tiles_dir=empty_dir)
+    with pytest.raises(
+        FileNotFoundError, match=r'Missing flow direction tile.*n40w090\.npy'
+    ):
+        delin_empty.delineate_point(lat=39.6828, lon=-88.7729)
+
+    tiles_dir = tmp_path / 'partial_tiles'
+    tiles_dir.mkdir()
+    south = np.zeros((TILE_CELLS, TILE_CELLS), dtype=np.uint8)
+    col = 1200
+    for row in (0, 1, 2):
+        south[row, col] = _SOUTH_D8
+    np.save(tiles_dir / 'n40w090.npy', south)
+
+    lat = 40.0 - 3 * RES_DEG
+    lon = -90.0 + col * RES_DEG
+    delin = DemDelineator(tiles_dir=tiles_dir)
+
+    with pytest.raises(
+        FileNotFoundError, match=r'Missing flow direction tile.*n45w090\.npy'
+    ):
+        delin.delineate_point(lat=lat, lon=lon, snap_window_cells=0)
+
+    with pytest.raises(
+        FileNotFoundError, match=r'Missing flow direction tile.*n45w090\.npy'
+    ):
+        delin.delineate(
+            lat=lat,
+            lon=lon,
+            snap_window_cells=0,
+            expected_area_km2=0.50,
+        )
+
+
+@pytest.mark.unit
+def test_area_hint_skips_candidates_exceeding_max_cells_without_try_except(
+    tmp_path: Path,
+) -> None:
+    """Candidate cells exceeding max_cells are skipped cleanly via abort_on_limit=False."""
+    tile_arr = np.zeros((TILE_CELLS, TILE_CELLS), dtype=np.uint8)
+    # Oversized channel at c=100 starting at row=10 so every cell inside
+    # the 80-cell window around r=180 has >90 upstream cells (exceeding max_cells=25).
+    for row in range(10, 181):
+        tile_arr[row, 100] = _SOUTH_D8
+    # Matching 10-cell channel at (r=171..180, c=120)
+    for row in range(171, 181):
+        tile_arr[row, 120] = _SOUTH_D8
+    np.save(tmp_path / 'n40w090.npy', tile_arr)
+
+    delin = DemDelineator(tiles_dir=tmp_path)
+    vt_over, cnt_over = delin._traverse_upstream_bfs(
+        (40, -90), 180, 100, max_cells=25, abort_on_limit=False
+    )
+    assert vt_over == {}
+    assert cnt_over == -1
+
+    lat = 40.0 - 180 * RES_DEG
+    lon = -90.0 + 100 * RES_DEG
+    feat = delin.delineate(
+        lat=lat,
+        lon=lon,
+        snap_window_cells=5,
+        max_cells=25,
+        expected_area_km2=0.064,
+        area_tolerance=0.25,
+    )
+    assert feat['properties']['upstream_cells_count'] == 10
+
+
+@pytest.mark.unit
+def test_build_benchmark_dataset_cli_explicit_args(tmp_path: Path) -> None:
+    """build_benchmark_dataset.py requires --shapes, --world-geojson, and --output."""
+    from multimet.catchment_delineation.tools.build_benchmark_dataset import (
+        main as build_bench_main,
+    )
+
+    with pytest.raises(SystemExit):
+        build_bench_main([])
+
+    with pytest.raises(SystemExit):
+        build_bench_main(
+            [
+                '--data-dir',
+                str(tmp_path),
+                '--output',
+                str(tmp_path / 'o.parquet'),
+            ]
+        )
+
+    world_path = tmp_path / 'world.geojson'
+    gpd.GeoDataFrame(
+        {'continent': ['North America']},
+        geometry=[box(-130.0, 20.0, -60.0, 55.0)],
+        crs='EPSG:4326',
+    ).to_file(world_path, driver='GeoJSON')
+
+    out_pq = tmp_path / 'benchmark.parquet'
+    with pytest.raises(
+        FileNotFoundError, match='Shapefile path does not exist'
+    ):
+        build_bench_main(
+            [
+                '--shapes',
+                str(tmp_path / 'missing_shapes.shp'),
+                '--world-geojson',
+                str(world_path),
+                '--output',
+                str(out_pq),
+            ]
+        )
+
+    shapes_dir = tmp_path / 'shapes_dir'
+    shapes_dir.mkdir()
+    shp_file = shapes_dir / 'camels_basin_shapes.shp'
+    gpd.GeoDataFrame(
+        {'gauge_id': ['camels_001', 'camels_002']},
+        geometry=[
+            box(-88.80, 39.65, -88.70, 39.75),
+            box(-86.95, 40.35, -86.80, 40.50),
+        ],
+        crs='EPSG:4326',
+    ).to_file(shp_file)
+
+    coords_csv = tmp_path / 'coords.csv'
+    pd.DataFrame(
+        {
+            'gauge_id': ['camels_001', 'camels_002'],
+            'latitude': [39.6828, 40.4172],
+            'longitude': [-88.7729, -86.8858],
+            'calculated_drain_area': [95.0, 210.0],
+        }
+    ).to_csv(coords_csv, index=False)
+
+    with pytest.raises(
+        FileNotFoundError, match='Coordinate CSV does not exist'
+    ):
+        build_bench_main(
+            [
+                '--shapes',
+                str(shapes_dir),
+                '--coords-csv',
+                str(tmp_path / 'nonexistent_coords.csv'),
+                '--world-geojson',
+                str(world_path),
+                '--output',
+                str(out_pq),
+            ]
+        )
+
+    # Sibling coordinates.csv must NOT be implicitly read when --coords-csv is omitted,
+    # and empty matched basins must raise ValueError instead of writing a 0-row file.
+    sibling_csv = shapes_dir / 'coordinates.csv'
+    sibling_csv.write_text(coords_csv.read_text(encoding='utf-8'), encoding='utf-8')
+    with pytest.raises(
+        ValueError, match='No valid benchmark basins matched'
+    ):
+        build_bench_main(
+            [
+                '--shapes',
+                str(shapes_dir),
+                '--world-geojson',
+                str(world_path),
+                '--output',
+                str(out_pq),
+            ]
+        )
+    assert not out_pq.exists()
+
+    rc = build_bench_main(
+        [
+            '--shapes',
+            str(shapes_dir),
+            '--coords-csv',
+            str(coords_csv),
+            '--world-geojson',
+            str(world_path),
+            '--output',
+            str(out_pq),
+        ]
+    )
+    assert rc == 0
+    assert out_pq.is_file()
+    df = pd.read_parquet(out_pq)
+    assert len(df) == 2
+    assert set(df['gauge_id']) == {'camels_001', 'camels_002'}
+    assert 'geometry_wkt' in df.columns
+    assert 'reference_area_km2' in df.columns

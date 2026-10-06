@@ -100,7 +100,6 @@ class Logger(object):
     def log_figures(
         self,
         figures: list[mpl.figure.Figure],
-        freq: str,
         preamble: str = '',
         period: str = 'validation',
         suffix: str = '',
@@ -111,8 +110,6 @@ class Logger(object):
         ----------
         figures : list[mpl.figure.Figure]
             List of figures to save.
-        freq : str
-            Prediction frequency of the figures.
         preamble : str, optional
             Prefix to prepend to the figures' file names.
         period : str
@@ -125,7 +122,6 @@ class Logger(object):
             self._img_log_dir,
             self.epoch,
             figures,
-            freq,
             preamble,
             period,
             suffix,
@@ -310,21 +306,20 @@ def do_log_figures(
     img_log_dir: Path,
     epoch: int,
     figures: list[mpl.figure.Figure],
-    freq: str,
     preamble: str = '',
     period: str = 'validation',
     suffix: str = '',
 ):
     if writer is not None:
         writer.add_figure(
-            f'{period}/timeseries/{freq}', figures, global_step=epoch
+            f'{period}/timeseries', figures, global_step=epoch
         )
 
     for figure in figures:
         figure.savefig(
             Path(
                 img_log_dir,
-                preamble + f'_{period}_freq{freq}_epoch{epoch}_{suffix}',
+                preamble + f'_{period}_epoch{epoch}_{suffix}',
             ),
             dpi=300,
         )

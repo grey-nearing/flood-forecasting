@@ -34,20 +34,57 @@ NOAA_PSL_URL_TEMPLATE = (
 )
 
 
+def _is_cached_cpc_netcdf_usable(
+    nc_path: str,
+    *,
+    required_end_date: pd.Timestamp | str | None = None,
+) -> bool:
+  """Returns True if ``nc_path`` exists and covers ``required_end_date``."""
+  if not os.path.exists(nc_path) or os.path.getsize(nc_path) <= 1024:
+    return False
+  if required_end_date is None:
+    return True
+  with xr.open_dataset(nc_path, decode_timedelta=False) as ds:
+    if "precip" not in ds or "time" not in ds:
+      return False
+    time_raw = pd.to_datetime(ds["time"].values)
+    dates = pd.DatetimeIndex(time_raw.strftime("%Y-%m-%d"))
+    if len(dates) == 0:
+      return False
+    precip_raw = np.asarray(ds["precip"].values, dtype=np.float32)
+    if precip_raw.ndim != 3:
+      return False
+    finite_per_day = np.isfinite(
+        np.where(precip_raw < 0, np.nan, precip_raw)
+    ).any(axis=(1, 2))
+    if not finite_per_day.any():
+      return False
+    last_valid_idx = int(np.where(finite_per_day)[0][-1])
+    last_valid_date = pd.Timestamp(dates[last_valid_idx]).normalize()
+    return bool(last_valid_date >= pd.Timestamp(required_end_date).normalize())
+
+
 def ensure_psl_cpc_netcdf(
     year: int,
     cache_dir: str,
     url_template: str = NOAA_PSL_URL_TEMPLATE,
+    *,
+    force_download: bool = False,
+    required_end_date: pd.Timestamp | str | None = None,
+    required_date: pd.Timestamp | str | None = None,
 ) -> str:
-  """Downloads and caches a yearly NOAA PSL CPC NetCDF file if not present."""
+  """Downloads and caches a yearly NOAA PSL CPC NetCDF file if needed."""
   os.makedirs(cache_dir, exist_ok=True)
   local_path = os.path.join(cache_dir, f"precip.{year}.nc")
-  if os.path.exists(local_path) and os.path.getsize(local_path) > 1024:
+  req_dt = required_end_date if required_end_date is not None else required_date
+  if not force_download and _is_cached_cpc_netcdf_usable(
+      local_path, required_end_date=req_dt
+  ):
     return local_path
 
   url = url_template.format(year=year)
   logging.info("Downloading NOAA PSL CPC NetCDF for %d from %s...", year, url)
-  download_http_file(
+  downloaded = download_http_file(
       url,
       local_path,
       headers={"User-Agent": "OpenMultiMet/1.1 (Google Research)"},
@@ -56,9 +93,9 @@ def ensure_psl_cpc_netcdf(
       resource_label=f"NOAA PSL CPC NetCDF for year {year}",
   )
   logging.info(
-      "Cached %s (%.1f MB)", local_path, os.path.getsize(local_path) / 1e6
+      "Cached %s (%.1f MB)", downloaded, os.path.getsize(downloaded) / 1e6
   )
-  return local_path
+  return downloaded
 
 
 def process_cpc_netcdf_to_dataset(

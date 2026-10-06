@@ -67,6 +67,17 @@ TENSOR_VARS = [
 ]
 MULTIMET_MINIMUM_LEAD_TIME = 1
 
+def _needs_per_basin_target_stds(cfg: Config) -> bool:
+    """Whether the training loss or the data assimilation loss is NSE."""
+    if cfg.loss.lower() == 'nse':
+        return True
+    assimilation_config = cfg.assimilation_config
+    return (
+        assimilation_config is not None
+        and assimilation_config.loss.lower() == 'nse'
+    )
+
+
 class MultimetDataLoader(torch.utils.data.DataLoader):
     """Custom DataLoader that handles lazy data loading.
 
@@ -201,8 +212,6 @@ class Multimet(Dataset):
 
         # Validating samples depends on whether we are training or testing.
         self.is_train = is_train
-        # TODO (future) :: Necessary for tester. Remove dependency if possible.
-        self.frequencies = ['1D']
 
         self._period = period
         if period not in ['train', 'validation', 'test']:
@@ -365,7 +374,7 @@ class Multimet(Dataset):
         # TODO (future) :: Find a better way to decide whether to calculate these. At least keep a list of
         # losses that require them somewhere like `training.__init__.py`. Perhaps simply always calculate.
         self._per_basin_target_stds = None
-        if cfg.loss.lower() in ['nse']:
+        if _needs_per_basin_target_stds(cfg):
             LOGGER.debug('create per_basin_target_stds')
             self._per_basin_target_stds = self._dataset[
                 self._target_features
@@ -740,20 +749,19 @@ class Multimet(Dataset):
         )
         if single_store_path is not None:
             ds = _open_zarr(single_store_path)
-            if any(f in ds.data_vars for f in features):
-                missing = sorted(set(features) - set(ds.data_vars))
-                if missing:
-                    raise ValueError(
-                        f'Requested hindcast features {missing} not found in '
-                        f'{single_store_path}.'
-                    )
-                if 'lead_time' in ds:
-                    ds = ds.sel(
-                        basin=self._basins, lead_time=self._lead_time_slice()
-                    )
-                else:
-                    ds = ds.sel(basin=self._basins)
-                return [ds[features]]
+            missing = sorted(set(features) - set(ds.data_vars))
+            if missing:
+                raise ValueError(
+                    f'Requested hindcast features {missing} not found in '
+                    f'{single_store_path}.'
+                )
+            if 'lead_time' in ds:
+                ds = ds.sel(
+                    basin=self._basins, lead_time=self._lead_time_slice()
+                )
+            else:
+                ds = ds.sel(basin=self._basins)
+            return [ds[features]]
 
         # Separate products and bands for each product from the configured
         # hindcast inputs.
@@ -833,24 +841,23 @@ class Multimet(Dataset):
         )
         if single_store_path is not None:
             ds = _open_zarr(single_store_path)
-            if any(f in ds.data_vars for f in self._forecast_features):
-                missing = sorted(
-                    set(self._forecast_features) - set(ds.data_vars)
+            missing = sorted(
+                set(self._forecast_features) - set(ds.data_vars)
+            )
+            if missing:
+                raise ValueError(
+                    f'Requested forecast features {missing} not found in '
+                    f'{single_store_path}.'
                 )
-                if missing:
-                    raise ValueError(
-                        f'Requested forecast features {missing} not found in '
-                        f'{single_store_path}.'
-                    )
-                if 'lead_time' not in ds:
-                    raise ValueError(
-                        f'Lead times do not exist in forecast dataset at '
-                        f'{single_store_path}.'
-                    )
-                ds = ds.sel(
-                    basin=self._basins, lead_time=self._lead_time_slice()
+            if 'lead_time' not in ds:
+                raise ValueError(
+                    f'Lead times do not exist in forecast dataset at '
+                    f'{single_store_path}.'
                 )
-                return [ds[self._forecast_features]]
+            ds = ds.sel(
+                basin=self._basins, lead_time=self._lead_time_slice()
+            )
+            return [ds[self._forecast_features]]
 
         # Separate products and bands for each product from configured inputs.
         product_bands = _get_products_and_bands_from_features(
@@ -1002,24 +1009,18 @@ def _convert_to_tensor(
 def _find_single_dynamics_zarr_path(dynamics_path: Path | str) -> Path | None:
     path_str = str(dynamics_path)
     if path_str.startswith('gs://') or path_str.startswith('gs:/'):
-        if path_str.endswith('.zarr'):
-            return Path(path_str)
+        if path_str.rstrip('/').endswith('.zarr'):
+            return Path(path_str.rstrip('/'))
         return None
 
     p = Path(dynamics_path)
-    is_zarr = (
-        p.suffix == '.zarr'
-        or (p / '.zgroup').exists()
-        or (p / 'zarr.json').exists()
-        or (p / '.zmetadata').exists()
-    )
-    if is_zarr:
+    if p.suffix == '.zarr':
+        if not p.exists():
+            raise FileNotFoundError(f'Dynamics Zarr store not found: {p}')
         return p
-    has_timeseries = (p / 'timeseries.zarr').exists()
-    has_other_dirs = any(
-        sub.is_dir() for sub in p.glob('*') if sub.name != 'timeseries.zarr'
-    )
-    if has_timeseries and not has_other_dirs:
+    if not p.exists():
+        raise FileNotFoundError(f'Dynamics data path not found: {p}')
+    if (p / 'timeseries.zarr').exists():
         return p / 'timeseries.zarr'
     return None
 
@@ -1030,25 +1031,12 @@ def _find_product_zarr_path(dynamics_path: Path | str, product: str) -> Path:
         return Path(f"{path_str.rstrip('/')}/{product}/timeseries.zarr")
 
     p = Path(dynamics_path)
-    product_path = p / product / 'timeseries.zarr'
-    if product_path.exists():
-        return product_path
-    if (p / product).exists() and (
-        (p / product).suffix == '.zarr'
-        or (p / product / '.zgroup').exists()
-        or (p / product / 'zarr.json').exists()
-        or (p / product / '.zmetadata').exists()
-    ):
-        return p / product
-    # Try case-insensitive matching
-    if p.is_dir():
-        product_norm = product.lower().replace('_', '')
-        for sub in p.glob('*'):
-            if sub.is_dir() and sub.name.lower().replace('_', '') == product_norm:
-                if (sub / 'timeseries.zarr').exists():
-                    return sub / 'timeseries.zarr'
-                return sub
-    return product_path
+    candidate = p / product / 'timeseries.zarr'
+    if candidate.exists():
+        return candidate
+    raise FileNotFoundError(
+        f"Zarr store for product '{product}' not found at {candidate}"
+    )
 
 
 @functools.cache
@@ -1122,7 +1110,7 @@ def _get_products_and_bands_from_features(
                     existing.append(band)
         return product_bands
 
-    flat_features = flatten_feature_list(list(features))
+    flat_features = flatten_feature_list(features)
     return _get_products_and_bands_from_feature_strings(flat_features)
 
 class SampleIndexer:

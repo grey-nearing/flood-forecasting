@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime
+import json
 import os
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
+import time
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import gc
 import logging
@@ -31,6 +34,9 @@ import zarr
 
 import gcsfs
 
+import importlib.util
+import threading
+
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import (
     DEFAULT_STORAGE_PATHS,
@@ -39,8 +45,382 @@ from multimet.timeseries_extractors.config import (
     PRODUCT_METADATA_ATTRS,
     Product,
 )
-from multimet.utils.zonal import ZonalWeightCalculator, ZonalWeightMatrix
-from multimet.utils.zonal import weighted_mean_valid
+from multimet.utils.spatial import slice_coordinates_by_bounds
+from multimet.utils.zonal import (
+    ZonalWeightCalculator,
+    ZonalWeightMatrix,
+    weighted_mean_valid,
+)
+
+logger = logging.getLogger(__name__)
+
+ECMWF_OPEN_DATA_BUCKET = "ecmwf-open-data"
+OPEN_DATA_LEAD_STEPS = (24, 48, 72, 96, 120, 144, 168, 192, 216, 240)
+OPEN_DATA_6H_STEPS = tuple(range(6, 241, 6))
+OPEN_DATA_GRID_SHAPE = (721, 1440)
+_RASTERIO_LOCK = threading.Lock()
+
+
+def deaccumulate(
+    accumulated: np.ndarray, clip_negative: bool = False
+) -> np.ndarray:
+  """Converts a run-cumulative forecast stack into per-lead-day increments."""
+  daily = np.empty_like(accumulated)
+  daily[0] = accumulated[0]
+  difference = accumulated[1:] - accumulated[:-1]
+  daily[1:] = np.maximum(0.0, difference) if clip_negative else difference
+  return daily
+
+
+def decode_grib2_message(
+    raw_bytes: bytes,
+    expected_shape: tuple[int, int],
+    *,
+    param: str = "",
+    context: str = "",
+) -> np.ndarray:
+  """Decodes a single GRIB2 message into a 2D float32 array in raw WMO units."""
+  if importlib.util.find_spec("eccodes") is not None:
+    import eccodes  # type: ignore[import-untyped]
+
+    gid = eccodes.codes_new_from_message(raw_bytes)
+    short_name = str(eccodes.codes_get(gid, "shortName"))
+    bitmap_present = int(eccodes.codes_get(gid, "bitmapPresent"))
+    missing_val = float(eccodes.codes_get(gid, "missingValue"))
+    vals = eccodes.codes_get_values(gid)
+    eccodes.codes_release(gid)
+
+    if param and short_name != param:
+      label = f" at {context}" if context else ""
+      raise ValueError(
+          f"GRIB2 parameter mismatch{label}: expected {param!r}, got {short_name!r}"
+      )
+    if vals.size != expected_shape[0] * expected_shape[1]:
+      label = f" for {param} at {context}" if (param or context) else ""
+      raise ValueError(
+          f"Grid size mismatch{label}: "
+          f"got {vals.size} values, expected {expected_shape}"
+      )
+    arr = vals.reshape(expected_shape).astype(np.float32)
+    if bitmap_present:
+      arr = np.where(np.isclose(arr, np.float32(missing_val)), np.nan, arr)
+    return arr
+
+  if importlib.util.find_spec("rasterio") is not None:
+    import rasterio  # type: ignore[import-untyped]
+    from rasterio.io import MemoryFile  # type: ignore[import-untyped]
+
+    logging.getLogger("rasterio").setLevel(logging.CRITICAL)
+    try:
+      with _RASTERIO_LOCK:
+        with MemoryFile(raw_bytes, ext=".grib2") as memfile:
+          with memfile.open() as dataset:
+            arr = dataset.read(1).astype(np.float32)
+            nodata = dataset.nodata
+            grib_tags = dataset.tags(1)
+            grib_unit = grib_tags.get("GRIB_UNIT", "")
+            pds_nums = grib_tags.get("GRIB_PDS_TEMPLATE_NUMBERS", "").split()
+    except Exception:
+      arr = None
+    else:
+      if param and len(pds_nums) >= 2:
+        cat_num = (int(pds_nums[0]), int(pds_nums[1]))
+        pds_to_param = {
+            (0, 0): "2t",
+            (3, 0): "sp",
+            (1, 193): "tp",
+            (1, 52): "tp",
+            (1, 8): "tp",
+            (4, 9): "ssr",
+            (180, 176): "ssr",
+            (5, 5): "str",
+            (180, 177): "str",
+        }
+        detected_param = pds_to_param.get(cat_num)
+        if detected_param is not None and detected_param != param:
+          label = f" at {context}" if context else ""
+          raise ValueError(
+              f"GRIB2 parameter mismatch{label}: expected {param!r}, got {detected_param!r}"
+          )
+      if nodata is not None:
+        arr = np.where(np.isclose(arr, np.float32(nodata)), np.nan, arr)
+      if grib_unit == "[C]":
+        arr = arr + np.float32(273.15)
+      if arr.size != expected_shape[0] * expected_shape[1]:
+        label = f" for {param} at {context}" if (param or context) else ""
+        raise ValueError(
+            f"Grid size mismatch{label}: "
+            f"got {arr.size} values, expected {expected_shape}"
+        )
+      return arr.reshape(expected_shape)
+
+  if (
+      len(raw_bytes) >= 20
+      and raw_bytes[:4] == b"GRIB"
+      and raw_bytes[-4:] == b"7777"
+  ):
+    import struct
+
+    pos = 16
+    end = len(raw_bytes) - 4
+    cat_num_hdr: Optional[Tuple[int, int]] = None
+    data_bytes: Optional[bytes] = None
+    while pos + 5 <= end:
+      sec_len, sec_num = struct.unpack(">IB", raw_bytes[pos : pos + 5])
+      if sec_len < 5 or pos + sec_len > end:
+        break
+      sec = raw_bytes[pos : pos + sec_len]
+      if sec_num == 4 and sec_len >= 11:
+        cat_num_hdr = (sec[9], sec[10])
+      elif sec_num == 7:
+        data_bytes = sec[5:]
+      pos += sec_len
+    if param and cat_num_hdr is not None:
+      pds_to_param = {
+          (0, 0): "2t",
+          (3, 0): "sp",
+          (1, 193): "tp",
+          (1, 52): "tp",
+          (1, 8): "tp",
+          (4, 9): "ssr",
+          (180, 176): "ssr",
+          (5, 5): "str",
+          (180, 177): "str",
+      }
+      detected_param = pds_to_param.get(cat_num_hdr)
+      if detected_param is not None and detected_param != param:
+        label = f" at {context}" if context else ""
+        raise ValueError(
+            f"GRIB2 parameter mismatch{label}: expected {param!r}, got {detected_param!r}"
+        )
+    if data_bytes is not None:
+      arr = np.frombuffer(data_bytes, dtype=">f4").astype(np.float32, copy=True)
+      if arr.size != expected_shape[0] * expected_shape[1]:
+        label = f" for {param} at {context}" if (param or context) else ""
+        raise ValueError(
+            f"Grid size mismatch{label}: "
+            f"got {arr.size} values, expected {expected_shape}"
+        )
+      return arr.reshape(expected_shape)
+
+  raise ImportError(
+      "eccodes or rasterio is required to decode ECMWF Open Data GRIB2 files. "
+      "Install python-eccodes or rasterio."
+  )
+
+
+def find_latest_hres_open_data_date(
+    bucket: str = ECMWF_OPEN_DATA_BUCKET,
+    reference_date: Optional[Union[str, pd.Timestamp]] = None,
+    max_lookback_days: int = 7,
+    require_full_10d: bool = True,
+    fs: Optional[Any] = None,
+) -> pd.Timestamp:
+  """Finds the latest published ECMWF Open Data 00z HRES initialization date.
+
+  Walks backwards from ``reference_date`` (default: current UTC date) up to
+  ``max_lookback_days`` until it finds an initialization date whose 00z 0.25-deg
+  IFS forecast index file is published on ``gs://ecmwf-open-data``.
+  """
+  if fs is None:
+    if gcsfs is None:
+      raise ImportError("gcsfs is required to query ECMWF Open Data on GCS.")
+    fs = gcsfs.GCSFileSystem(token="anon")
+
+  bucket_clean = bucket.removeprefix("gs://").strip("/")
+  if reference_date is None or str(reference_date).strip().lower() == "latest":
+    ref_dt = pd.Timestamp(datetime.datetime.now(datetime.timezone.utc).date())
+  else:
+    ref_dt = pd.to_datetime(reference_date).floor("D")
+
+  check_step = 240 if require_full_10d else 24
+  for offset in range(max_lookback_days + 1):
+    cand_dt = ref_dt - pd.Timedelta(days=offset)
+    date_str = cand_dt.strftime("%Y%m%d")
+    idx_path = (
+        f"{bucket_clean}/{date_str}/00z/ifs/0p25/oper/"
+        f"{date_str}000000-{check_step}h-oper-fc.index"
+    )
+    if fs.exists(idx_path):
+      return cand_dt
+
+  raise FileNotFoundError(
+      f"No published ECMWF Open Data 00z HRES forecast found within "
+      f"{max_lookback_days} days of {ref_dt.strftime('%Y-%m-%d')} "
+      f"in bucket gs://{bucket_clean}."
+  )
+
+
+def _fetch_open_data_day_grids(
+    fs: Any,
+    bucket: str,
+    dt: pd.Timestamp,
+    lead_steps: Sequence[int] = OPEN_DATA_LEAD_STEPS,
+    lat_idx: Optional[np.ndarray] = None,
+    lon_idx: Optional[np.ndarray] = None,
+) -> Optional[Dict[str, np.ndarray]]:
+  """Fetches and decodes 1 initialization date of ECMWF Open Data GRIB2 slices.
+
+  Uses batched ``fs.cat`` on ``.index`` files and ``fs.cat_ranges`` on ``.grib2``
+  byte ranges for high-throughput concurrent GCS reads, then converts units to
+  the canonical Caravan MultiMet ``hres_*`` schema on an ascending latitude
+  ``[-90, 90]`` and longitude ``[-180, 179.75]`` grid (optionally cropped to
+  ``lat_idx`` / ``lon_idx``).
+
+  Returns ``None`` if the initialization date is not published upstream.
+  Raises ``FileNotFoundError`` if the run is only partially published (e.g. step
+  24h exists but later steps in ``lead_steps`` are missing).
+  """
+  sorted_steps = tuple(sorted(int(s) for s in lead_steps))
+  if not sorted_steps:
+    raise ValueError("lead_steps cannot be empty.")
+
+  bucket_clean = bucket.removeprefix("gs://").strip("/")
+  date_str = pd.to_datetime(dt).strftime("%Y%m%d")
+  prefix = f"{bucket_clean}/{date_str}/00z/ifs/0p25/oper/{date_str}000000"
+
+  # Check whether the initialization run is published at all before reading.
+  first_boundary_idx = f"{prefix}-{sorted_steps[0]}h-oper-fc.index"
+  if not fs.exists(first_boundary_idx):
+    return None
+
+  # When sub-daily 3h/6h forecast steps are published on the bucket (e.g. step 3h),
+  # expand 24h boundary steps into all sub-daily steps within each requested lead day
+  # so instantaneous variables (2t, sp) are averaged over the full 24h window.
+  if all(s % 24 == 0 for s in sorted_steps) and fs.exists(
+      f"{prefix}-3h-oper-fc.index"
+  ):
+    expanded_steps: List[int] = []
+    for boundary_step in sorted_steps:
+      day_start = boundary_step - 24
+      step_stride = 3 if boundary_step <= 144 else 6
+      expanded_steps.extend(
+          range(day_start + step_stride, boundary_step + 1, step_stride)
+      )
+    sorted_steps = tuple(sorted(set(expanded_steps)))
+
+  idx_paths = [f"{prefix}-{step}h-oper-fc.index" for step in sorted_steps]
+  instant_params = ("2t", "sp")
+  accum_params = ("tp", "ssr", "str")
+  target_params = instant_params + accum_params
+
+  missing_idx = [p for p in idx_paths if not fs.exists(p)]
+  if missing_idx:
+    raise FileNotFoundError(
+        f"Incomplete ECMWF Open Data HRES run for {date_str}: "
+        f"{first_boundary_idx} exists but {missing_idx} are missing."
+    )
+
+  idx_contents: Dict[str, bytes] = {}
+  if hasattr(fs, "cat"):
+    raw_cat = fs.cat(idx_paths)
+    for p, val in raw_cat.items():
+      idx_contents[p] = (
+          val.encode("utf-8") if isinstance(val, str) else bytes(val)
+      )
+  else:
+    for p in idx_paths:
+      with fs.open(p, "rb") as f:
+        idx_contents[p] = f.read()
+
+  # Group steps by 24-hour lead day (1..10). Instantaneous variables (2t, sp)
+  # are averaged across all steps falling in lead day d; accumulated variables
+  # (tp, ssr, str) are read at the 24-hour end boundary of each lead day.
+  steps_by_day: Dict[int, List[int]] = {}
+  for step in sorted_steps:
+    lead_day = (step - 1) // 24 + 1
+    steps_by_day.setdefault(lead_day, []).append(step)
+
+  lead_days = sorted(steps_by_day.keys())
+  boundary_steps = {d: max(steps_by_day[d]) for d in lead_days}
+  boundary_step_set = set(boundary_steps.values())
+
+  grib_paths: List[str] = []
+  starts: List[int] = []
+  ends: List[int] = []
+  step_param_order: List[Tuple[int, str]] = []
+
+  for step in sorted_steps:
+    idx_p = f"{prefix}-{step}h-oper-fc.index"
+    grib_p = f"{prefix}-{step}h-oper-fc.grib2"
+    needed_for_step = (
+        target_params if step in boundary_step_set else instant_params
+    )
+    offsets: Dict[str, Tuple[int, int]] = {}
+    for line in idx_contents[idx_p].decode("utf-8").splitlines():
+      if not line.strip():
+        continue
+      msg = json.loads(line)
+      param = msg.get("param")
+      if msg.get("levtype") == "sfc" and param in needed_for_step:
+        offsets[param] = (int(msg["_offset"]), int(msg["_length"]))
+
+    missing = [p for p in needed_for_step if p not in offsets]
+    if missing:
+      raise RuntimeError(
+          f"Missing surface parameters {missing} in {idx_p}"
+      )
+    for param in needed_for_step:
+      off, length = offsets[param]
+      grib_paths.append(grib_p)
+      starts.append(off)
+      ends.append(off + length)
+      step_param_order.append((step, param))
+
+  if hasattr(fs, "cat_ranges"):
+    raw_blobs = fs.cat_ranges(grib_paths, starts, ends)
+  else:
+    raw_blobs = []
+    for g_p, s_off, e_off in zip(grib_paths, starts, ends):
+      with fs.open(g_p, "rb") as f:
+        f.seek(s_off)
+        raw_blobs.append(f.read(e_off - s_off))
+
+  decoded_by_step: Dict[Tuple[int, str], np.ndarray] = {}
+  for (step, param), blob in zip(step_param_order, raw_blobs):
+    arr = decode_grib2_message(
+        blob,
+        OPEN_DATA_GRID_SHAPE,
+        param=param,
+        context=f"{date_str} +{step}h",
+    )
+    # Flip latitude from [+90..-90] to [-90..+90] to match HRESExtractor.lats
+    arr = arr[::-1, :]
+    if lat_idx is not None and lon_idx is not None:
+      arr = arr[lat_idx, :][:, lon_idx]
+    decoded_by_step[(step, param)] = arr
+
+  t2m_days = [
+      np.mean([decoded_by_step[(s, "2t")] for s in steps_by_day[d]], axis=0)
+      for d in lead_days
+  ]
+  sp_days = [
+      np.mean([decoded_by_step[(s, "sp")] for s in steps_by_day[d]], axis=0)
+      for d in lead_days
+  ]
+  tp_days = [decoded_by_step[(boundary_steps[d], "tp")] for d in lead_days]
+  ssr_days = [decoded_by_step[(boundary_steps[d], "ssr")] for d in lead_days]
+  str_days = [decoded_by_step[(boundary_steps[d], "str")] for d in lead_days]
+
+  t2m = np.stack(t2m_days, axis=0) - np.float32(273.15)
+  sp = np.stack(sp_days, axis=0) * np.float32(1e-3)
+  tp = deaccumulate(
+      np.stack(tp_days, axis=0), clip_negative=True
+  ) * np.float32(1000.0)
+  ssr = deaccumulate(
+      np.stack(ssr_days, axis=0), clip_negative=False
+  ) / np.float32(86400.0)
+  str_rad = deaccumulate(
+      np.stack(str_days, axis=0), clip_negative=False
+  ) / np.float32(86400.0)
+
+  return {
+      "hres_temperature_2m": t2m.astype(np.float32),
+      "hres_surface_pressure": sp.astype(np.float32),
+      "hres_total_precipitation": tp.astype(np.float32),
+      "hres_surface_net_solar_radiation": ssr.astype(np.float32),
+      "hres_surface_net_thermal_radiation": str_rad.astype(np.float32),
+  }
 
 
 def open_wb2_hres_dataset(zarr_url: Union[str, xr.Dataset]) -> xr.Dataset:
@@ -250,8 +630,10 @@ class HRESExtractor(BaseExtractor):
       self,
       data_dir: Optional[str] = None,
       source: str = "auto",
+      fs: Optional[Any] = None,
   ):
     super().__init__(Product.HRES, data_dir)
+    self._fs = fs
     source_lower = source.lower().strip()
     if source_lower in ("archive", "gridded_archive", "zarr_archive"):
       self.source = "archive"
@@ -267,6 +649,18 @@ class HRESExtractor(BaseExtractor):
     elif source_lower in ("wb2", "public", "gcs", "upstream"):
       self.source = "wb2"
       self.data_dir = str(data_dir) if data_dir is not None else ""
+    elif source_lower in (
+        "open_data",
+        "ecmwf_open_data",
+        "realtime",
+        "ecmwf",
+    ):
+      self.source = "open_data"
+      self.data_dir = (
+          str(data_dir).strip()
+          if data_dir is not None and str(data_dir).strip()
+          else ECMWF_OPEN_DATA_BUCKET
+      )
     elif source_lower in ("local", "cns", "zarr"):
       self.source = "zarr"
       self.data_dir = str(data_dir) if data_dir is not None else ""
@@ -274,7 +668,7 @@ class HRESExtractor(BaseExtractor):
       self.source = source_lower
       self.data_dir = str(data_dir) if data_dir is not None else ""
 
-    if self.source in ("wb2", "archive"):
+    if self.source in ("wb2", "archive", "open_data"):
       # HRES 0.25 deg grid: 721 lats x 1440 lons
       self.lats = np.linspace(-90.0, 90.0, 721, dtype=np.float64)
       self.lons = np.linspace(-180.0, 179.75, 1440, dtype=np.float64)
@@ -298,6 +692,15 @@ class HRESExtractor(BaseExtractor):
     self._cached_matrix = None
     self._cached_basin_keys = None
 
+  def _get_open_data_fs(self) -> Any:
+    """Returns the GCS filesystem client for ECMWF Open Data."""
+    if self._fs is not None:
+      return self._fs
+    if gcsfs is None:
+      raise ImportError("gcsfs is required to read ECMWF Open Data from GCS.")
+    self._fs = gcsfs.GCSFileSystem(token="anon")
+    return self._fs
+
   def extract_day(
       self,
       dt: Union[str, pd.Timestamp],
@@ -306,6 +709,7 @@ class HRESExtractor(BaseExtractor):
       weights_dict: Optional[
           Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]
       ] = None,
+      lead_steps: Sequence[int] = OPEN_DATA_LEAD_STEPS,
   ) -> Dict[str, np.ndarray]:
     """Extracts 1 forecast initialization date across 10 lead days."""
     dt_ts = pd.to_datetime(dt)
@@ -336,16 +740,35 @@ class HRESExtractor(BaseExtractor):
             "bucket paths are not permitted."
         )
       return self._extract_day_wb2(dt_ts, basins_gdf)
+    if self.source == "open_data":
+      ds_day = self.extract_for_basins_open_data(
+          basins_gdf,
+          start_date=dt_ts,
+          end_date=dt_ts,
+          weights_matrix=matrix,
+          use_bounding_box=True,
+          spinup_only_before=(
+              dt_ts + pd.Timedelta(days=1)
+              if tuple(lead_steps) == (24,)
+              else None
+          ),
+      )
+      return {
+          var: ds_day[var].values[:, 0, :].astype(np.float32)
+          for var in ds_day.data_vars
+      }
     if not self.data_dir:
       raise ValueError(
           "HRESExtractor requires an explicit data_dir path for local Zarr extraction."
       )
     basin_ids = list(basins_gdf.index)
     if weights_dict is None:
-      weights_dict = {
-          b_id: self.zonal_calc.compute_weights(b_id, basins_gdf.loc[b_id].geometry)
-          for b_id in basin_ids
-      }
+      weights_dict = {}
+      for b_id in basin_ids:
+        geom = basins_gdf.loc[b_id].geometry
+        w = self.zonal_calc.compute_weights(b_id, geom)
+        if w is not None:
+          weights_dict[b_id] = w
     return extract_day_from_hres(
         self.data_dir, dt_ts, basin_ids, weights_dict, self.sort_lon_idx
     )
@@ -359,40 +782,264 @@ class HRESExtractor(BaseExtractor):
       use_bounding_box: bool = True,
       **kwargs,
   ) -> xr.Dataset:
-    """Extracts HRES forecast dataset for given basin geometries."""
-    del kwargs
+      """Extracts HRES forecast dataset for given basin geometries."""
+      spinup_only_before = kwargs.get("spinup_only_before")
+      if start_date is None or end_date is None:
+        raise ValueError(
+            "HRESExtractor.extract_for_basins requires both start_date and "
+            "end_date to be explicitly provided."
+        )
+      if self.source == "open_data":
+        return self.extract_for_basins_open_data(
+            basins_gdf,
+            start_date=start_date,
+            end_date=end_date,
+            weights_matrix=weights_matrix,
+            use_bounding_box=use_bounding_box,
+            spinup_only_before=spinup_only_before,
+        )
+      if not self.data_dir:
+        raise ValueError(
+            "HRESExtractor requires an explicit data_dir Zarr URI or path; "
+            "hardcoded default bucket paths are not permitted."
+        )
+      if self.source == "archive":
+        from multimet.timeseries_extractors.gridded_archive import extract_forecast_from_archive
+
+        return extract_forecast_from_archive(
+            Product.HRES,
+            self.data_dir,
+            basins_gdf,
+            start_date=start_date,
+            end_date=end_date,
+            weights_matrix=weights_matrix,
+            use_bounding_box=use_bounding_box,
+        )
+      if self.source == "wb2":
+        return self.extract_for_basins_wb2(
+            basins_gdf,
+            start_date=start_date,
+            end_date=end_date,
+            weights_matrix=weights_matrix,
+            use_bounding_box=use_bounding_box,
+        )
+      return self.extract_for_basins_zarr(
+          basins_gdf, start_date=start_date, end_date=end_date
+      )
+
+  def extract_for_basins_open_data(
+      self,
+      basins_gdf: gpd.GeoDataFrame,
+      start_date: Optional[Union[str, pd.Timestamp]] = None,
+      end_date: Optional[Union[str, pd.Timestamp]] = None,
+      weights_matrix: Optional[ZonalWeightMatrix] = None,
+      use_bounding_box: bool = True,
+      spinup_only_before: Optional[Union[str, pd.Timestamp]] = None,
+      max_workers: int = 16,
+  ) -> xr.Dataset:
+    """Extracts 10-day (or 1-day spin-up) HRES forecasts from ECMWF Open Data on GCS.
+
+    Args:
+      basins_gdf: Catchment geometries indexed by basin ID.
+      start_date: First forecast initialization date (inclusive).
+      end_date: Last forecast initialization date (inclusive).
+      weights_matrix: Optional precomputed :class:`ZonalWeightMatrix`.
+      use_bounding_box: Whether to crop decoded GRIB2 rasters to the catchment
+        bounding box before zonal reduction.
+      spinup_only_before: Optional cutoff date. For initialization dates
+        strictly before ``spinup_only_before``, only ``step=24h`` (``lead_time=1D``)
+        is downloaded and decoded (leaving ``lead_time=2D..10D`` as ``NaN``),
+        cutting Cold-Start 365-day spin-up download volume by 10x. For dates
+        ``>= spinup_only_before`` (or when ``spinup_only_before is None``), all
+        10 lead days (``24h..240h``) are extracted.
+      max_workers: Maximum number of concurrent GCS day-fetch workers.
+    """
     if start_date is None or end_date is None:
       raise ValueError(
-          "HRESExtractor.extract_for_basins requires both start_date and "
-          "end_date to be explicitly provided."
+          "HRESExtractor.extract_for_basins_open_data requires both start_date "
+          "and end_date to be explicitly provided."
       )
-    if not self.data_dir:
+    start_dt = pd.to_datetime(start_date).floor("D")
+    end_dt = pd.to_datetime(end_date).floor("D")
+    if end_dt < start_dt:
       raise ValueError(
-          "HRESExtractor requires an explicit data_dir Zarr URI or path; "
-          "hardcoded default bucket paths are not permitted."
+          f"end_date ({end_dt}) must be >= start_date ({start_dt})."
       )
-    if self.source == "archive":
-      from multimet.timeseries_extractors.gridded_archive import extract_forecast_from_archive
 
-      return extract_forecast_from_archive(
-          Product.HRES,
-          self.data_dir,
-          basins_gdf,
-          start_date=start_date,
-          end_date=end_date,
-          weights_matrix=weights_matrix,
-          use_bounding_box=use_bounding_box,
+    spinup_cutoff = (
+        pd.to_datetime(spinup_only_before).floor("D")
+        if spinup_only_before is not None
+        else None
+    )
+
+    basin_ids = [str(b) for b in basins_gdf.index]
+    date_idx = pd.date_range(start_dt, end_dt, freq="D")
+    lead_steps_total = FORECAST_LEAD_DAYS[Product.HRES]  # 10 days
+    lead_time_idx = pd.to_timedelta(range(1, lead_steps_total + 1), unit="D")
+    expected_bands = PRODUCT_BANDS[Product.HRES]
+
+    lat_idx = None
+    lon_idx = None
+    if use_bounding_box:
+      sub_lats, sub_lons, lat_idx, lon_idx = slice_coordinates_by_bounds(
+          self.lats, self.lons, bounds=basins_gdf, buffer_degrees=0.5
       )
-    if self.source == "wb2":
-      return self.extract_for_basins_wb2(
-          basins_gdf,
-          start_date=start_date,
-          end_date=end_date,
-          weights_matrix=weights_matrix,
-          use_bounding_box=use_bounding_box,
+      if weights_matrix is not None:
+        if (
+            weights_matrix.grid_shape == (len(sub_lats), len(sub_lons))
+            and np.allclose(weights_matrix.lats, sub_lats)
+            and np.allclose(weights_matrix.lons, sub_lons)
+        ):
+          matrix = weights_matrix
+        else:
+          matrix = weights_matrix.crop_to_coords(sub_lats, sub_lons)
+      else:
+        matrix = ZonalWeightMatrix.from_geodataframe(
+            basins_gdf, sub_lats, sub_lons, cell_res_lat=0.25, cell_res_lon=0.25
+        )
+    else:
+      if weights_matrix is not None and (
+          weights_matrix.grid_shape == (len(self.lats), len(self.lons))
+          and np.allclose(weights_matrix.lats, self.lats)
+          and np.allclose(weights_matrix.lons, self.lons)
+      ):
+        matrix = weights_matrix
+      else:
+        matrix = ZonalWeightMatrix.from_geodataframe(
+            basins_gdf,
+            self.lats,
+            self.lons,
+            cell_res_lat=0.25,
+            cell_res_lon=0.25,
+        )
+
+    shape = (len(basin_ids), len(date_idx), len(lead_time_idx))
+    data_dict = {
+        band: np.full(shape, np.nan, dtype=np.float32)
+        for band in expected_bands
+    }
+    missing_fraction = np.ones(shape, dtype=np.float32)
+
+    fs = self._get_open_data_fs()
+    bucket = self.data_dir or ECMWF_OPEN_DATA_BUCKET
+
+    def _process_one_day(
+        d_pos: int, dt: pd.Timestamp
+    ) -> Tuple[
+        int,
+        pd.Timestamp,
+        int,
+        Optional[Dict[str, np.ndarray]],
+        Optional[np.ndarray],
+    ]:
+      if spinup_cutoff is not None and dt < spinup_cutoff:
+        day_lead_steps: Sequence[int] = (24,)
+      else:
+        day_lead_steps = OPEN_DATA_LEAD_STEPS
+
+      day_grids = _fetch_open_data_day_grids(
+          fs,
+          bucket,
+          dt,
+          lead_steps=day_lead_steps,
+          lat_idx=lat_idx,
+          lon_idx=lon_idx,
       )
-    return self.extract_for_basins_zarr(
-        basins_gdf, start_date=start_date, end_date=end_date
+      if day_grids is None:
+        return (d_pos, dt, len(day_lead_steps), None, None)
+
+      reduced_by_band: Dict[str, np.ndarray] = {}
+      day_miss: Optional[np.ndarray] = None
+      for band in expected_bands:
+        if band not in day_grids:
+          continue
+        reduced_vals, reduced_miss = matrix.reduce_3d_with_coverage(
+            day_grids[band]
+        )
+        reduced_by_band[band] = reduced_vals
+        if day_miss is None:
+          day_miss = reduced_miss
+        else:
+          day_miss = np.maximum(day_miss, reduced_miss)
+      return (d_pos, dt, len(day_lead_steps), reduced_by_band, day_miss)
+
+    n_workers = max(1, min(int(max_workers), len(date_idx)))
+    published_dates: List[pd.Timestamp] = []
+    with tqdm.tqdm(
+        total=len(date_idx),
+        desc=(
+            f"HRES OpenData [{start_dt.strftime('%Y-%m-%d')} to"
+            f" {end_dt.strftime('%Y-%m-%d')}]"
+        ),
+        unit="init_date",
+        leave=True,
+    ) as pbar:
+      if n_workers == 1:
+        for d_pos, dt in enumerate(date_idx):
+          _, _, n_leads_fetched, reduced_by_band, day_miss = _process_one_day(
+              d_pos, dt
+          )
+          if reduced_by_band is None:
+            logger.warning(
+                "ECMWF Open Data HRES not published for %s; leaving slice as NaN.",
+                dt.strftime("%Y-%m-%d"),
+            )
+          else:
+            published_dates.append(dt)
+            for band, reduced_vals in reduced_by_band.items():
+              data_dict[band][:, d_pos, :n_leads_fetched] = reduced_vals
+            if day_miss is not None:
+              missing_fraction[:, d_pos, :n_leads_fetched] = day_miss
+          pbar.update(1)
+      else:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=n_workers
+        ) as pool:
+          futures = [
+              pool.submit(_process_one_day, d_pos, dt)
+              for d_pos, dt in enumerate(date_idx)
+          ]
+          for fut in concurrent.futures.as_completed(futures):
+            d_pos, dt, n_leads_fetched, reduced_by_band, day_miss = fut.result()
+            if reduced_by_band is None:
+              logger.warning(
+                  "ECMWF Open Data HRES not published for %s; leaving slice as NaN.",
+                  dt.strftime("%Y-%m-%d"),
+              )
+            else:
+              published_dates.append(dt)
+              for band, reduced_vals in reduced_by_band.items():
+                data_dict[band][:, d_pos, :n_leads_fetched] = reduced_vals
+              if day_miss is not None:
+                missing_fraction[:, d_pos, :n_leads_fetched] = day_miss
+            pbar.update(1)
+
+    if not published_dates:
+      raise FileNotFoundError(
+          f"No published ECMWF Open Data HRES 00z runs found in gs://{bucket} "
+          f"between {start_dt.strftime('%Y-%m-%d')} and {end_dt.strftime('%Y-%m-%d')}."
+      )
+
+    data_vars = {
+        band: (["basin", "date", "lead_time"], data_dict[band])
+        for band in expected_bands
+    }
+    data_vars["hres_missing_fraction"] = (
+        ["basin", "date", "lead_time"],
+        missing_fraction,
+    )
+
+    attrs = dict(PRODUCT_METADATA_ATTRS.get(Product.HRES, {}))
+    attrs["upstream_source"] = f"gs://{bucket.removeprefix('gs://').strip('/')}"
+
+    return xr.Dataset(
+        data_vars=data_vars,
+        coords={
+            "basin": basin_ids,
+            "date": date_idx.values,
+            "lead_time": lead_time_idx.values,
+        },
+        attrs=attrs,
     )
 
   def _extract_day_wb2(

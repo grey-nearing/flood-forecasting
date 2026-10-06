@@ -15,8 +15,8 @@
 """Local serial execution runner for MultiMet meteorological forcing extraction.
 
 Enables extraction of the 4 core meteorological products (ERA5-Land, CPC, IMERG,
-and HRES) over arbitrary catchment geometries and time intervals in a local
-serial workflow without distributed dependencies.
+and HRES) over arbitrary catchment geometries and time intervals
+in a local serial workflow without distributed dependencies.
 """
 
 from __future__ import annotations
@@ -24,13 +24,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 import geopandas as gpd
 import pandas as pd
-import xarray as xr
 
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import Product
@@ -226,7 +224,7 @@ def extract_multimet_serial(
     elif prod_name == "CPC":
       src = (
           "psl"
-          if source_lower in ("public", "auto", "upstream")
+          if source_lower in ("public", "auto", "upstream", "realtime", "open_data")
           else ("binary" if source_lower == "local" else source_lower)
       )
       extractor = CPCExtractor(
@@ -235,7 +233,7 @@ def extract_multimet_serial(
     elif prod_name == "IMERG":
       src = (
           "gesdisc"
-          if source_lower in ("public", "auto", "upstream")
+          if source_lower in ("public", "auto", "upstream", "realtime", "open_data")
           else ("h5" if source_lower == "local" else source_lower)
       )
       extractor = IMERGExtractor(
@@ -248,9 +246,13 @@ def extract_multimet_serial(
       )
     elif prod_name == "HRES":
       src = (
-          "wb2"
-          if source_lower in ("public", "auto", "upstream")
-          else source_lower
+          "open_data"
+          if source_lower in ("realtime", "open_data", "ecmwf_open_data", "ecmwf")
+          else (
+              "wb2"
+              if source_lower in ("public", "auto", "upstream")
+              else source_lower
+          )
       )
       extractor = HRESExtractor(
           data_dir=norm_data_dirs.get(prod_name), source=src
