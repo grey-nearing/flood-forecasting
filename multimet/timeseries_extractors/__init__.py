@@ -17,7 +17,7 @@
 Reduces gridded meteorology to per-basin daily timeseries in the Caravan
 MultiMet schema. Every extractor reads either from a gridded Zarr archive
 (:mod:`multimet.timeseries_extractors.gridded_archive`) or from an upstream
-agency provider.
+provider / Icechunk catalog (:mod:`multimet.timeseries_extractors.dynamical`).
 """
 
 from __future__ import annotations
@@ -31,10 +31,12 @@ _SUBMODULES = frozenset({
     "config",
     "cpc",
     "dask_runner",
+    "dynamical",
     "era5_land",
     "gridded_archive",
     "hres",
     "imerg",
+    "realtime",
     "runner",
     "zarr_writer",
 })
@@ -47,6 +49,7 @@ _LAZY_SYMBOLS = {
     "CPCExtractor": "multimet.timeseries_extractors.cpc",
     "ERA5LandExtractor": "multimet.timeseries_extractors.era5_land",
     "HRESExtractor": "multimet.timeseries_extractors.hres",
+    "find_latest_hres_open_data_date": "multimet.timeseries_extractors.hres",
     "IMERGExtractor": "multimet.timeseries_extractors.imerg",
     "get_bounding_box": "multimet.utils.geometry",
     "load_basin_geometries": "multimet.utils.geometry",
@@ -57,6 +60,16 @@ _LAZY_SYMBOLS = {
     "extract_multimet_serial": "multimet.timeseries_extractors.runner",
     "extract_multimet_dask": "multimet.timeseries_extractors.dask_runner",
     "extract_product_dask": "multimet.timeseries_extractors.dask_runner",
+    "RealtimeFetchResult": "multimet.timeseries_extractors.realtime",
+    "RealtimeForcingFetcher": "multimet.timeseries_extractors.realtime",
+    "fetch_realtime_multimet": "multimet.timeseries_extractors.realtime",
+    "inspect_store_last_valid_date": "multimet.timeseries_extractors.realtime",
+    "read_hot_start_state_date": "multimet.timeseries_extractors.realtime",
+    "DynamicalDataLoader": "multimet.timeseries_extractors.dynamical",
+    "DynamicalExtractor": "multimet.timeseries_extractors.dynamical",
+    "DynamicalIMERGExtractor": "multimet.timeseries_extractors.dynamical",
+    "AIFSExtractor": "multimet.timeseries_extractors.dynamical",
+    "load_dynamical": "multimet.timeseries_extractors.dynamical",
     "BoundingBox": "multimet.utils.spatial",
     "find_lat_lon_dims": "multimet.utils.spatial",
     "slice_coordinates_by_bounds": "multimet.utils.spatial",

@@ -771,6 +771,7 @@ class MultiMetZarrWriter:
       ds: xr.Dataset,
       product: Product,
       overwrite_existing_basins: bool = False,
+      preserve_existing_valid: bool = False,
   ) -> str:
     """Writes or appends a dataset into the product's Zarr store."""
     ds_to_write = ds.copy()
@@ -802,7 +803,7 @@ class MultiMetZarrWriter:
     if not _exists(local_target) or not has_metadata:
       # Create new Zarr store
       if _exists(local_target):
-        shutil.rmtree(local_target, ignore_errors=True)
+        shutil.rmtree(local_target)
       os.makedirs(os.path.dirname(local_target), exist_ok=True)
       ds_chunked = ds_to_write.chunk(chunk_spec)
       _safe_to_zarr(ds_chunked, local_target, mode="w", consolidated=True)
@@ -812,7 +813,7 @@ class MultiMetZarrWriter:
       existing_basins = set(str(b) for b in existing_ds["basin"].values)
 
       if not existing_basins:
-        shutil.rmtree(local_target, ignore_errors=True)
+        shutil.rmtree(local_target)
         ds_chunked = ds_to_write.chunk(chunk_spec)
         _safe_to_zarr(ds_chunked, local_target, mode="w", consolidated=True)
       else:
@@ -870,13 +871,120 @@ class MultiMetZarrWriter:
             self._open_groups.pop(product, None)
             z_root = zarr.open_group(local_target, mode="r+")
             ds_aligned = ds_to_write.sel(basin=existing_basins_list)
-            for var in ds_aligned.data_vars:
-              vals = ds_aligned[var].values.astype(np.float32)
+            missing_var = MISSING_FRACTION_VAR.get(product)
+            has_missing_var = (
+                missing_var is not None
+                and missing_var in ds_aligned.data_vars
+                and missing_var in z_root
+            )
+            old_miss_cache: Dict[int, np.ndarray] = {}
+            new_miss_cache: Dict[int, np.ndarray] = {}
+            updated_mask_by_local_idx: Dict[int, np.ndarray] = {}
+            if preserve_existing_valid and has_missing_var:
+              new_miss_all = ds_aligned[missing_var].values.astype(np.float32)
+              z_miss = z_root[missing_var]
               for local_idx, store_idx in enumerate(indices):
                 if is_forecast:
-                  z_root[var][:, store_idx, :] = vals[:, local_idx, :]
+                  old_miss_cache[store_idx] = np.asarray(
+                      z_miss[:, store_idx, :], dtype=np.float32
+                  )
+                  new_miss_cache[local_idx] = new_miss_all[:, local_idx, :]
                 else:
-                  z_root[var][:, store_idx] = vals[:, local_idx]
+                  old_miss_cache[store_idx] = np.asarray(
+                      z_miss[:, store_idx], dtype=np.float32
+                  )
+                  new_miss_cache[local_idx] = new_miss_all[:, local_idx]
+
+            data_vars_non_missing = [
+                v for v in ds_aligned.data_vars if v != missing_var
+            ]
+            for var in data_vars_non_missing:
+              vals = ds_aligned[var].values.astype(np.float32)
+              z_var = z_root[var]
+              for local_idx, store_idx in enumerate(indices):
+                if is_forecast:
+                  new_slice_arr = vals[:, local_idx, :]
+                  if preserve_existing_valid:
+                    old_slice_arr = np.asarray(
+                        z_var[:, store_idx, :], dtype=np.float32
+                    )
+                    if has_missing_var:
+                      old_m = old_miss_cache[store_idx]
+                      new_m = new_miss_cache[local_idx]
+                      use_new = ~np.isnan(new_slice_arr) & (
+                          np.isnan(old_slice_arr)
+                          | np.isnan(old_m)
+                          | (new_m < old_m - 1e-5)
+                      )
+                    else:
+                      use_new = ~np.isnan(new_slice_arr) & np.isnan(
+                          old_slice_arr
+                      )
+                    new_slice_arr = np.where(
+                        use_new, new_slice_arr, old_slice_arr
+                    )
+                    if local_idx not in updated_mask_by_local_idx:
+                      updated_mask_by_local_idx[local_idx] = use_new
+                    else:
+                      updated_mask_by_local_idx[local_idx] = (
+                          updated_mask_by_local_idx[local_idx] | use_new
+                      )
+                  z_var[:, store_idx, :] = new_slice_arr
+                else:
+                  new_slice_arr = vals[:, local_idx]
+                  if preserve_existing_valid:
+                    old_slice_arr = np.asarray(
+                        z_var[:, store_idx], dtype=np.float32
+                    )
+                    if has_missing_var:
+                      old_m = old_miss_cache[store_idx]
+                      new_m = new_miss_cache[local_idx]
+                      use_new = ~np.isnan(new_slice_arr) & (
+                          np.isnan(old_slice_arr)
+                          | np.isnan(old_m)
+                          | (new_m < old_m - 1e-5)
+                      )
+                    else:
+                      use_new = ~np.isnan(new_slice_arr) & np.isnan(
+                          old_slice_arr
+                      )
+                    new_slice_arr = np.where(
+                        use_new, new_slice_arr, old_slice_arr
+                    )
+                    if local_idx not in updated_mask_by_local_idx:
+                      updated_mask_by_local_idx[local_idx] = use_new
+                    else:
+                      updated_mask_by_local_idx[local_idx] = (
+                          updated_mask_by_local_idx[local_idx] | use_new
+                      )
+                  z_var[:, store_idx] = new_slice_arr
+
+            if has_missing_var and missing_var is not None:
+              vals = ds_aligned[missing_var].values.astype(np.float32)
+              z_var = z_root[missing_var]
+              for local_idx, store_idx in enumerate(indices):
+                if is_forecast:
+                  new_m = vals[:, local_idx, :]
+                  if preserve_existing_valid:
+                    old_m = old_miss_cache[store_idx]
+                    use_new = updated_mask_by_local_idx.get(
+                        local_idx, np.isnan(old_m)
+                    )
+                    new_m = np.where(
+                        use_new | np.isnan(old_m), new_m, old_m
+                    )
+                  z_var[:, store_idx, :] = new_m
+                else:
+                  new_m = vals[:, local_idx]
+                  if preserve_existing_valid:
+                    old_m = old_miss_cache[store_idx]
+                    use_new = updated_mask_by_local_idx.get(
+                        local_idx, np.isnan(old_m)
+                    )
+                    new_m = np.where(
+                        use_new | np.isnan(old_m), new_m, old_m
+                    )
+                  z_var[:, store_idx] = new_m
             self.consolidate_metadata(product)
             return store_path
         elif overwrite_existing_basins:

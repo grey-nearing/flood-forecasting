@@ -61,6 +61,7 @@ setup(
             'build-imerg-archive=multimet.gridded_archive_builders.build_imerg_archive:main',
             'extract-multimet=multimet.timeseries_extractors.runner:main',
             'extract-multimet-dask=multimet.timeseries_extractors.dask_runner:main',
+            'multimet-realtime=multimet.timeseries_extractors.realtime:main',
             'delineate-catchment=multimet.catchment_delineation.cli:main',
             'benchmark-catchment=multimet.catchment_delineation.benchmark:main',
             'extract-caravan-static=multimet.static_extractor.cli:main',
