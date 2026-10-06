@@ -81,7 +81,6 @@ def test_logger_figures(logger_config, tmp_path):
 
     logger.log_figures(
         figures=[fig],
-        freq='1D',
         preamble='test',
         suffix='hydrograph.png',
     )

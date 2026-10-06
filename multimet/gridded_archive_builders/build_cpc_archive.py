@@ -163,6 +163,7 @@ def process_cpc_netcdf_to_dataset(
 
   Validates input coordinates, dimensions, calendar year bounds, and daily data
   completeness before performing spatial transformation:
+
   1. Verifies ``lat`` is descending ``[89.75 .. -89.75]`` and ``lon`` is
      ascending ``[0.25 .. 359.75]``.
   2. Inverts latitude axis (PSL: ``[89.75 .. -89.75]`` -> ``[-89.75 .. 89.75]``).

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import itertools
 import logging
 import random
@@ -32,12 +33,9 @@ from torch.utils.data import Dataset
 
 from model.datasetzoo import get_dataset
 from model.datasetzoo.multimet import MultimetDataLoader
-from model.datautils.utils import (
-    get_frequency_factor,
-    load_basin_file,
-    sort_frequencies,
-)
+from model.datautils.utils import load_basin_file
 from model.evaluation import plots
+from model.evaluation.assimilation import Assimilation
 from model.evaluation.metrics import (
     calculate_metrics,
     get_available_metrics,
@@ -47,7 +45,7 @@ from model.evaluation.utils import (
     get_samples_indexes,
     metrics_to_dataframe,
 )
-from model.modelzoo import get_model
+from model.modelzoo import get_model, load_model_weights
 from model.modelzoo.basemodel import BaseModel
 from model.training import get_loss_obj, get_regularization_obj
 from model.training.logger import Logger, do_log_figures
@@ -117,6 +115,13 @@ class BaseTester(object):
             get_regularization_obj(cfg=self.cfg)
         )
 
+        # data assimilation engine, only built if the run config defines one
+        assimilation_config = cfg.assimilation_config
+        self.assimilation = (
+            Assimilation(assimilation_config)
+            if assimilation_config is not None
+            else None
+        )
         self._load_run_data()  # Sets self.basins
 
         self.dataset = self._get_dataset_all()
@@ -171,15 +176,7 @@ class BaseTester(object):
         weight_file = self._get_weight_file(epoch)
 
         LOGGER.info('Using the model weights from %s', weight_file)
-        state_dict = torch.load(
-            weight_file, map_location=self.device, weights_only=True
-        )
-        # Drop `_orig_mod.` prefix introduced by torch.compile.
-        state_dict = {
-            k.removeprefix('_orig_mod.'): v for k, v in state_dict.items()
-        }
-        model_to_load = getattr(self.model, '_orig_mod', self.model)
-        model_to_load.load_state_dict(state_dict)
+        load_model_weights(self.model, weight_file, self.device)
 
     def _get_dataset_all(self) -> Dataset:
         """Get dataset for all basins."""
@@ -195,9 +192,10 @@ class BaseTester(object):
         self,
         epoch: int = None,
         save_results: bool = True,
-        metrics: list | dict = [],
+        metrics: list | dict | None = None,
         model: torch.nn.Module = None,
         experiment_logger: Logger = None,
+        data_assimilation: bool | None = None,
     ) -> dict:
         """Evaluate the model.
 
@@ -213,7 +211,24 @@ class BaseTester(object):
             If a model is passed, this is used for validation.
         experiment_logger : Logger, optional
             Logger can be passed during training to log metrics
+        data_assimilation : bool, optional
+            If True, the model outputs are corrected by data assimilation
+            before they are evaluated, and the output files get the suffix
+            `_data_assimilation`. By default, the `assimilate` config value
+            is used.
         """
+        if metrics is None:
+            metrics = []
+        if data_assimilation is None:
+            data_assimilation = self.cfg.assimilate
+        if data_assimilation and self.assimilation is None:
+            raise ValueError(
+                'data assimilation requested but no assimilation_config is '
+                'defined in the run config.'
+            )
+        # DA outputs never overwrite the regular evaluation outputs.
+        suffix = '_data_assimilation' if data_assimilation else ''
+
         if model is None:
             if self.init_model:
                 self._load_weights(epoch=epoch)
@@ -231,11 +246,7 @@ class BaseTester(object):
         ):
             basins = random.sample(basins, k=self.cfg.validate_n_random_basins)
 
-        # force model to train-mode when doing mc-dropout evaluation
-        if self.cfg.mc_dropout:
-            model.train()
-        else:
-            model.eval()
+        model.eval()
 
         batch_sampler = BasinBatchSampler(
             sample_index=self.dataset._sample_index,
@@ -262,7 +273,11 @@ class BaseTester(object):
         basins_for_figures = random.sample(list(basins), k=max_figures)
 
         eval_data_it = self._evaluate(
-            model, loader, self.dataset.frequencies, basins
+            model,
+            loader,
+            basins,
+            data_assimilation=data_assimilation,
+            suffix=suffix,
         )
         pbar = tqdm(
             eval_data_it,
@@ -277,13 +292,11 @@ class BaseTester(object):
                 '# Inference' if self.cfg.inference_mode else '# Evaluation'
             )
 
-        self._ensure_no_previous_results_saved(epoch)
+        self._ensure_no_previous_results_saved(epoch, suffix=suffix)
 
         metrics_results = {}
 
         for basin_data in pbar:
-            results = {}
-
             basin = basin_data['basin']
             y_hat = basin_data['preds']
             y = basin_data['obs']
@@ -297,194 +310,163 @@ class BaseTester(object):
                 )
 
             predict_last_n = self.cfg.predict_last_n
-            seq_length = self.cfg.seq_length
-            # if predict_last_n/seq_length are int, there's only one frequency
-            if isinstance(predict_last_n, int):
-                predict_last_n = {self.dataset.frequencies[0]: predict_last_n}
-            if isinstance(seq_length, int):
-                seq_length = {self.dataset.frequencies[0]: seq_length}
-            lowest_freq = sort_frequencies(self.dataset.frequencies)[0]
 
-            for freq in self.dataset.frequencies:
-                if predict_last_n[freq] == 0:
-                    continue  # this frequency is not being predicted
-                results.setdefault(freq, {})
+            # Create data_vars dictionary for the xarray.Dataset
+            data_vars = self._create_xarray_data_vars(y_hat, y)
 
-                # Create data_vars dictionary for the xarray.Dataset
-                data_vars = self._create_xarray_data_vars(y_hat[freq], y[freq])
-
-                # freq_range are the steps of the current frequency at each lowest-frequency step
-                frequency_factor = int(get_frequency_factor(lowest_freq, freq))
-
-                # Create coords dictionary for the xarray.Dataset. 'date' can be directly infered from the dates
-                # dictionary. We index the sample by the date of the last timestep of the sequence. The 'time_step'
-                # index that specifies the position in the output sequence (relative to the end) can be inferred by
-                # computing the timedelta of the dates. To account for predict_last_n > 1 and multi-freq stuff, we
-                # need to add the frequency factor and remove 1 (to start at zero). If this is a forecast model,
-                # `date` should refer to the issue dates and the `time_step` coordinates should be positive for
-                # positive lead times (negative for any lookback into the hindcast).
-                time_step_coords = (
-                    (
-                        (dates[freq][0, :] - dates[freq][0, -1])
-                        / pd.Timedelta(freq)
-                    ).astype(np.int64)
-                    + frequency_factor
-                    - 1
-                )
-                date_coords = dates[lowest_freq][:, -1]
-                # TODO (future) : As in all of the forecast models (but not `Multimet`), this assumes
-                # that all lead times are present from 1 to `self.dataset.lead_time`.
-                if (
-                    hasattr(self.dataset, 'lead_time')
-                    and self.dataset.lead_time
-                ):
-                    time_step_coords += self.dataset.lead_time
-                    # The last target date is the issue date plus the number of
-                    # forecast steps beyond the (1-indexed) first lead time.
-                    # Deriving the issue date from it, instead of indexing a
-                    # column, also works when predict_last_n < lead_time.
-                    min_lead_time = getattr(self.dataset, 'min_lead_time', 1)
-                    date_coords = dates[lowest_freq][:, -1] - (
-                        self.dataset.lead_time - min_lead_time
-                    ) * pd.Timedelta(lowest_freq)
-                coords = {'date': date_coords, 'time_step': time_step_coords}
-                xr = xarray.Dataset(data_vars=data_vars, coords=coords)
-                xr = xr.reindex(
-                    {
-                        'date': pd.DatetimeIndex(
-                            pd.date_range(
-                                xr['date'].values[0],
-                                xr['date'].values[-1],
-                                freq=lowest_freq,
-                            ),
-                            name='date',
-                        )
-                    }
-                )
-                xr = self.dataset.scaler.unscale(xr)
-                results[freq]['xr'] = xr
-
-                # create datetime range at the current frequency
-                freq_date_range = pd.date_range(
-                    start=dates[lowest_freq][0, -1],
-                    end=dates[freq][-1, -1],
-                    freq=freq,
-                )
-                # remove datetime steps that are not being predicted from the datetime range
-                mask = np.ones(frequency_factor).astype(bool)
-                mask[: -predict_last_n[freq]] = False
-                freq_date_range = freq_date_range[
-                    np.tile(mask, len(xr['date']))
-                ]
-
-                # only warn once per freq
-                if frequency_factor < predict_last_n[freq] and basin == next(
-                    iter(basins)
-                ):
-                    tqdm.write(
-                        f'Metrics for {freq} are calculated over last {frequency_factor} elements only. '
-                        f'Ignoring {predict_last_n[freq] - frequency_factor} predictions per sequence.'
+            # Create coords dictionary for the xarray.Dataset. 'date' can be directly inferred from the dates
+            # array. We index the sample by the date of the last timestep of the sequence. The 'time_step'
+            # index that specifies the position in the output sequence (relative to the end) can be inferred by
+            # computing the timedelta of the dates. If this is a forecast model, `date` should refer to the
+            # issue dates and the `time_step` coordinates should be positive for positive lead times (negative
+            # for any lookback into the hindcast).
+            time_step_coords = (
+                (dates[0, :] - dates[0, -1]) / pd.Timedelta('1D')
+            ).astype(np.int64)
+            date_coords = dates[:, -1]
+            # TODO (future) : As in all of the forecast models (but not `Multimet`), this assumes
+            # that all lead times are present from 1 to `self.dataset.lead_time`.
+            if (
+                hasattr(self.dataset, 'lead_time')
+                and self.dataset.lead_time
+            ):
+                time_step_coords += self.dataset.lead_time
+                # The last target date is the issue date plus the number of
+                # forecast steps beyond the (1-indexed) first lead time.
+                # Deriving the issue date from it, instead of indexing a
+                # column, also works when predict_last_n < lead_time.
+                min_lead_time = getattr(self.dataset, 'min_lead_time', 1)
+                date_coords = dates[:, -1] - (
+                    self.dataset.lead_time - min_lead_time
+                ) * pd.Timedelta('1D')
+            coords = {'date': date_coords, 'time_step': time_step_coords}
+            xr = xarray.Dataset(data_vars=data_vars, coords=coords)
+            xr = xr.reindex(
+                {
+                    'date': pd.DatetimeIndex(
+                        pd.date_range(
+                            xr['date'].values[0],
+                            xr['date'].values[-1],
+                            freq='1D',
+                        ),
+                        name='date',
                     )
+                }
+            )
+            xr = self.dataset.scaler.unscale(xr)
+            results = {'xr': xr}
 
-                if metrics:
-                    for target_variable in self.cfg.target_variables:
-                        # stack dates and time_steps so we don't just evaluate every 24h when use_frequencies=[1D, 1h]
-                        obs = (
+            date_range = pd.date_range(
+                start=dates[0, -1],
+                end=dates[-1, -1],
+                freq='1D',
+            )
+
+            # only warn once
+            if 1 < predict_last_n and basin == next(iter(basins)):
+                tqdm.write(
+                    'Metrics are calculated over last 1 elements only. '
+                    f'Ignoring {predict_last_n - 1} predictions per sequence.'
+                )
+
+            if metrics:
+                for target_variable in self.cfg.target_variables:
+                    obs = (
+                        xr.isel(
+                            time_step=slice(
+                                -predict_last_n,
+                                -predict_last_n + 1,
+                            )
+                        )
+                        .stack(datetime=['date', 'time_step'])
+                        .drop_vars({'datetime', 'date', 'time_step'})[
+                            f'{target_variable}_obs'
+                        ]
+                    )
+                    obs['datetime'] = date_range
+                    # check if there are observations for this period
+                    if obs.notnull().any():
+                        sim = (
                             xr.isel(
                                 time_step=slice(
-                                    -predict_last_n[freq],
-                                    -predict_last_n[freq] + 1,
+                                    -predict_last_n,
+                                    -predict_last_n + 1,
                                 )
                             )
                             .stack(datetime=['date', 'time_step'])
                             .drop_vars({'datetime', 'date', 'time_step'})[
-                                f'{target_variable}_obs'
+                                f'{target_variable}_sim'
                             ]
                         )
-                        obs['datetime'] = freq_date_range
-                        # check if there are observations for this period
-                        if obs.notnull().any():
-                            sim = (
-                                xr.isel(
-                                    time_step=slice(
-                                        -predict_last_n[freq],
-                                        -predict_last_n[freq] + 1,
-                                    )
-                                )
-                                .stack(datetime=['date', 'time_step'])
-                                .drop_vars({'datetime', 'date', 'time_step'})[
-                                    f'{target_variable}_sim'
-                                ]
+                        sim['datetime'] = date_range
+
+                        # clip negative predictions to zero, if variable is listed in config 'clip_target_to_zero'
+                        if target_variable in self.cfg.clip_targets_to_zero:
+                            sim = xarray.where(sim < 0, 0, sim)
+
+                        if 'samples' in sim.dims:
+                            is_cmal_det = (
+                                self.cfg.head.lower() == 'cmal_deterministic'
                             )
-                            sim['datetime'] = freq_date_range
+                            match self.cfg.tester_sample_reduction:
+                                case TesterSamplesReduction.MEAN:
+                                    sim = (
+                                        sim.isel(samples=0)
+                                        if is_cmal_det
+                                        else sim.mean(dim='samples')
+                                    )
+                                case TesterSamplesReduction.MEDIAN:
+                                    sim = (
+                                        sim.isel(samples=5)
+                                        if is_cmal_det
+                                        else sim.median(dim='samples')
+                                    )
+                                case _:
+                                    msg = f'Supported {self.cfg.tester_sample_reduction=}'
+                                    raise KeyError(msg)
 
-                            # clip negative predictions to zero, if variable is listed in config 'clip_target_to_zero'
-                            if target_variable in self.cfg.clip_targets_to_zero:
-                                sim = xarray.where(sim < 0, 0, sim)
-
-                            if 'samples' in sim.dims:
-                                match self.cfg.tester_sample_reduction:
-                                    case TesterSamplesReduction.MEAN:
-                                        sim = sim.mean(dim='samples')
-                                    case TesterSamplesReduction.MEDIAN:
-                                        sim = sim.median(dim='samples')
-                                    case _:
-                                        msg = f'Supported {self.cfg.tester_sample_reduction=}'
-                                        raise KeyError(msg)
-
-                            var_metrics = (
-                                metrics
-                                if isinstance(metrics, list)
-                                else metrics[target_variable]
+                        var_metrics = (
+                            metrics
+                            if isinstance(metrics, list)
+                            else metrics[target_variable]
+                        )
+                        if 'all' in var_metrics:
+                            var_metrics = get_available_metrics()
+                        try:
+                            values = calculate_metrics(
+                                obs,
+                                sim,
+                                metrics=var_metrics,
+                                resolution='1D',
                             )
-                            if 'all' in var_metrics:
-                                var_metrics = get_available_metrics()
-                            try:
-                                values = calculate_metrics(
-                                    obs,
-                                    sim,
-                                    metrics=var_metrics,
-                                    resolution=freq,
+                        except AllNaNError as err:
+                            msg = (
+                                f'Basin {basin} '
+                                + (
+                                    f'{target_variable} '
+                                    if len(self.cfg.target_variables) > 1
+                                    else ''
                                 )
-                            except AllNaNError as err:
-                                msg = (
-                                    f'Basin {basin} '
-                                    + (
-                                        f'{target_variable} '
-                                        if len(self.cfg.target_variables) > 1
-                                        else ''
-                                    )
-                                    + (
-                                        f'{freq} '
-                                        if len(self.dataset.frequencies) > 1
-                                        else ''
-                                    )
-                                    + str(err)
-                                )
-                                LOGGER.warning(msg)
-                                values = {
-                                    metric: np.nan for metric in var_metrics
-                                }
+                                + str(err)
+                            )
+                            LOGGER.warning(msg)
+                            values = {
+                                metric: np.nan for metric in var_metrics
+                            }
 
-                            # add variable identifier to metrics if needed
-                            if len(self.cfg.target_variables) > 1:
-                                values = {
-                                    f'{target_variable}_{key}': val
-                                    for key, val in values.items()
-                                }
-                            # add frequency identifier to metrics if needed
-                            if len(self.dataset.frequencies) > 1:
-                                values = {
-                                    f'{key}_{freq}': val
-                                    for key, val in values.items()
-                                }
-                            if experiment_logger is not None:
-                                experiment_logger.log_step(**values)
-                            results[freq].update(values)
+                        # add variable identifier to metrics if needed
+                        if len(self.cfg.target_variables) > 1:
+                            values = {
+                                f'{target_variable}_{key}': val
+                                for key, val in values.items()
+                            }
+                        if experiment_logger is not None:
+                            experiment_logger.log_step(**values)
+                        results.update(values)
 
             if basin in basins_for_figures:
                 self._create_and_log_figures(
-                    basin, results, experiment_logger, epoch or -1
+                    basin, results, experiment_logger, epoch or -1, suffix
                 )
 
             self._save_incremental_results(
@@ -493,27 +475,31 @@ class BaseTester(object):
                 states={},
                 save_results=save_results,
                 epoch=epoch,
+                suffix=suffix,
+                data_assimilation=data_assimilation,
             )
 
             if metrics and not experiment_logger:
-                for freq, freq_metrics in results.items():
-                    for name, metric in freq_metrics.items():
-                        if name == 'xr':
-                            continue
-                        metrics_results.setdefault(freq, {}).setdefault(
-                            name, []
-                        ).append(metric)
+                for name, metric in results.items():
+                    if name == 'xr':
+                        continue
+                    metrics_results.setdefault(name, []).append(metric)
 
         if metrics and not experiment_logger:
-            for freq, freq_metrics in metrics_results.items():
-                for name, metric in freq_metrics.items():
-                    median = np.nanmedian(metric)
-                    LOGGER.info('%s %s median=%f', freq, name, median)
+            for name, metric in metrics_results.items():
+                median = np.nanmedian(metric)
+                LOGGER.info('%s median=%f', name, median)
 
         # Consolidate metadata for the output Zarr store if one was created
-        if self.cfg.inference_mode and self.period == 'test' and save_results:
+        if (
+            (self.cfg.inference_mode or data_assimilation)
+            and self.period == 'test'
+            and save_results
+        ):
             parent_directory = self._parent_directory_for_results(epoch)
-            result_file = parent_directory / f'{self.period}_results.zarr'
+            result_file = (
+                parent_directory / f'{self.period}_results{suffix}.zarr'
+            )
             if result_file.exists():
                 try:
                     zarr.consolidate_metadata(str(result_file))
@@ -562,50 +548,56 @@ class BaseTester(object):
         results: dict,
         experiment_logger: Logger | None,
         epoch: int,
+        suffix: str = '',
     ):
+        """Plot obs vs. sim; `suffix` keeps DA figures apart from others."""
+        xr = results['xr']
         for target_var in self.cfg.target_variables:
-            for freq in results:
-                xr = results[freq]['xr']
-                obs = xr[f'{target_var}_obs'].values
-                sim = xr[f'{target_var}_sim'].values
-                # clip negative predictions to zero, if variable is listed in config 'clip_target_to_zero'
-                if target_var in self.cfg.clip_targets_to_zero:
-                    sim = xarray.where(sim < 0, 0, sim)
-                figures = [
-                    self._get_plots(
-                        obs,
-                        sim,
-                        title=f'{target_var} - Basin {basin} - Epoch {epoch} - Frequency {freq}',
-                    )[0],
-                ]
-                # make sure the preamble is a valid file name
-                preamble = re.sub(r'[^A-Za-z0-9\._\-]+', '', target_var)
-                if experiment_logger:
-                    experiment_logger.log_figures(
-                        figures, freq, preamble, self.period, basin
-                    )
-                else:
-                    do_log_figures(
-                        None,
-                        self.cfg.img_log_dir,
-                        epoch,
-                        figures,
-                        freq,
-                        preamble,
-                        self.period,
-                        basin,
-                    )
+            obs = xr[f'{target_var}_obs'].values
+            sim = xr[f'{target_var}_sim'].values
+            # clip negative predictions to zero, if variable is listed in config 'clip_target_to_zero'
+            if target_var in self.cfg.clip_targets_to_zero:
+                sim = xarray.where(sim < 0, 0, sim)
+            figures = [
+                self._get_plots(
+                    obs,
+                    sim,
+                    title=f'{target_var} - Basin {basin} - Epoch {epoch}',
+                )[0],
+            ]
+            # make sure the preamble is a valid file name
+            preamble = re.sub(
+                r'[^A-Za-z0-9\._\-]+', '', f'{target_var}{suffix}'
+            )
+            if experiment_logger:
+                experiment_logger.log_figures(
+                    figures, preamble, self.period, basin
+                )
+            else:
+                do_log_figures(
+                    None,
+                    self.cfg.img_log_dir,
+                    epoch,
+                    figures,
+                    preamble,
+                    self.period,
+                    basin,
+                )
 
-    def _ensure_no_previous_results_saved(self, epoch: int | None = None):
+    def _ensure_no_previous_results_saved(
+        self, epoch: int | None = None, suffix: str = ''
+    ):
         parent_directory = self._parent_directory_for_results(epoch)
 
         zarr_stores_to_remove = [
-            parent_directory / f'{self.period}_results.zarr',
+            parent_directory / f'{self.period}_results{suffix}.zarr',
         ]
         for zarr_store in zarr_stores_to_remove:
             shutil.rmtree(zarr_store, ignore_errors=True)
 
-        metrics_csv_path = parent_directory / f'{self.period}_metrics.csv'
+        metrics_csv_path = (
+            parent_directory / f'{self.period}_metrics{suffix}.csv'
+        )
         if metrics_csv_path.exists():
             metrics_csv_path.unlink()
 
@@ -617,8 +609,16 @@ class BaseTester(object):
         states: dict,
         save_results: bool,
         epoch: int | None,
+        suffix: str = '',
+        data_assimilation: bool = False,
     ):
         """Store results in various formats to disk.
+
+        `suffix` is appended to the file stems (e.g. `_data_assimilation`).
+        The results zarr store is written in inference mode and, whatever the
+        mode, when `data_assimilation` is set: assimilation exists to produce
+        updated forecasts, so its results are always persisted. The metrics
+        csv is unaffected.
 
         Developer note: We cannot store the time series data (the xarray objects) as netCDF file but have to use
         pickle as a wrapper. The reason is that netCDF files have special constraints on the characters/symbols that can
@@ -636,23 +636,23 @@ class BaseTester(object):
             df = metrics_to_dataframe(
                 {basin: results}, metrics_list, self.cfg.target_variables
             )
-            metrics_file = parent_directory / f'{self.period}_metrics.csv'
+            metrics_file = (
+                parent_directory / f'{self.period}_metrics{suffix}.csv'
+            )
             df.to_csv(metrics_file, mode='a', header=not metrics_file.exists())
 
         # store all results in a zarr store
         if (
             results
             and save_results
-            and self.cfg.inference_mode
+            and (self.cfg.inference_mode or data_assimilation)
             and self.period == 'test'
         ):
-            result_file = parent_directory / f'{self.period}_results.zarr'
-
-            dss = (
-                freq_results['xr'].assign_coords(freq=freq)
-                for freq, freq_results in results.items()
+            result_file = (
+                parent_directory / f'{self.period}_results{suffix}.zarr'
             )
-            ds = xarray.concat(dss, dim='freq').expand_dims(basin=[basin])
+
+            ds = results['xr'].expand_dims(basin=[basin])
             ds = _ensure_unicode_or_bytes_are_strings(ds)
 
             if result_file.exists():
@@ -671,16 +671,21 @@ class BaseTester(object):
         self,
         model: BaseModel,
         loader: MultimetDataLoader,
-        frequencies: list[str],
-        basins: set[str] = set(),
+        basins: set[str] | None = None,
+        data_assimilation: bool = False,
+        suffix: str = '',
     ):
+        if basins is None:
+            basins = set()
         predict_last_n = self.cfg.predict_last_n
-        if isinstance(predict_last_n, int):
-            predict_last_n = {
-                frequencies[0]: predict_last_n
-            }  # if predict_last_n is int, there's only one frequency
 
-        with torch.inference_mode():
+        # Data assimilation optimizes model components with autograd and thus
+        # cannot run in inference mode.
+        with (
+            contextlib.nullcontext()
+            if data_assimilation
+            else torch.inference_mode()
+        ):
             basin_samples = itertools.groupby(
                 loader, lambda data: data['basin_index'][0].item()
             )
@@ -702,9 +707,9 @@ class BaseTester(object):
                     if basin_state.exists():
                         model.load_state_from_disk(basin_state)
 
-                preds = {}
-                obs = {}
-                dates = {}
+                preds = None
+                obs = None
+                dates = None
                 losses = []
                 mean_losses = {}
                 last_data = None
@@ -725,35 +730,26 @@ class BaseTester(object):
                     ):
                         data = model.pre_model_hook(data, is_train=False)
                         predictions, loss = self._get_predictions_and_loss(
-                            model, data
+                            model, data, data_assimilation=data_assimilation
                         )
 
-                    for freq in frequencies:
-                        if predict_last_n[freq] == 0:
-                            continue  # no predictions for this frequency
-                        freq_key = '' if len(frequencies) == 1 else f'_{freq}'
-                        y_hat_sub, y_sub = self._subset_targets(
-                            model,
-                            data,
-                            predictions,
-                            predict_last_n[freq],
-                            freq_key,
-                        )
-                        # Date subsetting is universal across all models and thus happens here.
-                        date_sub = data[f'date{freq_key}'][
-                            :, -predict_last_n[freq] :
-                        ]
+                    y_hat_sub, y_sub = self._subset_targets(
+                        model,
+                        data,
+                        predictions,
+                        predict_last_n,
+                    )
+                    # Date subsetting is universal across all models and thus happens here.
+                    date_sub = data['date'][:, -predict_last_n:]
 
-                        if freq not in preds:
-                            preds[freq] = y_hat_sub
-                            obs[freq] = y_sub
-                            dates[freq] = date_sub
-                        else:
-                            preds[freq] = torch.cat((preds[freq], y_hat_sub), 0)
-                            obs[freq] = torch.cat((obs[freq], y_sub), 0)
-                            dates[freq] = np.concatenate(
-                                (dates[freq], date_sub), axis=0
-                            )
+                    if preds is None:
+                        preds = y_hat_sub
+                        obs = y_sub
+                        dates = date_sub
+                    else:
+                        preds = torch.cat((preds, y_hat_sub), 0)
+                        obs = torch.cat((obs, y_sub), 0)
+                        dates = np.concatenate((dates, date_sub), axis=0)
 
                     losses.append(loss)
 
@@ -765,7 +761,9 @@ class BaseTester(object):
                 ):
                     save_dir = self.run_dir / 'hot_start_states'
                     save_dir.mkdir(parents=True, exist_ok=True)
-                    state_save_path = save_dir / f'state_{basin}.npz'
+                    # `save_state` runs an unassimilated forward pass; the
+                    # suffix keeps a DA run from overwriting the regular state.
+                    state_save_path = save_dir / f'state_{basin}{suffix}.npz'
                     model.save_state(last_data, state_save_path)
 
                 # set to NaN explicitly if all losses are NaN to avoid RuntimeWarning
@@ -782,8 +780,8 @@ class BaseTester(object):
 
                 res = {
                     'basin': basin,
-                    'preds': _values_to_cpu(preds),
-                    'obs': _values_to_cpu(obs),
+                    'preds': preds.to('cpu', non_blocking=True),
+                    'obs': obs.to('cpu', non_blocking=True),
                     'dates': dates,
                     'losses': losses,
                     'mean_losses': mean_losses,
@@ -797,10 +795,19 @@ class BaseTester(object):
                 yield res
 
     def _get_predictions_and_loss(
-        self, model: BaseModel, data: dict[str, torch.Tensor]
+        self,
+        model: BaseModel,
+        data: dict[str, torch.Tensor],
+        data_assimilation: bool = False,
     ) -> tuple[torch.Tensor, float]:
-        predictions = model(data)
-        _, all_losses = self.loss_obj(predictions, data)
+        predictions = (
+            self.assimilation.assimilate(model, data)
+            if data_assimilation
+            else model(data)
+        )
+        # Outside inference mode (DA path), grads are not needed for the loss.
+        with torch.no_grad() if data_assimilation else contextlib.nullcontext():
+            _, all_losses = self.loss_obj(predictions, data)
         return predictions, {k: v.item() for k, v in all_losses.items()}
 
     def _subset_targets(
@@ -809,7 +816,6 @@ class BaseTester(object):
         data: dict[str, torch.Tensor],
         predictions: np.ndarray,
         predict_last_n: int,
-        freq: str,
     ):
         raise NotImplementedError
 
@@ -851,11 +857,10 @@ class RegressionTester(BaseTester):
         model: BaseModel,
         data: dict[str, torch.Tensor],
         predictions: np.ndarray,
-        predict_last_n: np.ndarray,
-        freq: str,
+        predict_last_n: int,
     ):
-        y_hat_sub = predictions[f'y_hat{freq}'][:, -predict_last_n:, :]
-        y_sub = data[f'y{freq}'][:, -predict_last_n:, :]
+        y_hat_sub = predictions['y_hat'][:, -predict_last_n:, :]
+        y_sub = data['y'][:, -predict_last_n:, :]
         return y_hat_sub, y_sub
 
     def _create_xarray_data_vars(self, y_hat: np.ndarray, y: np.ndarray):
@@ -898,13 +903,22 @@ class UncertaintyTester(BaseTester):
         )
 
     def _get_predictions_and_loss(
-        self, model: BaseModel, data: dict[str, torch.Tensor]
+        self,
+        model: BaseModel,
+        data: dict[str, torch.Tensor],
+        data_assimilation: bool = False,
     ) -> tuple[torch.Tensor, float]:
-        outputs = model(data)
-        _, all_losses = self.loss_obj(outputs, data)
-        predictions = model.sample(data, self.cfg.n_samples, outputs=outputs)
+        # With DA, the samples are drawn from the assimilated head outputs.
+        outputs, losses = super()._get_predictions_and_loss(
+            model, data, data_assimilation=data_assimilation
+        )
+        # Outside inference mode (DA path), grads are not needed for sampling.
+        with torch.no_grad() if data_assimilation else contextlib.nullcontext():
+            predictions = model.sample(
+                data, self.cfg.n_samples, outputs=outputs
+            )
         model.eval()
-        return predictions, {k: v.item() for k, v in all_losses.items()}
+        return predictions, losses
 
     def _subset_targets(
         self,
@@ -912,10 +926,9 @@ class UncertaintyTester(BaseTester):
         data: dict[str, torch.Tensor],
         predictions: np.ndarray,
         predict_last_n: int,
-        freq: str = None,
     ):
-        y_hat_sub = predictions[f'y_hat{freq}'][:, -predict_last_n:, :]
-        y_sub = data[f'y{freq}'][:, -predict_last_n:, :]
+        y_hat_sub = predictions['y_hat'][:, -predict_last_n:, :]
+        y_sub = data['y'][:, -predict_last_n:, :]
         return y_hat_sub, y_sub
 
     def _create_xarray_data_vars(self, y_hat: np.ndarray, y: np.ndarray):
@@ -939,7 +952,3 @@ def _ensure_unicode_or_bytes_are_strings(ds: xarray.Dataset):
         if coord.dtype.kind in ('U', 'S')
     }
     return ds.assign_coords(updates)
-
-
-def _values_to_cpu(x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    return {k: v.to('cpu', non_blocking=True) for k, v in x.items()}

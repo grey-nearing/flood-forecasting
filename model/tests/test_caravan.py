@@ -159,3 +159,121 @@ def test_load_caravan_timeseries_missing_file_error(mock_caravan_dir):
             target_features=['streamflow'],
             csv=False,
         )
+
+
+@pytest.mark.unit
+def test_resolve_zarr_store_and_missing_paths(mock_caravan_dir, tmp_path):
+    # GCS URI normalization
+    assert (
+        caravan._resolve_zarr_store('gs:/bucket/path', 'attributes.zarr')
+        == 'gs://bucket/path/attributes.zarr'
+    )
+    assert (
+        caravan._resolve_zarr_store(
+            'gs://bucket/path/custom.zarr/', 'attributes.zarr'
+        )
+        == 'gs://bucket/path/custom.zarr'
+    )
+
+    # Missing explicit .zarr path must raise FileNotFoundError immediately
+    # and never fall back to CSV/NetCDF even if sibling CSV/NetCDF files exist
+    with pytest.raises(FileNotFoundError, match='Zarr store not found'):
+        caravan.load_caravan_attributes(
+            data_dir=mock_caravan_dir / 'missing_attributes.zarr'
+        )
+    with pytest.raises(FileNotFoundError, match='Zarr store not found'):
+        caravan.load_caravan_timeseries(
+            data_dir=mock_caravan_dir / 'missing_streamflow.zarr',
+            basins=['camelsus_01022500'],
+            target_features=['streamflow'],
+        )
+
+    # Missing data_dir must raise FileNotFoundError immediately
+    with pytest.raises(FileNotFoundError, match='Data path not found'):
+        caravan.load_caravan_attributes(data_dir=tmp_path / 'does_not_exist')
+    with pytest.raises(FileNotFoundError, match='Data path not found'):
+        caravan.load_caravan_timeseries(
+            data_dir=tmp_path / 'does_not_exist',
+            basins=['camelsus_01022500'],
+            target_features=['streamflow'],
+        )
+
+
+@pytest.mark.unit
+def test_caravan_strict_feature_validation(mock_caravan_dir, tmp_path):
+    # Legacy CSV attributes: missing requested feature raises ValueError
+    with pytest.raises(
+        ValueError, match='Requested static attributes.*not found'
+    ):
+        caravan.load_caravan_attributes(
+            data_dir=mock_caravan_dir,
+            features=['area', 'nonexistent_attr'],
+        )
+
+    # Legacy NetCDF/CSV timeseries: missing target feature raises ValueError
+    with pytest.raises(
+        ValueError, match='Requested target features.*not found'
+    ):
+        caravan.load_caravan_timeseries(
+            data_dir=mock_caravan_dir,
+            basins=['camelsus_01022500'],
+            target_features=['streamflow', 'nonexistent_target'],
+            csv=False,
+        )
+    with pytest.raises(
+        ValueError, match='Requested target features.*not found'
+    ):
+        caravan.load_caravan_timeseries(
+            data_dir=mock_caravan_dir,
+            basins=['camelsus_01022500'],
+            target_features=['streamflow', 'nonexistent_target'],
+            csv=True,
+        )
+
+    # Zarr attributes and streamflow stores: valid load + missing feature ValueError
+    zarr_root = tmp_path / 'zarr_caravan'
+    attr_ds = xr.Dataset(
+        {'area': (('basin',), np.array([100.5], dtype=np.float32))},
+        coords={'basin': ['camelsus_01022500']},
+    )
+    attr_ds.to_zarr(zarr_root / 'attributes.zarr', mode='w')
+
+    ts_ds = xr.Dataset(
+        {
+            'streamflow': (
+                ('basin', 'date'),
+                np.ones((1, 5), dtype=np.float32),
+            )
+        },
+        coords={
+            'basin': ['camelsus_01022500'],
+            'date': pd.date_range('2020-01-01', periods=5, freq='D'),
+        },
+    )
+    ts_ds.to_zarr(zarr_root / 'streamflow.zarr', mode='w')
+
+    loaded_attr = caravan.load_caravan_attributes(
+        data_dir=zarr_root, features=['area']
+    )
+    assert 'area' in loaded_attr
+    with pytest.raises(
+        ValueError, match='Requested static attributes.*not found'
+    ):
+        caravan.load_caravan_attributes(
+            data_dir=zarr_root, features=['missing_attr']
+        )
+
+    loaded_ts = caravan.load_caravan_timeseries(
+        data_dir=zarr_root,
+        basins=['camelsus_01022500'],
+        target_features=['streamflow'],
+    )
+    assert 'streamflow' in loaded_ts
+    with pytest.raises(
+        ValueError, match='Requested target features.*not found'
+    ):
+        caravan.load_caravan_timeseries(
+            data_dir=zarr_root,
+            basins=['camelsus_01022500'],
+            target_features=['missing_target'],
+        )

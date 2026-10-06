@@ -566,3 +566,13 @@ def test_scaler_load_from_file_raises_error_for_zero_scale(tmp_scaler_dir):
         ValueError, match='Zero scale values found for features:'
     ):
         Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
+
+
+def test_scaler_load_missing_zarr_raises_file_not_found(
+    tmp_scaler_dir, sample_dataset_basic
+):
+    os.makedirs(tmp_scaler_dir, exist_ok=True)
+    # Even if a legacy scaler.nc file is present, Scaler must require scaler.zarr
+    sample_dataset_basic.to_netcdf(tmp_scaler_dir / 'scaler.nc')
+    with pytest.raises(FileNotFoundError, match='Scaler file not found at'):
+        Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
