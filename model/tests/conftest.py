@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import logging
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -32,6 +33,19 @@ from model.tests.test_hot_start import get_base_cfg
 
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.disable = True
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Move imported modules/types to the permanent GC generation.
+
+    ``Multimet.__init__`` calls ``memory.release()`` (``gc.collect()``) four
+    times per dataset initialization. Freezing permanent import-time objects
+    avoids rescanning hundreds of thousands of library objects on every call
+    while still collecting all objects allocated during tests.
+    """
+    del session
+    gc.collect()
+    gc.freeze()
 
 
 def _cleanup_all_open_resources() -> None:
