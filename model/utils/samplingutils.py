@@ -31,9 +31,8 @@ def sample_pointpredictions(
 ) -> dict[str, torch.Tensor]:
     """Point prediction samplers for the different uncertainty estimation approaches.
 
-    This function provides different point sampling functions for the different uncertainty estimation approaches
-    (e.g. Gaussian Mixture Models (GMM), Countable Mixtures of Asymmetric Laplacians (CMAL), Monte-Carlo Dropout (MCD);
-    note: MCD can be combined with the others, by setting `mc_dropout` to `True` in the configuration file).
+    This function provides different point sampling functions for the supported uncertainty estimation approaches
+    (e.g. Countable Mixtures of Asymmetric Laplacians (CMAL)).
 
     There are also options to handle negative point prediction samples that arise while sampling from the uncertainty
     estimates. This functionality currently supports (a) 'clip' for directly clipping values at zero and
@@ -55,8 +54,7 @@ def sample_pointpredictions(
     Returns
     -------
     dict[str, torch.Tensor]
-        Dictionary, containing the sampled model outputs for the `predict_last_n` (config argument) time steps of
-        each frequency.
+        Dictionary, containing the sampled model outputs for the `predict_last_n` (config argument) time steps.
     """
 
     if model.cfg.head.lower() == 'cmal':
@@ -65,9 +63,6 @@ def sample_pointpredictions(
         samples = sample_cmal_deterministic(
             model, data, scaler, outputs=outputs
         )
-    elif model.cfg.head.lower() == 'regression':  # regression head assumes mcd
-        assert not outputs, 'regression self creates outputs'
-        samples = sample_mcd(model, data, n_samples, scaler)
     else:
         raise NotImplementedError(
             f'Sampling mode not supported for head {model.cfg.head.lower()}!'
@@ -84,6 +79,7 @@ def _subset_target(
     end = start + steps
     parameter_sub = parameter[:, :, start:end]
     return parameter_sub
+
 
 def _calc_normalized_zero_thresholds(
     scaler: Scaler,
@@ -102,6 +98,7 @@ def _calc_normalized_zero_thresholds(
     centers = torch.tensor(centers, device=device, dtype=dtype)
     scales = torch.tensor(scales, device=device, dtype=dtype)
     return -(centers / scales)
+
 
 def _handle_negative_values(
     cfg: Config,
@@ -194,154 +191,12 @@ class _SamplingSetup:
                 f'{head} sampling not supported for the {cfg.head} head!'
             )
 
-        dropout_rates = []
-        if hasattr(model, 'dropout') and hasattr(model.dropout, 'p'):
-            dropout_rates.append(model.dropout.p)
-        if hasattr(model, 'modules'):
-            for m in model.modules():
-                if isinstance(
-                    m, (torch.nn.Dropout, torch.nn.modules.dropout._DropoutNd)
-                ):
-                    dropout_rates.append(m.p)
-                elif (
-                    isinstance(m, torch.nn.LSTM)
-                    and m.num_layers > 1
-                    and m.dropout > 0
-                ):
-                    dropout_rates.append(m.dropout)
-
-        max_implied_dropout = max(dropout_rates, default=0.0)
-        # check lower bound dropout:
-        if cfg.mc_dropout and max_implied_dropout <= 0.0:
-            raise RuntimeError(
-                f'{cfg.model} with `mc_dropout` activated requires a dropout'
-                f' rate larger than 0.0, but maximum implied dropout is {max_implied_dropout}.'
-            )
-        # check upper bound dropout:
-        if cfg.mc_dropout and max_implied_dropout >= 1.0:
-            raise RuntimeError(
-                f'The maximal dropout-rate is 1. Please check your settings; '
-                f'maximum implied dropout is {max_implied_dropout}.'
-            )
-
         # assign setup properties:
         self.cfg = cfg
         self.device = next(model.parameters()).device
         self.number_of_targets = len(cfg.target_variables)
-        self.mc_dropout = cfg.mc_dropout
         self.predict_last_n = cfg.predict_last_n
-
-        # determine appropriate frequency suffix:
-        if len(self.cfg.use_frequencies) > 1:
-            self.freq_suffixes = [f'_{freq}' for freq in cfg.use_frequencies]
-        else:
-            self.freq_suffixes = ['']
-
-        self.batch_size_data = data[f'y{self.freq_suffixes[0]}'].shape[0]
-
-
-def _get_frequency_last_n(
-    predict_last_n: dict[str, int] | int,
-    freq_suffix: str,
-    use_frequencies: list[str],
-):
-    if isinstance(predict_last_n, int):
-        frequency_last_n = predict_last_n
-    else:
-        if freq_suffix != '':
-            frequency_last_n = predict_last_n[freq_suffix[1:]]
-        else:
-            frequency_last_n = predict_last_n[use_frequencies[0]]
-    return frequency_last_n
-
-
-def sample_mcd(
-    model: 'BaseModel',
-    data: dict[str, torch.Tensor],
-    n_samples: int,
-    scaler: Scaler,
-) -> dict[str, torch.Tensor]:
-    """MC-Dropout based point predictions sampling.
-
-    Naive sampling. This function does `n_samples` forward passes for each sample in the batch. Currently it is
-    only useful for models with dropout, to perform MC-Dropout sampling.
-    Note: Calling this function will force the model to train mode (`model.train()`) and not set it back to its original
-    state.
-
-    The negative sample handling supports (a) 'clip' for directly clipping sample_points at physical zero
-    (``normalized_zero``), (b) 'truncate' for resampling sample_points that are below zero, and (c) 'none'
-    (or ``None`` / omitted) to leave CMAL draws completely unclipped. The mode can be defined by the config
-    argument ``negative_sample_handling``. When ``negative_sample_handling: 'clip'`` is configured, clamping at
-    physical zero (``normalized_zero``) is applied inside ``model.sample()`` (``sample_cmal`` and
-    ``sample_cmal_deterministic``). Therefore, during evaluation (``BaseTester.evaluate``), evaluation metrics
-    (``NSE``, ``KGE``, etc.) are computed after clipping and sample reduction (``tester_sample_reduction``),
-    whereas losses (``cmalloss``) are computed on the raw distribution parameters before sampling or clipping.
-
-    Parameters
-    ----------
-    model : BaseModel
-        A model with a non-probabilistic head.
-    data : dict[str, torch.Tensor]
-        Dictionary, containing input features as key-value pairs.
-    n_samples : int
-        Number of samples to generate for each input sample.
-    scaler : Scaler
-        Scaler of the run.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Dictionary, containing the sampled model outputs for the `predict_last_n` (config argument) time steps of
-        each frequency.
-    """
-    setup = _SamplingSetup(model, data, model.cfg.head)
-
-    # force model into train mode for mc_dropout:
-    if setup.mc_dropout:
-        model.train()
-
-    # sample for different frequencies and targets:
-    samples = {}
-    for freq_suffix in setup.freq_suffixes:
-        sample_points = []
-        frequency_last_n = _get_frequency_last_n(
-            setup.cfg.predict_last_n, freq_suffix, setup.cfg.use_frequencies
-        )
-
-        x_d = data[f'x_d{freq_suffix}']
-        some_key = list(x_d)[0]
-        ids = list(range(x_d[some_key].shape[0]))
-
-        for nth_target in range(setup.number_of_targets):
-            # unbound sampling:
-            def _sample_values(ids: list[int]) -> torch.Tensor:
-                # The ids are used for location-specific resampling for 'truncation' in '_handle_negative_values'
-                target_values = torch.zeros(
-                    len(ids), frequency_last_n, n_samples
-                )
-                for i in range(
-                    n_samples
-                ):  # forward-pass for each frequency separately to guarantee independence
-                    prediction = model(data)
-                    value_buffer = prediction[f'y_hat{freq_suffix}'][
-                        :, -frequency_last_n:, 0
-                    ]
-                    target_values[ids, -frequency_last_n:, i] = value_buffer
-                return target_values
-
-            values = _sample_values(ids)
-
-            # bind values and add to sample_points:
-            values = _handle_negative_values(
-                setup.cfg, values, _sample_values, scaler, nth_target
-            )
-            sample_points.append(values)
-
-        # add sample_points to dictionary of samples:
-        freq_key = f'y_hat{freq_suffix}'
-        samples.update({freq_key: torch.stack(sample_points, 2)})
-
-    return samples
+        self.batch_size_data = data['y'].shape[0]
 
 
 def sample_cmal_deterministic(
@@ -362,9 +217,6 @@ def sample_cmal_deterministic(
     whereas losses (``cmalloss``) are computed on the raw distribution parameters
     before sampling or clipping.
 
-    Note: If the config setting 'mc_dropout' is true this function will force the model to train mode (`model.train()`)
-    and not set it back to its original state.
-
     Parameters
     ----------
     model : BaseModel
@@ -379,15 +231,10 @@ def sample_cmal_deterministic(
     Returns
     -------
     dict[str, torch.Tensor]
-        Dictionary, containing the sampled model outputs for the `predict_last_n` (config argument) time steps of
-        each frequency. The shape of the output tensor for each frequency is
-        ``[batch size, predict_last_n, n_samples]``.
+        Dictionary, containing the sampled model outputs for the `predict_last_n` (config argument) time steps.
+        The shape of the output tensor is ``[batch size, predict_last_n, target, n_samples]``.
     """
     setup = _SamplingSetup(model, data, 'cmal_deterministic')
-
-    # force model into train mode if mc_dropout
-    if setup.mc_dropout:
-        model.train()
 
     # Make predictions (forward pass). For CMAL head those are dist params and
     # not point predictions.
@@ -407,33 +254,26 @@ def sample_cmal_deterministic(
             dtype=next(model.parameters()).dtype,
         )
 
-    # Map output frequencies to final sample tensors:
-    samples = {}
+    mu = pred['mu']  # means
+    b = pred['b']  # scales
+    tau = pred['tau']  # asymmetries
+    pi = pred['pi']  # weights
 
-    # Loop over all model output frequencies (e.g., 'daily', 'hourly').
-    for freq_suffix in setup.freq_suffixes:
-        mu = pred[f'mu{freq_suffix}']  # means
-        b = pred[f'b{freq_suffix}']  # scales
-        tau = pred[f'tau{freq_suffix}']  # asymmetries
-        pi = pred[f'pi{freq_suffix}']  # weights
-
-        values = cmal_deterministic.generate_predictions(mu, b, tau, pi)
-        # Element 0 is the mixture mean. Clipping it applies a physical floor
-        # to E[X]; it is not the distributional correction E[max(X, 0)].
-        if normalized_zeros is not None:
-            values = _handle_negative_values(
-                setup.cfg,
-                values,
-                # Unused: 'clip' never resamples, and a summary statistic
-                # cannot be redrawn.
-                sample_values=lambda _: values,
-                # generate_predictions collapses every target into a single
-                # mixture, so values only ever holds target 0.
-                normalized_zero=normalized_zeros[0],
-            )
-        samples[f'y_hat{freq_suffix}'] = torch.stack([values], 2)
-
-    return samples
+    values = cmal_deterministic.generate_predictions(mu, b, tau, pi)
+    # Element 0 is the mixture mean. Clipping it applies a physical floor
+    # to E[X]; it is not the distributional correction E[max(X, 0)].
+    if normalized_zeros is not None:
+        values = _handle_negative_values(
+            setup.cfg,
+            values,
+            # Unused: 'clip' never resamples, and a summary statistic
+            # cannot be redrawn.
+            sample_values=lambda _: values,
+            # generate_predictions collapses every target into a single
+            # mixture, so values only ever holds target 0.
+            normalized_zero=normalized_zeros[0],
+        )
+    return {'y_hat': torch.stack([values], 2)}
 
 
 def sample_cmal(
@@ -454,9 +294,6 @@ def sample_cmal(
     'truncate' for resampling sample_points that are below zero. The mode can be defined by the config argument
     'negative_sample_handling'.
 
-    Note: If the config setting 'mc_dropout' is true this function will force the model to train mode (`model.train()`)
-    and not set it back to its original state.
-
     Parameters
     ----------
     model : BaseModel
@@ -473,9 +310,8 @@ def sample_cmal(
     Returns
     -------
     dict[str, torch.Tensor]
-        Dictionary, containing the sampled model outputs for the `predict_last_n` (config argument) time steps of
-        each frequency. The shape of the output tensor for each frequency is
-        ``[batch size, predict_last_n, n_samples]``.
+        Dictionary, containing the sampled model outputs for the `predict_last_n` (config argument) time steps.
+        The shape of the output tensor is ``[batch size, predict_last_n, target, n_samples]``.
 
     References
     ----------
@@ -485,16 +321,9 @@ def sample_cmal(
     """
     setup = _SamplingSetup(model, data, 'cmal')
 
-    # force model into train mode if mc_dropout
-    if setup.mc_dropout:
-        model.train()
-
     # Make predictions (forward pass). For CMAL head those are dist params and
     # not point predictions.
     pred = outputs or model(data)
-
-    # Map output frequencies to final sample tensors:
-    samples = {}
 
     normalized_zeros = _calc_normalized_zero_thresholds(
         scaler=scaler,
@@ -503,123 +332,116 @@ def sample_cmal(
         dtype=next(model.parameters()).dtype,
     )
 
-    # Loop over all model output frequencies (e.g., 'daily', 'hourly').
-    for freq_suffix in setup.freq_suffixes:
-        # Get the number of time steps to predict for the current frequency
-        frequency_last_n = _get_frequency_last_n(
-            setup.cfg.predict_last_n, freq_suffix, setup.cfg.use_frequencies
+    predict_last_n = setup.cfg.predict_last_n
+
+    # Extract the four parameters of the CMAL distributions.
+    m = pred['mu']  # location means
+    b = pred['b']  # scales
+    t = pred['tau']  # asymmetries
+    p = pred['pi']  # mixture weights
+
+    sample_points = []  # (for each target parameter)
+    for nth_target in range(
+        setup.number_of_targets
+    ):  # e.g. streamflow, temp
+        # Slice each full param tensor from the model's concat'd params to get
+        # only the portion relevant to the current target.
+        m_target = _subset_target(
+            m[:, -predict_last_n:, :],
+            nth_target,
+            setup.cfg.n_distributions,
+        )
+        b_target = _subset_target(
+            b[:, -predict_last_n:, :],
+            nth_target,
+            setup.cfg.n_distributions,
+        )
+        t_target = _subset_target(
+            t[:, -predict_last_n:, :],
+            nth_target,
+            setup.cfg.n_distributions,
+        )
+        p_target = _subset_target(
+            p[:, -predict_last_n:, :],
+            nth_target,
+            setup.cfg.n_distributions,
         )
 
-        # Extract the four parameters of the CMAL distributions.
-        m = pred[f'mu{freq_suffix}']  # location means
-        b = pred[f'b{freq_suffix}']  # scales
-        t = pred[f'tau{freq_suffix}']  # asymmetries
-        p = pred[f'pi{freq_suffix}']  # mixture weights
+        assert (
+            m_target.shape
+            == b_target.shape
+            == t_target.shape
+            == p_target.shape
+        )
+        batch_size, time_steps, n_dist = m_target.shape  # WLOG
 
-        sample_points = []  # (for each target parameter)
-        for nth_target in range(
-            setup.number_of_targets
-        ):  # e.g. streamflow, temp
-            # Slice each full param tensor from the model's concat'd params to get
-            # only the portion relevant to the current target.
-            m_target = _subset_target(
-                m[:, -frequency_last_n:, :],
-                nth_target,
-                setup.cfg.n_distributions,
-            )
-            b_target = _subset_target(
-                b[:, -frequency_last_n:, :],
-                nth_target,
-                setup.cfg.n_distributions,
-            )
-            t_target = _subset_target(
-                t[:, -frequency_last_n:, :],
-                nth_target,
-                setup.cfg.n_distributions,
-            )
-            p_target = _subset_target(
-                p[:, -frequency_last_n:, :],
-                nth_target,
-                setup.cfg.n_distributions,
-            )
+        # Make [batch, sample, time, dist] (expanded) tensor views of the targets.
+        # Unsqueeze to add a dim for samples: [batch, rime, dist] -> [batch, 1, time, dist].
+        # Expand to repeat the new dim without allocating new memory for it. So:
+        #     [batch, 1, time, dist] -> [batch, sample, time, dist].
+        m_exp = m_target.unsqueeze(1).expand(-1, n_samples, -1, -1)
+        b_exp = b_target.unsqueeze(1).expand(-1, n_samples, -1, -1)
+        t_exp = t_target.unsqueeze(1).expand(-1, n_samples, -1, -1)
+        p_exp = p_target.unsqueeze(1).expand(-1, n_samples, -1, -1)
 
-            assert (
-                m_target.shape
-                == b_target.shape
-                == t_target.shape
-                == p_target.shape
-            )
-            batch_size, time_steps, n_dist = m_target.shape  # WLOG
+        # Distribute:
 
-            # Make [batch, sample, time, dist] (expanded) tensor views of the targets.
-            # Unsqueeze to add a dim for samples: [batch, rime, dist] -> [batch, 1, time, dist].
-            # Expand to repeat the new dim without allocating new memory for it. So:
-            #     [batch, 1, time, dist] -> [batch, sample, time, dist].
-            m_exp = m_target.unsqueeze(1).expand(-1, n_samples, -1, -1)
-            b_exp = b_target.unsqueeze(1).expand(-1, n_samples, -1, -1)
-            t_exp = t_target.unsqueeze(1).expand(-1, n_samples, -1, -1)
-            p_exp = p_target.unsqueeze(1).expand(-1, n_samples, -1, -1)
+        # Prepare data for the Categorical dist.
+        # Categorical dist descrbies a random event with a fixed number of results
+        # where each one has a probability. Number of outcomes here is from 0 to
+        # n_dist-1, and probabilities are given by pi.
+        # Replace nan with uniform probability. Later those nans will be restored.
+        p_invalid = torch.isnan(p_exp)
+        p_safe = torch.where(
+            p_invalid, torch.ones_like(p_exp) / n_dist, p_exp
+        )
 
-            # Distribute:
+        dist = torch.distributions.Categorical(probs=p_safe)
 
-            # Prepare data for the Categorical dist.
-            # Categorical dist descrbies a random event with a fixed number of results
-            # where each one has a probability. Number of outcomes here is from 0 to
-            # n_dist-1, and probabilities are given by pi.
-            # Replace nan with uniform probability. Later those nans will be restored.
-            p_invalid = torch.isnan(p_exp)
-            p_safe = torch.where(
-                p_invalid, torch.ones_like(p_exp) / n_dist, p_exp
-            )
+        # Sample:
 
-            dist = torch.distributions.Categorical(probs=p_safe)
+        # Draw dist index for each sample and time step from the dist dim, to get
+        # [batch, sample, time].
+        # And add a dim to match the shape of the expanded params for gathering,
+        # for selecting which dist it is gathered from.
+        choices = dist.sample().unsqueeze(-1)
+        # For each param point, select from [batch, sample, time, dist] using
+        # choices index which is [batch, sample, time, 1] to find which dist
+        # to use, gathering that param using the index for it.
+        # Then squeeze out the dist dim.
+        m_sub = torch.gather(m_exp, dim=3, index=choices).squeeze(-1)
+        b_sub = torch.gather(b_exp, dim=3, index=choices).squeeze(-1)
+        t_sub = torch.gather(t_exp, dim=3, index=choices).squeeze(-1)
 
-            # Sample:
+        def sample_values(ids: torch.Tensor) -> torch.Tensor:
+            return _sample_asymmetric_laplacians(ids, m_sub, b_sub, t_sub)
 
-            # Draw dist index for each sample and time step from the dist dim, to get
-            # [batch, sample, time].
-            # And add a dim to match the shape of the expanded params for gathering,
-            # for selecting which dist it is gathered from.
-            choices = dist.sample().unsqueeze(-1)
-            # For each param point, select from [batch, sample, time, dist] using
-            # choices index which is [batch, sample, time, 1] to find which dist
-            # to use, gathering that param using the index for it.
-            # Then squeeze out the dist dim.
-            m_sub = torch.gather(m_exp, dim=3, index=choices).squeeze(-1)
-            b_sub = torch.gather(b_exp, dim=3, index=choices).squeeze(-1)
-            t_sub = torch.gather(t_exp, dim=3, index=choices).squeeze(-1)
+        # Generate an initial value for every single pos via a mask of all `True`s,
+        # with the _sample_asymmetric_laplacians helper.
+        values_unbound = sample_values(
+            ids=torch.ones_like(m_sub, dtype=torch.bool)
+        )
+        # Reshape it back since the helper has flattened dims.
+        values_unbound = values_unbound.reshape(
+            batch_size, n_samples, time_steps
+        )
+        # Restore nans (squeezing out the dist dim from which it was gathered)
+        was_nan_mask = torch.gather(
+            p_invalid, dim=3, index=choices
+        ).squeeze(-1)
+        values_unbound[was_nan_mask] = torch.nan
 
-            def sample_values(ids: torch.Tensor) -> torch.Tensor:
-                return _sample_asymmetric_laplacians(ids, m_sub, b_sub, t_sub)
+        values = _handle_negative_values(  # Resample as needed
+            setup.cfg,
+            values_unbound,
+            sample_values=sample_values,
+            normalized_zero=normalized_zeros[nth_target],
+        )
+        # Swap [batch, sample, time] to [batch, time, sample]
+        values = values.permute(0, 2, 1)
+        sample_points.append(values)
 
-            # Generate an initial value for every single pos via a mask of all `True`s,
-            # with the _sample_asymmetric_laplacians helper.
-            values_unbound = sample_values(
-                ids=torch.ones_like(m_sub, dtype=torch.bool)
-            )
-            # Reshape it back since the helper has flattened dims.
-            values_unbound = values_unbound.reshape(
-                batch_size, n_samples, time_steps
-            )
-            # Restore nans (squeezing out the dist dim from which it was gathered)
-            was_nan_mask = torch.gather(
-                p_invalid, dim=3, index=choices
-            ).squeeze(-1)
-            values_unbound[was_nan_mask] = torch.nan
-
-            values = _handle_negative_values(  # Resample as needed
-                setup.cfg,
-                values_unbound,
-                sample_values=sample_values,
-                normalized_zero=normalized_zeros[nth_target],
-            )
-            # Swap [batch, sample, time] to [batch, time, sample]
-            values = values.permute(0, 2, 1)
-            sample_points.append(values)
-
-        # torch.stack results for all targets into a single tensor for this freq.
-        # It stacks into a new dim for the targets at dim 2, so shape should be
-        # [batch, time, sample] -> [batch, time, target, sample].
-        samples[f'y_hat{freq_suffix}'] = torch.stack(sample_points, dim=2)
-
-    return samples
+    # torch.stack results for all targets into a single tensor.
+    # It stacks into a new dim for the targets at dim 2, so shape should be
+    # [batch, time, sample] -> [batch, time, target, sample].
+    return {'y_hat': torch.stack(sample_points, dim=2)}

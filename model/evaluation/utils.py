@@ -34,30 +34,25 @@ def metrics_to_dataframe(
     results : dict
         Dictionary, containing the results of the model evaluation as returned by the `Tester.evaluate()`.
     metrics : Iterable[str]
-        Iterable of metric names (without frequency suffix).
+        Iterable of metric names.
     targets : Iterable[str]
         Iterable of target variable names.
 
     Returns
     -------
-    A basin indexed DataFrame with one column per metric. In case of multi-frequency runs, the metric names contain
-    the corresponding frequency as a suffix.
+    A basin indexed DataFrame with one column per metric.
     """
     metrics_dict = defaultdict(dict)
     for basin, basin_data in results.items():
-        for freq, freq_results in basin_data.items():
-            for target, metric in itertools.product(targets, metrics):
-                metric_key = metric
-                if len(targets) > 1:
-                    metric_key = f'{target}_{metric}'
-                if len(basin_data) > 1:
-                    # For multi-frequency runs, metrics include a frequency suffix.
-                    metric_key = f'{metric_key}_{freq}'
-                if metric_key in freq_results.keys():
-                    metrics_dict[basin][metric_key] = freq_results[metric_key]
-                else:
-                    # in case the current period has no valid samples, the result dict has no metric-key
-                    metrics_dict[basin][metric_key] = np.nan
+        for target, metric in itertools.product(targets, metrics):
+            metric_key = metric
+            if len(targets) > 1:
+                metric_key = f'{target}_{metric}'
+            if metric_key in basin_data.keys():
+                metrics_dict[basin][metric_key] = basin_data[metric_key]
+            else:
+                # in case the current period has no valid samples, the result dict has no metric-key
+                metrics_dict[basin][metric_key] = np.nan
 
     df = pd.DataFrame.from_dict(metrics_dict, orient='index')
     df.index.name = 'basin'

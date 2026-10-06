@@ -116,7 +116,9 @@ class BaseTrainer(object):
 
     def _get_optimizer(self) -> torch.optim.Optimizer:
         return get_optimizer(
-            model=self.model, cfg=self.cfg, is_gpu=self.device.type == 'cuda'
+            model_or_params=self.model,
+            cfg=self.cfg,
+            is_gpu=self.device.type == 'cuda',
         )
 
     def _get_loss_obj(self) -> loss.BaseLoss:
@@ -330,6 +332,9 @@ class BaseTrainer(object):
                     metrics=self.cfg.metrics,
                     model=self.model,
                     experiment_logger=self.experiment_logger.valid(),
+                    # Validation during training never assimilates, even if
+                    # the run config sets `assimilate: true` for evaluation.
+                    data_assimilation=False,
                 )
 
                 valid_metrics = {

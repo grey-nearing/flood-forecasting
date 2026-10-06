@@ -2,11 +2,24 @@
 
 This module creates watershed boundary polygons and calculates drainage areas ($\text{km}^2$) for streamflow gauges using 90-meter (3-arc-second) flow-direction maps.
 
-You can use it from the command line (`delineate-catchment`) or from Python (`DemDelineator`) to prepare basin boundary polygons for Caravan static attribute extraction and MultiMet weather forcing extraction.
+> **Do you need this tool?**
+> If you are using gauges from the published Caravan or MultiMet collections, **you do not need to run this tool**. Pre-delineated watershed boundary polygons are already available in `gs://open-multimet/caravan-new/<collection>/shapefiles-rederived/` and `gs://caravan-multimet/v1.1`.
+>
+> Use this tool only when you want to delineate watershed boundary polygons for new gauge locations or evaluate delineation accuracy against reference polygons.
 
 ---
 
-## 1. How It Works (Brief Overview)
+## 1. Overview & Summary Table
+
+| Command / Class | Purpose | Spatial Grid | Coordinate System & Coverage |
+| :--- | :--- | :--- | :--- |
+| `delineate-catchment` | Delineate one or many watershed polygons from gauge coordinates | 90 m (`3-arc-second`, `5° × 5°` tiles of `6000 × 6000` pixels) | `EPSG:4326` (WGS84), `-56°S` to `60°N`, `-180°W` to `180°E` |
+| `DemDelineator` | Python class for single-gauge and batch watershed delineation | 90 m (`3-arc-second`, `5° × 5°` tiles of `6000 × 6000` pixels) | `EPSG:4326` (WGS84), `-56°S` to `60°N`, `-180°W` to `180°E` |
+| `benchmark-catchment` | Compare delineated polygons against reference polygons (IoU, Dice, area error) | 90 m (`3-arc-second`) | `EPSG:4326` (WGS84), `-56°S` to `60°N` |
+| `slice_continental_dems.py` | Slice raw HydroSHEDS or MERIT GeoTIFF files into `5° × 5°` `.npy` tiles | `6000 × 6000` uint8 D8 flow-direction tiles | `EPSG:4326` (WGS84) |
+| `build_benchmark_dataset.py` | Build a stratified multi-continent reference benchmark Parquet file | Vector reference polygons (WKT) | `EPSG:4326` (WGS84) |
+
+### How It Works
 
 Given the latitude and longitude of a river gauge, the tool produces its watershed polygon in three steps:
 
@@ -16,9 +29,16 @@ Given the latitude and longitude of a river gauge, the tool produces its watersh
 
 ---
 
-## 2. Preparing Map Tiles
+## 2. Prerequisites & Preparing Map Tiles
 
-Before running `delineate-catchment`, you need a folder (either on your computer or in Google Cloud Storage `gs://`) containing 5°×5° flow-direction `.npy` files (for example, `n35w090_dir.npy`).
+Activate the `openhydronet` Conda environment and install the repository in editable mode:
+
+```bash
+conda activate openhydronet
+pip install -e .
+```
+
+Before running `delineate-catchment`, you need a folder (either on your computer or in Google Cloud Storage `gs://`) containing 5°×5° flow-direction `.npy` files named by their top-left corner coordinate (for example, `n35w090.npy` or `n40w090.npy`).
 
 * **If you already have a folder or `gs://` bucket of `.npy` tiles:** Pass that folder directly using `--tiles-dir /path/to/tiles_5deg` (or `--gcs-uri gs://... --cache-dir /tmp/tile_cache`).
 * **If you are starting from raw HydroSHEDS or MERIT GeoTIFF files:** Run `multimet/catchment_delineation/tools/slice_continental_dems.py` once to slice the continental `.tif` rasters into 5°×5° `.npy` tiles:
@@ -84,7 +104,7 @@ delineate-catchment \
   --workers 8
 ```
 
-This creates the exact folder structure expected by Caravan and MultiMet tools:
+This creates the standard folder structure used by Caravan and MultiMet tools:
 
 ```text
 /path/to/caravan_dataset/
@@ -136,21 +156,21 @@ print("Area (km²):", feature["properties"]["area_km2"])
 
 ## 4. What to Watch Out For (Common Pitfalls)
 
-1. **You must provide all file paths yourself (no hidden defaults)**
-   The tool never guesses file locations and never falls back to default paths. Always pass your tile location (`--tiles-dir` or `--gcs-uri` + `--cache-dir`) and your output destination (`-o` or `--output-dir`).
+1. **Always provide your tile and output paths**
+   Pass your tile location (`--tiles-dir` or `--gcs-uri` + `--cache-dir`) and your output destination (`-o` or `--output-dir`).
 
 2. **Gauges on wide rivers need `--expected-area` or `--area-col`**
    On a 90-meter map, a wide river (such as the Danube, Mississippi, or Amazon) spans many grid cells across its width. A gauge coordinate near the riverbank can sit closer to a tiny creek on the bank than to the main river channel in the middle of the river.
    * Passing `--expected-area` (or `--area-col` for CSV tables) tells the tool to find the nearby channel whose drainage area matches your expected area (within `±50%` by default, controlled by `--area-tolerance`).
-   * **Loud error if no river matches:** If you supply an expected area and no river within `~7.2 km` matches that area, the tool **will not guess or output a bad polygon**. It logs a `[AREA HINT FAILURE]` error and refuses to output a polygon (`CatchmentAreaMismatchError`).
+   * If you supply an expected area and no river within `~7.2 km` matches that area, the tool logs a `[AREA HINT FAILURE]` error and raises `CatchmentAreaMismatchError` rather than outputting a mismatched polygon.
 
 3. **Latitude limit (`-56°S` to `60°N`)**
    The 90-meter HydroSHEDS maps cover latitudes from `-56°S` to `60°N`.
    * If a gauge is north of `60°N` (such as northern Scandinavia, Alaska, or northern Canada), it is outside map coverage.
-   * If a gauge sits south of `60°N` (for example at `59.8°N`) but its upstream headwaters cross north of `60°N`, the tool stops rather than cutting the river off at the `60°N` border. In batch runs, these gauges are marked `status: "out_of_coverage"` with `geometry: null`.
+   * If a gauge sits south of `60°N` (for example at `59.8°N`) but its upstream headwaters cross north of `60°N`, the tool stops rather than cutting the river off at the `60°N` border. In batch runs, these gauges are recorded with `status: "MISSING_DATA: ..."` and `geometry: null`.
 
 4. **All upstream map tiles must be in your tile folder**
-   Large rivers can start hundreds of kilometers away and cross several 5°×5° map tiles. If your `--tiles-dir` contains the tile for the gauge location but is missing an upstream tile that drains into that river, the tool stops with an error instead of returning an incomplete polygon.
+   Large rivers can start hundreds of kilometers away and cross several 5°×5° map tiles (named `{lat_top}{lon_left}.npy`, such as `n40w090.npy` and `n45w090.npy`). If your `--tiles-dir` contains the tile for the gauge location but is missing an upstream tile that drains into that river, the tool raises `FileNotFoundError` instead of returning an incomplete polygon.
 
 5. **Coordinate order and units**
    * **Coordinates:** Standard decimal degrees (`EPSG:4326` / WGS84), with **latitude first** (`-56` to `60`) and **longitude second** (`-180` to `180`).
@@ -178,7 +198,7 @@ print("Area (km²):", feature["properties"]["area_km2"])
 
 | Argument | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--tiles-dir` | path / URI | `None` | Folder (local path or `gs://` URI) containing 5°×5° `.npy` flow-direction tiles. You must provide either `--tiles-dir` or `--gcs-uri`. |
+| `--tiles-dir` | path / URI | `None` | Folder (local path or `gs://` URI) containing 5°×5° `.npy` flow-direction tiles (e.g., `n35w090.npy`, `n40w090.npy`). You must provide either `--tiles-dir` or `--gcs-uri`. |
 | `--gcs-uri` | URI | `None` | Google Cloud Storage folder (`gs://...`) containing 5°×5° `.npy` tiles. Must be used with `--cache-dir`. |
 | `--cache-dir` | path | `None` | Local folder where tiles downloaded from Google Cloud Storage are stored. Required whenever reading tiles from `gs://`. |
 | `--snap-window` | int | `12` | Half-width of the search box (in 90-meter pixels) around the gauge coordinate used to snap onto the nearest river channel (`12` cells ≈ `1.1 km`). |
@@ -201,9 +221,30 @@ print("Area (km²):", feature["properties"]["area_km2"])
 
 ---
 
-## 6. Benchmark CLI (`benchmark-catchment`) & Accuracy Summary
+## 6. Benchmark Tools (`benchmark-catchment` & `build_benchmark_dataset.py`)
 
-You can evaluate delineation accuracy against a reference dataset of published gauge polygons using `benchmark-catchment`:
+### Building a Reference Benchmark Dataset (`build_benchmark_dataset.py`)
+
+To create a stratified reference benchmark Parquet file (`geometry_wkt` and `reference_area_km2` across continents and basin size tiers) from reference shapefiles and coordinate tables:
+
+```bash
+python multimet/catchment_delineation/tools/build_benchmark_dataset.py \
+  --shapes /path/to/grdc_basin_shapes.shp /path/to/camels_shapefiles_dir \
+  --coords-csv /path/to/grdc_attributes.csv /path/to/caravan_coordinates.csv \
+  --world-geojson /path/to/naturalearth_lowres.geojson \
+  --output /path/to/benchmark_basins_1000.parquet
+```
+
+| Argument | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--shapes` | path(s) | Required | One or more reference shapefile paths (`.shp`) or directories containing `*_basin_shapes.shp` files. |
+| `--coords-csv` | path(s) | `[]` | Optional path(s) to coordinate CSV files (such as `grdc_attributes.csv` or `coordinates.csv`). Also checks for `coordinates.csv` next to each shapefile. |
+| `--world-geojson` | path | Required | Path to world continents GeoJSON file (must include `continent` and `geometry`). |
+| `--output` | path | Required | Output Parquet file path (`.parquet`) containing `gauge_id`, `continent`, `hemisphere`, `size_tier`, `latitude`, `longitude`, `reference_area_km2`, and `geometry_wkt`. |
+
+### Running the Benchmark (`benchmark-catchment`)
+
+Evaluate delineation accuracy against a reference dataset of published gauge polygons using `benchmark-catchment`:
 
 ```bash
 benchmark-catchment \
@@ -213,11 +254,9 @@ benchmark-catchment \
   --output benchmark_results.csv
 ```
 
-### Benchmark CLI Arguments
-
 | Argument | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--dataset` | path / URI | Required | Path (`.parquet` or `gs://`) to the benchmark reference dataset. |
+| `--dataset` | path / URI | Required | Path (`.parquet` or `gs://`) to the benchmark reference dataset (with `reference_area_km2` and `geometry_wkt`). |
 | `--tiles-dir` | path / URI | `None` | Local folder (or `gs://` URI) containing 5°×5° `.npy` flow-direction tiles. |
 | `--gcs-uri` | URI | `None` | Google Cloud Storage URI containing 5°×5° `.npy` tiles (requires `--cache-dir`). |
 | `--cache-dir` | path | `None` | Local folder for storing tiles downloaded from `--gcs-uri`. |
@@ -237,9 +276,9 @@ Evaluated across `1,200` global gauges (`1,127` within the `[-56°S, 60°N]` Hyd
 
 | Basin Size Bucket | In-Coverage Basins | Median IoU | Median Dice | Basins with $\text{IoU} \ge 0.80$ | Median Area Error |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **1_micro** ($< 10\text{ km}^2$) | 132 | **0.916** | **0.956** | **87.1%** (115 / 132) | 5.29% |
-| **2_small** ($10\text{–}100\text{ km}^2$) | 172 | **0.955** | **0.977** | **98.3%** (169 / 172) | 2.68% |
-| **3_medium** ($100\text{–}1,000\text{ km}^2$) | 222 | **0.975** | **0.988** | **98.2%** (218 / 222) | 1.88% |
-| **4_large** ($1,000\text{–}10,000\text{ km}^2$) | 282 | **0.984** | **0.992** | **98.9%** (279 / 282) | 1.38% |
+| **1_micro** ($< 100\text{ km}^2$) | 132 | **0.916** | **0.956** | **87.1%** (115 / 132) | 5.29% |
+| **2_small** ($100\text{–}500\text{ km}^2$) | 172 | **0.955** | **0.977** | **98.3%** (169 / 172) | 2.68% |
+| **3_medium** ($500\text{–}2,500\text{ km}^2$) | 222 | **0.975** | **0.988** | **98.2%** (218 / 222) | 1.88% |
+| **4_large** ($2,500\text{–}10,000\text{ km}^2$) | 282 | **0.984** | **0.992** | **98.9%** (279 / 282) | 1.38% |
 | **5_macro** ($> 10,000\text{ km}^2$) | 319 | **0.991** | **0.995** | **99.4%** (317 / 319) | 0.96% |
 | **All In-Coverage** | **1,127** | **0.976** | **0.988** | **97.4%** (1,098 / 1,127) | **1.80%** |
