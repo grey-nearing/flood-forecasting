@@ -5,6 +5,7 @@ multimet.timeseries_extractors package
    :members:
    :show-inheritance:
    :undoc-members:
+   :no-index:
 
 multimet.timeseries_extractors.base
 -----------------------------------

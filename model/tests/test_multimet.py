@@ -15,13 +15,14 @@
 import pytest
 import numpy as np
 import pandas as pd
+import torch
 import xarray as xr
 import re
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from typing import Callable
 
-from model.datasetzoo.multimet import Multimet
+from model.datasetzoo.multimet import Multimet, MultimetDataLoader
 from model.utils.config import Config
 from model.utils.errors import NoTrainDataError, NoEvaluationDataError
 
@@ -1170,3 +1171,64 @@ def test_multimet_rejects_unexpected_minimum_lead_time(
 
     with pytest.raises(ValueError, match='minimum forecast lead time'):
         Multimet(cfg=cfg, is_train=True, period='train')
+
+
+def test_multimet_basin_index_consistent_int64_across_128_boundary(
+    tmp_path: Path,
+    get_config: Callable[[str], Config],
+) -> None:
+    """Multimet emits fixed int64 basin_index across the 128-basin boundary."""
+    num_basins = 130
+    expected_samples = num_basins * 2
+    basins = [f'basin_{idx:03d}' for idx in range(num_basins)]
+    dates = pd.date_range('1999-12-25', '2000-01-05', freq='D')
+    lead_times = [np.timedelta64(1, 'D'), np.timedelta64(2, 'D')]
+    ds = _day_offset_dataset(basins, dates, lead_times)
+
+    cfg = get_config('default')
+    _write_multimet_stores(tmp_path / 'stores', cfg, ds, basins)
+    cfg.update_config(
+        {
+            'seq_length': 3,
+            'lead_time': 2,
+            'forecast_overlap': 1,
+            'predict_last_n': 2,
+            'hindcast_inputs': ['era5land_2d'],
+            'forecast_inputs': ['hres_3d'],
+            'train_start_date': ['01/01/2000'],
+            'train_end_date': ['02/01/2000'],
+        }
+    )
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    assert len(dataset) == expected_samples
+
+    sample_low = dataset[0]  # basin 0
+    sample_pre_boundary = dataset[254]  # basin 127
+    sample_boundary = dataset[256]  # basin 128
+    sample_high = dataset[258]  # basin 129
+    for sample, expected_basin_idx in [
+        (sample_low, 0),
+        (sample_pre_boundary, 127),
+        (sample_boundary, 128),
+        (sample_high, 129),
+    ]:
+        assert sample['basin_index'].dtype == np.int64
+        assert int(sample['basin_index']) == expected_basin_idx
+
+    loader = MultimetDataLoader(
+        dataset,
+        lazy_load=True,
+        logging_level=cfg.logging_level,
+        batch_size=expected_samples,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=dataset.collate_fn,
+    )
+    batches = list(loader)
+    assert len(batches) == 1
+    assert batches[0]['basin_index'].dtype == torch.int64
+    expected_batch_indices = [
+        idx for idx in range(num_basins) for _ in range(2)
+    ]
+    assert batches[0]['basin_index'].tolist() == expected_batch_indices

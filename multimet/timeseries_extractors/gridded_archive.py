@@ -23,6 +23,7 @@ gridded Zarr archives (local paths or ``gs://`` URIs) for:
 - **HRES** (0.25 deg 10-day daily forecast: 5 ``hres_*`` surface bands)
 
 Design invariants:
+
 1. **No hardcoded paths or fallback locations:** callers must supply an explicit
    ``store_uri``. Missing or empty URIs raise :class:`GriddedArchiveError`.
 2. **Missing data in = missing data out:** absent variables or dates within a

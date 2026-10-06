@@ -24,6 +24,7 @@ def release() -> None:
     """Collect freed memory, and trim on Linux-like systems.
 
     Return freed C memory to the OS. This has two purposes:
+
     1. OS allocates us new defragmented allocs when needed.
     2. Prevent races where memory is fragmented, and we ask
        for new allocs yet the underlying allocator didn't
