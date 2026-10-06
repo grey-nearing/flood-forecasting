@@ -31,51 +31,20 @@ import xarray as xr
 
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import DEFAULT_STORAGE_PATHS, Product
+from multimet.utils.cpc import ensure_psl_cpc_netcdf
 from multimet.utils.spatial import slice_coordinates_by_bounds
-from multimet.utils.zonal import ZonalWeightCalculator, ZonalWeightMatrix
-
-import netCDF4
-
-import logging
-import tempfile
-import time
-import urllib.request
-from pathlib import Path
-
 from multimet.utils.zonal import (
+    ZonalWeightCalculator,
+    ZonalWeightMatrix,
     weighted_mean_valid as _weighted_mean_valid,
     weighted_mean_valid_with_coverage as _weighted_mean_valid_with_coverage,
 )
 
+import logging
+import tempfile
+import netCDF4
+
 logger = logging.getLogger(__name__)
-
-
-def _default_cpc_cache_dir() -> str:
-  return os.path.join(tempfile.gettempdir(), "cpc_cache")
-
-
-def ensure_psl_cpc_netcdf(
-    year: int, cache_dir: Optional[str] = None
-) -> str:
-  """Downloads and caches yearly NOAA PSL CPC NetCDF file if not already present."""
-  if cache_dir is None:
-    cache_dir = _default_cpc_cache_dir()
-  os.makedirs(cache_dir, exist_ok=True)
-  local_path = os.path.join(cache_dir, f"precip.{year}.nc")
-  if os.path.exists(local_path) and os.path.getsize(local_path) > 1024 * 1024:
-    return local_path
-
-  url = f"https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/precip.{year}.nc"
-  temp_path = f"{local_path}.tmp.{os.getpid()}.{time.time_ns()}"
-  if not (os.path.exists(local_path) and os.path.getsize(local_path) > 1024 * 1024):
-    logger.info("Downloading NOAA PSL CPC NetCDF for %d from %s...", year, url)
-    with urllib.request.urlopen(url, timeout=120) as response, open(temp_path, "wb") as out_f:
-      shutil.copyfileobj(response, out_f)
-    if not (os.path.exists(local_path) and os.path.getsize(local_path) > 1024 * 1024):
-      os.replace(temp_path, local_path)
-      logger.info("Cached %s (%.1f MB)", local_path, os.path.getsize(local_path) / 1e6)
-  Path(temp_path).unlink(missing_ok=True)
-  return local_path
 
 
 def resolve_date_to_cpc_file(
@@ -118,7 +87,11 @@ class CPCExtractor(BaseExtractor):
       cache_dir: Optional[str] = None,
   ):
     super().__init__(Product.CPC, data_dir)
-    self.cache_dir = cache_dir if cache_dir is not None else _default_cpc_cache_dir()
+    self.cache_dir = (
+        str(cache_dir)
+        if cache_dir is not None and str(cache_dir).strip()
+        else os.path.join(tempfile.gettempdir(), "multimet_cpc_cache")
+    )
 
     source_lower = source.lower()
     if source_lower in ("archive", "gridded_archive", "zarr", "zarr_archive"):
@@ -311,8 +284,12 @@ class CPCExtractor(BaseExtractor):
 
     years = sorted(list(set(d.year for d in date_idx)))
     for yr in years:
-      nc_path = ensure_psl_cpc_netcdf(yr, cache_dir=self.cache_dir)
       days_in_year = [d for d in date_idx if d.year == yr]
+      nc_path = ensure_psl_cpc_netcdf(
+          yr,
+          cache_dir=self.cache_dir,
+          required_end_date=max(days_in_year) if days_in_year else None,
+      )
 
       if netCDF4 is not None:
         with netCDF4.Dataset(nc_path, "r") as nc:
@@ -395,7 +372,9 @@ class CPCExtractor(BaseExtractor):
     from multimet.timeseries_extractors.gridded_archive import _warn_missing_variables_once
 
     dt = pd.to_datetime(dt)
-    nc_path = ensure_psl_cpc_netcdf(dt.year, cache_dir=self.cache_dir)
+    nc_path = ensure_psl_cpc_netcdf(
+        dt.year, cache_dir=self.cache_dir, required_end_date=dt
+    )
     num_basins = matrix.matrix.shape[0]
     res = np.full(num_basins, np.nan, dtype=np.float32)
     stations = np.full(num_basins, np.nan, dtype=np.float32)
