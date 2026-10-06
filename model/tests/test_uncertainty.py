@@ -14,10 +14,12 @@
 
 """Integration tests that perform full runs on the uncertainty estimation code."""
 
-from typing import Callable
+import shutil
+from collections.abc import Callable
+from pathlib import Path
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import pytest
 
 from model.evaluation.evaluate import start_evaluation
@@ -30,6 +32,45 @@ from model.training.train import start_training
 from model.utils.config import Config
 
 
+@pytest.fixture(scope='module')
+def trained_uncertainty_runs(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Callable[[str, str, dict], Path]:
+    """Train a model once per (forecast_model, head) pair and cache its run_dir.
+
+    Neither ``negative_sample_handling`` nor ``mc_dropout`` affects training
+    weights or scaler computation; they only govern evaluation-time sampling.
+    """
+    cache: dict[tuple[str, str], Path] = {}
+    config_file = Path(__file__).parent / 'test_configs' / 'forecast.test.yml'
+
+    def _get_trained_run(
+        forecast_model: str, head: str, model_updates: dict
+    ) -> Path:
+        key = (forecast_model, head)
+        if key not in cache:
+            run_root = tmp_path_factory.mktemp(
+                f'uncertainty_{forecast_model}_{head}'
+            )
+            config = Config(config_file)
+            config.run_dir = run_root
+            updates = {
+                'model': forecast_model,
+                'head': head,
+                'n_samples': 10,
+                'negative_sample_max_retries': 1,
+                'loss': 'CMALLoss',
+                'n_distributions': 3,
+            }
+            updates.update(model_updates)
+            config.update_config(updates)
+            start_training(config)
+            cache[key] = config.run_dir
+        return cache[key]
+
+    return _get_trained_run
+
+
 @pytest.mark.parametrize('mc_dropout', [False, True])
 @pytest.mark.parametrize(
     'negative_sample_handling', ['none', 'clip', 'truncate']
@@ -37,7 +78,8 @@ from model.utils.config import Config
 @pytest.mark.parametrize('head', ['cmal', 'cmal_deterministic'])
 @pytest.mark.parametrize('forecast_model', ['mean_embedding_forecast_lstm'])
 def test_daily_uncertainty(
-    get_config: Fixture[Callable[[str], dict]],
+    tmp_path: Fixture[Path],
+    trained_uncertainty_runs: Callable[[str, str, dict], Path],
     forecast_config_updates: Fixture[Callable[[str], dict]],
     forecast_model: str,
     head: str,
@@ -50,24 +92,25 @@ def test_daily_uncertainty(
     for CMAL heads under various negative sample handling strategies
     ('none', 'clip', 'truncate') and with or without Monte Carlo dropout.
     """
+    base_run_dir = trained_uncertainty_runs(
+        forecast_model, head, forecast_config_updates(forecast_model)
+    )
+    run_dir = tmp_path / base_run_dir.name
+    shutil.copytree(base_run_dir, run_dir)
 
-    config = get_config('forecast')
-    updates = {
-        'model': forecast_model,
-        'head': head,
-        'negative_sample_handling': negative_sample_handling,
-        'mc_dropout': mc_dropout,
-        'n_samples': 10,
-        'negative_sample_max_retries': 1,
-        'loss': 'CMALLoss',
-        'n_distributions': 3,
-    }
-    updates.update(forecast_config_updates(forecast_model))
-    config.update_config(updates)
+    config = Config(run_dir / 'config.yml')
+    config.update_config(
+        {
+            'run_dir': run_dir,
+            'negative_sample_handling': negative_sample_handling,
+            'mc_dropout': mc_dropout,
+            'n_samples': 10,
+            'negative_sample_max_retries': 1,
+        }
+    )
 
     basin = 'hysets_01075000'
 
-    start_training(config)
     start_evaluation(cfg=config, run_dir=config.run_dir, epoch=1, period='test')
     _check_uncertainty_output(config, basin, negative_sample_handling)
 

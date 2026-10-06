@@ -311,6 +311,7 @@ def test_continue_training_and_finetuning_pipeline(
         integration_data_env, 'test_finetune_base', run_dir
     )
     cfg_dict['epochs'] = 1
+    cfg_dict['validate_every'] = None
     cfg_dict['clip_gradient_norm'] = 1.0
     cfg = Config(cfg_dict)
 
@@ -335,6 +336,7 @@ def test_continue_training_and_finetuning_pipeline(
         'is_continue_training': True,
         'continue_from_epoch': 1,
         'epochs': 1,
+        'validate_every': None,
         'clip_gradient_norm': 1.0,
     })
     continue_cfg = Config(continue_cfg_dict)
@@ -368,6 +370,7 @@ def test_continue_training_and_finetuning_pipeline(
         'is_finetuning': True,
         'finetune_modules': ['head'],
         'epochs': 1,
+        'validate_every': None,
         'clip_gradient_norm': 1.0,
     })
     finetune_cfg = Config(finetune_cfg_dict)
@@ -421,6 +424,7 @@ def test_inference_mode_without_ground_truth(integration_data_env, tmp_path):
         integration_data_env, 'test_infer_mode', run_dir
     )
     cfg_dict['epochs'] = 1
+    cfg_dict['validate_every'] = None
     cfg_dict['tester_skip_obs_all_nan'] = False
     cfg = Config(cfg_dict)
 
@@ -456,12 +460,14 @@ def test_numerical_determinism_with_fixed_seed(
         integration_data_env, 'test_determ_1', run_dir_1
     )
     cfg_dict_1['epochs'] = 1
+    cfg_dict_1['validate_every'] = None
     cfg_dict_1['seed'] = 42
 
     cfg_dict_2 = _get_base_config_dict(
         integration_data_env, 'test_determ_2', run_dir_2
     )
     cfg_dict_2['epochs'] = 1
+    cfg_dict_2['validate_every'] = None
     cfg_dict_2['seed'] = 42
 
     cfg_1 = Config(cfg_dict_1)
@@ -520,6 +526,7 @@ def test_run_cli_entrypoints(integration_data_env, tmp_path):
         integration_data_env, 'test_cli_pipeline', run_dir
     )
     cfg_dict['epochs'] = 1
+    cfg_dict['validate_every'] = None
     cfg = Config(cfg_dict)
 
     # 1. start_run
