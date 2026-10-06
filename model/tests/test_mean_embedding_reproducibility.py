@@ -138,7 +138,7 @@ def _config(tmp_path: Path, layout: str = 'dict') -> Config:
     xr.Dataset(
         {'streamflow': ('parameter', [0.0, 1.0, 0.0, 1.0])},
         coords={'parameter': ['center', 'scale', 'mean', 'std']},
-    ).to_netcdf(tmp_path / 'scaler.nc', engine='scipy')
+    ).to_zarr(tmp_path / 'scaler.zarr', mode='w')
     return cfg
 
 

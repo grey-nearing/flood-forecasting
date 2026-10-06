@@ -751,20 +751,19 @@ class Multimet(Dataset):
         )
         if single_store_path is not None:
             ds = _open_zarr(single_store_path)
-            if any(f in ds.data_vars for f in features):
-                missing = sorted(set(features) - set(ds.data_vars))
-                if missing:
-                    raise ValueError(
-                        f'Requested hindcast features {missing} not found in '
-                        f'{single_store_path}.'
-                    )
-                if 'lead_time' in ds:
-                    ds = ds.sel(
-                        basin=self._basins, lead_time=self._lead_time_slice()
-                    )
-                else:
-                    ds = ds.sel(basin=self._basins)
-                return [ds[features]]
+            missing = sorted(set(features) - set(ds.data_vars))
+            if missing:
+                raise ValueError(
+                    f'Requested hindcast features {missing} not found in '
+                    f'{single_store_path}.'
+                )
+            if 'lead_time' in ds:
+                ds = ds.sel(
+                    basin=self._basins, lead_time=self._lead_time_slice()
+                )
+            else:
+                ds = ds.sel(basin=self._basins)
+            return [ds[features]]
 
         # Separate products and bands for each product from the configured
         # hindcast inputs.
@@ -844,24 +843,23 @@ class Multimet(Dataset):
         )
         if single_store_path is not None:
             ds = _open_zarr(single_store_path)
-            if any(f in ds.data_vars for f in self._forecast_features):
-                missing = sorted(
-                    set(self._forecast_features) - set(ds.data_vars)
+            missing = sorted(
+                set(self._forecast_features) - set(ds.data_vars)
+            )
+            if missing:
+                raise ValueError(
+                    f'Requested forecast features {missing} not found in '
+                    f'{single_store_path}.'
                 )
-                if missing:
-                    raise ValueError(
-                        f'Requested forecast features {missing} not found in '
-                        f'{single_store_path}.'
-                    )
-                if 'lead_time' not in ds:
-                    raise ValueError(
-                        f'Lead times do not exist in forecast dataset at '
-                        f'{single_store_path}.'
-                    )
-                ds = ds.sel(
-                    basin=self._basins, lead_time=self._lead_time_slice()
+            if 'lead_time' not in ds:
+                raise ValueError(
+                    f'Lead times do not exist in forecast dataset at '
+                    f'{single_store_path}.'
                 )
-                return [ds[self._forecast_features]]
+            ds = ds.sel(
+                basin=self._basins, lead_time=self._lead_time_slice()
+            )
+            return [ds[self._forecast_features]]
 
         # Separate products and bands for each product from configured inputs.
         product_bands = _get_products_and_bands_from_features(
@@ -1013,24 +1011,18 @@ def _convert_to_tensor(
 def _find_single_dynamics_zarr_path(dynamics_path: Path | str) -> Path | None:
     path_str = str(dynamics_path)
     if path_str.startswith('gs://') or path_str.startswith('gs:/'):
-        if path_str.endswith('.zarr'):
-            return Path(path_str)
+        if path_str.rstrip('/').endswith('.zarr'):
+            return Path(path_str.rstrip('/'))
         return None
 
     p = Path(dynamics_path)
-    is_zarr = (
-        p.suffix == '.zarr'
-        or (p / '.zgroup').exists()
-        or (p / 'zarr.json').exists()
-        or (p / '.zmetadata').exists()
-    )
-    if is_zarr:
+    if p.suffix == '.zarr':
+        if not p.exists():
+            raise FileNotFoundError(f'Dynamics Zarr store not found: {p}')
         return p
-    has_timeseries = (p / 'timeseries.zarr').exists()
-    has_other_dirs = any(
-        sub.is_dir() for sub in p.glob('*') if sub.name != 'timeseries.zarr'
-    )
-    if has_timeseries and not has_other_dirs:
+    if not p.exists():
+        raise FileNotFoundError(f'Dynamics data path not found: {p}')
+    if (p / 'timeseries.zarr').exists():
         return p / 'timeseries.zarr'
     return None
 
@@ -1041,25 +1033,12 @@ def _find_product_zarr_path(dynamics_path: Path | str, product: str) -> Path:
         return Path(f"{path_str.rstrip('/')}/{product}/timeseries.zarr")
 
     p = Path(dynamics_path)
-    product_path = p / product / 'timeseries.zarr'
-    if product_path.exists():
-        return product_path
-    if (p / product).exists() and (
-        (p / product).suffix == '.zarr'
-        or (p / product / '.zgroup').exists()
-        or (p / product / 'zarr.json').exists()
-        or (p / product / '.zmetadata').exists()
-    ):
-        return p / product
-    # Try case-insensitive matching
-    if p.is_dir():
-        product_norm = product.lower().replace('_', '')
-        for sub in p.glob('*'):
-            if sub.is_dir() and sub.name.lower().replace('_', '') == product_norm:
-                if (sub / 'timeseries.zarr').exists():
-                    return sub / 'timeseries.zarr'
-                return sub
-    return product_path
+    candidate = p / product / 'timeseries.zarr'
+    if candidate.exists():
+        return candidate
+    raise FileNotFoundError(
+        f"Zarr store for product '{product}' not found at {candidate}"
+    )
 
 
 @functools.cache
