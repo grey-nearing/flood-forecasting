@@ -219,7 +219,7 @@ def test_multi_target_cmal(
             for name in options['target_variables']
         },
         coords={'parameter': ['center', 'scale', 'mean', 'std']},
-    ).to_netcdf(tmp_path / 'scaler.nc', engine='scipy')
+    ).to_zarr(tmp_path / 'scaler.zarr', mode='w')
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(0)
         model = MeanEmbeddingForecastLSTM(Config(options)).eval()
