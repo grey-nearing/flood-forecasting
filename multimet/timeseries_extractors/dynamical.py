@@ -55,10 +55,9 @@ from multimet.timeseries_extractors.config import (
     PRODUCT_BANDS,
     PRODUCT_METADATA_ATTRS,
     Product,
-    ProductType,
 )
-from multimet.utils.geometry import get_bounding_box, load_basin_geometries
-from multimet.utils.zonal import ZonalWeightCalculator, ZonalWeightMatrix
+from multimet.utils.geometry import load_basin_geometries
+from multimet.utils.zonal import ZonalWeightMatrix
 
 logger = logging.getLogger(__name__)
 

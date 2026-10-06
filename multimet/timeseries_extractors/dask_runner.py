@@ -28,11 +28,9 @@ import argparse
 import gc
 import logging
 import os
-import random
-import shutil
 import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import dask
 import distributed
@@ -47,11 +45,7 @@ import zarr
 
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import (
-    FORECAST_LEAD_DAYS,
-    PRODUCT_BANDS,
-    PRODUCT_TYPES,
     Product,
-    ProductType,
 )
 from multimet.timeseries_extractors.cpc import CPCExtractor
 from multimet.timeseries_extractors.dynamical import (
@@ -206,7 +200,7 @@ def _extract_and_write_chunk_task(
   if gcp_project or store_path.startswith(("gs://", "gcs://")):
     configure_gcp_project(gcp_project)
 
-  prod_enum = Product[product_name]
+  _ = Product[product_name]
   extractor = extractor_cls(**extractor_kwargs)
 
   with dask.config.set(scheduler="threads"):

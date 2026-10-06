@@ -24,13 +24,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 import geopandas as gpd
 import pandas as pd
-import xarray as xr
 
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import Product
