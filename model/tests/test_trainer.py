@@ -69,7 +69,6 @@ def test_get_loss_obj():
         cfg = MagicMock()
         cfg.loss = loss_name
         cfg.predict_last_n = 1
-        cfg.no_loss_frequencies = []
         cfg.target_variables = ['flow']
         cfg.target_loss_weights = None
         cfg.n_distributions = 3

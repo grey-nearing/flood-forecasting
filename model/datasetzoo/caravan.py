@@ -31,35 +31,30 @@ from model.utils.tqdm import AutoRefreshTqdm as tqdm
 LOGGER = logging.getLogger(__name__)
 
 
-def _find_zarr_store(
-    path: Path | str, preferred_names: list[str]
-) -> Path | None:
-    """Finds a Zarr store given a directory or file path."""
+def _resolve_zarr_store(
+    path: Path | str, canonical_zarr_name: str
+) -> Path | str | None:
+    """Resolves a Zarr store path deterministically without heuristic probing."""
     path_str = str(path)
     if path_str.startswith('gs://') or path_str.startswith('gs:/'):
-        if path_str.endswith('.zarr'):
-            return Path(path_str)
-        if preferred_names:
-            return Path(f"{path_str.rstrip('/')}/{preferred_names[0]}")
-        return Path(path_str)
+        uri = (
+            'gs://'
+            + path_str.removeprefix('gs://').removeprefix('gs:/').rstrip('/')
+        )
+        if uri.endswith('.zarr'):
+            return uri
+        return f'{uri}/{canonical_zarr_name}'
 
     p = Path(path)
-    if (
-        p.suffix == '.zarr'
-        or (p / '.zgroup').exists()
-        or (p / 'zarr.json').exists()
-        or (p / '.zmetadata').exists()
-    ):
+    if p.suffix == '.zarr':
+        if not p.exists():
+            raise FileNotFoundError(f'Zarr store not found: {p}')
         return p
-    for name in preferred_names:
-        candidate = p / name
-        if candidate.exists() and (
-            candidate.suffix == '.zarr'
-            or (candidate / '.zgroup').exists()
-            or (candidate / 'zarr.json').exists()
-            or (candidate / '.zmetadata').exists()
-        ):
-            return candidate
+    if not p.exists():
+        raise FileNotFoundError(f'Data path not found: {p}')
+    candidate = p / canonical_zarr_name
+    if candidate.exists():
+        return candidate
     return None
 
 
@@ -91,13 +86,10 @@ def load_caravan_attributes(
         A basin indexed Dataset with all attributes as coordinates.
     """
     LOGGER.debug('load caravan attributes')
-    zarr_store = _find_zarr_store(
-        data_dir, ['attributes.zarr', 'attributes', 'statics.zarr', 'statics']
-    )
+    zarr_store = _resolve_zarr_store(data_dir, 'attributes.zarr')
     if zarr_store is not None:
         LOGGER.debug('Loading attributes from Zarr store: %s', zarr_store)
-        store_path = zarr_store.as_posix().replace('gs:/', 'gs://')
-        ds = xarray.open_zarr(store_path, chunks='auto')
+        ds = xarray.open_zarr(zarr_store, chunks='auto')
         if features:
             missing_features = sorted(
                 set(features) - (set(ds.data_vars) | set(ds.coords))
@@ -201,14 +193,10 @@ def load_caravan_timeseries(
         A combined Dataset with 'basin' and 'date' coordinates.
     """
     LOGGER.debug('load caravan timeseries')
-    zarr_store = _find_zarr_store(
-        data_dir,
-        ['streamflow.zarr', 'targets.zarr', 'timeseries.zarr', 'timeseries'],
-    )
+    zarr_store = _resolve_zarr_store(data_dir, 'streamflow.zarr')
     if zarr_store is not None:
         LOGGER.debug('Loading timeseries from Zarr store: %s', zarr_store)
-        store_path = zarr_store.as_posix().replace('gs:/', 'gs://')
-        ds = xarray.open_zarr(store_path, chunks='auto')
+        ds = xarray.open_zarr(zarr_store, chunks='auto')
         if target_features:
             missing_targets = sorted(set(target_features) - set(ds.data_vars))
             if missing_targets:
@@ -261,7 +249,15 @@ def load_caravan_timeseries_together(
         raise FileNotFoundError(f'No basin file found at {path}.')
 
     def select(ds: xarray.Dataset) -> xarray.Dataset:
-        return ds[target_features]
+        if target_features:
+            missing_targets = sorted(set(target_features) - set(ds.data_vars))
+            if missing_targets:
+                raise ValueError(
+                    f'Requested target features {missing_targets} not found in '
+                    f'{data_dir}.'
+                )
+            return ds[target_features]
+        return ds
 
     paths = tuple(map(basin_to_path, basins))
 
@@ -330,10 +326,23 @@ def _load_attribute_files_of_subdatasets(
             {'basin': -1}
         )  # Uses underlying numpy arrays in df
 
-    dss = map(
-        process,
-        itertools.chain.from_iterable(e.glob('*.csv') for e in datasets),
+    csv_files = list(
+        itertools.chain.from_iterable(e.glob('*.csv') for e in datasets)
     )
-    dss = dask.compute(*dss)
-
-    return xarray.merge(dss, join='outer', compat='no_conflicts')
+    if not csv_files:
+        raise FileNotFoundError(
+            f'No attribute CSV files found in {datasets}.'
+        )
+    dss = dask.compute(*(process(f) for f in csv_files))
+    ds = xarray.merge(dss, join='outer', compat='no_conflicts')
+    if features:
+        missing_features = sorted(
+            set(features) - (set(ds.data_vars) | set(ds.coords))
+        )
+        if missing_features:
+            raise ValueError(
+                f'Requested static attributes {missing_features} not found '
+                f'in {datasets}.'
+            )
+        ds = ds[features]
+    return ds

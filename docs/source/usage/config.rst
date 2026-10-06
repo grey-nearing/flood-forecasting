@@ -37,11 +37,13 @@ Evaluation settings
 -------------------
 
 -  ``inference_mode``: True/False. If True, saves observed data and model output to disk and does not skip dates with missing observations.
--  ``tester_sample_reduction``: ``mean`` or ``median``. How to reduce multiple samples (e.g., from MC-Dropout or CMAL) during evaluation.
+-  ``tester_sample_reduction``: ``mean`` or ``median``. How to reduce multiple samples (e.g., from CMAL) during evaluation.
 -  ``tester_skip_obs_all_nan``: True/False. If True, skips basins whose target observations are entirely ``NaN`` over the evaluation period.
 -  ``clip_targets_to_zero``: List of target variable names (e.g., ``[streamflow]``) for which negative predictions are clipped to zero during evaluation.
 -  ``hot_start_path``: Optional path to a saved LSTM state file (``.npz``) or a directory of per-basin state files (``state_<basin>.npz`` or ``<basin>.npz``) used to warm-start the model's hidden and cell states before running evaluation or inference. Requires ``batch_size: 1``.
 -  ``save_state``: True/False. If ``True``, saves each basin's final LSTM hidden and cell states to ``<run_dir>/hot_start_states/state_<basin>.npz`` at the end of validation, evaluation, or inference. Default: ``False``.
+-  ``assimilate``: True/False. If ``True``, enables gradient-based data assimilation during evaluation/inference (can also be enabled via ``run evaluate --assimilate``). Default: ``False``.
+-  ``assimilation_config``: Optional dictionary configuring gradient-based data assimilation for ``mean_embedding_forecast_lstm``. Supported keys are ``assimilation_components``, ``assimilation_window``, ``initial_learning_rate``, ``regularization_weight``, ``early_stopping_tolerance``, ``epochs``, ``optimizer``, ``loss``, and ``clip_gradient_norm`` (see :py:mod:`model.utils.assimilationconfig` and ``model/example-configs/camels-multimet-mean-embedding-forecast-lstm-assimilation-config.yml``).
 
 General model configuration
 ---------------------------
@@ -58,7 +60,6 @@ General model configuration
 Regression head
 ~~~~~~~~~~~~~~~
 -  ``output_activation``: Activation on the output neuron (``linear``, ``relu``, ``softplus``).
--  ``mc_dropout``: True/False. Whether Monte-Carlo dropout is used during inference.
 
 CMAL head
 ~~~~~~~~~
@@ -92,7 +93,7 @@ Training settings
 -  ``optimizer``: Optimizer to use (``Adam``, ``AdamW``, ``SGD``, etc.).
 -  ``loss``: Loss function (``MSE``, ``NSE``, ``RMSE``, ``CMALLoss``).
 -  ``target_loss_weights``: A list of float values specifying the per-target loss weight, when training on multiple targets at once. Can be combined with any loss. By default, the weight of each target is ``1/n`` with ``n`` being the number of target variables. The order of the weights corresponds to the order of the ``target_variables``.
--  ``regularization``: List of regularization terms (currently, only ``forecast_overlap`` is supported for the ``handoff_forecast_lstm``).
+-  ``regularization``: List of regularization terms (``forecast_overlap`` for ``handoff_forecast_lstm``, ``bg_embedding`` for data assimilation).
 -  ``learning_rate_strategy``: ``ConstantLR``, ``StepLR``, or ``ReduceLROnPlateau``.
 -  ``initial_learning_rate``: Float. Starting learning rate.
 -  ``learning_rate_drop_factor``: Factor by which to reduce the learning rate.
@@ -122,8 +123,7 @@ Data settings
 
 -  ``dataset``: Dataset class to use (currently ``multimet`` is built-in, and custom classes can be registered via :py:func:`model.datasetzoo.register_dataset`).
 -  ``data_dir``: Root directory of the dataset.
--  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir`` (or ``statics_data_path``, ``dynamics_data_path``, ``targets_data_path``): Optional directory/path overrides for static attributes, dynamic forcings, and target streamflow data.
--  ``load_as_csv``: True/False. Whether to force loading data from CSVs instead of binary formats (e.g., NetCDF/Zarr).
+-  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir``: Directory overrides for static attributes (containing ``attributes.zarr``), dynamic forcings, and target streamflow data (containing ``streamflow.zarr``).
 -  ``hindcast_inputs``: Nested dictionary mapping meteorological product names to lists of dynamic input variables used during the historical hindcast period.
 -  ``forecast_inputs``: Nested dictionary mapping meteorological forecast product names to lists of dynamic input variables used during the forecast rollout period.
 -  ``union_mapping``: Optional dictionary mapping primary dynamic features (keys) to fallback features (values) used to fill missing (``NaN``) timestamps, for example ``{cpc_precipitation: era5land_total_precipitation}``.

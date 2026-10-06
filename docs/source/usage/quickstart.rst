@@ -72,16 +72,12 @@ OpenHydroNet uses the `Caravan <https://www.nature.com/articles/s41597-023-01975
 Download or Use Sample Caravan Data
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-A 5-basin sample dataset is included in ``model/tutorial/Caravan-nc``. This sample is ready to use with ``model/tutorial/configs/train-config.yml`` and ``model/tutorial/OpenHydroNet_Tutorial.ipynb``.
+A 5-basin sample dataset is included in ``model/tutorial/Caravan-zarr`` (converted from ``model/tutorial/Caravan-nc``). This sample is ready to use with ``model/tutorial/configs/train-config.yml`` and ``model/tutorial/OpenHydroNet_Tutorial.ipynb``.
 
 To run experiments on the full global Caravan dataset:
 
 1. Visit the `Caravan Zenodo repository <https://doi.org/10.5281/zenodo.6522634>`_.
 2. Download the **NetCDF version** of the dataset (``Caravan-nc.tar.gz``).
-
-   .. note::
-      Avoid loading raw CSV files during large-scale training because CSV parsing is much slower than NetCDF or Zarr.
-
 3. Unpack the archive into a local directory:
 
 .. code-block:: bash
@@ -89,7 +85,7 @@ To run experiments on the full global Caravan dataset:
    mkdir -p ~/data/
    tar -xvzf Caravan-nc.tar.gz -C ~/data/
 
-4. (Optional) Convert Caravan NetCDF/CSV directories to Zarr stores (``attributes.zarr`` and ``streamflow.zarr``) for faster loading:
+4. Convert the unpacked Caravan directory into canonical Zarr stores (``attributes.zarr`` and ``streamflow.zarr``) required by the dataset loader:
 
 .. code-block:: bash
 
@@ -117,7 +113,7 @@ Training Configuration
 Experiments are configured via YAML files:
 
 - **Tutorial Configs:** ``model/tutorial/configs/train-config.yml`` and ``model/tutorial/configs/finetune-config.yml``
-- **Production & Benchmark Example Configs:** ``model/example-configs/`` (including ``floodhub-settings-config.yml`` and ``handoff-forecast-lstm-config.yml``)
+- **Production & Benchmark Example Configs:** ``model/example-configs/`` (including ``floodhub-settings-config.yml``, ``camels-multimet-mean-embedding-forecast-lstm-config.yml``, ``camels-multimet-mean-embedding-forecast-lstm-assimilation-config.yml``, and ``camels-multimet-handoff-forecast-lstm-config.yml``)
 - **Pre-Trained Global Checkpoints:** ``model/pretrained-models/google-floodhub-settings-110-epochs/``
 
 Understanding the Tutorial Dataset Splits
@@ -146,9 +142,9 @@ Argument               Description
 
 **train_basin_file**   Path to a plain-text file listing basin IDs (e.g., ``model/tutorial/basin-lists/5-basin-train.txt``).
 
-**targets_data_dir**   Path to the tutorial sample (``model/tutorial/Caravan-nc``) or your unpacked Caravan dataset directory.
+**targets_data_dir**   Path to the tutorial sample (``model/tutorial/Caravan-zarr``) or your converted Caravan Zarr directory.
 
-**statics_data_dir**   Path to the tutorial sample (``model/tutorial/Caravan-nc``) or your unpacked Caravan dataset directory.
+**statics_data_dir**   Path to the tutorial sample (``model/tutorial/Caravan-zarr``) or your converted Caravan Zarr directory.
 
 **dynamics_data_dir**  Path to the MultiMet forcing dataset (``gs://caravan-multimet/v1.1`` or a local directory).
 =====================  ============================================================================================================
@@ -174,7 +170,7 @@ Fine-Tuning a Pre-Trained Model
 Evaluation
 ^^^^^^^^^^
 
-To calculate performance metrics (such as NSE and KGE) on the test period:
+To calculate performance metrics (such as NSE and KGE) on the test period (pass ``--assimilate`` to enable variational data assimilation if configured):
 
 .. code-block:: bash
 

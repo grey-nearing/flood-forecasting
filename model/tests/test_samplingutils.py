@@ -41,9 +41,6 @@ def mock_scaler():
 
 @pytest.fixture
 def mock_model():
-    class DummyDropout:
-        p = 0.2
-
     class DummyModel:
         pass
 
@@ -51,16 +48,12 @@ def mock_model():
     model.parameters = lambda: iter([torch.zeros(1)])
     cfg = MagicMock()
     cfg.head = 'cmal'
-    cfg.output_dropout = 0.2
-    cfg.mc_dropout = False
     cfg.target_variables = ['streamflow']
-    cfg.use_frequencies = ['1D']
-    cfg.predict_last_n = {'1D': 3}
+    cfg.predict_last_n = 3
     cfg.n_distributions = 3
     cfg.negative_sample_handling = 'none'
     cfg.negative_sample_max_retries = 3
     model.cfg = cfg
-    model.dropout = DummyDropout()
     return model
 
 
@@ -144,22 +137,6 @@ def test_sample_asymmetric_laplacians():
 
 
 @pytest.mark.unit
-def test_sampling_setup_dropout_checks(mock_model):
-    mock_model.cfg.mc_dropout = True
-    mock_model.dropout.p = 0.0  # Invalid for mc_dropout
-    data = {'y': torch.zeros(2, 5, 1)}
-
-    with pytest.raises(
-        RuntimeError, match='requires a dropout rate larger than 0.0'
-    ):
-        samplingutils._SamplingSetup(mock_model, data, head='cmal')
-
-    mock_model.dropout.p = 1.0  # Invalid >= 1.0
-    with pytest.raises(RuntimeError, match='maximal dropout-rate is 1'):
-        samplingutils._SamplingSetup(mock_model, data, head='cmal')
-
-
-@pytest.mark.unit
 def test_sample_cmal(mock_model, mock_scaler):
     data = {
         'x_d': {'ERA5': torch.zeros(2, 10, 3)},
@@ -185,9 +162,10 @@ def test_sample_cmal(mock_model, mock_scaler):
 
 
 @pytest.mark.unit
-def test_sample_pointpredictions_dispatch(mock_model, mock_scaler):
-    mock_model.cfg.head = 'unsupported_head'
-    data = {'y_1D': torch.zeros(2, 5, 1)}
+@pytest.mark.parametrize('head', ['regression', 'unsupported_head'])
+def test_sample_pointpredictions_dispatch(mock_model, mock_scaler, head):
+    mock_model.cfg.head = head
+    data = {'y': torch.zeros(2, 5, 1)}
     with pytest.raises(
         NotImplementedError, match='Sampling mode not supported'
     ):
