@@ -645,6 +645,18 @@ class Config(object):
 
     @property
     def negative_sample_handling(self) -> str:
+        """Method to handle negative point prediction samples ('none', 'clip', or 'truncate').
+
+        Setting ``negative_sample_handling: 'none'`` (or omitting it / ``None``) leaves
+        CMAL draws and summary statistics completely unclipped. When
+        ``negative_sample_handling: 'clip'`` is configured, clamping at physical zero
+        (``normalized_zero``) is applied inside ``model.sample()`` (``sample_cmal`` and
+        ``sample_cmal_deterministic``). Therefore, during evaluation
+        (``BaseTester.evaluate``), evaluation metrics (``NSE``, ``KGE``, etc.) are
+        computed after clipping and sample reduction (``tester_sample_reduction``),
+        whereas losses (``cmalloss``) are computed on the raw distribution parameters
+        before sampling or clipping.
+        """
         return self._cfg.get('negative_sample_handling', None)
 
     @property
