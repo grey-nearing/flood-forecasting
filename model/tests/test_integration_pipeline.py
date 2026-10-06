@@ -32,7 +32,10 @@ from tensorboard.backend.event_processing.event_accumulator import (
 )
 
 from model import run
-from model.datasetzoo.caravan import load_caravan_timeseries_together
+from model.datasetzoo.caravan import (
+    load_caravan_attributes,
+    load_caravan_timeseries_together,
+)
 from model.evaluation.evaluate import start_evaluation
 from model.run import continue_run
 from model.run import eval_run
@@ -57,11 +60,19 @@ def integration_data_env(tmp_path_factory: pytest.TempPathFactory):
     with open(test_basin_file) as f:
         basins = [line.strip() for line in f if line.strip()]
 
-    raw_features = ['total_precipitation_sum', 'temperature_2m_mean']
-    ds = load_caravan_timeseries_together(
-        nc_dir, basins=basins, target_features=raw_features, csv=False
+    raw_features = [
+        'total_precipitation_sum',
+        'temperature_2m_mean',
+        'streamflow',
+    ]
+    ds_all = (
+        load_caravan_timeseries_together(
+            nc_dir, basins=basins, target_features=raw_features, csv=False
+        )
+        .sel(date=slice('1999-01-01', '2002-12-31'))
+        .compute()
     )
-    ds = ds.rename(
+    ds = ds_all[['total_precipitation_sum', 'temperature_2m_mean']].rename(
         {
             'total_precipitation_sum': 'era5land_total_precipitation',
             'temperature_2m_mean': 'era5land_temperature_2m',
@@ -74,12 +85,21 @@ def integration_data_env(tmp_path_factory: pytest.TempPathFactory):
     era5_zarr = dynamics_dir / 'ERA5_LAND' / 'timeseries.zarr'
     era5_zarr.parent.mkdir(parents=True, exist_ok=True)
     ds_forecast.to_zarr(era5_zarr, consolidated=True)
+    ds_all[['streamflow']].to_zarr(
+        dynamics_dir / 'streamflow.zarr', consolidated=True
+    )
+    ds_attr = load_caravan_attributes(
+        nc_dir, basins=basins, features=['area', 'p_mean']
+    ).compute()
+    ds_attr.to_zarr(dynamics_dir / 'attributes.zarr', consolidated=True)
+    ds_all.close()
     ds.close()
     ds_forecast.close()
+    ds_attr.close()
 
     env_info = {
         'tmp_dir': str(tmp_dir),
-        'nc_dir': str(nc_dir.resolve()),
+        'nc_dir': str(dynamics_dir.resolve()),
         'dynamics_dir': str(dynamics_dir.resolve()),
         'train_basin_file': str(train_basin_file.resolve()),
         'test_basin_file': str(test_basin_file.resolve()),
@@ -343,15 +363,17 @@ def test_continue_training_and_finetuning_pipeline(
     continue_cfg_dict = _get_base_config_dict(
         integration_data_env, 'test_finetune_base', str(actual_run_dir.parent)
     )
-    continue_cfg_dict.update({
-        'base_run_dir': str(actual_run_dir),
-        'run_dir': str(actual_run_dir),
-        'is_continue_training': True,
-        'continue_from_epoch': 1,
-        'epochs': 1,
-        'validate_every': None,
-        'clip_gradient_norm': 1.0,
-    })
+    continue_cfg_dict.update(
+        {
+            'base_run_dir': str(actual_run_dir),
+            'run_dir': str(actual_run_dir),
+            'is_continue_training': True,
+            'continue_from_epoch': 1,
+            'epochs': 1,
+            'validate_every': None,
+            'clip_gradient_norm': 1.0,
+        }
+    )
     continue_cfg = Config(continue_cfg_dict)
     start_training(continue_cfg)
 
@@ -383,14 +405,16 @@ def test_continue_training_and_finetuning_pipeline(
     finetune_cfg_dict = _get_base_config_dict(
         integration_data_env, 'test_finetuned', finetune_dir
     )
-    finetune_cfg_dict.update({
-        'base_run_dir': str(actual_run_dir),
-        'is_finetuning': True,
-        'finetune_modules': ['head'],
-        'epochs': 1,
-        'validate_every': None,
-        'clip_gradient_norm': 1.0,
-    })
+    finetune_cfg_dict.update(
+        {
+            'base_run_dir': str(actual_run_dir),
+            'is_finetuning': True,
+            'finetune_modules': ['head'],
+            'epochs': 1,
+            'validate_every': None,
+            'clip_gradient_norm': 1.0,
+        }
+    )
     finetune_cfg = Config(finetune_cfg_dict)
     start_training(finetune_cfg)
 
@@ -598,10 +622,11 @@ def _train_run_with_da_config(
     """Train one epoch with a DA block (DA off) and return the run directory."""
     cfg_dict = _get_base_config_dict(env_info, f'test_da_{head}', str(root))
     cfg_dict['epochs'] = 1
+    cfg_dict['validate_every'] = None
     # Figures are only logged for up to `validate_n_random_basins` basins.
-    cfg_dict['log_n_figures'] = 1
+    cfg_dict['log_n_figures'] = 1 if head == 'regression' else 0
     cfg_dict['validate_n_random_basins'] = 8
-    cfg_dict['save_state'] = True
+    cfg_dict['save_state'] = head == 'regression'
     cfg_dict['assimilation_config'] = _assimilation_config_dict()
     if head == 'cmal':
         cfg_dict.update(
@@ -653,7 +678,9 @@ def trained_cmal_run(
 ) -> Path:
     """Train a CMAL run (one epoch) whose config carries a DA block."""
     root = tmp_path_factory.mktemp('runs_da_cmal')
-    return _train_run_with_da_config(integration_data_env, root, 'cmal')
+    run_dir = _train_run_with_da_config(integration_data_env, root, 'cmal')
+    _evaluate_cli(run_dir, assimilate=False)
+    return run_dir
 
 
 @pytest.mark.slow
@@ -727,6 +754,7 @@ def test_data_assimilation_without_config_raises(
         integration_data_env, 'test_da_no_config', str(tmp_path / 'runs')
     )
     cfg_dict['epochs'] = 1
+    cfg_dict['validate_every'] = None
     start_training(Config(cfg_dict))
     run_dir = next((tmp_path / 'runs').glob('*'))
 
@@ -742,7 +770,7 @@ def test_cmal_evaluation_with_data_assimilation(
 ) -> None:
     """DA on a CMAL model samples from the assimilated outputs (any loss)."""
     run_dir = trained_cmal_run
-    eval_dir = _evaluate_cli(run_dir, assimilate=False)
+    eval_dir = run_dir / 'test' / 'model_epoch001'
     metrics_baseline = pd.read_csv(eval_dir / 'test_metrics.csv')
     # The NSE assimilation loss needs per-basin target stds although the
     # training loss is CMAL (the shipped example config uses this combination).
