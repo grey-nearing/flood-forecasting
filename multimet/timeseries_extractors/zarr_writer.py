@@ -467,13 +467,6 @@ class MultiMetZarrWriter:
       target_vars = [var_name]
     else:
       optional_bands = set(_OPTIONAL_SECONDARY_BANDS.get(product, ()))
-      if product == Product.GRAPHCAST and z_root.attrs.get(
-          "graphcast_radiation_unavailable"
-      ):
-        optional_bands.update({
-            "graphcast_surface_net_solar_radiation",
-            "graphcast_surface_net_thermal_radiation",
-        })
       target_vars = [
           b for b in PRODUCT_BANDS[product] if b not in optional_bands
       ]

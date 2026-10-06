@@ -52,7 +52,7 @@ def test_write_and_append_nowcast(writer: MultiMetZarrWriter):
 
   # 1. Write initial dataset
   store_path = writer.write_or_append(ds1, Product.CPC)
-  assert store_path.endswith("CPC/timeseries.zarr")
+  assert Path(store_path).as_posix().endswith("CPC/timeseries.zarr")
 
   read_ds = xr.open_zarr(store_path)
   assert list(read_ds["basin"].values) == basins_1
@@ -103,7 +103,7 @@ def test_write_and_append_forecast(writer: MultiMetZarrWriter):
   )
 
   store_path = writer.write_or_append(ds, Product.HRES)
-  assert store_path.endswith("HRES/timeseries.zarr")
+  assert Path(store_path).as_posix().endswith("HRES/timeseries.zarr")
 
   read_ds = xr.open_zarr(store_path)
   assert "lead_time" in read_ds.coords

@@ -17,7 +17,7 @@
 Reduces gridded meteorology to per-basin daily timeseries in the Caravan
 MultiMet schema. Every extractor reads either from a gridded Zarr archive
 (:mod:`multimet.timeseries_extractors.gridded_archive`) or from an upstream
-provider / Icechunk catalog (:mod:`multimet.timeseries_extractors.dynamical`).
+agency provider.
 """
 
 from __future__ import annotations
@@ -31,9 +31,7 @@ _SUBMODULES = frozenset({
     "config",
     "cpc",
     "dask_runner",
-    "dynamical",
     "era5_land",
-    "graphcast",
     "gridded_archive",
     "hres",
     "imerg",
@@ -48,7 +46,6 @@ _LAZY_SYMBOLS = {
     "BaseExtractor": "multimet.timeseries_extractors.base",
     "CPCExtractor": "multimet.timeseries_extractors.cpc",
     "ERA5LandExtractor": "multimet.timeseries_extractors.era5_land",
-    "GraphCastExtractor": "multimet.timeseries_extractors.graphcast",
     "HRESExtractor": "multimet.timeseries_extractors.hres",
     "IMERGExtractor": "multimet.timeseries_extractors.imerg",
     "get_bounding_box": "multimet.utils.geometry",
@@ -60,11 +57,6 @@ _LAZY_SYMBOLS = {
     "extract_multimet_serial": "multimet.timeseries_extractors.runner",
     "extract_multimet_dask": "multimet.timeseries_extractors.dask_runner",
     "extract_product_dask": "multimet.timeseries_extractors.dask_runner",
-    "DynamicalDataLoader": "multimet.timeseries_extractors.dynamical",
-    "DynamicalExtractor": "multimet.timeseries_extractors.dynamical",
-    "DynamicalIMERGExtractor": "multimet.timeseries_extractors.dynamical",
-    "AIFSExtractor": "multimet.timeseries_extractors.dynamical",
-    "load_dynamical": "multimet.timeseries_extractors.dynamical",
     "BoundingBox": "multimet.utils.spatial",
     "find_lat_lon_dims": "multimet.utils.spatial",
     "slice_coordinates_by_bounds": "multimet.utils.spatial",
