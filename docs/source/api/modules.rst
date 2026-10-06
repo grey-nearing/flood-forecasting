@@ -9,3 +9,4 @@ Modules
    static_extractor
    gridded_archive_builders
    timeseries_extractors
+   return_periods

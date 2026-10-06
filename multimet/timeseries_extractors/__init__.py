@@ -17,7 +17,7 @@
 Reduces gridded meteorology to per-basin daily timeseries in the Caravan
 MultiMet schema. Every extractor reads either from a gridded Zarr archive
 (:mod:`multimet.timeseries_extractors.gridded_archive`) or from an upstream
-agency provider.
+agency feed.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ _SUBMODULES = frozenset({
     "gridded_archive",
     "hres",
     "imerg",
+    "realtime",
     "runner",
     "zarr_writer",
 })
@@ -47,6 +48,7 @@ _LAZY_SYMBOLS = {
     "CPCExtractor": "multimet.timeseries_extractors.cpc",
     "ERA5LandExtractor": "multimet.timeseries_extractors.era5_land",
     "HRESExtractor": "multimet.timeseries_extractors.hres",
+    "find_latest_hres_open_data_date": "multimet.timeseries_extractors.hres",
     "IMERGExtractor": "multimet.timeseries_extractors.imerg",
     "get_bounding_box": "multimet.utils.geometry",
     "load_basin_geometries": "multimet.utils.geometry",
@@ -57,6 +59,11 @@ _LAZY_SYMBOLS = {
     "extract_multimet_serial": "multimet.timeseries_extractors.runner",
     "extract_multimet_dask": "multimet.timeseries_extractors.dask_runner",
     "extract_product_dask": "multimet.timeseries_extractors.dask_runner",
+    "RealtimeFetchResult": "multimet.timeseries_extractors.realtime",
+    "RealtimeForcingFetcher": "multimet.timeseries_extractors.realtime",
+    "fetch_realtime_multimet": "multimet.timeseries_extractors.realtime",
+    "inspect_store_last_valid_date": "multimet.timeseries_extractors.realtime",
+    "read_hot_start_state_date": "multimet.timeseries_extractors.realtime",
     "BoundingBox": "multimet.utils.spatial",
     "find_lat_lon_dims": "multimet.utils.spatial",
     "slice_coordinates_by_bounds": "multimet.utils.spatial",
@@ -76,7 +83,64 @@ _LAZY_SYMBOLS = {
     "open_gridded_archive": "multimet.timeseries_extractors.gridded_archive",
 }
 
-__all__ = sorted(_SUBMODULES | set(_LAZY_SYMBOLS))
+__all__ = [
+    "AIFSExtractor",
+    "ArchiveBandSpec",
+    "BaseExtractor",
+    "BoundingBox",
+    "CPCExtractor",
+    "DynamicalDataLoader",
+    "DynamicalExtractor",
+    "DynamicalForecastExtractor",
+    "DynamicalIMERGExtractor",
+    "ERA5LandExtractor",
+    "GEFSExtractor",
+    "GFSExtractor",
+    "GriddedArchiveError",
+    "GriddedArchiveSpec",
+    "HRESExtractor",
+    "IFSEnsExtractor",
+    "IMERGExtractor",
+    "MultiMetZarrWriter",
+    "Product",
+    "ProductType",
+    "RealtimeFetchResult",
+    "RealtimeForcingFetcher",
+    "ZonalWeightCalculator",
+    "ZonalWeightMatrix",
+    "base",
+    "calculate_fao56_penman_monteith_pet",
+    "config",
+    "cpc",
+    "dask_runner",
+    "dynamical",
+    "era5_land",
+    "extract_forecast_from_archive",
+    "extract_from_archive",
+    "extract_multimet_dask",
+    "extract_multimet_serial",
+    "extract_nowcast_from_archive",
+    "extract_product_dask",
+    "fetch_realtime_multimet",
+    "find_lat_lon_dims",
+    "find_latest_dynamical_forecast_date",
+    "find_latest_hres_open_data_date",
+    "get_archive_spec",
+    "get_bounding_box",
+    "gridded_archive",
+    "hres",
+    "imerg",
+    "inspect_store_last_valid_date",
+    "load_basin_geometries",
+    "load_dynamical",
+    "open_gridded_archive",
+    "read_hot_start_state_date",
+    "realtime",
+    "runner",
+    "slice_coordinates_by_bounds",
+    "slice_dataset_by_bounds",
+    "zarr_writer",
+]
 
 
 def __getattr__(name: str) -> Any:  # noqa: ANN401 - module objects are untyped.

@@ -22,7 +22,6 @@ import pandas as pd
 import xarray as xr
 
 SCALER_FILE_NAME = 'scaler.zarr'
-LEGACY_SCALER_FILE_NAME = 'scaler.nc'
 
 
 def _calc_stats(dataset: xr.Dataset, needed: set[str]):
@@ -96,9 +95,11 @@ class Scaler:
         self,
         scaler_dir: Path,
         calculate_scaler,
-        custom_normalization: dict[str, dict[str, float]] = {},
+        custom_normalization: dict[str, dict[str, float]] | None = None,
         dataset: xr.Dataset | None = None,
     ):
+        if custom_normalization is None:
+            custom_normalization = {}
         # Consistency check.
         if not calculate_scaler and dataset is not None:
             raise ValueError(
@@ -118,14 +119,9 @@ class Scaler:
 
     def load(self):
         scaler_zarr = self.scaler_dir / SCALER_FILE_NAME
-        scaler_nc = self.scaler_dir / LEGACY_SCALER_FILE_NAME
-        if scaler_zarr.exists():
-            self.scaler = xr.open_zarr(scaler_zarr).load()
-        elif scaler_nc.exists():
-            with open(scaler_nc, 'rb') as f:
-                self.scaler = xr.load_dataset(f)
-        else:
-            raise ValueError(f'Scaler file not found in {self.scaler_dir}')
+        if not scaler_zarr.exists():
+            raise FileNotFoundError(f'Scaler file not found at {scaler_zarr}')
+        self.scaler = xr.open_zarr(scaler_zarr).load()
 
     def calculate(
         self,

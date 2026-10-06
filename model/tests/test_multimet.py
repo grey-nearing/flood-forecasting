@@ -564,6 +564,42 @@ def test_forecast_dataset_per_basin_target_stds(
     assert 'per_basin_target_stds' not in sample_mse
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ('da_loss', 'expected'), [('NSE', True), ('nse', True), ('MSE', False)]
+)
+@patch('model.datasetzoo.multimet.load_basin_file')
+@patch.object(Multimet, '_load_data')
+def test_forecast_dataset_per_basin_target_stds_for_assimilation_loss(
+    mock_load_data,
+    mock_load_basin_file,
+    get_config,
+    sample_basins,
+    mock_load_data_return,
+    da_loss,
+    expected,
+):
+    """An NSE assimilation loss provides the stds like an NSE training loss."""
+    mock_load_basin_file.return_value = sample_basins
+    mock_load_data.return_value = mock_load_data_return
+    cfg = get_config('default')
+    cfg.loss = 'mse'
+    cfg.update_config(
+        {
+            'assimilation_config': {
+                'assimilation_components': ['static_embedding'],
+                'assimilation_window': 1,
+                'initial_learning_rate': 0.1,
+                'loss': da_loss,
+            }
+        }
+    )
+
+    sample = Multimet(cfg=cfg, is_train=True, period='train')[0]
+
+    assert ('per_basin_target_stds' in sample) is expected
+
+
 @patch('model.datasetzoo.multimet.load_basin_file')
 @patch.object(Multimet, '_load_data')
 def test_forecast_dataset_timestep_counter(
@@ -788,8 +824,12 @@ def test_multimet_dict_inputs_and_missing_band_validation(
     mock_open_zarr.side_effect = fake_open_zarr
 
     cfg = get_config('dict_inputs')
+    dynamics_dir = cfg.run_dir / 'dynamics'
+    (dynamics_dir / 'CHIRPS_GEFS' / 'timeseries.zarr').mkdir(parents=True)
+    (dynamics_dir / 'ERA5_LAND' / 'timeseries.zarr').mkdir(parents=True)
     cfg.update_config(
         {
+            'dynamics_data_dir': dynamics_dir,
             'hindcast_inputs': {
                 'chirps_gefs': ['chirps_gefs_precip'],
                 'era5_land': ['era5_land_temp'],
@@ -811,6 +851,7 @@ def test_multimet_dict_inputs_and_missing_band_validation(
     cfg_missing = get_config('dict_inputs_missing')
     cfg_missing.update_config(
         {
+            'dynamics_data_dir': dynamics_dir,
             'hindcast_inputs': {
                 'era5_land': ['era5_land_missing_var'],
             },
@@ -873,7 +914,7 @@ def _write_multimet_stores(
     targets_dir = root / 'targets'
     dynamics_dir = root / 'dynamics'
     ds[['static_f1']].to_zarr(statics_dir / 'attributes.zarr', mode='w')
-    ds[['target_v1']].to_zarr(targets_dir / 'targets.zarr', mode='w')
+    ds[['target_v1']].to_zarr(targets_dir / 'streamflow.zarr', mode='w')
     ds[['era5land_2d']].drop_vars('lead_time', errors='ignore').to_zarr(
         dynamics_dir / 'ERA5_LAND' / 'timeseries.zarr', mode='w'
     )
@@ -1173,9 +1214,98 @@ def test_multimet_rejects_unexpected_minimum_lead_time(
         Multimet(cfg=cfg, is_train=True, period='train')
 
 
+def test_single_store_dynamics_with_unrelated_subdirs_and_strict_validation(
+    tmp_path: Path,
+    get_config,
+):
+    """Single-store dynamics detection ignores unrelated subdirectories and validates features strictly."""
+    from model.datasetzoo.multimet import (
+        _find_product_zarr_path,
+        _find_single_dynamics_zarr_path,
+    )
+
+    basins = ['basin_01', 'basin_02']
+    dates = pd.date_range('1999-12-25', '2000-01-10', freq='D')
+    lead_times = [np.timedelta64(1, 'D'), np.timedelta64(2, 'D')]
+    ds = _day_offset_dataset(basins, dates, lead_times)
+
+    statics_dir = tmp_path / 'statics'
+    targets_dir = tmp_path / 'targets'
+    dynamics_dir = tmp_path / 'single_dynamics'
+    ds[['static_f1']].to_zarr(statics_dir / 'attributes.zarr', mode='w')
+    ds[['target_v1']].to_zarr(targets_dir / 'streamflow.zarr', mode='w')
+    ds[['era5land_2d', 'hres_3d']].to_zarr(
+        dynamics_dir / 'timeseries.zarr', mode='w'
+    )
+
+    # Create unrelated subdirectories inside dynamics_dir
+    (dynamics_dir / 'logs').mkdir(parents=True)
+    (dynamics_dir / '.ipynb_checkpoints').mkdir(parents=True)
+
+    assert (
+        _find_single_dynamics_zarr_path(dynamics_dir)
+        == dynamics_dir / 'timeseries.zarr'
+    )
+
+    cfg = get_config('single_store')
+    cfg.train_basin_file.write_text('\n'.join(basins) + '\n')
+    cfg.update_config(
+        {
+            'statics_data_dir': statics_dir,
+            'targets_data_dir': targets_dir,
+            'dynamics_data_dir': dynamics_dir,
+            'seq_length': 3,
+            'lead_time': 2,
+            'forecast_overlap': 0,
+            'predict_last_n': 1,
+            'hindcast_inputs': ['era5land_2d'],
+            'forecast_inputs': ['hres_3d'],
+            'train_start_date': ['01/01/2000'],
+            'train_end_date': ['02/01/2000'],
+        }
+    )
+
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    assert len(dataset) == 4
+
+    # Missing hindcast or forecast feature in single-store mode must raise ValueError immediately
+    # (never fall through to multi-product lookup)
+    for override, match in [
+        (
+            {'hindcast_inputs': ['completely_missing_hindcast']},
+            'Requested hindcast features.*completely_missing_hindcast.*not found',
+        ),
+        (
+            {'forecast_inputs': ['completely_missing_forecast']},
+            'Requested forecast features.*completely_missing_forecast.*not found',
+        ),
+    ]:
+        cfg_missing = Config({**cfg.as_dict(), **override})
+        with pytest.raises(ValueError, match=match):
+            Multimet(cfg=cfg_missing, is_train=True, period='train')
+
+    # Missing dynamics .zarr or directory raises FileNotFoundError
+    with pytest.raises(
+        FileNotFoundError, match='Dynamics Zarr store not found'
+    ):
+        _find_single_dynamics_zarr_path(tmp_path / 'missing_store.zarr')
+    with pytest.raises(
+        FileNotFoundError, match='Dynamics data path not found'
+    ):
+        _find_single_dynamics_zarr_path(tmp_path / 'missing_dynamics_dir')
+
+    # Missing product Zarr store raises FileNotFoundError
+    multi_dyn_dir = tmp_path / 'multi_dynamics'
+    multi_dyn_dir.mkdir()
+    with pytest.raises(
+        FileNotFoundError, match="Zarr store for product 'CPC' not found"
+    ):
+        _find_product_zarr_path(multi_dyn_dir, 'CPC')
+
+
 def test_multimet_basin_index_consistent_int64_across_128_boundary(
     tmp_path: Path,
-    get_config: Callable[[str], Config],
+    get_config,
 ) -> None:
     """Multimet emits fixed int64 basin_index across the 128-basin boundary."""
     num_basins = 130
