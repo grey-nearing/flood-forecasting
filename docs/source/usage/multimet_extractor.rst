@@ -84,7 +84,7 @@ Real-Time Operational Forcing Fetcher (``multimet-realtime``)
 ``RealtimeForcingFetcher`` and ``fetch_realtime_multimet`` orchestrate live operational forcing extraction across ``HRES`` (``gs://ecmwf-open-data``), ``IMERG`` (``dynamical.org`` or NASA GES DISC), and ``CPC`` (NOAA PSL) in two operational modes:
 
 * **Cold-Start (``mode="coldstart"``)**: Fetches a 365-day historical spin-up window (``[t0 - 365d, t0]``) plus the 10-day operational forecast issued on ``t0``. By default, historical spin-up dates prior to the forecast issue window download only ``step=24h`` (``lead_time=1D``) to reduce Cold-Start HRES download volume by 10x.
-* **Hot-Start (``mode="hotstart"``)**: Inspects existing Zarr stores (and/or a saved ``googlehydrology`` ``.npz`` state file or directory) to find the latest valid date across all bands and basins, automatically re-fetching and healing trailing ``NaN`` dates caused by upstream publication latency alongside newly elapsed days up to ``t0``.
+* **Hot-Start (``mode="hotstart"``)**: Inspects existing Zarr stores (and/or a saved ``openhydronet`` / ``model`` ``.npz`` state file or directory) to find the latest valid date across all bands and basins, automatically re-fetching and healing trailing ``NaN`` dates caused by upstream publication latency alongside newly elapsed days up to ``t0``.
 
 .. code-block:: python
 
