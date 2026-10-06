@@ -62,41 +62,17 @@ _LOSSES = [MaskedMSELoss, MaskedRMSELoss, MaskedNSELoss]
 
 @pytest.mark.unit
 @pytest.mark.parametrize('loss_cls', _LOSSES)
-@pytest.mark.parametrize('override', [3, np.int64(3), {'1D': 3}, {'': 3}])
+@pytest.mark.parametrize('override', [3, np.int64(3)])
 def test_predict_last_n_override_matches_config(
-    make_cfg: Callable[..., Config], loss_cls: type, override: int | dict
+    make_cfg: Callable[..., Config], loss_cls: type, override: int
 ) -> None:
     """A per-call override gives the same loss as configuring that value."""
     prediction, data = _data()
-    expected, _ = loss_cls(make_cfg(predict_last_n={'1D': 3}))(prediction, data)
-    actual, _ = loss_cls(make_cfg(predict_last_n={'1D': 6}))(
+    expected, _ = loss_cls(make_cfg(predict_last_n=3))(prediction, data)
+    actual, _ = loss_cls(make_cfg(predict_last_n=6))(
         prediction, data, predict_last_n=override
     )
     assert torch.equal(actual, expected)
-
-
-@pytest.mark.unit
-def test_predict_last_n_override_multi_frequency(
-    make_cfg: Callable[..., Config],
-) -> None:
-    """Dict overrides touch only the given frequencies; unknown ones raise."""
-    cfg = make_cfg(predict_last_n={'1D': 2, '1h': 4})
-    cfg_expected = make_cfg(predict_last_n={'1D': 1, '1h': 4})
-    gen = torch.Generator().manual_seed(3)
-    prediction = {
-        'y_hat_1D': torch.randn(1, 3, 1, generator=gen),
-        'y_hat_1h': torch.randn(1, 5, 1, generator=gen),
-    }
-    data = {
-        'y_1D': torch.randn(1, 3, 1, generator=gen),
-        'y_1h': torch.randn(1, 5, 1, generator=gen),
-    }
-    expected, _ = MaskedMSELoss(cfg_expected)(prediction, data)
-    actual, _ = MaskedMSELoss(cfg)(prediction, data, predict_last_n={'1D': 1})
-    assert torch.equal(actual, expected)
-
-    with pytest.raises(ValueError, match='unknown frequency'):
-        MaskedMSELoss(cfg)(prediction, data, predict_last_n={'3h': 1})
 
 
 @pytest.mark.unit
@@ -105,58 +81,19 @@ def test_predict_last_n_override_multi_frequency(
     [
         (True, 'must be integers'),
         (3.0, 'must be integers'),
+        ({'1D': 3}, 'must be integers'),
         (0, 'must be >= 1'),
         (-3, 'must be >= 1'),
-        ({'1D': 0}, 'must be >= 1'),
-        ({'1D': False}, 'must be integers'),
-        ({'3h': 2}, 'unknown frequency'),
-        ({'1D': 2, '3h': 2}, 'exactly one entry'),
     ],
 )
 def test_predict_last_n_override_invalid_raises(
     make_cfg: Callable[..., Config], override: object, match: str
 ) -> None:
-    """Bools, non-ints, values < 1 and unknown frequencies raise ValueError."""
-    prediction, data = _data()
-    loss_fn = MaskedMSELoss(make_cfg(predict_last_n={'1D': 6}))
-    with pytest.raises(ValueError, match=match):
-        loss_fn(prediction, data, predict_last_n=override)
-
-
-@pytest.mark.unit
-def test_predict_last_n_override_unnamed_single_frequency(
-    make_cfg: Callable[..., Config],
-) -> None:
-    """Without frequency names in the config only the '' key is accepted."""
+    """Bools, non-ints, dicts and values < 1 raise ValueError."""
     prediction, data = _data()
     loss_fn = MaskedMSELoss(make_cfg(predict_last_n=6))
-    expected, _ = MaskedMSELoss(make_cfg(predict_last_n=3))(prediction, data)
-    actual, _ = loss_fn(prediction, data, predict_last_n={'': 3})
-    assert torch.equal(actual, expected)
-    with pytest.raises(ValueError, match='unknown frequency'):
-        loss_fn(prediction, data, predict_last_n={'1D': 3})
-
-
-@pytest.mark.unit
-def test_config_default_still_allows_zero(
-    make_cfg: Callable[..., Config],
-) -> None:
-    """A config-derived 0 for a frequency is skipped, so only 1h counts."""
-    cfg = make_cfg(predict_last_n={'1D': 0, '1h': 4})
-    gen = torch.Generator().manual_seed(4)
-    prediction = {
-        'y_hat_1D': torch.randn(1, 3, 1, generator=gen),
-        'y_hat_1h': torch.randn(1, 5, 1, generator=gen),
-    }
-    data = {
-        'y_1D': torch.randn(1, 3, 1, generator=gen),
-        'y_1h': torch.randn(1, 5, 1, generator=gen),
-    }
-    loss, _ = MaskedMSELoss(cfg)(prediction, data)
-    expected = 0.5 * torch.mean(
-        (prediction['y_hat_1h'][:, -4:] - data['y_1h'][:, -4:]) ** 2
-    )
-    torch.testing.assert_close(loss, expected)
+    with pytest.raises(ValueError, match=match):
+        loss_fn(prediction, data, predict_last_n=override)
 
 
 @pytest.mark.unit

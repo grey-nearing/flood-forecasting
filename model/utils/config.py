@@ -538,11 +538,11 @@ class Config(object):
         return self._get_value_verbose('hindcast_inputs')
 
     @property
-    def hidden_size(self) -> int | dict[str, int]:
+    def hidden_size(self) -> int:
         return self._get_value_verbose('hidden_size')
 
     @property
-    def hindcast_hidden_size(self) -> int | dict[str, int]:
+    def hindcast_hidden_size(self) -> int:
         return self._cfg.get('hindcast_hidden_size', self.hidden_size)
 
     @property
@@ -640,15 +640,11 @@ class Config(object):
         return max(0, self._cfg.get('max_updates_per_epoch', 0) or 0)
 
     @property
-    def mc_dropout(self) -> bool:
-        return self._cfg.get('mc_dropout', False)
-
-    @property
     def metrics(self) -> list[str] | dict[str, list[str]]:
         return self._cfg.get('metrics', [])
 
     @metrics.setter
-    def metrics(self, metrics: str | list[str, dict[str, list[str]]]):
+    def metrics(self, metrics: list[str] | dict[str, list[str]]):
         self._cfg['metrics'] = metrics
 
     @property
@@ -681,10 +677,6 @@ class Config(object):
     @property
     def negative_sample_max_retries(self) -> int:
         return self._get_value_verbose('negative_sample_max_retries')
-
-    @property
-    def no_loss_frequencies(self) -> list:
-        return self._as_default_list(self._cfg.get('no_loss_frequencies', []))
 
     @property
     def num_workers(self) -> int:
@@ -723,7 +715,7 @@ class Config(object):
         return max(1, value or 1)
 
     @property
-    def predict_last_n(self) -> int | dict[str, int]:
+    def predict_last_n(self) -> int:
         return self._get_value_verbose('predict_last_n')
 
     @property
@@ -786,11 +778,11 @@ class Config(object):
             )
 
     @property
-    def seq_length(self) -> int | dict[str, int]:
+    def seq_length(self) -> int:
         return self._get_value_verbose('seq_length')
 
     @seq_length.setter
-    def seq_length(self, val: int | dict[str, int]) -> None:
+    def seq_length(self, val: int) -> None:
         self._cfg['seq_length'] = val
 
     @property
@@ -884,10 +876,6 @@ class Config(object):
         return self._as_default_list(
             self._get_value_verbose('train_start_date')
         )
-
-    @property
-    def use_frequencies(self) -> list[str]:
-        return self._as_default_list(self._cfg.get('use_frequencies', []))
 
     @property
     def validate_every(self) -> int:
