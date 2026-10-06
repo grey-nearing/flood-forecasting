@@ -22,7 +22,6 @@ drainage area tiers.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import math
 import multiprocessing
@@ -42,10 +41,7 @@ import shapely.wkt
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
-from multimet.catchment_delineation.delineator import (
-    CatchmentCoverageError,
-    DemDelineator,
-)
+from multimet.catchment_delineation.delineator import DemDelineator
 from multimet.catchment_delineation.gcs import download_tile_from_gcs
 from multimet.catchment_delineation.tiles import (
     is_coord_in_coverage,
@@ -128,16 +124,16 @@ def _evaluate_single_basin(
         cache_tiles=True,
     )
     t0 = time.time()
-    try:
-        res = delineator.delineate(
-            lat=lat,
-            lon=lon,
-            catchment_id=gauge_id,
-            snap_window_cells=snap_window_cells,
-            expected_area_km2=ref_area_km2 if use_area_hint else None,
-            area_tolerance=area_tolerance,
-        )
-        elapsed = time.time() - t0
+    res, err_msg = delineator._delineate_safe(
+        lat=lat,
+        lon=lon,
+        catchment_id=gauge_id,
+        snap_window_cells=snap_window_cells,
+        expected_area_km2=ref_area_km2 if use_area_hint else None,
+        area_tolerance=area_tolerance,
+    )
+    elapsed = time.time() - t0
+    if res is not None:
         props = res['properties']
         del_area_km2 = float(props['area_km2'])
         tiles_spanned = float(props['tiles_spanned_count'])
@@ -174,8 +170,7 @@ def _evaluate_single_basin(
             'elapsed_sec': round(elapsed, 3),
             'status': 'SUCCESS',
         }
-    except CatchmentCoverageError as err:
-        elapsed = time.time() - t0
+    else:
         nan_val = float('nan')
         record = {
             'gauge_id': gauge_id,
@@ -193,7 +188,7 @@ def _evaluate_single_basin(
             'snap_dist_m': nan_val,
             'tiles_spanned': nan_val,
             'elapsed_sec': round(elapsed, 3),
-            'status': f'OUT_OF_COVERAGE: {err}',
+            'status': f'OUT_OF_COVERAGE: {err_msg}',
         }
 
     created = [str(p) for p in delineator.created_cache_files]
@@ -280,144 +275,137 @@ def run_benchmark(
             df = df.sample(n=samples, random_state=42)
 
     created_cache_files: set[Path] = set()
-    try:
-        if delineator.gcs_uri is not None:
-            assert delineator.cache_dir is not None
-            delineator.cache_dir.mkdir(parents=True, exist_ok=True)
-            needed_tile_keys: set[tuple[int, int]] = set()
-            for row in df.itertuples():
-                lat = float(row.latitude)
-                lon = float(row.longitude)
-                if is_coord_in_coverage(lat, lon):
-                    tk = latlon_to_tile_key(lat, lon)
-                    if is_tile_in_coverage(tk[0], tk[1]):
-                        needed_tile_keys.add(tk)
+    if delineator.gcs_uri is not None:
+        assert delineator.cache_dir is not None
+        delineator.cache_dir.mkdir(parents=True, exist_ok=True)
+        needed_tile_keys: set[tuple[int, int]] = set()
+        for row in df.itertuples():
+            lat = float(row.latitude)
+            lon = float(row.longitude)
+            if is_coord_in_coverage(lat, lon):
+                tk = latlon_to_tile_key(lat, lon)
+                if is_tile_in_coverage(tk[0], tk[1]):
+                    needed_tile_keys.add(tk)
 
-            missing_tiles = [
-                tk
-                for tk in sorted(needed_tile_keys)
-                if not (
-                    delineator.cache_dir / tile_key_to_filename(tk[0], tk[1])
-                ).is_file()
-            ]
-            if missing_tiles:
-                cache_dir_path = delineator.cache_dir
-                gcs_uri_str = delineator.gcs_uri
+        missing_tiles = [
+            tk
+            for tk in sorted(needed_tile_keys)
+            if not (
+                delineator.cache_dir / tile_key_to_filename(tk[0], tk[1])
+            ).is_file()
+        ]
+        if missing_tiles:
+            cache_dir_path = delineator.cache_dir
+            gcs_uri_str = delineator.gcs_uri
 
-                def _download_one(tk: tuple[int, int]) -> None:
-                    download_tile_from_gcs(
-                        lat_top=tk[0],
-                        lon_left=tk[1],
-                        target_dir=cache_dir_path,
-                        source_uri=gcs_uri_str,
-                        created_files=created_cache_files,
-                    )
+            def _download_one(tk: tuple[int, int]) -> None:
+                download_tile_from_gcs(
+                    lat_top=tk[0],
+                    lon_left=tk[1],
+                    target_dir=cache_dir_path,
+                    source_uri=gcs_uri_str,
+                    created_files=created_cache_files,
+                )
 
-                max_threads = min(_MAX_PRECACHE_THREADS, len(missing_tiles))
-                with ThreadPoolExecutor(max_workers=max_threads) as pool:
-                    list(pool.map(_download_one, missing_tiles))
+            max_threads = min(_MAX_PRECACHE_THREADS, len(missing_tiles))
+            with ThreadPoolExecutor(max_workers=max_threads) as pool:
+                list(pool.map(_download_one, missing_tiles))
 
-        rows = df.to_dict(orient='records')
-        indexed_results: list[tuple[int, dict[str, Any]]] = []
-        t_start = time.time()
-        mp_ctx = multiprocessing.get_context('spawn')
+    rows = df.to_dict(orient='records')
+    indexed_results: list[tuple[int, dict[str, Any]]] = []
+    t_start = time.time()
+    mp_ctx = multiprocessing.get_context('spawn')
 
-        with ProcessPoolExecutor(
-            max_workers=workers, mp_context=mp_ctx
-        ) as executor:
-            futures = {
-                executor.submit(
-                    _evaluate_single_basin,
-                    row,
-                    tiles_dir=(
-                        str(delineator.tiles_dir)
-                        if delineator.tiles_dir
-                        else None
-                    ),
-                    gcs_uri=delineator.gcs_uri,
-                    cache_dir=(
-                        str(delineator.cache_dir)
-                        if delineator.cache_dir
-                        else None
-                    ),
-                    snap_window_cells=snap_window_cells,
-                    use_area_hint=use_area_hint,
-                    area_tolerance=area_tolerance,
-                ): idx
-                for idx, row in enumerate(rows)
-            }
-            done_count = 0
-            total = len(futures)
-            for fut in as_completed(futures):
-                idx = futures[fut]
-                res_item, worker_created = fut.result()
-                created_cache_files.update(Path(p) for p in worker_created)
-                indexed_results.append((idx, res_item))
-                done_count += 1
-                if done_count % _PROGRESS_INTERVAL == 0 or done_count == total:
-                    pct = (done_count / total) * 100.0
-                    sys.stdout.write(
-                        f'Progress: [{done_count}/{total}] basins evaluated '
-                        f'({pct:.1f}%)\n'
-                    )
+    with ProcessPoolExecutor(
+        max_workers=workers, mp_context=mp_ctx
+    ) as executor:
+        futures = {
+            executor.submit(
+                _evaluate_single_basin,
+                row,
+                tiles_dir=(
+                    str(delineator.tiles_dir) if delineator.tiles_dir else None
+                ),
+                gcs_uri=delineator.gcs_uri,
+                cache_dir=(
+                    str(delineator.cache_dir) if delineator.cache_dir else None
+                ),
+                snap_window_cells=snap_window_cells,
+                use_area_hint=use_area_hint,
+                area_tolerance=area_tolerance,
+            ): idx
+            for idx, row in enumerate(rows)
+        }
+        done_count = 0
+        total = len(futures)
+        for fut in as_completed(futures):
+            idx = futures[fut]
+            res_item, worker_created = fut.result()
+            created_cache_files.update(Path(p) for p in worker_created)
+            indexed_results.append((idx, res_item))
+            done_count += 1
+            if done_count % _PROGRESS_INTERVAL == 0 or done_count == total:
+                pct = (done_count / total) * 100.0
+                sys.stdout.write(
+                    f'Progress: [{done_count}/{total}] basins evaluated '
+                    f'({pct:.1f}%)\n'
+                )
 
-        indexed_results.sort(key=lambda pair: pair[0])
-        res_df = pd.DataFrame([r for _, r in indexed_results])
-        total_time = time.time() - t_start
+    indexed_results.sort(key=lambda pair: pair[0])
+    res_df = pd.DataFrame([r for _, r in indexed_results])
+    total_time = time.time() - t_start
 
-        valid_df = res_df[res_df['status'] == 'SUCCESS']
-        out_of_coverage = int(
-            res_df['status'].str.startswith('OUT_OF_COVERAGE').sum()
-        )
-        sys.stdout.write('\n' + '=' * 80 + '\n')
-        sys.stdout.write('GLOBAL CATCHMENT DELINEATION BENCHMARK RESULTS\n')
-        sys.stdout.write('=' * 80 + '\n')
-        sys.stdout.write(f'Total Basins Evaluated : {len(res_df)}\n')
-        sys.stdout.write(f'Total Wall-Clock Time  : {total_time:.1f}s\n')
+    valid_df = res_df[res_df['status'] == 'SUCCESS']
+    out_of_coverage = int(
+        res_df['status'].str.startswith('OUT_OF_COVERAGE').sum()
+    )
+    sys.stdout.write('\n' + '=' * 80 + '\n')
+    sys.stdout.write('GLOBAL CATCHMENT DELINEATION BENCHMARK RESULTS\n')
+    sys.stdout.write('=' * 80 + '\n')
+    sys.stdout.write(f'Total Basins Evaluated : {len(res_df)}\n')
+    sys.stdout.write(f'Total Wall-Clock Time  : {total_time:.1f}s\n')
+    sys.stdout.write(
+        f'Successful Delineations: {len(valid_df)} / {len(res_df)}\n'
+    )
+    if out_of_coverage > 0:
         sys.stdout.write(
-            f'Successful Delineations: {len(valid_df)} / {len(res_df)}\n'
+            f'Out-of-Coverage Basins : {out_of_coverage} / {len(res_df)}\n'
         )
-        if out_of_coverage > 0:
-            sys.stdout.write(
-                f'Out-of-Coverage Basins : {out_of_coverage} / {len(res_df)}\n'
-            )
-        if not valid_df.empty:
-            sys.stdout.write(
-                f'Median IoU (valid)     : {valid_df["iou"].median():.3f}\n'
-            )
-            sys.stdout.write(
-                f'Median Dice (valid)    : {valid_df["dice"].median():.3f}\n'
-            )
-            pct80 = (valid_df['iou'] >= _IOU_THRESHOLD_80).mean() * 100.0
-            pct90 = (valid_df['iou'] >= _IOU_THRESHOLD_90).mean() * 100.0
-            sys.stdout.write(f'Basins IoU >= 0.80     : {pct80:.1f}%\n')
-            sys.stdout.write(f'Basins IoU >= 0.90     : {pct90:.1f}%\n')
-            sys.stdout.write(
-                'Median Abs Area Err    : '
-                f'{valid_df["abs_area_err_pct"].median():.1f}%\n'
-            )
-        print_summary_table(res_df, 'PERFORMANCE BY CONTINENT', 'continent')
-        print_summary_table(
-            res_df, 'PERFORMANCE BY HEMISPHERE QUADRANT', 'hemisphere'
+    if not valid_df.empty:
+        sys.stdout.write(
+            f'Median IoU (valid)     : {valid_df["iou"].median():.3f}\n'
         )
-        print_summary_table(
-            res_df, 'PERFORMANCE BY BASIN SIZE TIER', 'size_tier'
+        sys.stdout.write(
+            f'Median Dice (valid)    : {valid_df["dice"].median():.3f}\n'
         )
-        sys.stdout.write('=' * 80 + '\n')
+        pct80 = (valid_df['iou'] >= _IOU_THRESHOLD_80).mean() * 100.0
+        pct90 = (valid_df['iou'] >= _IOU_THRESHOLD_90).mean() * 100.0
+        sys.stdout.write(f'Basins IoU >= 0.80     : {pct80:.1f}%\n')
+        sys.stdout.write(f'Basins IoU >= 0.90     : {pct90:.1f}%\n')
+        sys.stdout.write(
+            'Median Abs Area Err    : '
+            f'{valid_df["abs_area_err_pct"].median():.1f}%\n'
+        )
+    print_summary_table(res_df, 'PERFORMANCE BY CONTINENT', 'continent')
+    print_summary_table(
+        res_df, 'PERFORMANCE BY HEMISPHERE QUADRANT', 'hemisphere'
+    )
+    print_summary_table(res_df, 'PERFORMANCE BY BASIN SIZE TIER', 'size_tier')
+    sys.stdout.write('=' * 80 + '\n')
 
-        if output_path:
-            out_p = Path(output_path).expanduser().resolve()
-            out_p.parent.mkdir(parents=True, exist_ok=True)
-            if str(out_p).endswith('.parquet'):
-                res_df.to_parquet(out_p, index=False)
-            else:
-                res_df.to_csv(out_p, index=False)
+    if output_path:
+        out_p = Path(output_path).expanduser().resolve()
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        if str(out_p).endswith('.parquet'):
+            res_df.to_parquet(out_p, index=False)
+        else:
+            res_df.to_csv(out_p, index=False)
 
-        return res_df
-    finally:
-        if clean_cache:
-            delineator.created_cache_files.update(created_cache_files)
-            delineator.clean_created_cache()
+    if clean_cache:
+        delineator.created_cache_files.update(created_cache_files)
+        delineator.clean_created_cache()
+
+    return res_df
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -531,5 +519,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == '__main__':
-    with contextlib.suppress(SystemExit):
-        sys.exit(main())
+    sys.exit(main())

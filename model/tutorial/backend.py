@@ -259,8 +259,14 @@ def calculate_metrics_for_run(
     metrics_list = metrics.get_available_metrics()
 
     for gauge_id in tqdm(common_gauges, desc="Processing Gauges"):
-        sim_gauge = sim_data.sel(basin=gauge_id, freq='1D').load()
-        obs_gauge = obs_data.sel(basin=gauge_id, freq='1D').load()
+        sim_gauge = sim_data.sel(basin=gauge_id)
+        obs_gauge = obs_data.sel(basin=gauge_id)
+        if 'freq' in sim_gauge.dims:
+            sim_gauge = sim_gauge.sel(freq='1D', drop=True)
+        if 'freq' in obs_gauge.dims:
+            obs_gauge = obs_gauge.sel(freq='1D', drop=True)
+        sim_gauge = sim_gauge.load()
+        obs_gauge = obs_gauge.load()
 
         lead_times = sim_gauge['time_step'].values
 

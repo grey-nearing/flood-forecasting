@@ -383,7 +383,6 @@ When `inference_mode: True` and `save_results: True`, `BaseTester` writes unscal
 
 - **Coordinates:**
   - `basin` (`str`): Basin ID (`camels_01013500`, etc.)
-  - `freq` (`str`): Frequency string (`["1D"]`)
   - `date` (`datetime64[ns]`): **Forecast issue date $D$** (`00:00 UTC`)
   - `time_step` (`int64`): Relative lead-time index across the `predict_last_n` output steps. For a forecast model with `lead_time = 7` and `predict_last_n = 8`, `time_step = [0, 1, 2, 3, 4, 5, 6, 7]`, where:
     - `time_step = 0` is the last completed hindcast day ($D - 1$),
@@ -391,8 +390,8 @@ When `inference_mode: True` and `save_results: True`, `BaseTester` writes unscal
     - `time_step = k` ($k \in \{1,\dots,L\}$) is forecast lead day $k$ (valid on $[D + k - 1, D + k)$).
 - **Data Variables (`float32`, unscaled to physical units $\text{mm/day}$):**
   - **Regression Head (`head: regression`):**
-    - `streamflow_sim`: dims `("basin", "freq", "date", "time_step")`
-    - `streamflow_obs`: dims `("basin", "freq", "date", "time_step")`
+    - `streamflow_sim`: dims `("basin", "date", "time_step")`
+    - `streamflow_obs`: dims `("basin", "date", "time_step")`
   - **Probabilistic / Mixture Head (`head: cmal` / `umal` / `gmm`):**
-    - `streamflow_sim`: dims `("basin", "freq", "date", "time_step", "samples")`, where `samples` has length `n_samples` (e.g., `7,500` Monte Carlo draws from the Countable Mixture of Asymmetric Laplacians distribution).
-    - `streamflow_obs`: dims `("basin", "freq", "date", "time_step")`.
+    - `streamflow_sim`: dims `("basin", "date", "time_step", "samples")`, where `samples` has length `n_samples` (e.g., `7,500` Monte Carlo draws from the Countable Mixture of Asymmetric Laplacians distribution).
+    - `streamflow_obs`: dims `("basin", "date", "time_step")`.

@@ -16,8 +16,17 @@
 
 import contextlib
 import ctypes
+import functools
 import gc
 from ctypes.util import find_library
+
+
+@functools.cache
+def _get_libc() -> ctypes.CDLL | None:
+    """Return cached libc handle if available on the current platform."""
+    with contextlib.suppress(OSError, AttributeError):
+        return ctypes.CDLL(find_library('c') or 'libc.so.6')
+    return None
 
 
 def release() -> None:
@@ -38,4 +47,6 @@ def release() -> None:
     gc.collect()
 
     with contextlib.suppress(OSError, AttributeError):  # Ignore non Unix-like
-        ctypes.CDLL(find_library('c') or 'libc.so.6').malloc_trim(0)
+        libc = _get_libc()
+        if libc is not None:
+            libc.malloc_trim(0)

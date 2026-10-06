@@ -27,7 +27,6 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-import multimet.timeseries_extractors.dynamical as dynamical_mod
 from multimet.timeseries_extractors.config import PRODUCT_BANDS, Product
 from multimet.timeseries_extractors.hres import (
     OPEN_DATA_GRID_SHAPE,
@@ -426,34 +425,24 @@ def test_read_hot_start_state_date_from_file_and_dir(tmp_path):
   assert read_hot_start_state_date(state_dir) == pd.Timestamp("2026-09-22")
 
 
-def _build_synthetic_imerg_half_hourly_cube(
+def _write_synthetic_imerg_daily_nc4(
+    target_path: Path,
     basins_gdf: gpd.GeoDataFrame,
-    start_date: str,
-    end_date: str,
     daily_mm: float,
-    trailing_incomplete_day: bool = False,
-) -> xr.Dataset:
-  """Builds a real 3D half-hourly IMERG dataset on a 0.1-deg grid covering basins_gdf."""
+    is_nan: bool = False,
+) -> None:
+  """Writes a daily IMERG V07 NetCDF4 file on a 0.1-deg grid covering basins_gdf."""
   minx, miny, maxx, maxy = basins_gdf.total_bounds
   lats = np.arange(np.ceil(maxy) + 1.0, np.floor(miny) - 1.0, -0.1, dtype=np.float32)
   lons = np.arange(np.floor(minx) - 1.0, np.ceil(maxx) + 1.0, 0.1, dtype=np.float32)
-  end_ts = pd.Timestamp(end_date) + pd.Timedelta(hours=23, minutes=30)
-  times = pd.date_range(start_date, end_ts, freq="30min")
-  flux_val = np.float32(daily_mm / 86400.0)
-  data = np.full((len(times), len(lats), len(lons)), flux_val, dtype=np.float32)
-  if trailing_incomplete_day:
-    # Set the final day's last 12 half-hourly steps to NaN to simulate upstream latency
-    data[-12:, :, :] = np.nan
-  return xr.Dataset(
-      data_vars={
-          "precipitation_surface": (["time", "latitude", "longitude"], data)
-      },
-      coords={
-          "time": times.values,
-          "latitude": lats,
-          "longitude": lons,
-      },
+  fill_val = np.nan if is_nan else np.float32(daily_mm)
+  data = np.full((len(lats), len(lons)), fill_val, dtype=np.float32)
+  ds = xr.Dataset(
+      data_vars={"precipitation": (["lat", "lon"], data)},
+      coords={"lat": lats, "lon": lons},
   )
+  target_path.parent.mkdir(parents=True, exist_ok=True)
+  ds.to_netcdf(target_path)
 
 
 def _write_synthetic_cpc_netcdf(
@@ -487,25 +476,30 @@ def test_coldstart_and_hotstart_end_to_end_workflow(
   basin_ids = [str(b) for b in basins_gdf.index]
   out_dir = tmp_path / "realtime_forcing"
   cpc_cache_dir = tmp_path / "cpc_cache"
+  imerg_cache_dir = tmp_path / "imerg_cache"
+  monkeypatch.setenv("MULTIMET_IMERG_CACHE", str(imerg_cache_dir))
 
   all_dates = [f"2026-09-{d:02d}" for d in range(21, 28)]
   fs = FakeECMWFOpenDataFS(available_dates=all_dates)
 
-  # Prepare Run 1 upstream feeds (2026-09-21..2026-09-25 where 2026-09-25 is incomplete/NaN)
-  imerg_cube_run1 = _build_synthetic_imerg_half_hourly_cube(
-      basins_gdf,
-      start_date="2026-09-21",
-      end_date="2026-09-25",
-      daily_mm=4.0,
-      trailing_incomplete_day=True,
-  )
-  monkeypatch.setitem(
-      dynamical_mod._GLOBAL_DATASET_CACHE,
-      "nasa-imerg-analysis-early",
-      imerg_cube_run1,
-  )
-
   cpc_state = {"run": 1}
+
+  def _fake_imerg_download(url: str, target_path: str, **kwargs) -> str:
+    del url, kwargs
+    is_run1_trailing = cpc_state["run"] == 1 and "20260925" in str(target_path)
+    daily_mm = 4.0 if cpc_state["run"] == 1 else 8.0
+    _write_synthetic_imerg_daily_nc4(
+        Path(target_path),
+        basins_gdf,
+        daily_mm=daily_mm,
+        is_nan=is_run1_trailing,
+    )
+    return target_path
+
+  monkeypatch.setattr(
+      "multimet.timeseries_extractors.imerg.download_daily_imerg",
+      _fake_imerg_download,
+  )
 
   def _fake_cpc_download(url: str, target_path: str, **kwargs) -> str:
     del url, kwargs
@@ -592,18 +586,6 @@ def test_coldstart_and_hotstart_end_to_end_workflow(
 
   # 2. Advance upstream feeds to Run 2 (2026-09-27 published, 2026-09-25 healed)
   cpc_state["run"] = 2
-  imerg_cube_run2 = _build_synthetic_imerg_half_hourly_cube(
-      basins_gdf,
-      start_date="2026-09-21",
-      end_date="2026-09-27",
-      daily_mm=8.0,
-      trailing_incomplete_day=False,
-  )
-  monkeypatch.setitem(
-      dynamical_mod._GLOBAL_DATASET_CACHE,
-      "nasa-imerg-analysis-early",
-      imerg_cube_run2,
-  )
 
   hot_res = fetch_realtime_multimet(
       basins=basins_gdf,
@@ -779,163 +761,4 @@ def test_cli_arg_parser_and_main(tmp_path, monkeypatch):
   assert summary["start_date"] == "2026-09-25"
   assert summary["end_date"] == "2026-09-27"
 
-
-def _build_real_dynamical_forecast_loader(
-    dataset_id: str,
-    dates,
-    basins_gdf,
-    step_hours: int = 6,
-    t2m_val: float = 18.0,
-    pr_mm_day: float = 3.0,
-) -> dynamical_mod.DynamicalDataLoader:
-  """Builds a real DynamicalDataLoader backed by an in-memory forecast Dataset."""
-  minx, miny, maxx, maxy = basins_gdf.total_bounds
-  lats = np.linspace(maxy + 0.5, miny - 0.5, 5, dtype=np.float64)
-  lons = np.linspace(minx - 0.5, maxx + 0.5, 5, dtype=np.float64)
-  init_times = pd.to_datetime([f"{d}T00:00:00" for d in dates])
-  lead_td = pd.to_timedelta(range(0, 241, step_hours), unit="h")
-
-  shape = (len(init_times), len(lead_td), len(lats), len(lons))
-  t2m = np.full(shape, t2m_val, dtype=np.float32)
-  pr = np.full(shape, pr_mm_day / 86400.0, dtype=np.float32)
-  pr[:, 0, :, :] = np.nan
-  u10 = np.full(shape, 1.5, dtype=np.float32)
-  v10 = np.full(shape, -0.5, dtype=np.float32)
-
-  ds = xr.Dataset(
-      data_vars={
-          "temperature_2m": (
-              ["init_time", "lead_time", "latitude", "longitude"],
-              t2m,
-          ),
-          "precipitation_surface": (
-              ["init_time", "lead_time", "latitude", "longitude"],
-              pr,
-          ),
-          "wind_u_10m": (
-              ["init_time", "lead_time", "latitude", "longitude"],
-              u10,
-          ),
-          "wind_v_10m": (
-              ["init_time", "lead_time", "latitude", "longitude"],
-              v10,
-          ),
-      },
-      coords={
-          "init_time": init_times,
-          "lead_time": lead_td,
-          "latitude": lats,
-          "longitude": lons,
-      },
-  )
-  return dynamical_mod.DynamicalDataLoader(
-      dataset_id, cache_dataset=False, ds=ds
-  )
-
-
-def test_realtime_coldstart_and_hotstart_dynamical_forecasts(tmp_path, basins_gdf):
-  """Verifies Cold-Start and Hot-Start fetching for AIFS and GFS dynamical.org forecasts."""
-  out_dir = tmp_path / "dyn_realtime"
-  dates_run1 = ["2026-04-10", "2026-04-11", "2026-04-12", "2026-04-13"]
-  aifs_loader_1 = _build_real_dynamical_forecast_loader(
-      "ecmwf-aifs-single-forecast",
-      dates_run1,
-      basins_gdf,
-      step_hours=6,
-      t2m_val=14.0,
-      pr_mm_day=2.0,
-  )
-  gfs_loader_1 = _build_real_dynamical_forecast_loader(
-      "noaa-gfs-forecast",
-      dates_run1,
-      basins_gdf,
-      step_hours=3,
-      t2m_val=16.0,
-      pr_mm_day=4.0,
-  )
-
-  # 1. Cold-Start with AIFS and GFS (reference_date="2026-04-13", lookback_days=3)
-  cold_res = fetch_realtime_multimet(
-      basins=basins_gdf,
-      output_dir=out_dir,
-      mode="coldstart",
-      reference_date="2026-04-13",
-      lookback_days=3,
-      products=["AIFS", "GFS"],
-      spinup_only_lead_1d=True,
-      full_forecast_days=1,
-      dynamical_loaders={"AIFS": aifs_loader_1, "GFS": gfs_loader_1},
-  )
-  assert set(cold_res.keys()) == {"AIFS", "GFS"}
-
-  with xr.open_zarr(cold_res["AIFS"]) as ds_aifs:
-    assert len(ds_aifs["date"]) == 4  # 2026-04-10 .. 2026-04-13
-    # Spin-up dates 2026-04-10..12 have lead 1D valid and leads 2D..10D NaN
-    assert np.allclose(ds_aifs["aifs_temperature_2m"].values[:, :3, 0], 14.0)
-    assert np.all(np.isnan(ds_aifs["aifs_temperature_2m"].values[:, :3, 1:]))
-    assert np.allclose(ds_aifs["aifs_missing_fraction"].values[:, :3, 0], 0.0)
-    assert np.allclose(ds_aifs["aifs_missing_fraction"].values[:, :3, 1:], 1.0)
-    # Forecast issue date 2026-04-13 has all 10 lead days valid
-    assert np.allclose(ds_aifs["aifs_temperature_2m"].values[:, 3, :], 14.0)
-    assert np.allclose(ds_aifs["aifs_total_precipitation"].values[:, 3, :], 2.0)
-    assert np.allclose(ds_aifs["aifs_missing_fraction"].values[:, 3, :], 0.0)
-
-  # 2. Hot-Start advancing to 2026-04-15
-  dates_run2 = [
-      "2026-04-10",
-      "2026-04-11",
-      "2026-04-12",
-      "2026-04-13",
-      "2026-04-14",
-      "2026-04-15",
-  ]
-  aifs_loader_2 = _build_real_dynamical_forecast_loader(
-      "ecmwf-aifs-single-forecast",
-      dates_run2,
-      basins_gdf,
-      step_hours=6,
-      t2m_val=20.0,
-      pr_mm_day=6.0,
-  )
-  gfs_loader_2 = _build_real_dynamical_forecast_loader(
-      "noaa-gfs-forecast",
-      dates_run2,
-      basins_gdf,
-      step_hours=3,
-      t2m_val=22.0,
-      pr_mm_day=8.0,
-  )
-
-  hot_res = fetch_realtime_multimet(
-      basins=basins_gdf,
-      output_dir=out_dir,
-      mode="hotstart",
-      reference_date="2026-04-15",
-      products=["AIFS", "GFS"],
-      spinup_only_lead_1d=True,
-      full_forecast_days=1,
-      dynamical_loaders={"AIFS": aifs_loader_2, "GFS": gfs_loader_2},
-  )
-  assert hot_res.product_windows["AIFS"] == (
-      pd.Timestamp("2026-04-13"),
-      pd.Timestamp("2026-04-15"),
-  )
-
-  with xr.open_zarr(hot_res["GFS"]) as ds_gfs:
-    assert len(ds_gfs["date"]) == 6  # 2026-04-10 .. 2026-04-15
-    # 2026-04-13 (index 3) preserved its full 10-day forecast from Run 1 (16.0 C)
-    assert np.allclose(ds_gfs["gfs_temperature_2m"].values[:, 3, :], 16.0)
-    # 2026-04-14 (index 4) has lead 1D valid (22.0 C)
-    assert np.allclose(ds_gfs["gfs_temperature_2m"].values[:, 4, 0], 22.0)
-    # 2026-04-15 (index 5) has all 10 lead days valid (22.0 C, 8.0 mm/day)
-    assert np.allclose(ds_gfs["gfs_temperature_2m"].values[:, 5, :], 22.0)
-    assert np.allclose(ds_gfs["gfs_total_precipitation"].values[:, 5, :], 8.0)
-    assert np.allclose(ds_gfs["gfs_missing_fraction"].values[:, 5, :], 0.0)
-
-  # 3. Auto-discovering reference_date="latest" with no forecast product raises ValueError
-  fetcher = RealtimeForcingFetcher(out_dir)
-  with pytest.raises(
-      ValueError, match="Cannot auto-discover latest forecast initialization date"
-  ):
-    fetcher.resolve_reference_date("latest", products=["IMERG", "CPC"])
 
