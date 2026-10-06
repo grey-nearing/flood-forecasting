@@ -25,10 +25,8 @@ def _model_with_handling(handling):
     model = MagicMock()
     model.parameters.side_effect = lambda: iter([torch.zeros(1)])
     model.cfg.head = 'cmal_deterministic'
-    model.cfg.mc_dropout = False
     model.cfg.target_variables = ['streamflow']
-    model.cfg.use_frequencies = ['1D']
-    model.cfg.predict_last_n = {'1D': 2}
+    model.cfg.predict_last_n = 2
     model.cfg.negative_sample_handling = handling
     return model
 
@@ -135,21 +133,20 @@ def _run_uncertainty_tester_evaluate(
     tester.cfg = MagicMock()
     tester.cfg.head = head
     tester.cfg.tester_sample_reduction = TesterSamplesReduction(reduction)
-    tester.cfg.mc_dropout = False
+    tester.cfg.assimilate = False
     tester.cfg.validate_n_random_basins = 0
     tester.cfg.log_n_figures = 0
     tester.cfg.batch_size = 2
     tester.cfg.lazy_load = False
     tester.cfg.logging_level = logging.INFO
     tester.cfg.inference_mode = False
-    tester.cfg.predict_last_n = {'1D': 2}
-    tester.cfg.seq_length = {'1D': 2}
+    tester.cfg.predict_last_n = 2
+    tester.cfg.seq_length = 2
     tester.cfg.target_variables = ['streamflow']
     tester.cfg.clip_targets_to_zero = []
     tester.cfg.metrics = []
 
     dataset = MagicMock()
-    dataset.frequencies = ['1D']
     dataset.lead_time = 0
     dataset._sample_index = SampleIndexer(
         (
@@ -164,19 +161,19 @@ def _run_uncertainty_tester_evaluate(
         [['2020-01-01', '2020-01-02'], ['2020-01-02', '2020-01-03']],
         dtype='datetime64[ns]',
     )
-    tester._evaluate = lambda model, loader, frequencies, basins: iter(
+    tester._evaluate = lambda model, loader, basins, **kwargs: iter(
         [
             {
                 'basin': 'basin_A',
-                'preds': {'1D': preds_tensor},
-                'obs': {'1D': obs_tensor},
-                'dates': {'1D': dates},
+                'preds': preds_tensor,
+                'obs': obs_tensor,
+                'dates': dates,
                 'losses': [{'loss': 0.1}],
                 'mean_losses': {'loss': 0.1},
             }
         ]
     )
-    tester._ensure_no_previous_results_saved = lambda epoch=None: None
+    tester._ensure_no_previous_results_saved = lambda epoch=None, **kwargs: None
     tester._save_incremental_results = lambda *args, **kwargs: None
 
     logger = MagicMock()

@@ -4,6 +4,12 @@ Catchment Delineation
 
 This guide explains how to create watershed boundary polygons and calculate drainage areas (:math:`\text{km}^2`) for streamflow gauges using the ``delineate-catchment`` tool.
 
+.. note::
+   **Do you need this tool?**
+   If you are using gauges from the published Caravan or MultiMet collections, **you do not need to run this tool**. Pre-delineated watershed boundary polygons are already available in ``gs://open-multimet/caravan-new/<collection>/shapefiles-rederived/`` and ``gs://caravan-multimet/v1.1``.
+
+   Use this tool only when you want to delineate watershed boundary polygons for new gauge locations or evaluate delineation accuracy against reference polygons.
+
 --------
 Overview
 --------
@@ -20,7 +26,7 @@ Given the latitude and longitude of a river gauge, ``delineate-catchment`` produ
 Data Requirements
 -----------------
 
-Before running ``delineate-catchment``, you need a folder (local or on Google Cloud Storage ``gs://``) containing 90-meter (3-arc-second) D8 flow-direction map tiles saved as 5°×5° NumPy (``.npy``) files (such as ``n35w090_dir.npy``).
+Before running ``delineate-catchment``, you need a folder (local or on Google Cloud Storage ``gs://``) containing 90-meter (3-arc-second) D8 flow-direction map tiles saved as 5°×5° NumPy (``.npy``) files named by their top-left corner coordinate (such as ``n35w090.npy`` or ``n40w090.npy``).
 
 * **If you already have a folder or GCS bucket of 5°×5° ``.npy`` tiles:** Pass that folder directly with ``--tiles-dir /path/to/tiles_5deg`` (or ``--gcs-uri gs://... --cache-dir /tmp/tile_cache``).
 * **If you are starting from raw HydroSHEDS or MERIT GeoTIFF files:** Use ``multimet/catchment_delineation/tools/slice_continental_dems.py`` to slice the continental ``.tif`` files into 5°×5° ``.npy`` tiles:
@@ -148,25 +154,25 @@ You can also run delineation directly inside a Python script or notebook:
 What to Watch Out For
 -----------------------
 
-Please keep these five rules in mind when running the tool:
+Please keep these five points in mind when running the tool:
 
-1. **You must supply all file paths yourself (no hidden defaults)**
-   The tool never guesses file locations and never falls back to hidden paths. You must always provide the path to your map tiles (``--tiles-dir`` or ``--gcs-uri`` + ``--cache-dir``) and your output path (``-o`` or ``--output-dir``).
+1. **Always provide your tile and output paths**
+   Pass the path to your map tiles (``--tiles-dir`` or ``--gcs-uri`` + ``--cache-dir``) and your output destination (``-o`` or ``--output-dir``).
 
 2. **Gauges on wide rivers need an expected area hint (``--expected-area`` or ``--area-col``)**
    On a 90-meter grid, a wide river (like the Danube, Mississippi, or Amazon) is many pixels wide. A gauge coordinate near the riverbank can sit closer to a tiny creek on the bank than to the center of the main river.
 
    * Passing ``--expected-area`` (or ``--area-col`` for CSV tables) tells the tool to find the nearby channel whose drainage area is within ``±50%`` (configurable via ``--area-tolerance``) of the expected area.
-   * **Loud failure if no river matches:** If you provide an expected area and no river within ``~7.2 km`` matches that area, the tool **will not guess or output a wrong polygon**. It logs a ``[AREA HINT FAILURE]`` error and refuses to produce a polygon for that gauge.
+   * If you provide an expected area and no river within ``~7.2 km`` matches that area, the tool logs a ``[AREA HINT FAILURE]`` error and raises ``CatchmentAreaMismatchError`` rather than outputting a mismatched polygon.
 
 3. **Latitude limit (``-56°S`` to ``60°N``)**
    The 90-meter HydroSHEDS flow-direction maps cover latitudes from ``-56°S`` to ``60°N``.
 
    * If a gauge is north of ``60°N`` (such as in northern Norway, Sweden, Finland, Alaska, or northern Canada), it is outside map coverage.
-   * Likewise, if a gauge sits south of ``60°N`` (for example at ``59.8°N``) but its upstream river reaches north across ``60°N``, the tool stops rather than cutting the river off at the ``60°N`` border. In batch runs, these basins are recorded with ``status: "out_of_coverage"`` and ``geometry: null``.
+   * Likewise, if a gauge sits south of ``60°N`` (for example at ``59.8°N``) but its upstream river reaches north across ``60°N``, the tool stops rather than cutting the river off at the ``60°N`` border. In batch runs, these basins are recorded with ``status: "MISSING_DATA: ..."`` and ``geometry: null``.
 
 4. **All upstream map tiles must be present**
-   Large rivers can start hundreds of kilometers away from the gauge and cross several 5°×5° map tiles. If your ``--tiles-dir`` has the tile for the gauge location but is missing an upstream tile that flows into that river, the tool stops and raises an error instead of returning a chopped-off polygon.
+   Large rivers can start hundreds of kilometers away from the gauge and cross several 5°×5° map tiles (named ``{lat_top}{lon_left}.npy``, such as ``n40w090.npy`` and ``n45w090.npy``). If your ``--tiles-dir`` has the tile for the gauge location but is missing an upstream tile that flows into that river, the tool raises ``FileNotFoundError`` instead of returning a chopped-off polygon.
 
 5. **Coordinate order and measurement units**
 
@@ -195,7 +201,7 @@ Coordinate Input Options
 Map Tile & River Snapping Options
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
--  ``--tiles-dir`` *(path or gs:// URI, default: None)*: Folder containing the 5°×5° ``.npy`` flow-direction tiles. You must provide either ``--tiles-dir`` or ``--gcs-uri``. If you pass a ``gs://`` URI to ``--tiles-dir``, you must also specify ``--cache-dir``.
+-  ``--tiles-dir`` *(path or gs:// URI, default: None)*: Folder containing the 5°×5° ``.npy`` flow-direction tiles (such as ``n35w090.npy`` or ``n40w090.npy``). You must provide either ``--tiles-dir`` or ``--gcs-uri``. If you pass a ``gs://`` URI to ``--tiles-dir``, you must also specify ``--cache-dir``.
 -  ``--gcs-uri`` *(gs:// URI, default: None)*: Google Cloud Storage folder containing the 5°×5° ``.npy`` flow-direction tiles. Must be paired with ``--cache-dir``.
 -  ``--cache-dir`` *(local path, default: None)*: Local folder where tiles downloaded from Google Cloud Storage are saved. Required whenever ``--gcs-uri`` is used or when ``--tiles-dir`` points to a ``gs://`` path.
 -  ``--snap-window`` *(int, default: 12)*: Half-width of the search box (in 90-meter grid cells) used to snap the gauge coordinate onto the nearest river channel. The default of ``12`` cells searches roughly ``1.1 km`` in each direction around the input coordinate.
@@ -215,11 +221,32 @@ Output & Utility Options
 -  ``--clean-cache`` *(flag, default: False)*: Deletes only the ``.npy`` tile files that were downloaded into ``--cache-dir`` during this run, leaving any previously existing files untouched.
 -  ``--list-tiles`` *(flag, default: False)*: Lists all ``.npy`` tile files found in ``--tiles-dir`` and exits immediately.
 
----------------------------------------
-Benchmark CLI (``benchmark-catchment``)
----------------------------------------
+--------------------------------------------------------
+Benchmark Tools (``benchmark-catchment`` & Dataset Prep)
+--------------------------------------------------------
 
-The repository also provides ``benchmark-catchment`` to measure polygon accuracy (Intersection-over-Union, Dice score, and relative area error) against a reference dataset of published gauge polygons:
+Building a Reference Benchmark Dataset (``build_benchmark_dataset.py``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To build a stratified reference benchmark Parquet file from reference shapefiles, coordinate tables, and a world continents GeoJSON file:
+
+.. code-block:: bash
+
+   python multimet/catchment_delineation/tools/build_benchmark_dataset.py \
+     --shapes /path/to/grdc_basin_shapes.shp /path/to/camels_shapefiles_dir \
+     --coords-csv /path/to/grdc_attributes.csv /path/to/caravan_coordinates.csv \
+     --world-geojson /path/to/naturalearth_lowres.geojson \
+     --output /path/to/benchmark_basins_1000.parquet
+
+-  ``--shapes`` *(one or more paths, required)*: Reference shapefile paths (``.shp``) or directories containing ``*_basin_shapes.shp`` files.
+-  ``--coords-csv`` *(zero or more paths, default: [])*: Optional path(s) to coordinate CSV files (such as ``grdc_attributes.csv`` or ``coordinates.csv``). Also checks for ``coordinates.csv`` next to each shapefile.
+-  ``--world-geojson`` *(path, required)*: Path to world continents GeoJSON file (containing ``continent`` and ``geometry``).
+-  ``--output`` *(path, required)*: Output Parquet file path (``.parquet``) with columns ``gauge_id``, ``continent``, ``hemisphere``, ``size_tier``, ``latitude``, ``longitude``, ``reference_area_km2``, and ``geometry_wkt``.
+
+Running the Benchmark (``benchmark-catchment``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use ``benchmark-catchment`` to measure polygon accuracy (Intersection-over-Union, Dice score, and relative area error) against a reference dataset of published gauge polygons:
 
 .. code-block:: bash
 
@@ -229,10 +256,7 @@ The repository also provides ``benchmark-catchment`` to measure polygon accuracy
      --workers 16 \
      --output benchmark_results.csv
 
-Benchmark Arguments
-^^^^^^^^^^^^^^^^^^^
-
--  ``--dataset`` *(path or gs:// URI, required)*: Path to the benchmark Parquet file containing reference gauge coordinates, reference areas (``reference_area_km2``), and reference polygons (``geometry_wkb``).
+-  ``--dataset`` *(path or gs:// URI, required)*: Path to the benchmark Parquet file containing reference gauge coordinates, reference areas (``reference_area_km2``), and reference polygons (``geometry_wkt``).
 -  ``--tiles-dir`` *(path or gs:// URI, default: None)*: Local folder (or ``gs://`` URI) containing the 5°×5° ``.npy`` flow-direction tiles.
 -  ``--gcs-uri`` *(gs:// URI, default: None)*: Google Cloud Storage URI containing the 5°×5° ``.npy`` tiles (requires ``--cache-dir``).
 -  ``--cache-dir`` *(local path, default: None)*: Local folder used to store tiles downloaded from ``--gcs-uri``.

@@ -4,18 +4,14 @@ The `multimet.timeseries_extractors` subpackage reduces gridded meteorology to c
 
 ## Supported Meteorological Products
 
-The extractor supports **4 core Open-MultiMet products** plus **4 operational forecast products via dynamical.org**, operating either against user-supplied **Open-MultiMet Gridded Zarr Archives** (`--source archive --archive-store PRODUCT=URI`) or directly against **third-party agency upstream feeds / dynamical.org catalogs** (`--source public`):
+The extractor supports **4 core products**, operating either against user-supplied **Open-MultiMet Gridded Zarr Archives** (`--source archive --archive-store PRODUCT=URI`) or directly against **third-party agency upstream feeds** (`--source public`, for CPC, IMERG, and HRES):
 
 | Product | Type | Native Grid | Forecast Lead | Variables Extracted | Supported Sources |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **ERA5-Land** (`ERA5_LAND`) | Daily Reanalysis | $0.1^\circ$ (1801 $\times$ 3600) | N/A | **17 variables** (`era5land_temperature_2m`, `era5land_temperature_2m_min`, `era5land_temperature_2m_max`, `era5land_dewpoint_temperature_2m`, `era5land_surface_pressure`, `era5land_total_precipitation`, solar/thermal radiation, 10m U/V wind, soil moisture layers 1–4, snow depth water equivalent, FAO-56 & ERA5-Land PET) + `era5land_missing_fraction` | **Gridded Zarr archive only** (explicit user-supplied `gs://` or local `.zarr` URI; third-party sources are disabled to prevent 0.25° ERA5 substitution) |
 | **CPC Global Precip** (`CPC`) | Daily Gauge | $0.5^\circ$ (360 $\times$ 720) | N/A | **2 variables**: `cpc_precipitation` ($\text{mm/day}$) and `cpc_num_stations` (reporting rain-gauge count per cell) + `cpc_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`), NOAA PSL NetCDF (`https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/`), or local CPC binary grids |
-| **IMERG Early V07** (`IMERG`) | Daily / Half-Hourly Satellite | $0.1^\circ$ (1800 $\times$ 3600) | N/A | `imerg_precipitation` ($\text{mm/day}$) + `imerg_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`), NASA GES DISC (`GPM_3IMERGDE.07`), or dynamical.org Icechunk catalog |
+| **IMERG Early V07** (`IMERG`) | Daily / Half-Hourly Satellite | $0.1^\circ$ (1800 $\times$ 3600) | N/A | `imerg_precipitation` ($\text{mm/day}$) + `imerg_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`) or NASA GES DISC (`GPM_3IMERGDE.07`) |
 | **ECMWF IFS HRES** (`HRES`) | Operational NWP Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **5 variables** (`hres_total_precipitation`, `hres_temperature_2m`, `hres_surface_pressure`, `hres_surface_net_solar_radiation`, `hres_surface_net_thermal_radiation`) + `hres_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`), ECMWF Open Data (`gs://ecmwf-open-data`, `--source open_data`), or explicit Zarr/GRIB store (`data_dir`) |
-| **ECMWF AIFS Single** (`AIFS`) | AI Weather Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **4 variables** (`aifs_total_precipitation`, `aifs_temperature_2m`, `aifs_u_component_of_wind_10m`, `aifs_v_component_of_wind_10m`) + `aifs_missing_fraction` | dynamical.org Icechunk catalog (`ecmwf-aifs-single-forecast`, `--source public`) |
-| **NOAA GFS** (`GFS`) | Operational NWP Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **4 variables** (`gfs_total_precipitation`, `gfs_temperature_2m`, `gfs_u_component_of_wind_10m`, `gfs_v_component_of_wind_10m`) + `gfs_missing_fraction` | dynamical.org Icechunk catalog (`noaa-gfs-forecast`, `--source public`) |
-| **NOAA GEFS** (`GEFS`) | Operational Ensemble Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **4 variables** (`gefs_total_precipitation`, `gefs_temperature_2m`, `gefs_u_component_of_wind_10m`, `gefs_v_component_of_wind_10m`) + `gefs_missing_fraction` | dynamical.org Icechunk catalog (`noaa-gefs-forecast-35-day`, `--source public`, configurable `ensemble_member`) |
-| **ECMWF IFS ENS** (`IFS_ENS`) | Operational Ensemble Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **4 variables** (`ifs_ens_total_precipitation`, `ifs_ens_temperature_2m`, `ifs_ens_u_component_of_wind_10m`, `ifs_ens_v_component_of_wind_10m`) + `ifs_ens_missing_fraction` | dynamical.org Icechunk catalog (`ecmwf-ifs-ens-forecast-15-day-0-25-degree`, `--source public`, configurable `ensemble_member`) |
 
 ---
 
@@ -89,7 +85,7 @@ extract-multimet \
 
 ## Real-Time Operational Forcing Fetcher (`multimet-realtime`)
 
-`RealtimeForcingFetcher` and `fetch_realtime_multimet` fetch live operational forecasts and spin-up observations (`HRES` from `gs://ecmwf-open-data`, `IMERG` from `dynamical.org` or NASA GES DISC, and `CPC` from NOAA PSL) and write or incrementally append them into `<output_dir>/<PRODUCT>/timeseries.zarr`:
+`RealtimeForcingFetcher` and `fetch_realtime_multimet` fetch live operational forecasts and spin-up observations (`HRES` from `gs://ecmwf-open-data`, `IMERG` from NASA GES DISC, and `CPC` from NOAA PSL) and write or incrementally append them into `<output_dir>/<PRODUCT>/timeseries.zarr`:
 
 - **Cold-Start (`mode="coldstart"`)**: Fetches a 365-day historical spin-up window (`[t0 - 365d, t0]`) plus the 10-day operational forecast issued on `t0`. By default, historical spin-up dates prior to the forecast issue window use a 1-day lead-time optimization (`step=24h` only) to cut HRES spin-up download volume by $10\times$.
 - **Hot-Start (`mode="hotstart"`)**: Inspects existing Zarr stores (and/or a saved `googlehydrology` `.npz` state file or directory) to identify the latest valid date across all bands and basins, automatically re-fetching and healing any trailing `NaN` dates caused by upstream publication latency alongside newly elapsed days up to `t0`.
@@ -128,34 +124,4 @@ multimet-realtime \
   --output_dir /tmp/realtime_forcing \
   --mode hotstart \
   --reference_date latest
-```
-
----
-
-## dynamical.org Universal Catalog Loader with Icechunk Acceleration
-
-The `DynamicalDataLoader` provides direct, cloud-optimized access to weather and climate datasets in the [dynamical.org catalog](https://dynamical.org/catalog/).
-
-```python
-from multimet.timeseries_extractors import load_dynamical
-
-# Load geographically-bounded gridded cube
-ds_cube = load_dynamical(
-    dataset_id="nasa-imerg-analysis-early",
-    watersheds="multimet/tests/test_data/shapefiles/us/us_basin_shapes.geojson",
-    variables=["precipitation_surface"],
-    start_date="2023-01-01",
-    end_date="2023-01-05",
-    mode="cube",
-)
-
-# Extract catchment zonal timeseries directly
-ds_ts = load_dynamical(
-    dataset_id="nasa-imerg-analysis-early",
-    watersheds="multimet/tests/test_data/shapefiles/us/us_basin_shapes.geojson",
-    variables=["precipitation_surface"],
-    start_date="2023-01-01",
-    end_date="2023-01-05",
-    mode="timeseries",
-)
 ```

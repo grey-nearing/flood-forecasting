@@ -15,7 +15,7 @@
 """Massively parallel Dask runner for MultiMet meteorological forcing extraction.
 
 Enables distributed extraction across time (days or temporal batches) for all core
-MultiMet products (ERA5-Land, CPC, IMERG, HRES, AIFS) on Dask clusters
+MultiMet products (ERA5-Land, CPC, IMERG, HRES) on Dask clusters
 (Google Cloud, Kubernetes, or local multi-core machines).
 
 Uses lock-free direct chunk writing to pre-allocated Zarr stores, eliminating
@@ -48,13 +48,6 @@ from multimet.timeseries_extractors.config import (
     Product,
 )
 from multimet.timeseries_extractors.cpc import CPCExtractor
-from multimet.timeseries_extractors.dynamical import (
-    AIFSExtractor,
-    DynamicalIMERGExtractor,
-    GEFSExtractor,
-    GFSExtractor,
-    IFSEnsExtractor,
-)
 from multimet.timeseries_extractors.era5_land import ERA5LandExtractor
 from multimet.utils.geometry import load_basin_geometries
 from multimet.timeseries_extractors.hres import HRESExtractor
@@ -71,11 +64,6 @@ PRODUCT_MAP: Dict[str, Tuple[Product, type[BaseExtractor]]] = {
     "ERA5_LAND": (Product.ERA5_LAND, ERA5LandExtractor),
     "IMERG": (Product.IMERG, IMERGExtractor),
     "HRES": (Product.HRES, HRESExtractor),
-    "AIFS": (Product.AIFS, AIFSExtractor),
-    "GFS": (Product.GFS, GFSExtractor),
-    "GEFS": (Product.GEFS, GEFSExtractor),
-    "IFS_ENS": (Product.IFS_ENS, IFSEnsExtractor),
-    "DYNAMICAL_IMERG": (Product.DYNAMICAL_IMERG, DynamicalIMERGExtractor),
 }
 
 
@@ -347,11 +335,6 @@ def extract_product_dask(
           "or archive_stores['ERA5_LAND']."
       )
   elif source_lower in ("archive", "gridded_archive", "zarr_archive"):
-    if prod_name in ("AIFS", "GFS", "GEFS", "IFS_ENS", "DYNAMICAL_IMERG"):
-      raise ValueError(
-          f"Product {prod_name} reads from the dynamical.org Icechunk "
-          "catalog and does not support source='archive'."
-      )
     extractor_kwargs["source"] = "archive"
     if not extractor_kwargs.get("data_dir"):
       raise ValueError(
@@ -366,22 +349,18 @@ def extract_product_dask(
     )
     extractor_kwargs["source"] = src
   elif prod_name == "IMERG":
-    if source_lower in ("dynamical", "icechunk", "catalog"):
-      extractor_cls = DynamicalIMERGExtractor
-      extractor_kwargs["source"] = source_lower
-    else:
-      src = (
-          "gesdisc"
-          if source_lower in ("public", "auto", "upstream")
-          else ("h5" if source_lower == "local" else source_lower)
-      )
-      extractor_kwargs.update({
-          "source": src,
-          "username": earthdata_username,
-          "password": earthdata_password,
-          "token": earthdata_token,
-          "netrc_path": netrc_path,
-      })
+    src = (
+        "gesdisc"
+        if source_lower in ("public", "auto", "upstream")
+        else ("h5" if source_lower == "local" else source_lower)
+    )
+    extractor_kwargs.update({
+        "source": src,
+        "username": earthdata_username,
+        "password": earthdata_password,
+        "token": earthdata_token,
+        "netrc_path": netrc_path,
+    })
   elif prod_name == "HRES":
     src = (
         "wb2"
@@ -389,8 +368,6 @@ def extract_product_dask(
         else ("local" if source_lower == "local" else source_lower)
     )
     extractor_kwargs["source"] = src
-  elif prod_name in ("AIFS", "GFS", "GEFS", "IFS_ENS", "DYNAMICAL_IMERG"):
-    extractor_kwargs["source"] = source_lower
 
   from multimet.timeseries_extractors.zarr_writer import check_zarr_store_exists
 
