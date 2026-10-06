@@ -14,8 +14,6 @@
 
 """Unit tests for model.training.logger."""
 
-from unittest.mock import MagicMock
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -24,23 +22,26 @@ from model.training.logger import Logger
 
 
 @pytest.fixture
-def mock_config(tmp_path):
-    cfg = MagicMock()
-    cfg.log_interval = 1
-    cfg.run_dir = tmp_path
-    cfg.img_log_dir = tmp_path / 'img_log'
-    cfg.img_log_dir.mkdir(parents=True, exist_ok=True)
-    cfg.save_git_diff = False
-    cfg.update_config = MagicMock()
-    cfg.dump_config = MagicMock()
-    return cfg
+def logger_config(minimal_config, tmp_path):
+    img_dir = tmp_path / 'img_log'
+    img_dir.mkdir(parents=True, exist_ok=True)
+    minimal_config.update_config(
+        {
+            'log_interval': 1,
+            'run_dir': tmp_path,
+            'img_log_dir': img_dir,
+            'save_git_diff': False,
+        }
+    )
+    return minimal_config
 
 
 @pytest.mark.unit
-def test_logger_lifecycle_and_summarise(mock_config, tmp_path):
-    logger = Logger(mock_config)
+def test_logger_lifecycle_and_summarise(logger_config):
+    logger = Logger(logger_config)
     assert logger.epoch == 0
     assert logger.update == 0
+    assert (logger_config.run_dir / 'config.yml').exists()
 
     # Test train mode logging
     logger.train()
@@ -73,8 +74,8 @@ def test_logger_lifecycle_and_summarise(mock_config, tmp_path):
 
 
 @pytest.mark.unit
-def test_logger_figures(mock_config, tmp_path):
-    logger = Logger(mock_config)
+def test_logger_figures(logger_config, tmp_path):
+    logger = Logger(logger_config)
     fig, ax = plt.subplots()
     ax.plot([1, 2, 3], [4, 5, 6])
 

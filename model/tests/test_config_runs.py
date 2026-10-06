@@ -33,7 +33,10 @@ from model.training.basetrainer import BaseTrainer
 from model.training.train import start_training
 from model.utils.config import Config
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
+
+@pytest.mark.integration
 def test_tutorial_finetune_modules_are_valid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -43,9 +46,11 @@ def test_tutorial_finetune_modules_are_valid(
         lambda **_kwargs: None,
     )
     config = Config(
-        Path('model/tutorial/model-runs/5-basin-example/config.yml')
+        REPO_ROOT / 'model/tutorial/model-runs/5-basin-example/config.yml'
     )
-    config.update_config(Path('model/tutorial/configs/finetune-config.yml'))
+    config.update_config(
+        REPO_ROOT / 'model/tutorial/configs/finetune-config.yml'
+    )
     model = MeanEmbeddingForecastLSTM(config)
     trainer = BaseTrainer.__new__(BaseTrainer)
     trainer.cfg = config
@@ -57,7 +62,9 @@ def test_tutorial_finetune_modules_are_valid(
         for name, parameter in model.named_parameters()
         if parameter.requires_grad
     }
-    assert any(name.startswith('static_embedding_fc.') for name in trainable_names)
+    assert any(
+        name.startswith('static_embedding_fc.') for name in trainable_names
+    )
     assert any(name.startswith('head.') for name in trainable_names)
     assert all(
         name.startswith(('static_embedding_fc.', 'head.'))
@@ -65,6 +72,8 @@ def test_tutorial_finetune_modules_are_valid(
     )
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 def test_forecast_daily_regression(
     get_config: Fixture[Callable[[str], dict]],
     forecast_model: Fixture[str],
@@ -93,13 +102,13 @@ def test_forecast_daily_regression(
     nan_basin = 'camelsaus_102101A'
     nan_dates = pd.date_range(*get_test_start_end_dates(config))
     index = pd.MultiIndex.from_product(
-        [[nan_basin], nan_dates], 
-        names=['basin', 'date']
+        [[nan_basin], nan_dates],
+        names=['basin', 'date'],
     )
     nan_discharge = pd.DataFrame(
-        data=np.nan, 
-        index=index, 
-        columns=['streamflow']
+        data=np.nan,
+        index=index,
+        columns=['streamflow'],
     )
     _check_results(config, nan_basin, nan_discharge)  # No valid data.
     _check_results(config, 'lamah_1145')
@@ -173,6 +182,8 @@ def _check_results(config: Config, basin: str, discharge: pd.Series = None):
     assert not pd.isna(results[f'{target}_sim']).any()
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 def test_forecast_short_predict_last_n(
     get_config: Fixture[Callable[[str], dict]],
     forecast_config_updates: Fixture[Callable[[str], dict]],
