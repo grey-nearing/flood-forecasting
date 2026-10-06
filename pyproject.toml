@@ -28,7 +28,7 @@ docstring-code-format = true
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-testpaths = ["test", "multimet/tests"]
+testpaths = ["model/tests", "multimet/tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = [

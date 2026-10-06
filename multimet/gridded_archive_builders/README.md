@@ -24,10 +24,10 @@ Each tool downloads raw files from the weather agency, validates coordinates and
 
 ## Prerequisites
 
-Activate the `googlehydrology` Conda environment and install the repository in editable mode:
+Activate the `openhydronet` Conda environment and install the repository in editable mode:
 
 ```bash
-conda activate googlehydrology
+conda activate openhydronet
 pip install -e .
 ```
 

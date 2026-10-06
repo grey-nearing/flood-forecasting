@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.abspath('.'))
 sys.path.insert(0, os.path.abspath('../../'))
 # -- Project information -----------------------------------------------------
 about = {}
-with open('../../googlehydrology/__about__.py', 'r') as fp:
+with open('../../model/__about__.py', 'r') as fp:
     exec(fp.read(), about)
 
 project = 'OpenHydroNet'
@@ -90,7 +90,7 @@ nbsphinx_execute = 'never'
 def copy_notebooks(app):
     """Copies notebooks from the tutorial directory to the source directory."""
     root = Path(__file__).parent.parent.parent
-    examples_dir = root / 'tutorial'
+    examples_dir = root / 'model' / 'tutorial'
     tutorial_dir = root / 'docs' / 'source' / 'tutorial'
     
     # Mapping: Source relative to tutorial/ -> Destination relative to tutorial/

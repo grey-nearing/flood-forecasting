@@ -22,20 +22,20 @@ with readme_file.open('r') as fp:
     long_description = fp.read()
 
 about = {}
-with open('googlehydrology/__about__.py', 'r') as fp:
+with open('model/__about__.py', 'r') as fp:
     exec(fp.read(), about)
 
 setup(
-    name='googlehydrology',
+    name='openhydronet',
     version=about['__version__'],
     packages=[
-        'googlehydrology',
-        'googlehydrology.datasetzoo',
-        'googlehydrology.datautils',
-        'googlehydrology.utils',
-        'googlehydrology.modelzoo',
-        'googlehydrology.training',
-        'googlehydrology.evaluation',
+        'model',
+        'model.datasetzoo',
+        'model.datautils',
+        'model.utils',
+        'model.modelzoo',
+        'model.training',
+        'model.evaluation',
         'multimet',
         'multimet.utils',
         'multimet.catchment_delineation',
@@ -43,11 +43,10 @@ setup(
         'multimet.gridded_archive_builders',
         'multimet.timeseries_extractors',
     ],
-    url='https://googlehydrology.readthedocs.io',
+    url='https://openhydronet.readthedocs.io',
     project_urls={
-        'Documentation': 'https://googlehydrology.readthedocs.io',
-        'Source': 'https://github.com/googlehydrology/googlehydrology',
-        'Research Blog': 'https://googlehydrology.github.io/',
+        'Documentation': 'https://openhydronet.readthedocs.io',
+        'Source': 'https://github.com/google-research/flood-forecasting',
     },
     author='Amit Markel, Frederik Kratzert, Grey Nearing, Martin Gauch, Omri Shefi',
     author_email='flood-forecasting-open-source@google.com',
@@ -56,8 +55,8 @@ setup(
     long_description_content_type='text/markdown',
     entry_points={
         'console_scripts': [
-            'schedule-runs=googlehydrology.run_scheduler:_main',
-            'run=googlehydrology.run:_main',
+            'schedule-runs=model.run_scheduler:_main',
+            'run=model.run:_main',
             'build-cpc-archive=multimet.gridded_archive_builders.build_cpc_archive:main',
             'build-imerg-archive=multimet.gridded_archive_builders.build_imerg_archive:main',
             'extract-multimet=multimet.timeseries_extractors.runner:main',

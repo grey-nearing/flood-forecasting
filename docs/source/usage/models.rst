@@ -9,11 +9,11 @@ The head of the model is used on top of the model class and relates the outputs 
 
 Regression
 ^^^^^^^^^^
-:py:class:`googlehydrology.modelzoo.head.Regression` provides a single layer *regression* head, that includes different activation options for the output.
+:py:class:`model.modelzoo.head.Regression` provides a single layer *regression* head, that includes different activation options for the output.
 
 CMAL
 ^^^^
-:py:class:`googlehydrology.modelzoo.head.CMAL` implements a *Countable Mixture of Asymmetric Laplacians* head. That is, a mixture density network with asymmetric Laplace distributions as components.
+:py:class:`model.modelzoo.head.CMAL` implements a *Countable Mixture of Asymmetric Laplacians* head. That is, a mixture density network with asymmetric Laplace distributions as components.
 
 Model Classes
 -------------
@@ -26,7 +26,7 @@ Abstract base class from which all models derive. Do not use this class for mode
 
 Handoff-Forecast-LSTM
 ^^^^^^^^^^^^^^^^^^^^^
-:py:class:`googlehydrology.modelzoo.handoff_forecast_lstm.HandoffForecastLSTM` is a forecasting model
+:py:class:`model.modelzoo.handoff_forecast_lstm.HandoffForecastLSTM` is a forecasting model
 that uses a state-handoff to transition from a hindcast sequence (LSTM)
 model to a forecast sequence (LSTM) model. The hindcast model is run from the past up to present
 (the issue time of the forecast) and then passes the cell state and hidden state of the LSTM into
@@ -40,7 +40,7 @@ It is described in detail in [Nearing2024]_.
 
 Mean-Embedding-Forecast-LSTM
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-:py:class:`googlehydrology.modelzoo.mean_embedding_forecast_lstm.MeanEmbeddingForecastLSTM` is a forecasting
+:py:class:`model.modelzoo.mean_embedding_forecast_lstm.MeanEmbeddingForecastLSTM` is a forecasting
 model that uses separate embedding networks for hindcast and forecast inputs. It aggregates these inputs
 using masked means before passing them into respective LSTMs for the hindcast and forecast periods.
 
@@ -53,15 +53,15 @@ The listing below shows the skeleton of a template model you can use to start im
 
 **Crucial Steps:**
 
-1.  **Inherit from BaseModel:** Your class must inherit from :py:class:`googlehydrology.modelzoo.basemodel.BaseModel`.
+1.  **Inherit from BaseModel:** Your class must inherit from :py:class:`model.modelzoo.basemodel.BaseModel`.
 2.  **Define module_parts:** You must define a list called ``module_parts`` containing the names of the sub-modules (e.g., LSTMs, Linear layers) in your class. This is required for the fine-tuning logic to know which parts of the model to freeze or unfreeze.
-3.  **Register the Model:** Once implemented, you must modify :py:func:`googlehydrology.modelzoo.__init__.get_model` to instantiate your class when its name is found in the config.
+3.  **Register the Model:** Once implemented, you must modify :py:func:`model.modelzoo.__init__.get_model` to instantiate your class when its name is found in the config.
 
 .. code-block:: python
 
     import torch
 
-    from googlehydrology.modelzoo.basemodel import BaseModel
+    from model.modelzoo.basemodel import BaseModel
 
 
     class TemplateModel(BaseModel):
