@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
-import contextlib
 import ctypes
 import gc
 import logging
@@ -169,55 +168,60 @@ def _get_c_bfs_lib() -> ctypes.CDLL | None:
     compiler = (
         shutil.which('gcc') or shutil.which('clang') or shutil.which('cc')
     )
-    if not compiler or sys.platform == 'win32':
+    if compiler is None or sys.platform == 'win32':
         return None
 
-    try:
-        so_dir = Path(tempfile.gettempdir()) / f'gh_dem_bfs_{os.getuid()}'
-        so_dir.mkdir(parents=True, exist_ok=True)
-        so_path = so_dir / 'bfs_tile_v1.so'
-        if not so_path.is_file():
-            tmp_c = so_dir / f'bfs_{os.getpid()}.c'
-            tmp_so = so_dir / f'bfs_{os.getpid()}.so'
-            tmp_c.write_text(_C_BFS_SOURCE, encoding='utf-8')
-            subprocess.run(
-                [
-                    compiler,
-                    '-O3',
-                    '-shared',
-                    '-fPIC',
-                    str(tmp_c),
-                    '-o',
-                    str(tmp_so),
-                ],
-                check=True,
-                capture_output=True,
-                timeout=30,
-            )
-            tmp_so.replace(so_path)
-            with contextlib.suppress(OSError):
-                tmp_c.unlink()
-        lib = ctypes.CDLL(str(so_path))
-        lib.bfs_tile_c.restype = ctypes.c_int64
-        lib.bfs_tile_c.argtypes = [
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.POINTER(ctypes.c_int32),
-            ctypes.c_int32,
-            ctypes.POINTER(ctypes.c_int32),
-            ctypes.POINTER(ctypes.c_int32),
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.c_int32,
-            ctypes.POINTER(ctypes.c_int32),
-            ctypes.c_int64,
-        ]
-        _C_LIB = lib
-    except Exception:  # noqa: BLE001
+    so_dir = Path(tempfile.gettempdir()) / f'gh_dem_bfs_{os.getuid()}'
+    so_dir.mkdir(parents=True, exist_ok=True)
+    so_path = so_dir / 'bfs_tile_v1.so'
+    if not so_path.is_file():
+        tmp_c = so_dir / f'bfs_{os.getpid()}.c'
+        tmp_so = so_dir / f'bfs_{os.getpid()}.so'
+        tmp_c.write_text(_C_BFS_SOURCE, encoding='utf-8')
+        proc = subprocess.run(
+            [
+                compiler,
+                '-O3',
+                '-shared',
+                '-fPIC',
+                str(tmp_c),
+                '-o',
+                str(tmp_so),
+            ],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+        tmp_c.unlink(missing_ok=True)
+        if proc.returncode != 0 or not tmp_so.is_file():
+            tmp_so.unlink(missing_ok=True)
+            _C_LIB = None
+            return None
+        tmp_so.replace(so_path)
+
+    if not so_path.is_file():
         _C_LIB = None
+        return None
+
+    lib = ctypes.CDLL(str(so_path))
+    lib.bfs_tile_c.restype = ctypes.c_int64
+    lib.bfs_tile_c.argtypes = [
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.c_int64,
+    ]
+    _C_LIB = lib
     return _C_LIB
 
 
-class CatchmentCoverageError(FileNotFoundError, ValueError):
+class CatchmentCoverageError(ValueError):
     """Raised when a pour point or watershed fails coverage or area checks."""
 
 
@@ -344,6 +348,7 @@ class DemDelineator:
         self.cache_tiles = cache_tiles
         self._tile_cache: dict[tuple[int, int], np.ndarray] = {}
         self.created_cache_files: set[Path] = set()
+        self._last_coverage_error: str | None = None
         self._q_buf: np.ndarray | None = None
         self._b_r: np.ndarray | None = None
         self._b_c: np.ndarray | None = None
@@ -353,15 +358,13 @@ class DemDelineator:
         """Delete only the tile files created in cache_dir by this instance."""
         for arr in self._tile_cache.values():
             mmap_obj = getattr(arr, '_mmap', None)
-            if mmap_obj is not None:
-                with contextlib.suppress(Exception):
-                    mmap_obj.close()
+            if mmap_obj is not None and not getattr(mmap_obj, 'closed', True):
+                mmap_obj.close()
         self._tile_cache.clear()
         gc.collect()
         for file_path in list(self.created_cache_files):
             if file_path.is_file():
-                with contextlib.suppress(OSError):
-                    file_path.unlink()
+                file_path.unlink(missing_ok=True)
             self.created_cache_files.discard(file_path)
         if (
             self._created_cache_dir
@@ -369,17 +372,18 @@ class DemDelineator:
             and self.cache_dir.is_dir()
             and not any(self.cache_dir.iterdir())
         ):
-            with contextlib.suppress(OSError):
-                self.cache_dir.rmdir()
+            self.cache_dir.rmdir()
 
     def get_tile(self, lat_top: float, lon_left: float) -> np.ndarray:
         """Load a 5x5 degree (6000, 6000) uint8 tile array or raise on failure."""
-        key = (int(round(lat_top)), int(round(lon_left)))
+        tile_lat = int(round(lat_top))
+        tile_lon = int(round(lon_left))
+        key = (tile_lat, tile_lon)
         if self.cache_tiles and key in self._tile_cache:
             return self._tile_cache[key]
 
-        tile_name = tile_key_to_filename(key[0], key[1])
-        if not is_tile_in_coverage(key[0], key[1]):
+        tile_name = tile_key_to_filename(tile_lat, tile_lon)
+        if not is_tile_in_coverage(tile_lat, tile_lon):
             raise CatchmentCoverageError(
                 f'DEM tile {tile_name} is outside the global DEM coverage '
                 f'domain ({DEM_MIN_LAT}° to {DEM_MAX_LAT}° latitude, '
@@ -387,24 +391,32 @@ class DemDelineator:
             )
 
         if self.tiles_dir is not None:
-            tile_path = self.tiles_dir / tile_name
-            if not tile_path.is_file():
-                raise CatchmentCoverageError(
-                    f'Required DEM tile {tile_name} not found in '
-                    f'user-supplied tiles_dir ({self.tiles_dir}).'
+            local_npy = self.tiles_dir / tile_name
+            if not local_npy.exists():
+                raise FileNotFoundError(
+                    f'Missing flow direction tile for ({tile_lat}, {tile_lon}) '
+                    f'in {self.tiles_dir} (expected {local_npy.name}).'
                 )
+            tile_path = local_npy
         else:
             assert self.cache_dir is not None
             assert self.gcs_uri is not None
             tile_path = self.cache_dir / tile_name
             if not tile_path.is_file():
-                tile_path = download_tile_from_gcs(
-                    key[0],
-                    key[1],
+                dl_path = download_tile_from_gcs(
+                    tile_lat,
+                    tile_lon,
                     target_dir=self.cache_dir,
                     source_uri=self.gcs_uri,
                     created_files=self.created_cache_files,
                 )
+                if dl_path is None or not Path(dl_path).exists():
+                    raise FileNotFoundError(
+                        f'Missing flow direction tile for ({tile_lat}, '
+                        f'{tile_lon}) in {self.gcs_uri} '
+                        f'(expected {tile_name}).'
+                    )
+                tile_path = Path(dl_path)
 
         arr = np.load(tile_path, mmap_mode='r')
         if arr.shape != (TILE_CELLS, TILE_CELLS) or arr.dtype != np.uint8:
@@ -418,6 +430,22 @@ class DemDelineator:
             self._tile_cache[key] = arr
         return arr
 
+    def _check_coord_coverage(self, lat: float, lon: float) -> str | None:
+        """Return an error reason if (lat, lon) is non-finite or out of coverage."""
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            return (
+                f'Pour point coordinates ({lat}, {lon}) are missing or '
+                'non-finite. Catchment cannot be delineated.'
+            )
+        if not is_coord_in_coverage(lat, lon):
+            return (
+                f'Pour point coordinates ({lat:.4f}, {lon:.4f}) are outside '
+                f'the global DEM coverage domain ({DEM_MIN_LAT}° to '
+                f'{DEM_MAX_LAT}° latitude, {DEM_MIN_LON}° to {DEM_MAX_LON}° '
+                'longitude). Catchment cannot be delineated.'
+            )
+        return None
+
     def snap_outlet(
         self,
         lat: float,
@@ -425,18 +453,9 @@ class DemDelineator:
         snap_window_cells: int = 12,
     ) -> tuple[float, float, int, int, tuple[int, int], float]:
         """Snap input coordinates to the nearest channel outlet cell."""
-        if not (math.isfinite(lat) and math.isfinite(lon)):
-            raise CatchmentCoverageError(
-                f'Pour point coordinates ({lat}, {lon}) are missing or '
-                'non-finite. Catchment cannot be delineated.'
-            )
-        if not is_coord_in_coverage(lat, lon):
-            raise CatchmentCoverageError(
-                f'Pour point coordinates ({lat:.4f}, {lon:.4f}) are outside '
-                f'the global DEM coverage domain ({DEM_MIN_LAT}° to '
-                f'{DEM_MAX_LAT}° latitude, {DEM_MIN_LON}° to {DEM_MAX_LON}° '
-                'longitude). Catchment cannot be delineated.'
-            )
+        cov_err = self._check_coord_coverage(lat, lon)
+        if cov_err is not None:
+            raise CatchmentCoverageError(cov_err)
 
         lat_top = float(math.ceil(lat / TILE_DEG) * TILE_DEG)
         lon_left = float(math.floor(lon / TILE_DEG) * TILE_DEG)
@@ -494,27 +513,34 @@ class DemDelineator:
         )
         return outlet_lat, outlet_lon, best_r, best_c, start_key, snap_dist_m
 
-    def _raise_out_of_coverage(
+    def _format_out_of_coverage_msg(
         self, nt_lat: int, nt_lon: int, t_lon: int, cc_src: int
-    ) -> None:
+    ) -> str:
         if nt_lat > int(DEM_MAX_LAT):
-            raise CatchmentCoverageError(
+            return (
                 'Watershed extends north past the DEM coverage boundary '
                 f'({DEM_MAX_LAT}°N) at longitude '
                 f'{t_lon + cc_src * RES_DEG:.4f}°. Delineation stopped to '
                 'prevent returning a partial catchment.'
             )
         if nt_lat < MIN_TILE_LAT_TOP:
-            raise CatchmentCoverageError(
+            return (
                 'Watershed extends south past the DEM coverage boundary '
                 f'({DEM_MIN_LAT}°S) at longitude '
                 f'{t_lon + cc_src * RES_DEG:.4f}°. Delineation stopped to '
                 'prevent returning a partial catchment.'
             )
-        raise CatchmentCoverageError(
+        return (
             'Watershed extends past the longitude domain boundary into tile '
             f'({nt_lat}, {nt_lon}). Delineation stopped to prevent returning '
             'a partial catchment.'
+        )
+
+    def _raise_out_of_coverage(
+        self, nt_lat: int, nt_lon: int, t_lon: int, cc_src: int
+    ) -> None:
+        raise CatchmentCoverageError(
+            self._format_out_of_coverage_msg(nt_lat, nt_lon, t_lon, cc_src)
         )
 
     def _traverse_upstream_bfs_c(
@@ -525,6 +551,8 @@ class DemDelineator:
         best_c: int,
         *,
         max_cells: int | None = None,
+        abort_on_limit: bool = True,
+        abort_on_coverage: bool = True,
     ) -> tuple[dict[tuple[int, int], np.ndarray], int]:
         """Run C-accelerated multi-tile reverse-flow BFS."""
         if self._q_buf is None:
@@ -569,11 +597,15 @@ class DemDelineator:
                 )
                 total_accum += int(popped)
                 if out_b.value < 0:
-                    raise CatchmentCoverageError(
+                    msg = (
                         f'Watershed exceeded max_cells={max_cells}. '
                         'Delineation aborted to prevent returning a '
                         'truncated catchment.'
                     )
+                    self._last_coverage_error = msg
+                    if abort_on_limit:
+                        raise CatchmentCoverageError(msg)
+                    return {}, -1
                 for k in range(out_b.value):
                     rr = int(self._b_r[k])
                     cc = int(self._b_c[k])
@@ -594,9 +626,13 @@ class DemDelineator:
                         nt_lon += int(TILE_DEG)
 
                     if not is_tile_in_coverage(nt_lat, nt_lon):
-                        self._raise_out_of_coverage(
-                            nt_lat, nt_lon, t_lat, cc_src
+                        msg = self._format_out_of_coverage_msg(
+                            nt_lat, nt_lon, t_lon, cc_src
                         )
+                        self._last_coverage_error = msg
+                        if abort_on_coverage:
+                            raise CatchmentCoverageError(msg)
+                        return {}, -2
                     nkey = (nt_lat, nt_lon)
                     ngrid = self.get_tile(*nkey)
                     if nkey not in visited_tiles:
@@ -620,12 +656,21 @@ class DemDelineator:
         best_c: int,
         *,
         max_cells: int | None = None,
+        abort_on_limit: bool = True,
+        abort_on_coverage: bool = True,
     ) -> tuple[dict[tuple[int, int], np.ndarray], int]:
         """Run multi-tile reverse-flow BFS (C-accelerated with NumPy fallback)."""
+        self._last_coverage_error = None
         c_lib = _get_c_bfs_lib()
         if c_lib is not None:
             return self._traverse_upstream_bfs_c(
-                c_lib, start_key, best_r, best_c, max_cells=max_cells
+                c_lib,
+                start_key,
+                best_r,
+                best_c,
+                max_cells=max_cells,
+                abort_on_limit=abort_on_limit,
+                abort_on_coverage=abort_on_coverage,
             )
 
         offsets_1d = [
@@ -646,11 +691,15 @@ class DemDelineator:
             for (t_lat, t_lon), idx_arr in frontiers.items():
                 n_cur = int(idx_arr.size)
                 if max_cells is not None and total_accum + n_cur > max_cells:
-                    raise CatchmentCoverageError(
+                    msg = (
                         f'Watershed exceeded max_cells={max_cells} with '
                         f'{n_cur} upstream cells still queued. Delineation '
                         'aborted to prevent returning a truncated catchment.'
                     )
+                    self._last_coverage_error = msg
+                    if abort_on_limit:
+                        raise CatchmentCoverageError(msg)
+                    return {}, -1
                 total_accum += n_cur
 
                 grid_1d = self.get_tile(t_lat, t_lon).ravel()
@@ -715,9 +764,13 @@ class DemDelineator:
                                     nt_lon += int(TILE_DEG)
 
                                 if not is_tile_in_coverage(nt_lat, nt_lon):
-                                    self._raise_out_of_coverage(
+                                    msg = self._format_out_of_coverage_msg(
                                         nt_lat, nt_lon, t_lon, cc_src
                                     )
+                                    self._last_coverage_error = msg
+                                    if abort_on_coverage:
+                                        raise CatchmentCoverageError(msg)
+                                    return {}, -2
 
                                 nkey = (nt_lat, nt_lon)
                                 ngrid = self.get_tile(*nkey)
@@ -766,6 +819,8 @@ class DemDelineator:
         snap_window_cells: int,
         max_cells: int | None,
         catchment_id: str | None,
+        *,
+        raise_on_mismatch: bool = True,
     ) -> tuple[
         float,
         float,
@@ -785,9 +840,11 @@ class DemDelineator:
             )
             logger.error(msg)
             sys.stderr.write(msg + '\n')
-            raise CatchmentAreaMismatchError(msg)
+            self._last_coverage_error = msg
+            if raise_on_mismatch:
+                raise CatchmentAreaMismatchError(msg)
+            return 0.0, 0.0, 0, 0, (0, 0), 0.0, {}, -1
 
-        # First try the default snap cell at snap_window_cells:
         (
             outlet_lat,
             outlet_lon,
@@ -812,10 +869,15 @@ class DemDelineator:
             hint_cap = min(hint_cap, max_cells)
 
         closest_area_seen: float = 0.0
-        try:
-            vt0, cnt0 = self._traverse_upstream_bfs(
-                start_key, best_r, best_c, max_cells=hint_cap
-            )
+        vt0, cnt0 = self._traverse_upstream_bfs(
+            start_key,
+            best_r,
+            best_c,
+            max_cells=hint_cap,
+            abort_on_limit=False,
+            abort_on_coverage=False,
+        )
+        if cnt0 >= 0:
             area0 = _compute_visited_area_km2(vt0)
             closest_area_seen = area0
             if min_area <= area0 <= max_area:
@@ -829,8 +891,7 @@ class DemDelineator:
                     vt0,
                     cnt0,
                 )
-        except CatchmentCoverageError:
-            vt0 = None
+        else:
             area0 = -1.0
 
         # Default snap did not match expected_area_km2: expand search window
@@ -859,7 +920,7 @@ class DemDelineator:
         candidates.sort(key=lambda item: item[0])
 
         rejected = np.zeros((TILE_CELLS, TILE_CELLS), dtype=bool)
-        if vt0 is not None and 0.0 <= area0 < min_area:
+        if cnt0 >= 0 and 0.0 <= area0 < min_area and start_key in vt0:
             rejected |= vt0[start_key]
 
         probe_cap = min(min_cells, _AREA_HINT_PROBE_CAP)
@@ -875,34 +936,48 @@ class DemDelineator:
                 continue
 
             if probe_cap > 1:
-                try:
-                    vt_p, _ = self._traverse_upstream_bfs(
-                        start_key, er, ec, max_cells=probe_cap
-                    )
+                vt_p, cnt_p = self._traverse_upstream_bfs(
+                    start_key,
+                    er,
+                    ec,
+                    max_cells=probe_cap,
+                    abort_on_limit=False,
+                    abort_on_coverage=False,
+                )
+                if cnt_p >= 0:
                     area_p = _compute_visited_area_km2(vt_p)
                     if abs(area_p - expected_area_km2) < abs(
                         closest_area_seen - expected_area_km2
                     ):
                         closest_area_seen = area_p
-                    rejected |= vt_p[start_key]
+                    if start_key in vt_p:
+                        rejected |= vt_p[start_key]
                     for rr, cc in chain:
                         rejected[rr, cc] = True
                     continue
-                except CatchmentCoverageError:
-                    pass
+                if cnt_p == -2:
+                    for rr, cc in chain:
+                        rejected[rr, cc] = True
+                    continue
 
             # Full check on downstream exit (er, ec):
-            try:
-                vt_e, cnt_e = self._traverse_upstream_bfs(
-                    start_key, er, ec, max_cells=hint_cap
-                )
+            vt_e, cnt_e = self._traverse_upstream_bfs(
+                start_key,
+                er,
+                ec,
+                max_cells=hint_cap,
+                abort_on_limit=False,
+                abort_on_coverage=False,
+            )
+            if cnt_e >= 0:
                 area_e = _compute_visited_area_km2(vt_e)
                 if abs(area_e - expected_area_km2) < abs(
                     closest_area_seen - expected_area_km2
                 ):
                     closest_area_seen = area_e
                 if area_e < min_area:
-                    rejected |= vt_e[start_key]
+                    if start_key in vt_e:
+                        rejected |= vt_e[start_key]
                     for rr, cc in chain:
                         rejected[rr, cc] = True
                     continue
@@ -918,10 +993,17 @@ class DemDelineator:
                     while lo <= hi:
                         mid = (lo + hi) // 2
                         mr, mc = chain[mid]
-                        try:
-                            vt_m, cnt_m = self._traverse_upstream_bfs(
-                                start_key, mr, mc, max_cells=hint_cap
-                            )
+                        vt_m, cnt_m = self._traverse_upstream_bfs(
+                            start_key,
+                            mr,
+                            mc,
+                            max_cells=hint_cap,
+                            abort_on_limit=False,
+                            abort_on_coverage=False,
+                        )
+                        if cnt_m < 0:
+                            hi = mid - 1
+                        else:
                             area_m = _compute_visited_area_km2(vt_m)
                             if min_area <= area_m <= max_area:
                                 chosen_r, chosen_c, chosen_vt, chosen_cnt = (
@@ -935,8 +1017,6 @@ class DemDelineator:
                                 lo = mid + 1
                             else:
                                 hi = mid - 1
-                        except CatchmentCoverageError:
-                            hi = mid - 1
                     out_lat = lat_top - chosen_r * RES_DEG
                     out_lon = lon_left + chosen_c * RES_DEG
                     dist_m = float(
@@ -957,14 +1037,17 @@ class DemDelineator:
                         chosen_vt,
                         chosen_cnt,
                     )
-            except CatchmentCoverageError:
-                pass
 
             # (er, ec) exceeded hint_cap: check (tr, tc) directly
-            try:
-                vt_t, cnt_t = self._traverse_upstream_bfs(
-                    start_key, tr, tc, max_cells=hint_cap
-                )
+            vt_t, cnt_t = self._traverse_upstream_bfs(
+                start_key,
+                tr,
+                tc,
+                max_cells=hint_cap,
+                abort_on_limit=False,
+                abort_on_coverage=False,
+            )
+            if cnt_t >= 0:
                 area_t = _compute_visited_area_km2(vt_t)
                 if abs(area_t - expected_area_km2) < abs(
                     closest_area_seen - expected_area_km2
@@ -991,9 +1074,9 @@ class DemDelineator:
                         vt_t,
                         cnt_t,
                     )
-                if area_t < min_area:
+                if area_t < min_area and start_key in vt_t:
                     rejected |= vt_t[start_key]
-            except CatchmentCoverageError:
+            else:
                 for rr, cc in chain:
                     rejected[rr, cc] = True
 
@@ -1006,52 +1089,27 @@ class DemDelineator:
         )
         logger.error(msg)
         sys.stderr.write(msg + '\n')
-        raise CatchmentAreaMismatchError(msg)
+        self._last_coverage_error = msg
+        if raise_on_mismatch:
+            raise CatchmentAreaMismatchError(msg)
+        return 0.0, 0.0, 0, 0, (0, 0), 0.0, {}, -1
 
-    def delineate(
+    def _build_feature_from_visited(
         self,
+        *,
         lat: float,
         lon: float,
-        snap_window_cells: int = 12,
-        max_cells: int | None = None,
-        simplify_tolerance: float | None = None,
-        catchment_id: str | None = None,
-        expected_area_km2: float | None = None,
-        area_tolerance: float = 0.50,
+        outlet_lat: float,
+        outlet_lon: float,
+        best_r: int,
+        best_c: int,
+        snap_dist_m: float,
+        visited_tiles: dict[tuple[int, int], np.ndarray],
+        total_accum: int,
+        simplify_tolerance: float | None,
+        catchment_id: str | None,
     ) -> dict[str, Any]:
-        """Delineate the upstream catchment draining to (lat, lon)."""
-        if expected_area_km2 is not None:
-            (
-                outlet_lat,
-                outlet_lon,
-                best_r,
-                best_c,
-                start_key,
-                snap_dist_m,
-                visited_tiles,
-                total_accum,
-            ) = self._delineate_with_area_hint(
-                lat=lat,
-                lon=lon,
-                expected_area_km2=expected_area_km2,
-                area_tolerance=area_tolerance,
-                snap_window_cells=snap_window_cells,
-                max_cells=max_cells,
-                catchment_id=catchment_id,
-            )
-        else:
-            (
-                outlet_lat,
-                outlet_lon,
-                best_r,
-                best_c,
-                start_key,
-                snap_dist_m,
-            ) = self.snap_outlet(lat, lon, snap_window_cells=snap_window_cells)
-            visited_tiles, total_accum = self._traverse_upstream_bfs(
-                start_key, best_r, best_c, max_cells=max_cells
-            )
-
+        """Vectorize visited tile masks and assemble the output GeoJSON Feature."""
         total_area_km2 = _compute_visited_area_km2(visited_tiles)
 
         if simplify_tolerance is None:
@@ -1138,6 +1196,114 @@ class DemDelineator:
             'geometry': mapping(poly),
         }
 
+    def _delineate_safe(
+        self,
+        lat: float,
+        lon: float,
+        snap_window_cells: int = 12,
+        max_cells: int | None = None,
+        simplify_tolerance: float | None = None,
+        catchment_id: str | None = None,
+        expected_area_km2: float | None = None,
+        area_tolerance: float = 0.50,
+        *,
+        strict: bool = False,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Delineate without try/except while propagating FileNotFoundError."""
+        if not strict:
+            cov_err = self._check_coord_coverage(lat, lon)
+            if cov_err is not None:
+                return None, cov_err
+
+        if expected_area_km2 is not None:
+            (
+                outlet_lat,
+                outlet_lon,
+                best_r,
+                best_c,
+                _,
+                snap_dist_m,
+                visited_tiles,
+                total_accum,
+            ) = self._delineate_with_area_hint(
+                lat=lat,
+                lon=lon,
+                expected_area_km2=expected_area_km2,
+                area_tolerance=area_tolerance,
+                snap_window_cells=snap_window_cells,
+                max_cells=max_cells,
+                catchment_id=catchment_id,
+                raise_on_mismatch=strict,
+            )
+            if total_accum < 0:
+                return None, self._last_coverage_error or 'Area hint mismatch.'
+        else:
+            (
+                outlet_lat,
+                outlet_lon,
+                best_r,
+                best_c,
+                start_key,
+                snap_dist_m,
+            ) = self.snap_outlet(lat, lon, snap_window_cells=snap_window_cells)
+            visited_tiles, total_accum = self._traverse_upstream_bfs(
+                start_key,
+                best_r,
+                best_c,
+                max_cells=max_cells,
+                abort_on_limit=strict,
+                abort_on_coverage=strict,
+            )
+            if total_accum < 0:
+                return (
+                    None,
+                    self._last_coverage_error
+                    or 'Watershed exceeded coverage or cell limit.',
+                )
+
+        feat = self._build_feature_from_visited(
+            lat=lat,
+            lon=lon,
+            outlet_lat=outlet_lat,
+            outlet_lon=outlet_lon,
+            best_r=best_r,
+            best_c=best_c,
+            snap_dist_m=snap_dist_m,
+            visited_tiles=visited_tiles,
+            total_accum=total_accum,
+            simplify_tolerance=simplify_tolerance,
+            catchment_id=catchment_id,
+        )
+        return feat, None
+
+    def delineate(
+        self,
+        lat: float,
+        lon: float,
+        snap_window_cells: int = 12,
+        max_cells: int | None = None,
+        simplify_tolerance: float | None = None,
+        catchment_id: str | None = None,
+        expected_area_km2: float | None = None,
+        area_tolerance: float = 0.50,
+    ) -> dict[str, Any]:
+        """Delineate the upstream catchment draining to (lat, lon)."""
+        feat, _ = self._delineate_safe(
+            lat=lat,
+            lon=lon,
+            snap_window_cells=snap_window_cells,
+            max_cells=max_cells,
+            simplify_tolerance=simplify_tolerance,
+            catchment_id=catchment_id,
+            expected_area_km2=expected_area_km2,
+            area_tolerance=area_tolerance,
+            strict=True,
+        )
+        assert feat is not None
+        return feat
+
+    delineate_point = delineate
+
     def delineate_batch(
         self,
         coords: Iterable[tuple[float, float]],
@@ -1161,27 +1327,28 @@ class DemDelineator:
         for (lat, lon), cid, exp_area in zip(
             coords_list, ids_list, areas_list, strict=True
         ):
-            try:
-                feat = self.delineate(
-                    lat=lat,
-                    lon=lon,
-                    snap_window_cells=snap_window_cells,
-                    max_cells=max_cells,
-                    simplify_tolerance=simplify_tolerance,
-                    catchment_id=cid,
-                    expected_area_km2=exp_area,
-                    area_tolerance=area_tolerance,
-                )
+            feat, err_msg = self._delineate_safe(
+                lat=lat,
+                lon=lon,
+                snap_window_cells=snap_window_cells,
+                max_cells=max_cells,
+                simplify_tolerance=simplify_tolerance,
+                catchment_id=cid,
+                expected_area_km2=exp_area,
+                area_tolerance=area_tolerance,
+            )
+            if feat is not None:
                 features.append(feat)
-            except CatchmentCoverageError as err:
+            else:
+                reason = err_msg or 'Out of coverage'
                 logger.warning(
                     'Catchment %s at (%s, %s) failed coverage or area check: %s',
                     cid or f'{lat},{lon}',
                     lat,
                     lon,
-                    err,
+                    reason,
                 )
-                features.append(build_missing_feature(lat, lon, cid, str(err)))
+                features.append(build_missing_feature(lat, lon, cid, reason))
 
         return {
             'type': 'FeatureCollection',

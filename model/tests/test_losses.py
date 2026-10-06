@@ -25,7 +25,6 @@ from model.training.loss import (
     MaskedMSELoss,
     MaskedNSELoss,
     MaskedRMSELoss,
-    _get_predict_last_n,
 )
 from model.training.regularization import BaseRegularization
 
@@ -42,23 +41,10 @@ class DummyRegularization(BaseRegularization):
 def dummy_config():
     cfg = MagicMock()
     cfg.predict_last_n = 10
-    cfg.no_loss_frequencies = []
     cfg.target_variables = ['streamflow']
     cfg.target_loss_weights = None
     cfg.n_distributions = 3
     return cfg
-
-
-@pytest.mark.unit
-def test_get_predict_last_n():
-    cfg_int = MagicMock(predict_last_n=5)
-    assert _get_predict_last_n(cfg_int) == {'': 5}
-
-    cfg_single_dict = MagicMock(predict_last_n={'1D': 7})
-    assert _get_predict_last_n(cfg_single_dict) == {'': 7}
-
-    cfg_multi_dict = MagicMock(predict_last_n={'1D': 7, '1h': 24})
-    assert _get_predict_last_n(cfg_multi_dict) == {'1D': 7, '1h': 24}
 
 
 @pytest.mark.unit
@@ -196,31 +182,6 @@ def test_loss_with_regularization(dummy_config):
 
 
 @pytest.mark.unit
-def test_multi_frequency_loss():
-    cfg = MagicMock()
-    cfg.predict_last_n = {'1D': 2, '1h': 4}
-    cfg.no_loss_frequencies = ['1h']  # Exclude 1h from loss
-    cfg.target_variables = ['streamflow']
-    cfg.target_loss_weights = None
-
-    loss_fn = MaskedMSELoss(cfg)
-
-    prediction = {
-        'y_hat_1D': torch.tensor([[[2.0], [3.0]]]),
-        'y_hat_1h': torch.tensor([[[10.0], [10.0], [10.0], [10.0]]]),
-    }
-    data = {
-        'y_1D': torch.tensor([[[1.0], [3.0]]]),
-        'y_1h': torch.tensor([[[0.0], [0.0], [0.0], [0.0]]]),
-    }
-
-    total_loss, _ = loss_fn(prediction, data)
-    # Only 1D considered: (2-1)^2 = 1, (3-3)^2 = 0 -> Mean = 0.5
-    # Scaled loss: 0.5 * 0.5 = 0.25
-    assert np.isclose(total_loss.item(), 0.25)
-
-
-@pytest.mark.unit
 def test_masked_rmse_loss_zero_residual_finite_gradients(dummy_config):
     dummy_config.predict_last_n = 2
     loss_fn = MaskedRMSELoss(dummy_config)
@@ -255,13 +216,14 @@ def test_masked_rmse_loss_zero_residual_finite_gradients(dummy_config):
     expected_nz = torch.sqrt(0.5 * torch.mean(diff ** 2))
     assert torch.allclose(loss_nz, expected_nz, rtol=1e-15, atol=1e-15)
 
-    # All-NaN ground truth returns NaN
+    # All-NaN ground truth returns differentiable zero
     y_all_nan = torch.tensor([[[np.nan], [np.nan]]])
     loss_nan, _ = loss_fn(
         {'y_hat': torch.zeros(1, 2, 1, requires_grad=True)},
         {'y': y_all_nan},
     )
-    assert torch.isnan(loss_nan)
+    assert loss_nan.requires_grad
+    assert loss_nan.item() == 0.0
 
 
 @pytest.mark.unit

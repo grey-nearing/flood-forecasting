@@ -41,7 +41,6 @@ import geopandas as gpd
 import pandas as pd
 
 from multimet.catchment_delineation.delineator import (
-    CatchmentCoverageError,
     DemDelineator,
     build_missing_feature,
 )
@@ -125,25 +124,27 @@ def _delineate_worker(
         cache_dir=Path(cache_dir) if cache_dir else None,
         cache_tiles=True,
     )
-    try:
-        feature = delineator.delineate(
-            lat=lat,
-            lon=lon,
-            catchment_id=cid,
-            snap_window_cells=snap_window,
-            max_cells=max_cells,
-            expected_area_km2=expected_area,
-            area_tolerance=area_tolerance,
-        )
-    except CatchmentCoverageError as err:
+    feat, err_msg = delineator._delineate_safe(
+        lat=lat,
+        lon=lon,
+        catchment_id=cid,
+        snap_window_cells=snap_window,
+        max_cells=max_cells,
+        expected_area_km2=expected_area,
+        area_tolerance=area_tolerance,
+    )
+    if feat is None:
+        reason = err_msg or 'Out of coverage'
         logger.warning(
             'Catchment coverage abort for %s (%.4f, %.4f): %s',
             cid,
             lat,
             lon,
-            err,
+            reason,
         )
-        feature = build_missing_feature(lat, lon, cid, str(err))
+        feature = build_missing_feature(lat, lon, cid, reason)
+    else:
+        feature = feat
     created = [str(p) for p in delineator.created_cache_files]
     return feature, created
 
@@ -218,16 +219,22 @@ def _read_single_coord_table(path_str: str) -> pd.DataFrame:
                 )
             frames = [pd.read_csv(f) for f in caravan_files]
             return pd.concat(frames, ignore_index=True)
+        if local_p.stat().st_size == 0:
+            raise ValueError(
+                f"Coordinate file '{path_str}' is empty or has no header."
+            )
         path_str = str(local_p)
+        if (
+            not path_str.endswith(('.parquet', '.geoparquet'))
+            and not local_p.read_text(encoding='utf-8', errors='ignore').strip()
+        ):
+            raise ValueError(
+                f"Coordinate file '{path_str}' is empty or has no header."
+            )
 
-    try:
-        if path_str.endswith(('.parquet', '.geoparquet')):
-            return pd.read_parquet(path_str)
-        return pd.read_csv(path_str)
-    except pd.errors.EmptyDataError as err:
-        raise ValueError(
-            f"Coordinate file '{path_str}' is empty or has no header."
-        ) from err
+    if path_str.endswith(('.parquet', '.geoparquet')):
+        return pd.read_parquet(path_str)
+    return pd.read_csv(path_str)
 
 
 def load_coords_from_file(
@@ -688,134 +695,152 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    try:
-        delineator = DemDelineator(
-            tiles_dir=args.tiles_dir,
-            gcs_uri=args.gcs_uri,
-            cache_dir=args.cache_dir,
+    if args.tiles_dir is not None and args.gcs_uri is not None:
+        sys.stderr.write(
+            'Error: Provide either --tiles-dir or --gcs-uri, not both.\n'
         )
-    except ValueError as err:
-        sys.stderr.write(f'Error: {err}\n')
         return 1
+    if args.tiles_dir is None and args.gcs_uri is None:
+        sys.stderr.write(
+            'Error: An explicit tile source is required: pass --tiles-dir '
+            'or --gcs-uri + --cache-dir.\n'
+        )
+        return 1
+    uses_gcs = args.gcs_uri is not None or (
+        args.tiles_dir is not None and is_gcs_path(args.tiles_dir)
+    )
+    if uses_gcs and args.cache_dir is None:
+        sys.stderr.write(
+            'Error: An explicit --cache-dir is required when using --gcs-uri.\n'
+        )
+        return 1
+
+    delineator = DemDelineator(
+        tiles_dir=args.tiles_dir,
+        gcs_uri=args.gcs_uri,
+        cache_dir=args.cache_dir,
+    )
 
     created_cache_files: set[Path] = set()
-    try:
-        if len(coords_to_process) == 1 and not args.coords and not args.csv:
-            lat, lon = coords_to_process[0]
-            cid = ids_to_process[0]
-            exp_area = areas_to_process[0]
-            result = delineator.delineate(
-                lat=lat,
-                lon=lon,
-                snap_window_cells=args.snap_window,
-                max_cells=args.max_cells,
-                catchment_id=cid,
-                expected_area_km2=exp_area,
-                area_tolerance=args.area_tolerance,
-            )
-            created_cache_files.update(delineator.created_cache_files)
-        elif args.workers > 1 and len(coords_to_process) > 1:
-            if delineator.gcs_uri is not None:
-                assert delineator.cache_dir is not None
-                delineator.cache_dir.mkdir(parents=True, exist_ok=True)
-                needed_tile_keys: set[tuple[int, int]] = set()
-                for lat, lon in coords_to_process:
-                    if is_coord_in_coverage(lat, lon):
-                        tk = latlon_to_tile_key(lat, lon)
-                        if is_tile_in_coverage(tk[0], tk[1]):
-                            needed_tile_keys.add(tk)
-                missing_tiles = [
-                    tk
-                    for tk in sorted(needed_tile_keys)
-                    if not (
-                        delineator.cache_dir
-                        / tile_key_to_filename(tk[0], tk[1])
-                    ).is_file()
-                ]
-                if missing_tiles:
-                    gcs_uri_str = delineator.gcs_uri
-                    cache_dir_path = delineator.cache_dir
-
-                    def _dl(tk: tuple[int, int]) -> None:
-                        download_tile_from_gcs(
-                            lat_top=tk[0],
-                            lon_left=tk[1],
-                            target_dir=cache_dir_path,
-                            source_uri=gcs_uri_str,
-                            created_files=created_cache_files,
-                        )
-
-                    max_threads = min(_MAX_PRECACHE_THREADS, len(missing_tiles))
-                    with ThreadPoolExecutor(max_workers=max_threads) as pool:
-                        list(pool.map(_dl, missing_tiles))
-
-            tasks = [
-                (
-                    lat,
-                    lon,
-                    cid,
-                    str(delineator.tiles_dir) if delineator.tiles_dir else None,
-                    delineator.gcs_uri,
-                    str(delineator.cache_dir) if delineator.cache_dir else None,
-                    args.snap_window,
-                    args.max_cells,
-                    exp_area,
-                    args.area_tolerance,
-                )
-                for (lat, lon), cid, exp_area in zip(
-                    coords_to_process,
-                    ids_to_process,
-                    areas_to_process,
-                    strict=True,
-                )
+    if len(coords_to_process) == 1 and not args.coords and not args.csv:
+        lat, lon = coords_to_process[0]
+        cid = ids_to_process[0]
+        exp_area = areas_to_process[0]
+        feat, err_msg = delineator._delineate_safe(
+            lat=lat,
+            lon=lon,
+            snap_window_cells=args.snap_window,
+            max_cells=args.max_cells,
+            catchment_id=cid,
+            expected_area_km2=exp_area,
+            area_tolerance=args.area_tolerance,
+        )
+        created_cache_files.update(delineator.created_cache_files)
+        if feat is None:
+            if args.clean_cache:
+                delineator.created_cache_files.update(created_cache_files)
+                delineator.clean_created_cache()
+            sys.stderr.write(f'\nCatchment Delineation Aborted: {err_msg}\n')
+            return 1
+        result = feat
+    elif args.workers > 1 and len(coords_to_process) > 1:
+        if delineator.gcs_uri is not None:
+            assert delineator.cache_dir is not None
+            delineator.cache_dir.mkdir(parents=True, exist_ok=True)
+            needed_tile_keys: set[tuple[int, int]] = set()
+            for lat, lon in coords_to_process:
+                if is_coord_in_coverage(lat, lon):
+                    tk = latlon_to_tile_key(lat, lon)
+                    if is_tile_in_coverage(tk[0], tk[1]):
+                        needed_tile_keys.add(tk)
+            missing_tiles = [
+                tk
+                for tk in sorted(needed_tile_keys)
+                if not (
+                    delineator.cache_dir / tile_key_to_filename(tk[0], tk[1])
+                ).is_file()
             ]
-            indexed_features: list[tuple[int, dict[str, Any]]] = []
-            total = len(tasks)
-            mp_ctx = multiprocessing.get_context('spawn')
-            with ProcessPoolExecutor(
-                max_workers=args.workers, mp_context=mp_ctx
-            ) as pool:
-                futures = {
-                    pool.submit(_delineate_worker, t): idx
-                    for idx, t in enumerate(tasks)
-                }
-                completed = 0
-                for fut in as_completed(futures):
-                    idx = futures[fut]
-                    completed += 1
-                    step = max(1, total // _PROGRESS_INTERVAL_DIVISOR)
-                    if completed % step == 0 or completed == total:
-                        pct = (completed / total) * 100.0
-                        sys.stderr.write(
-                            f'Progress: [{completed}/{total}] catchments '
-                            f'evaluated ({pct:.1f}%)\n'
-                        )
-                    feat_item, worker_created = fut.result()
-                    created_cache_files.update(Path(p) for p in worker_created)
-                    indexed_features.append((idx, feat_item))
+            if missing_tiles:
+                gcs_uri_str = delineator.gcs_uri
+                cache_dir_path = delineator.cache_dir
 
-            indexed_features.sort(key=lambda pair: pair[0])
-            result = {
-                'type': 'FeatureCollection',
-                'features': [feat for _, feat in indexed_features],
-            }
-        else:
-            result = delineator.delineate_batch(
-                coords=coords_to_process,
-                ids=ids_to_process,
-                snap_window_cells=args.snap_window,
-                max_cells=args.max_cells,
-                expected_areas_km2=areas_to_process,
-                area_tolerance=args.area_tolerance,
+                def _dl(tk: tuple[int, int]) -> None:
+                    download_tile_from_gcs(
+                        lat_top=tk[0],
+                        lon_left=tk[1],
+                        target_dir=cache_dir_path,
+                        source_uri=gcs_uri_str,
+                        created_files=created_cache_files,
+                    )
+
+                max_threads = min(_MAX_PRECACHE_THREADS, len(missing_tiles))
+                with ThreadPoolExecutor(max_workers=max_threads) as pool:
+                    list(pool.map(_dl, missing_tiles))
+
+        tasks = [
+            (
+                lat,
+                lon,
+                cid,
+                str(delineator.tiles_dir) if delineator.tiles_dir else None,
+                delineator.gcs_uri,
+                str(delineator.cache_dir) if delineator.cache_dir else None,
+                args.snap_window,
+                args.max_cells,
+                exp_area,
+                args.area_tolerance,
             )
-            created_cache_files.update(delineator.created_cache_files)
-    except CatchmentCoverageError as err:
-        sys.stderr.write(f'\nCatchment Delineation Aborted: {err}\n')
-        return 1
-    finally:
-        if args.clean_cache:
-            delineator.created_cache_files.update(created_cache_files)
-            delineator.clean_created_cache()
+            for (lat, lon), cid, exp_area in zip(
+                coords_to_process,
+                ids_to_process,
+                areas_to_process,
+                strict=True,
+            )
+        ]
+        indexed_features: list[tuple[int, dict[str, Any]]] = []
+        total = len(tasks)
+        mp_ctx = multiprocessing.get_context('spawn')
+        with ProcessPoolExecutor(
+            max_workers=args.workers, mp_context=mp_ctx
+        ) as pool:
+            futures = {
+                pool.submit(_delineate_worker, t): idx
+                for idx, t in enumerate(tasks)
+            }
+            completed = 0
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                completed += 1
+                step = max(1, total // _PROGRESS_INTERVAL_DIVISOR)
+                if completed % step == 0 or completed == total:
+                    pct = (completed / total) * 100.0
+                    sys.stderr.write(
+                        f'Progress: [{completed}/{total}] catchments '
+                        f'evaluated ({pct:.1f}%)\n'
+                    )
+                feat_item, worker_created = fut.result()
+                created_cache_files.update(Path(p) for p in worker_created)
+                indexed_features.append((idx, feat_item))
+
+        indexed_features.sort(key=lambda pair: pair[0])
+        result = {
+            'type': 'FeatureCollection',
+            'features': [feat for _, feat in indexed_features],
+        }
+    else:
+        result = delineator.delineate_batch(
+            coords=coords_to_process,
+            ids=ids_to_process,
+            snap_window_cells=args.snap_window,
+            max_cells=args.max_cells,
+            expected_areas_km2=areas_to_process,
+            area_tolerance=args.area_tolerance,
+        )
+        created_cache_files.update(delineator.created_cache_files)
+
+    if args.clean_cache:
+        delineator.created_cache_files.update(created_cache_files)
+        delineator.clean_created_cache()
 
     _write_cli_outputs(args, result)
     return 0
