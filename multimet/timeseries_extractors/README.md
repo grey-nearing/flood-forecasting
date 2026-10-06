@@ -88,7 +88,7 @@ extract-multimet \
 `RealtimeForcingFetcher` and `fetch_realtime_multimet` fetch live operational forecasts and spin-up observations (`HRES` from `gs://ecmwf-open-data`, `IMERG` from NASA GES DISC, and `CPC` from NOAA PSL) and write or incrementally append them into `<output_dir>/<PRODUCT>/timeseries.zarr`:
 
 - **Cold-Start (`mode="coldstart"`)**: Fetches a 365-day historical spin-up window (`[t0 - 365d, t0]`) plus the 10-day operational forecast issued on `t0`. By default, historical spin-up dates prior to the forecast issue window use a 1-day lead-time optimization (`step=24h` only) to cut HRES spin-up download volume by $10\times$.
-- **Hot-Start (`mode="hotstart"`)**: Inspects existing Zarr stores (and/or a saved `googlehydrology` `.npz` state file or directory) to identify the latest valid date across all bands and basins, automatically re-fetching and healing any trailing `NaN` dates caused by upstream publication latency alongside newly elapsed days up to `t0`.
+- **Hot-Start (`mode="hotstart"`)**: Inspects existing Zarr stores (and/or a saved `openhydronet` `.npz` state file or directory) to identify the latest valid date across all bands and basins, automatically re-fetching and healing any trailing `NaN` dates caused by upstream publication latency alongside newly elapsed days up to `t0`.
 
 ```python
 from multimet.timeseries_extractors import fetch_realtime_multimet
