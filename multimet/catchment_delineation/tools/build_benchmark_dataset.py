@@ -216,15 +216,6 @@ def main(argv: list[str] | None = None) -> int:
         if cp not in csv_paths:
             csv_paths.append(cp)
 
-    for shp_p in shp_paths:
-        sibling_csv = shp_p.parent / 'coordinates.csv'
-        if (
-            sibling_csv.exists()
-            and sibling_csv.is_file()
-            and sibling_csv not in csv_paths
-        ):
-            csv_paths.append(sibling_csv)
-
     coords_frames = [_load_coords_csv(cp) for cp in csv_paths]
     coords_df = (
         pd.concat(coords_frames, ignore_index=True).drop_duplicates(
@@ -326,9 +317,10 @@ def main(argv: list[str] | None = None) -> int:
         'geometry_wkt',
     ]
     if not merged_frames:
-        empty_df = pd.DataFrame(columns=export_cols)
-        empty_df.to_parquet(out_file, index=False)
-        return 0
+        raise ValueError(
+            'No valid benchmark basins matched the input shapefiles, '
+            'coordinates, and world continent polygons.'
+        )
 
     all_basins = pd.concat(merged_frames, ignore_index=True).drop_duplicates(
         subset=['gauge_id'], keep='first'
