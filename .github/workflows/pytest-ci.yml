@@ -47,4 +47,4 @@ jobs:
           environment-file: environments/environment_cpu.yml
           python-version: "3.12"
           auto-activate-base: false
-      - run: pytest -m "not gpu" -v -ra --tb=short --cov=model --cov=multimet --cov-report=xml --cov-report=term-missing
+      - run: pytest -m "not gpu" -v -ra --tb=short --cov=model --cov=multimet --cov=return_periods --cov-report=xml --cov-report=term-missing

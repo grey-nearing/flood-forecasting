@@ -105,6 +105,16 @@ Most users do not need to build weather archives—pointing `dynamics_data_dir` 
 
 If you want to download raw gridded precipitation data directly from NOAA (CPC) or NASA (IMERG) and build your own Zarr archives, use the command-line tools in the [`multimet/gridded_archive_builders`](multimet/gridded_archive_builders/README.md) package (`build-cpc-archive` and `build-imerg-archive`). See [`multimet/gridded_archive_builders/README.md`](multimet/gridded_archive_builders/README.md) and the [Gridded Weather Archives documentation](docs/source/usage/gridded_archives.rst) for usage instructions and command-line arguments.
 
+## **Return Period Calculator (USGS Bulletin 17C)**
+
+This repository includes a standalone flood frequency and return period package (`return_periods`) implementing the official **USGS Bulletin 17C** guidelines (*Guidelines for Determining Flood Flow Frequency — Bulletin 17C*, England et al., 2019):
+
+- **Expected Moments Algorithm (EMA):** Iterative Log-Pearson Type III (LP3) parameter estimation (`GEMAFitter`) handling systematic records, zero-flow years, censored low outliers, and optional generalized regional skew weighting.
+- **Multiple Grubbs-Beck Test (MGBT):** Full orthogonal-$t$ Gaussian quadrature implementation (`MultipleGrubbsBeckTester`, Cohn et al., 2013) for screening Potentially Influential Low Floods (PILFs), plus legacy Bulletin 17B `GrubbsBeckTester` support.
+- **Distribution Fitters & Plotting Positions:** Explicit fitter selection (`GEMAFitter`, `SimpleLogPearson3Fitter`, `LogLogTrendFitter`), Hirsch-Stedinger threshold-exceedance plotting positions, peak extraction utilities, and diagnostic plots.
+
+👉 **See the [Return Periods Subproject README](return_periods/README.md) and [Sphinx Documentation](docs/source/usage/return_periods.rst) for full documentation, API reference, and examples.**
+
 ## **Usage**
 
 The package installs the run command as the primary entry point.
