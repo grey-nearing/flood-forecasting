@@ -2,18 +2,16 @@
 Quick Start
 ===========
 
-This guide will help you get up and running with the **OpenHydroNet Flood Forecasting** repository.
+This guide shows how to install and run the **OpenHydroNet Flood Forecasting** package (`google-research/flood-forecasting`).
 
 ---------------
 Obtain the Code
 ---------------
 
-To get started, you need to download the source code to your local machine. This ensures you have access to the environment definitions, example configurations, and the tutorial notebook.
+Clone or download the repository to access the Conda environment files, example configurations (`model/example-configs/`), pre-trained checkpoints (`model/pretrained-models/`), and tutorial (`model/tutorial/`).
 
 Option A: Via GitHub Cloning (Recommended)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-If you use git, clone the repository to access the full source and development history:
 
 .. code-block:: bash
 
@@ -23,29 +21,24 @@ If you use git, clone the repository to access the full source and development h
 Option B: Via Zipball
 ^^^^^^^^^^^^^^^^^^^^^
 
-If you do not use git, you can download the source code as a zip file:
+If you do not use git, download and extract the source archive:
 
 .. code-block:: bash
 
-   # Download the source code zip file
-   curl -L https://github.com/google-research/flood-forecasting/zipball/master -o flood-forecasting.zip
-
-   # Extract the archive
+   curl -L https://github.com/google-research/flood-forecasting/zipball/main -o flood-forecasting.zip
    unzip flood-forecasting.zip
-
-   # Enter the resulting directory (folder name may vary based on the specific commit)
    cd google-research-flood-forecasting-*
 
 ----------------------------------
 Prerequisites & Environment Setup
 ----------------------------------
 
-A Python environment with specific dependencies (like PyTorch and CUDA) is required. We recommend using **Conda** to manage these dependencies automatically.
+We recommend using **Conda** to install Python, PyTorch, CUDA, and geospatial dependencies.
 
 Using Conda (Recommended)
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The environment file is located in the ``environments/`` directory of the code you just obtained.
+The environment specification is located in ``environments/conda.yml``:
 
 .. code-block:: bash
 
@@ -53,22 +46,21 @@ The environment file is located in the ``environments/`` directory of the code y
    conda env create -f environments/conda.yml
 
    # Activate the environment (MANDATORY)
-   conda activate googlehydrology
+   conda activate openhydronet
 
 Manual Setup
 ^^^^^^^^^^^^
 
-If you prefer not to use Conda, ensure you have **Python >= 3.12** and install the dependencies listed in ``environments/rtd_requirements.txt`` using your preferred package manager.
+If you prefer not to use Conda, use **Python >= 3.12** and install the dependencies listed in ``environments/rtd_requirements.txt``.
 
 ------------
 Installation
 ------------
 
-Once your environment is active, install the package in **editable mode**. This allows you to run the model scripts and have any changes you make to the code reflected immediately.
+With the ``openhydronet`` environment active, install the package in editable mode from the repository root:
 
 .. code-block:: bash
 
-   # Run this from the root of the flood-forecasting directory
    pip install -e .
 
 ----------
@@ -77,91 +69,108 @@ Data Setup
 
 OpenHydroNet uses the `Caravan <https://www.nature.com/articles/s41597-023-01975-w>`_ dataset for streamflow observations and static catchment attributes.
 
-Download Caravan (NetCDF Version)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Download or Use Sample Caravan Data
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-A small amount of data is provided in the ``~/tutorial/data/Caravan-nc`` folder. This data is sufficient for running the tutorial example. For more comprehensive model runs, it is necessary to download the Caravan dataset locally.
+A 5-basin sample dataset is included in ``model/tutorial/Caravan-zarr`` (converted from ``model/tutorial/Caravan-nc``). This sample is ready to use with ``model/tutorial/configs/train-config.yml`` and ``model/tutorial/OpenHydroNet_Tutorial.ipynb``.
 
-1. Navigate to the `Zenodo repository <https://doi.org/10.5281/zenodo.6522634>`_.
-2. Download the **NetCDF version** of the dataset (e.g., ``Caravan-nc.tar.gz``). 
-   
-   .. note:: 
-      Do not use the CSV version for standard training as it is significantly slower.
+To run experiments on the full global Caravan dataset:
 
-3. Unpack the tarball file into a local directory (e.g., ``~/data/caravan/``).
+1. Visit the `Caravan Zenodo repository <https://doi.org/10.5281/zenodo.6522634>`_.
+2. Download the **NetCDF version** of the dataset (``Caravan-nc.tar.gz``).
+3. Unpack the archive into a local directory:
 
 .. code-block:: bash
 
-   # Create the directory and unpack the data
    mkdir -p ~/data/
    tar -xvzf Caravan-nc.tar.gz -C ~/data/
 
-MultiMet Data
-^^^^^^^^^^^^^
+4. Convert the unpacked Caravan directory into canonical Zarr stores (``attributes.zarr`` and ``streamflow.zarr``) required by the dataset loader:
 
-The MultiMet forcing data extension is accessed directly from **Google Cloud Storage** during runtime. You do not need to download it; ensure your configuration file's ``dynamics_data_dir`` argument points to: ``gs://caravan-multimet/v1.1``
+.. code-block:: bash
 
-Static Attributes for Custom Watersheds
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   run convert-caravan --caravan-dir ~/data/Caravan-nc --output-dir ~/data/Caravan-zarr
 
-If you want to run models on watersheds that are not part of the published Caravan dataset, see :doc:`Extracting Static Attributes for Custom Watersheds <static_extractor>` to generate Caravan-compatible static attribute tables from your own polygon files (``.geojson``, ``.shp``, or ``.gpkg``).
+MultiMet Dynamic Data
+^^^^^^^^^^^^^^^^^^^^^
+
+The Caravan-MultiMet weather forcing dataset is streamed directly from **Google Cloud Storage** or read from a local directory. Set ``dynamics_data_dir`` in your YAML configuration file to:
+
+.. code-block:: yaml
+
+   dynamics_data_dir: gs://caravan-multimet/v1.1
+
+Static Attributes & Catchment Polygons for Custom Watersheds
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- To delineate upstream watershed polygons from gauge latitude and longitude coordinates, see :doc:`Catchment Delineation <catchment_delineation>`.
+- To extract Caravan-compatible static attributes from watershed polygons (``.geojson``, ``.shp``, or ``.gpkg``), see :doc:`Extracting Static Attributes for Custom Watersheds <static_extractor>`.
 
 ----------------------
 Training Configuration
 ----------------------
 
-To train a model, you must create or modify a YAML configuration file. An example is provided in the ``tutorial/`` directory (``training-config.yml``).
+Experiments are configured via YAML files:
 
-Understanding the Dataset Splits
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+- **Tutorial Configs:** ``model/tutorial/configs/train-config.yml`` and ``model/tutorial/configs/finetune-config.yml``
+- **Production & Benchmark Example Configs:** ``model/example-configs/`` (including ``floodhub-settings-config.yml``, ``camels-multimet-mean-embedding-forecast-lstm-config.yml``, ``camels-multimet-mean-embedding-forecast-lstm-assimilation-config.yml``, and ``camels-multimet-handoff-forecast-lstm-config.yml``)
+- **Pre-Trained Global Checkpoints:** ``model/pretrained-models/google-floodhub-settings-110-epochs/``
 
+Understanding the Tutorial Dataset Splits
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-
-* **Training Set (5-basin set):** Core portion used by the algorithm to identify patterns and learn relationships between inputs and streamflow.
-* **Test Set (8-basin set):** A final, independent portion never "seen" during training. In this example, it includes the 5 training basins plus 3 additional "ungauged" basins to test generalization.
+- **Training Set (5-basin set):** ``model/tutorial/basin-lists/5-basin-train.txt`` — used to optimize model weights.
+- **Test Set (8-basin set):** ``model/tutorial/basin-lists/8-basin-test.txt`` — includes the 5 training basins plus 3 held-out basins to test spatial generalization.
 
 Understanding Time Periods
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-* **Training Period:** 01/01/2000 to 31/12/2020 (Historical learning).
-* **Validation/Test Period:** 01/01/2022 to 31/12/2024 (Objective performance estimation).
+- **Training Period:** ``01/01/2000`` to ``31/12/2020``
+- **Validation/Test Period:** ``01/01/2022`` to ``31/12/2024``
 
-It is normal practice to keep the Validation and Test periods distinct to avoid information leakage, ensuring the model reflects performance on truly novel data. Please notice that this was **not** done for the toy example in the tutorial.
+In full research and production experiments, keep the validation and test periods separate to avoid data leakage.
 
 Local Path Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-Update these arguments in your configuration file (``~/tutorial/configs/training-config.yml``) to match your data source:
+Update these arguments in ``model/tutorial/configs/train-config.yml`` to match your system paths:
 
 =====================  ============================================================================================================
 Argument               Description
 =====================  ============================================================================================================
-**run_dir**            Directory where weights, logs, and config copies are saved (e.g., ``~/tutorial/run/``).
+**run_dir**            Directory where weights, logs, and config copies are saved (e.g., ``model/tutorial/model-runs/``).
 
-**train_basin_file**   Path to plain text files containing lists of basin IDs.
+**train_basin_file**   Path to a plain-text file listing basin IDs (e.g., ``model/tutorial/basin-lists/5-basin-train.txt``).
 
-**targets_data_dir**   Use the tutorial sample (``~/tutorial/data/Caravan-nc/``) OR the unpacked full dataset, wherever you put it.
+**targets_data_dir**   Path to the tutorial sample (``model/tutorial/Caravan-zarr``) or your converted Caravan Zarr directory.
 
-**statics_data_dir**   Use the tutorial sample (``~/tutorial/data/Caravan-nc/``) OR the unpacked full dataset, wherever you put it.
+**statics_data_dir**   Path to the tutorial sample (``model/tutorial/Caravan-zarr``) or your converted Caravan Zarr directory.
 
-**dynamics_data_dir**   Path to the forcing data. For MultiMet, use the cloud bucket: ``gs://caravan-multimet/v1.1``.
+**dynamics_data_dir**  Path to the MultiMet forcing dataset (``gs://caravan-multimet/v1.1`` or a local directory).
 =====================  ============================================================================================================
 
 -----
 Usage
 -----
 
-Training a model
+Training a Model
 ^^^^^^^^^^^^^^^^
 
 .. code-block:: bash
 
-   run train --config-file ~/tutorial/training-config.yml
+   run train --config-file model/tutorial/configs/train-config.yml
+
+Fine-Tuning a Pre-Trained Model
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: bash
+
+   run finetune --config-file model/tutorial/configs/finetune-config.yml
 
 Evaluation
 ^^^^^^^^^^
 
-To calculate performance metrics on the test set:
+To calculate performance metrics (such as NSE and KGE) on the test period (pass ``--assimilate`` to enable variational data assimilation if configured):
 
 .. code-block:: bash
 
@@ -170,7 +179,7 @@ To calculate performance metrics on the test set:
 Inference
 ^^^^^^^^^
 
-To generate predictions without skipping NaN observations:
+To generate predictions across all dates without skipping missing observations:
 
 .. code-block:: bash
 

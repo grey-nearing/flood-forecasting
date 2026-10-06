@@ -16,12 +16,13 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Union
+from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -342,3 +343,86 @@ def upload_file_to_gcs(local_path: Union[str, Path], gcs_uri: str) -> None:
 
   fs = gcsfs.GCSFileSystem()
   fs.put(str(local_p), strip_gcs_prefix(normalized_uri))
+
+
+@functools.lru_cache(maxsize=1)
+def _gcloud_default_project() -> Optional[str]:
+  """Queries gcloud CLI once per process for the default project."""
+  if not shutil.which("gcloud"):
+    return None
+  try:
+    res = subprocess.run(
+        ["gcloud", "config", "get-value", "project"],
+        capture_output=True,
+        text=True,
+        timeout=2.0,
+        check=False,
+    )
+  except (subprocess.TimeoutExpired, OSError):
+    return None
+  if res.returncode == 0:
+    proj = res.stdout.strip()
+    if proj and proj != "(unset)":
+      logger.debug("Auto-detected GCP project from gcloud config: %s", proj)
+      return proj
+  return None
+
+
+def auto_detect_gcp_project(
+    explicit_project: Optional[str] = None,
+) -> Optional[str]:
+  """Resolves the active GCP project from explicit argument, environment, or gcloud.
+
+  Resolution precedence:
+    1. Explicitly provided ``explicit_project`` argument.
+    2. Environment variables (``GOOGLE_CLOUD_PROJECT``, ``GOOGLE_CLOUD_QUOTA_PROJECT``,
+       ``CLOUDSDK_CORE_PROJECT``, ``GCP_PROJECT``, ``GCLOUD_PROJECT``).
+    3. Local ``gcloud config get-value project`` CLI command.
+
+  Args:
+    explicit_project: Optional project ID passed directly by caller.
+
+  Returns:
+    Discovered project ID string, or None if unconfigured.
+  """
+  if explicit_project and str(explicit_project).strip():
+    return str(explicit_project).strip()
+
+  for env_key in (
+      "GOOGLE_CLOUD_PROJECT",
+      "GOOGLE_CLOUD_QUOTA_PROJECT",
+      "CLOUDSDK_CORE_PROJECT",
+      "GCP_PROJECT",
+      "GCLOUD_PROJECT",
+  ):
+    val = os.environ.get(env_key)
+    if val and val.strip():
+      return val.strip()
+
+  return _gcloud_default_project()
+
+
+def configure_gcp_project(project: Optional[str] = None) -> Optional[str]:
+  """Detects and activates GCP project context across environment and fsspec.
+
+  Args:
+    project: Optional explicit project ID. If None, ``auto_detect_gcp_project()``
+      is used.
+
+  Returns:
+    Configured project ID, or None if none could be detected.
+  """
+  detected = auto_detect_gcp_project(project)
+  if not detected:
+    return None
+
+  os.environ["GOOGLE_CLOUD_PROJECT"] = detected
+  os.environ["CLOUDSDK_CORE_PROJECT"] = detected
+  os.environ.pop("GOOGLE_CLOUD_QUOTA_PROJECT", None)
+
+  import fsspec.config
+
+  fsspec.config.conf.setdefault("gs", {})["project"] = detected
+  fsspec.config.conf.setdefault("gcs", {})["project"] = detected
+  return detected
+

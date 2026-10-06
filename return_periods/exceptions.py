@@ -1,0 +1,35 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Custom exception types for flood return period calculations."""
+
+
+class DistributionParameterError(Exception):
+    """Exception for invalid parameters of a theoretical distribution."""
+
+
+class NotEnoughDataError(Exception):
+    """Exception raised when there are not enough data points for fitting."""
+
+
+class InvalidFlowValueError(Exception):
+    """Exception raised when non-positive or invalid flow values are passed."""
+
+
+class DuplicateIndexError(Exception):
+    """Exception raised when a peak flow series contains duplicate indices."""
+
+
+class DataIntervalError(Exception):
+    """Exception raised when a censored flow interval is invalid."""

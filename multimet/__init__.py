@@ -12,18 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MultiMet data workflows for static and dynamic watershed data."""
+"""MultiMet data workflows for static watershed attributes, gridded archives, and catchment timeseries.
 
-from multimet.static_extractor import (
-    ERA5ClimateLoader,
-    ERA5GriddedExtractor,
-    StaticAttributesExtractor,
-    compute_caravan_climate_metrics,
-)
+Exposes:
+
+* Static attribute extraction (:class:`StaticAttributesExtractor`,
+  :class:`ERA5ClimateLoader`, :class:`ERA5GriddedExtractor`,
+  :func:`compute_caravan_climate_metrics`).
+* Gridded meteorological archive builders
+  (:mod:`multimet.gridded_archive_builders`).
+* Catchment meteorological timeseries extractors
+  (:mod:`multimet.timeseries_extractors`).
+"""
+
+from __future__ import annotations
+
+import importlib
+from typing import Any
 
 __all__ = [
     "StaticAttributesExtractor",
     "ERA5ClimateLoader",
     "ERA5GriddedExtractor",
     "compute_caravan_climate_metrics",
+    "gridded_archive_builders",
+    "timeseries_extractors",
 ]
+
+_STATIC_EXPORTS = frozenset({
+    "StaticAttributesExtractor",
+    "ERA5ClimateLoader",
+    "ERA5GriddedExtractor",
+    "compute_caravan_climate_metrics",
+})
+
+_SUBMODULES = frozenset({
+    "gridded_archive_builders",
+    "timeseries_extractors",
+})
+
+
+def __getattr__(name: str) -> Any:  # noqa: ANN401 - module objects are untyped.
+  if name in _SUBMODULES:
+    return importlib.import_module(f"{__name__}.{name}")
+  if name in _STATIC_EXPORTS:
+    mod = importlib.import_module(f"{__name__}.static_extractor")
+    return getattr(mod, name)
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+  return sorted(set(globals()) | _SUBMODULES | _STATIC_EXPORTS)

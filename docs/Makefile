@@ -8,8 +8,8 @@ SPHINXBUILD   ?= sphinx-build
 SPHINXAPIDOC  ?= sphinx-apidoc
 SOURCEDIR     = source
 BUILDDIR      = build
-PACKAGEDIR    = ../googlehydrology
-PACKAGEDIR2   = ../catchment_delineation
+PACKAGEDIR    = ../model
+PACKAGEDIR2   = ../return_periods
 
 # Put it first so that "make" without argument is like "make help".
 help:
@@ -24,14 +24,14 @@ help:
 # -T: Do not generate a table of contents file (managed manually).
 apidoc:
 	@echo "Generating API documentation..."
-	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR)"
-	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR2)"
-	@printf "Modules\n=======\n\n.. toctree::\n   :maxdepth: 4\n\n   googlehydrology\n   catchment_delineation\n" > "$(SOURCEDIR)/api/modules.rst"
+	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR)" "$(PACKAGEDIR)/tests" "$(PACKAGEDIR)/tutorial"
+	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR2)" "$(PACKAGEDIR2)/tests" "$(PACKAGEDIR2)/tools"
+	@printf "Modules\n=======\n\n.. toctree::\n   :maxdepth: 4\n\n   model\n   catchment_delineation\n   static_extractor\n   gridded_archive_builders\n   timeseries_extractors\n   return_periods\n" > "$(SOURCEDIR)/api/modules.rst"
 
 # Target to clean API docs
 clean-api:
 	@echo "Cleaning API documentation..."
-	@rm -rf "$(SOURCEDIR)/api"
+	@rm -f "$(SOURCEDIR)/api/model"*.rst "$(SOURCEDIR)/api/return_periods"*.rst "$(SOURCEDIR)/api/modules.rst"
 
 # Explicitly define html target to run apidoc first
 html: apidoc

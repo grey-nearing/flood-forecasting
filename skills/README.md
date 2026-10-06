@@ -1,0 +1,14 @@
+# Project Agent Skills (`skills/`)
+
+This directory contains project-level skill guides for AI coding assistants working on `flood-forecasting` (OpenHydroNet / Open-MultiMet):
+
+| Skill | File | Purpose |
+| :--- | :--- | :--- |
+| **`repo-organization`** | [`skills/repo-organization.md`](./repo-organization.md) | Top-level package layout (`model/`, `multimet/`, `return_periods/`), `multimet/` subpackages (`catchment_delineation`, `gridded_archive_builders`, `timeseries_extractors`, `static_extractor`), harmonized `<package>/tools/` directories, `multimet/utils/` shared helpers, and packaging/CI synchronization. |
+| **`algorithm-rules-and-norms`** | [`skills/algorithm-rules-and-norms.md`](./algorithm-rules-and-norms.md) | Non-negotiable algorithmic rules and data-integrity norms: missing data in $\implies$ `NaN` out, zero `try`/`except` blocks that mask errors, explicit paths only, 48-file IMERG daily accumulation, 80% valid zonal coverage, and 7-day tail publication lag / `--extend_archive` cache safety. |
+| **`testing`** | [`skills/testing.md`](./testing.md) | Co-located `<package>/tests/` layout, native-resolution synthetic testing (never monkeypatch grid sizes to toy grids), strict mocking only at external network/cloud boundaries, and required data-integrity regression coverage. |
+| **`documentation`** | [`skills/documentation.md`](./documentation.md) | Core rules (document only what exists and how to use it without exposing design history or internal coding rules; target a concise, high-school reading level for non-experts and ESL readers) and three-tier documentation architecture (`README.md`, package `README.md`s, and Sphinx ReadTheDocs). |
+| **`gcs-bucket-organization`** | [`skills/gcs-bucket-organization.md`](./gcs-bucket-organization.md) | Directory hierarchy, dataset schemas, and Python/CLI access patterns for `gs://open-multimet/` (`caravan-new/`, `caravan-old/`, `caravan-multimet/`, `gridded-data-archives/`, `ancillary-data/`, and `data/era5_land/`). |
+| **`data-structures`** | [`skills/data-structures.md`](./data-structures.md) | Canonical reference for all data structures, unified coordinate philosophy, dimensions, dtypes, chunking, spatial/temporal aggregation protocols, internal gridded archives (`ERA5_LAND`, `HRES`, `CPC`, `IMERG`), Caravan and Caravan-MultiMet basin timeseries, catchment polygons, static attributes, and model tensors for Cold-Start and Hot-Start realtime forecasting. |
+| **`pr-review`** | [`skills/pr-review.md`](./pr-review.md) | End-to-end PR review checklist and standards: zero phantom/fake/masked/imputed data, zero `try`/`except` error swallowing, mathematical & autograd gradient rigor, pretrained weight & evaluation hygiene, non-trivial test & mock audits, OO design & redundancy checks, strict avoidance of review-based scope creep (opening issues for non-related findings), Python readability, documentation compliance, and author-facing review register. |
+
