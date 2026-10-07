@@ -560,6 +560,123 @@ class TestMaaSServerEndpoints(unittest.TestCase):
     self.assertGreater((vs.get("geoglows_reach") or {}).get("upstream_area_km2") or 0, 500000)
 
 
+class TestMaaSViewerSubpackage(unittest.TestCase):
+  """Tests the `frontend.maas_viewer` visualization and geometry buffering subpackage."""
+
+  def test_inundation_corridor_buffering_and_camaflood_emulation(self):
+    from shapely.geometry import LineString
+    from frontend.maas_viewer import (
+        buffer_reach_corridor,
+        camaflood_unit_feature,
+        chain_length_km,
+        emulate_camaflood_physics,
+        route_floodplain_excess,
+    )
+
+    chain = [
+        {"geometry": LineString([[-90.30, 38.65], [-90.25, 38.63]])},
+        {"geometry": LineString([[-90.25, 38.63], [-90.20, 38.61]])},
+        {"geometry": LineString([[-90.20, 38.61], [-90.15, 38.59]])},
+    ]
+    total_len = chain_length_km(chain, ref_lat=38.63)
+    self.assertGreater(total_len, 12.0)
+
+    poly = buffer_reach_corridor(chain, half_width_m=600.0, ref_lat=38.63)
+    self.assertIsNotNone(poly)
+    self.assertIn(poly.geom_type, ("Polygon", "MultiPolygon"))
+    self.assertGreater(poly.area, 0.0)
+
+    routed = route_floodplain_excess([1000.0, 2000.0, 2500.0], q_bankfull=1500.0)
+    self.assertEqual(len(routed), 3)
+    self.assertEqual(routed[0], 0.0)
+    self.assertGreater(routed[1], 0.0)
+
+    glofas_records = [
+        {
+            "time": f"2026-04-0{day}",
+            "discharge_median": 1200.0 + 400.0 * day,
+            "discharge_mean": 1200.0 + 400.0 * day,
+            "discharge_p25": 1000.0 + 300.0 * day,
+            "discharge_p75": 1500.0 + 500.0 * day,
+            "discharge_min": 900.0 + 250.0 * day,
+            "discharge_max": 1800.0 + 600.0 * day,
+        }
+        for day in range(1, 7)
+    ]
+    rp = {
+        "return_period_2": 1800.0,
+        "return_period_5": 2400.0,
+        "return_period_20": 3200.0,
+        "mean_flow": 1100.0,
+        "status": "live",
+    }
+    emulated = emulate_camaflood_physics(glofas_records, rp, elev=120.0)
+    self.assertEqual(len(emulated["series"]["rivout"]), 6)
+    self.assertEqual(len(emulated["series"]["flddph_m"]), 6)
+
+    unit_feat = camaflood_unit_feature(
+        38.625,
+        -90.125,
+        {"status": "fallback", "emulated": True, "flood_forecast": {"max_flood_depth_m": 0.85, "max_flooded_fraction_pct": 12.5}},
+    )
+    self.assertEqual(unit_feat["type"], "Feature")
+    self.assertEqual(unit_feat["properties"]["layer"], "camaflood_depth")
+
+  def test_maas_viewer_render_forecast_view(self):
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    from maas.config import MaaSConfig
+    from frontend.maas_viewer import MaaSViewer
+
+    with tempfile.TemporaryDirectory() as tmp:
+      tmp_path = Path(tmp)
+      cfg = MaaSConfig(
+          cache_dir=tmp_path / "cache",
+          river_networks_dir=tmp_path / "river_networks",
+          floodhub_api_key="",
+      )
+      viewer = MaaSViewer(cfg)
+      mock_glofas = {
+          "model": "copernicus_glofas",
+          "available": True,
+          "status": "live",
+          "data": [
+              {
+                  "time": "2026-04-01",
+                  "discharge_median": 2600.0,
+                  "discharge_mean": 2600.0,
+                  "discharge_min": 2100.0,
+                  "discharge_p25": 2350.0,
+                  "discharge_p75": 2900.0,
+                  "discharge_max": 3400.0,
+              }
+          ],
+      }
+      mock_rp = {
+          "return_period_2": 1800.0,
+          "return_period_5": 2400.0,
+          "return_period_20": 3500.0,
+          "return_period_100": 4900.0,
+          "source": "unit_test_rp",
+          "status": "live",
+      }
+      with (
+          mock.patch.object(viewer.fetcher.glofas, "fetch_forecast", return_value=mock_glofas),
+          mock.patch.object(viewer.fetcher.glofas, "fetch_reanalysis_return_periods", return_value=mock_rp),
+      ):
+        view = viewer.render_forecast_view(
+            38.6270,
+            -90.1994,
+            requested_models=["glofas", "todays_earth"],
+        )
+      self.assertIn("consensus", view)
+      self.assertIn("flood_summary", view)
+      self.assertIn("timeline", view)
+      self.assertIn("inundation", view)
+      self.assertEqual(view["flood_summary"]["overall_risk_level"], "SEVERE")
+
+
 if __name__ == "__main__":
   unittest.main()
 

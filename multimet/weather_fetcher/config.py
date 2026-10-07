@@ -12,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Model & variable catalog, colormaps, and unit conversions for Weather Viewer."""
+"""Model and variable physical metadata and unit conversions for Weather Data Fetcher."""
 
 from __future__ import annotations
 
 import dataclasses
 from datetime import datetime, timedelta, timezone
 import json
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -34,20 +33,6 @@ STEP_HOURS: int = 3
 VIEWER_STEP_HOURS: int = 3
 MAX_LEAD_HOURS: int = (NUM_STEPS - 1) * STEP_HOURS
 SYNC_INTERVAL_HOURS: int = 6
-
-# Versioning and rendering constants
-TILE_VERSION: str = "3"
-FRAME_SIZE: int = 1440
-FRAME_VERSION: str = "1"
-MERCATOR_MAX_LAT: float = 85.0511287798
-FRAME_VARIABLES: Tuple[str, ...] = (
-    "precipitation",
-    "accumulated_precip",
-    "temperature",
-    "pressure",
-)
-TEMP_LEVELS: int = 128
-PRESSURE_LEVELS: int = 51
 
 # Metadata and synchronization constants
 STAC_CATALOG_URL: str = "https://stac.dynamical.org/catalog.json"
@@ -157,27 +142,7 @@ SUPPORTED_VARIABLES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# Tile colour classes: (lower bound, RGBA). Values below the first bound are
-# transparent.
-RAIN_RATE_CLASSES: Tuple[Tuple[float, Tuple[int, int, int, int]], ...] = (
-    (0.1, (125, 211, 252, 150)),
-    (0.5, (59, 130, 246, 185)),
-    (2.0, (34, 197, 94, 205)),
-    (5.0, (234, 179, 8, 220)),
-    (10.0, (239, 68, 68, 235)),
-    (20.0, (192, 38, 211, 245)),
-)
-
-RAIN_ACCUM_CLASSES: Tuple[Tuple[float, Tuple[int, int, int, int]], ...] = (
-    (1.0, (125, 211, 252, 140)),
-    (5.0, (59, 130, 246, 175)),
-    (10.0, (34, 197, 94, 195)),
-    (25.0, (234, 179, 8, 215)),
-    (50.0, (239, 68, 68, 230)),
-    (100.0, (192, 38, 211, 245)),
-)
-
-# Viewer stream suffix -> dynamical.org variable name
+# Stream suffix -> dynamical.org variable name
 STREAM_VARIABLES: Dict[str, str] = {
     "precip": "precipitation_surface",
     "temp": "temperature_2m",
@@ -186,7 +151,7 @@ STREAM_VARIABLES: Dict[str, str] = {
     "v10": "wind_v_10m",
 }
 
-# Viewer variable -> suffix of the binary stream that holds it
+# Physical variable -> suffix of the binary stream that holds it
 STREAM_SUFFIX: Dict[str, str] = {
     "precipitation": "precip",
     "accumulated_precip": "precip",
@@ -277,7 +242,7 @@ def output_lead_hours(
     max_lead: int = MAX_LEAD_HOURS,
     step: int = VIEWER_STEP_HOURS,
 ) -> List[int]:
-  """Returns stored lead hours: model leads that fall on viewer steps."""
+  """Returns stored lead hours: model leads that fall on 3-hourly steps."""
   return [
       int(h) for h in in_leads if 0 <= int(h) <= max_lead and int(h) % step == 0
   ]
@@ -311,7 +276,6 @@ def to_stored_units(stream: str, values: Any) -> np.ndarray:
   elif stream == "mslp":
     arr = arr / 100.0 - MSLP_OFFSET_HPA
   elif stream == "temp":
-    # If input values are in Kelvin (e.g. mean > 150 K), convert to Celsius
     finite = arr[np.isfinite(arr)]
     if finite.size > 0 and float(np.mean(finite)) > 150.0:
       arr = arr - 273.15

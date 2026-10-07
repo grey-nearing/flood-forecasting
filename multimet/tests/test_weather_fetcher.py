@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit, regression, and canary tests for multimet.weather_viewer."""
+"""Unit, regression, and canary tests for multimet.weather_fetcher."""
 
 from __future__ import annotations
 
@@ -20,15 +20,13 @@ import ast
 import json
 import os
 from pathlib import Path
-import struct
 
 import numpy as np
 import pytest
 
-import multimet.weather_viewer as wv
-from multimet.weather_viewer.config import (
+import multimet.weather_fetcher as wf
+from multimet.weather_fetcher.config import (
     DYNAMICAL_MODELS,
-    FRAME_SIZE,
     from_stored_units,
     get_weather_source,
     list_weather_sources,
@@ -41,13 +39,12 @@ from multimet.weather_viewer.config import (
     SUPPORTED_VARIABLES,
     to_stored_units,
 )
-from multimet.weather_viewer.probe import WeatherViewerEngine
-from multimet.weather_viewer.tiles import (
+from multimet.weather_fetcher.fetcher import (
     bilinear_sample_grid,
-     rate_file_steps,
-    render_colorbar_lut_png,
+    compute_wind_speed_and_direction,
+    rate_file_steps,
+    WeatherDataFetcher,
 )
-from multimet.weather_viewer.wind import compute_wind_speed_and_direction
 
 
 def _write_native_synced_run(
@@ -115,18 +112,39 @@ def _write_native_synced_run(
 
 
 @pytest.mark.unit
-def test_zero_try_except_in_weather_viewer_package() -> None:
-  """Verifies that zero try/except/finally blocks exist in multimet/weather_viewer/."""
-  pkg_dir = Path(wv.__file__).resolve().parent
+def test_zero_try_except_and_zero_ui_rendering_in_weather_fetcher_package() -> (
+    None
+):
+  """Verifies zero try/except blocks and zero PNG/tile/colormap code in multimet/weather_fetcher/."""
+  pkg_dir = Path(wf.__file__).resolve().parent
   py_files = sorted(pkg_dir.glob("*.py"))
-  assert len(py_files) >= 6
+  assert len(py_files) == 5
+  forbidden_ui_tokens = (
+      "make_png_bytes",
+      "encode_rgba_png",
+      "encode_indexed_png",
+      "colorize_rgba",
+      "colorize_indexed",
+      "render_colorbar_lut_png",
+      "RAIN_RATE_CLASSES",
+      "RAIN_ACCUM_CLASSES",
+      "TEMP_LEVELS",
+      "PRESSURE_LEVELS",
+      "tile_coordinates",
+      "frame_coordinates",
+  )
   for py_file in py_files:
-    tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+    source = py_file.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(py_file))
     try_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.Try)]
     assert not try_nodes, (
         f"Found forbidden try/except node(s) in {py_file.name}: "
         f"lines {[n.lineno for n in try_nodes]}"
     )
+    for token in forbidden_ui_tokens:
+      assert (
+          token not in source
+      ), f"Found forbidden UI rendering symbol {token!r} in {py_file.name}"
 
 
 @pytest.mark.unit
@@ -196,8 +214,8 @@ def test_weather_sources_and_zarr_metadata_extent() -> None:
 
 
 @pytest.mark.unit
-def test_bilinear_interpolation_and_colorbar_lut() -> None:
-  """Tests bilinear spatial interpolation on a 721x1440 native grid and LUT rendering."""
+def test_bilinear_interpolation() -> None:
+  """Tests bilinear spatial interpolation on a 721x1440 native grid."""
   lats = np.linspace(90.0, -90.0, N_LAT, dtype=np.float32)
   lons = np.linspace(-180.0, 179.75, N_LON, dtype=np.float32)
   plane = (lats[:, None] * 0.5 + lons[None, :] * 0.1).astype(np.float32)
@@ -208,98 +226,87 @@ def test_bilinear_interpolation_and_colorbar_lut() -> None:
   expected = target_lats[:, None] * 0.5 + target_lons[None, :] * 0.1
   np.testing.assert_allclose(sampled, expected, atol=1e-3)
 
-  for var_key in SUPPORTED_VARIABLES:
-    lut_png = render_colorbar_lut_png(var_key, width=128, height=8)
-    assert lut_png.startswith(b"\x89PNG\r\n\x1a\n")
-    w, h = struct.unpack("!II", lut_png[16:24])
-    assert (w, h) == (128, 8)
-
 
 @pytest.mark.unit
-def test_engine_requires_explicit_data_dir_and_rejects_unsynced_models(
+def test_fetcher_requires_explicit_data_dir_and_rejects_unsynced_models(
     tmp_path: Path,
 ) -> None:
-  """Verifies Rule 2 & Rule 3: explicit data_dir required and no synthetic fallbacks."""
+  """Verifies explicit data_dir requirement and no synthetic fallbacks."""
   with pytest.raises(ValueError, match="explicit data_dir"):
-    WeatherViewerEngine(None)  # type: ignore[arg-type]
+    WeatherDataFetcher(None)  # type: ignore[arg-type]
 
   with pytest.raises(ValueError, match="explicit data_dir"):
-    WeatherViewerEngine("")
+    WeatherDataFetcher("")
 
-  empty_engine = WeatherViewerEngine(tmp_path)
-  info = empty_engine.get_model_info("ecmwf_aifs")
+  empty_fetcher = WeatherDataFetcher(tmp_path)
+  info = empty_fetcher.get_model_info("ecmwf_aifs")
   assert info["data_source"] == "unavailable"
   assert info["real_variables"] == []
 
   with pytest.raises(FileNotFoundError):
-    empty_engine.render_tile("ecmwf_aifs", "precipitation", 0, 2, 1, 1)
+    empty_fetcher.fetch_forecast_grid("ecmwf_aifs", "precipitation", step_idx=0)
 
   with pytest.raises(FileNotFoundError):
-    empty_engine.get_frame_index("ecmwf_aifs", "precipitation")
+    empty_fetcher.fetch_wind_grid("ecmwf_aifs", step_idx=1)
 
   with pytest.raises(FileNotFoundError):
-    empty_engine.get_wind_vectors("ecmwf_aifs", step_idx=1)
+    empty_fetcher.fetch_point_timeseries(40.0, -86.0)
 
   with pytest.raises(FileNotFoundError):
-    empty_engine.probe_point(40.0, -86.0)
-
-  with pytest.raises(FileNotFoundError):
-    empty_engine.summarize_catchment(
+    empty_fetcher.fetch_catchment_summary(
         {"id": "b1", "geometry": {"type": "Point", "coordinates": [-86.0, 40.0]}}
     )
 
 
 @pytest.mark.unit
-def test_engine_tiles_frames_wind_probe_and_catchment_on_native_grid(
+def test_fetcher_on_native_grid(
     tmp_path: Path,
 ) -> None:
-  """Tests end-to-end WeatherViewerEngine operations on a native 721x1440 synced run."""
+  """Tests WeatherDataFetcher on a native 721x1440 synced run."""
   _write_native_synced_run(tmp_path, rain_mmh=5.0)
-  engine = WeatherViewerEngine(tmp_path)
+  fetcher = WeatherDataFetcher(tmp_path)
 
-  # 1. Model metadata
-  aifs_info = engine.get_model_info("ecmwf_aifs")
+  # 1. Model metadata & numerical grid fetch
+  aifs_info = fetcher.get_model_info("ecmwf_aifs")
   assert aifs_info["data_source"] == "archived_run"
   assert aifs_info["init_time"] == "2026-09-29T00:00:00Z"
   assert "pressure" in aifs_info["real_variables"]
   assert "wind" in aifs_info["real_variables"]
 
-  # 2. Web Mercator XYZ tiles (bilinear and nearest)
-  for var_key in ("precipitation", "accumulated_precip", "temperature", "pressure"):
-    tile_png = engine.render_tile(
-        "ecmwf_aifs", var_key, step_idx=2, z=2, x=1, y=1, bilinear=True
-    )
-    assert tile_png.startswith(b"\x89PNG\r\n\x1a\n")
-    w, h = struct.unpack("!II", tile_png[16:24])
-    assert (w, h) == (256, 256)
+  grid = fetcher.fetch_forecast_grid("ecmwf_aifs", "precipitation", step_idx=2)
+  assert grid.shape == (N_LAT, N_LON)
+  assert pytest.approx(float(grid[100, 200]), abs=0.05) == 5.0
 
-  # 3. Animation frame index & frame rendering
-  idx = engine.get_frame_index("ecmwf_aifs", "precipitation")
-  assert idx["frame_steps"] == [1, 2, 3, 4]
-  frame_png = engine.render_frame("ecmwf_aifs", "precipitation", step_idx=2)
-  assert frame_png.startswith(b"\x89PNG\r\n\x1a\n")
-  fw, fh = struct.unpack("!II", frame_png[16:24])
-  assert (fw, fh) == (FRAME_SIZE, FRAME_SIZE)
+  accum_grid = fetcher.fetch_forecast_grid(
+      "ecmwf_aifs", "accumulated_precip", step_idx=2
+  )
+  assert accum_grid.shape == (N_LAT, N_LON)
+  assert pytest.approx(float(accum_grid[100, 200]), abs=0.1) == 30.0
 
-  # 4. Wind vectors (global & viewport bbox)
-  wind_global = engine.get_wind_vectors("ecmwf_aifs", step_idx=2, subsample=2)
+  # 2. Wind vectors (global & viewport bbox)
+  wind_global = fetcher.fetch_wind_grid("ecmwf_aifs", step_idx=2, subsample=2)
   assert wind_global["header"]["data_source"] == "archived_run"
-  assert len(wind_global["u"]) == wind_global["header"]["nx"] * wind_global["header"]["ny"]
+  assert (
+      len(wind_global["u"])
+      == wind_global["header"]["nx"] * wind_global["header"]["ny"]
+  )
   assert pytest.approx(wind_global["u"][0], abs=0.05) == 6.0
   assert pytest.approx(wind_global["v"][0], abs=0.05) == 8.0
 
-  wind_bbox = engine.get_wind_vectors(
+  wind_bbox = fetcher.fetch_wind_grid(
       "ecmwf_aifs", step_idx=2, subsample=1, bbox=(-90.0, 35.0, -80.0, 45.0)
   )
   assert wind_bbox["header"]["nx"] == 11
   assert wind_bbox["header"]["ny"] == 11
 
-  spd, direc = compute_wind_speed_and_direction(np.array([6.0]), np.array([8.0]))
+  spd, direc = compute_wind_speed_and_direction(
+      np.array([6.0]), np.array([8.0])
+  )
   assert pytest.approx(float(spd[0]), abs=1e-4) == 10.0
   assert 0.0 <= float(direc[0]) < 360.0
 
-  # 5. Point probe
-  probe = engine.probe_point(40.42, -86.92)
+  # 5. Point timeseries probe
+  probe = fetcher.fetch_point_timeseries(40.42, -86.92)
   assert "ecmwf_aifs" in probe["models"]
   assert "ecmwf_ifs" in probe["models"]
   aifs_p = probe["models"]["ecmwf_aifs"]
@@ -324,7 +331,9 @@ def test_engine_tiles_frames_wind_probe_and_catchment_on_native_grid(
           ]],
       },
   }
-  summary = engine.summarize_catchment(basin, step_idx=2, model_key="ecmwf_aifs")
+  summary = fetcher.fetch_catchment_summary(
+      basin, step_idx=2, model_key="ecmwf_aifs"
+  )
   assert summary["catchment_id"] == "wabash_test"
   assert pytest.approx(summary["basin_mean_precip_mmh"], abs=0.05) == 5.0
   assert pytest.approx(summary["basin_mean_temp_c"], abs=0.1) == 18.5
@@ -350,7 +359,15 @@ def test_rate_file_steps_interval_coverage() -> None:
 @pytest.mark.canary
 def test_canary_dynamical_stac_catalog_reachable() -> None:
   """Live canary check verifying dynamical.org STAC catalog is reachable."""
-  cat = wv.open_dynamical_catalog()
-  assert cat is not None
-  child = cat.get_child("noaa-gfs-forecast")
-  assert child is not None
+  import importlib.util
+  import urllib.request
+  from multimet.weather_fetcher.config import STAC_CATALOG_URL
+
+  with urllib.request.urlopen(STAC_CATALOG_URL, timeout=15) as resp:
+    catalog_json = json.loads(resp.read().decode("utf-8"))
+  assert catalog_json.get("id") == "dynamical-org"
+  if importlib.util.find_spec("pystac") is not None:
+    cat = wf.open_dynamical_catalog()
+    assert cat is not None
+    child = cat.get_child("noaa-gfs-forecast")
+    assert child is not None

@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from maas.config import MaaSConfig, normalize_requested_models
-from maas.engine import MaaSEngine
+from maas.fetcher import MaaSDataFetcher
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -151,11 +151,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         todays_earth_api_url=te_url,
         http_timeout_s=args.timeout,
     )
-    engine = MaaSEngine(config)
+    fetcher = MaaSDataFetcher(config)
     requested_models = normalize_requested_models(
         [m.strip() for m in args.models.split(',') if m.strip()]
     )
-    result = engine.fetch_unified_forecast(
+    result = fetcher.fetch_forecasts(
         lat=args.lat,
         lon=args.lon,
         gauge_id=args.gauge_id,

@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""JAXA Today's Earth (TE-Global CaMa-Flood) client, physics emulator, and binary grid lookup."""
+"""JAXA Today's Earth (TE-Global CaMa-Flood) STAC/REST client, parser, and binary grid lookup."""
 
-import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import UTC, datetime
+import math
 from pathlib import Path
 from typing import Any
 
@@ -33,10 +33,8 @@ from maas.config import (
 from maas.networks import (
     cama_cell_area_km2,
     cama_cell_id,
-    cama_cell_polygon,
     snap_cama_cell,
 )
-from maas.thresholds import gumbel_quantile_from_return_periods
 
 TE_CATALOG_TOKENS: tuple[str, ...] = (
     'todays',
@@ -63,15 +61,6 @@ TODAYS_EARTH_EMULATION_NOTE = (
     'driven by the GloFAS v4 forecast; set TODAYS_EARTH_API_URL to connect an '
     'operational TE-Global feed.'
 )
-
-
-def _series_median(values: Sequence[Any]) -> float | None:
-    valid = sorted(
-        v
-        for v in (parse_finite_float(x) for x in values)
-        if v is not None and v >= 0.0
-    )
-    return valid[len(valid) // 2] if valid else None
 
 
 def extract_te_series(
@@ -145,111 +134,6 @@ def parse_todays_earth_payload(
             extract_te_series(payload, 'sfcelv_m', 'sfcelv', 'SFCELV')
         ),
     }, None
-
-
-def route_floodplain_excess(
-    series: Sequence[float],
-    q_bankfull: float,
-    k: float = CAMA_FLOODPLAIN_K,
-) -> list[float]:
-    """Linear-reservoir routing of above-bankfull flow (daily explicit scheme)."""
-    routed: list[float] = []
-    state: float | None = None
-    for q in series:
-        excess = max(float(q) - q_bankfull, 0.0)
-        state = excess if state is None else state + k * (excess - state)
-        routed.append(state)
-    return routed
-
-
-def emulate_camaflood_physics(
-    records: Sequence[Mapping[str, Any]],
-    rps: Mapping[str, Any] | None,
-    elev: float,
-    elev_source: str = 'DEM',
-    forcing_status: str | None = 'live',
-) -> dict[str, Any]:
-    """Deterministic CaMa-Flood channel/floodplain routing from GloFAS forecast records."""
-    records_slice = list(records)[:6]
-
-    def _col(name: str, fallback: str = 'discharge_mean') -> list[float]:
-        out: list[float] = []
-        for r in records_slice:
-            v = parse_finite_float(r.get(name))
-            if v is None:
-                v = parse_finite_float(r.get(fallback))
-            out.append(max(v or 0.0, 0.0))
-        return out
-
-    central = _col('discharge_median')
-    rps_map = rps or {}
-    q_clim = (
-        parse_finite_float(rps_map.get('mean_flow'))
-        or _series_median(central)
-        or 1.0
-    )
-    q_clim = max(q_clim, 0.05)
-    width = max(0.40 * (q_clim**0.75), 10.0)
-    depth = max(0.10 * (q_clim**0.5), 1.0)
-    q_bf = max(
-        gumbel_quantile_from_return_periods(rps_map, 1.5) or 0.0,
-        1.2 * q_clim,
-        0.5,
-    )
-    elev_c = min(max(float(elev), 0.0), 1500.0)
-    depth_scale = 1.0 + elev_c / 150.0
-    f_max = (0.02 + 0.08 * math.log10(1.0 + q_clim / 10.0)) * (
-        1.0 + 1.5 * math.exp(-elev_c / 30.0)
-    )
-    f_max = min(max(f_max, 0.02), 0.6)
-
-    def _cama(
-        series: list[float],
-    ) -> tuple[list[float], list[float], list[float]]:
-        routed = route_floodplain_excess(series, q_bf)
-        total = [min(q, q_bf) + r for q, r in zip(series, routed, strict=False)]
-        fld = [CAMA_FLDOUT_SHARE * r for r in routed]
-        return total, [t - f for t, f in zip(total, fld, strict=False)], fld
-
-    total, rivout, fldout = _cama(central)
-    stage = [depth * ((max(r, 0.0) / q_bf) ** 0.6) for r in rivout]
-    flddph = [max(h - depth, 0.0) for h in stage]
-    fldfrc = [
-        100.0 * f_max * (1.0 - math.exp(-d / depth_scale)) for d in flddph
-    ]
-    sfcelv = [max(max(float(elev), 0.0) - depth + h, 0.0) for h in stage]
-
-    def _r2(xs: Sequence[float]) -> list[float]:
-        return [round(x, 2) for x in xs]
-
-    return {
-        'series': {
-            'timestamps': [
-                f'{str(r.get("time"))[:10]}T00:00:00Z' for r in records_slice
-            ],
-            'mean': _r2(total),
-            'rivout': _r2(rivout),
-            'fldout': _r2(fldout),
-            'p25': _r2(_cama(_col('discharge_p25'))[0]),
-            'p75': _r2(_cama(_col('discharge_p75'))[0]),
-            'max': _r2(_cama(_col('discharge_max'))[0]),
-            'min': _r2(_cama(_col('discharge_min'))[0]),
-            'flddph_m': [round(d, 3) for d in flddph],
-            'fldfrc_pct': _r2(fldfrc),
-            'sfcelv_m': _r2(sfcelv),
-        },
-        'channel_params': {
-            'mean_flow_m3s': round(q_clim, 3),
-            'bankfull_discharge_m3s': round(q_bf, 2),
-            'channel_width_m': round(width, 1),
-            'channel_depth_m': round(depth, 2),
-            'ground_elevation_m': float(elev),
-            'elevation_source': elev_source,
-            'max_flooded_fraction_ceiling_pct': round(100.0 * f_max, 1),
-        },
-        'forcing_status': forcing_status,
-        'return_period_status': rps_map.get('status'),
-    }
 
 
 def format_todays_earth_forecast(  # noqa: PLR0913
@@ -347,36 +231,6 @@ def format_todays_earth_forecast(  # noqa: PLR0913
     }
 
 
-def camaflood_unit_feature(
-    lat: float,
-    lon: float,
-    service_status: str = 'emulated',
-) -> dict[str, Any]:
-    """GeoJSON Feature for the 0.25° CaMa-Flood unit-catchment grid cell."""
-    cell_lat, cell_lon = snap_cama_cell(lat, lon)
-    ring, bbox = cama_cell_polygon(cell_lat, cell_lon)
-    label = "Today's Earth CaMa-Flood Unit Grid (0.25°)"
-    return {
-        'type': 'Feature',
-        'geometry': {'type': 'Polygon', 'coordinates': [ring]},
-        'properties': {
-            'fabric': 'camaflood_unit',
-            'fabric_name': label,
-            'geofabric': 'camaflood_unit',
-            'geofabric_label': label,
-            'model': "JAXA Today's Earth (MATSIRO + CaMa-Flood)",
-            'source': f'{TODAYS_EARTH_SOURCE} unit-catchment grid',
-            'service_status': service_status,
-            'grid_cell_id': cama_cell_id(cell_lat, cell_lon),
-            'cell_center_lat': cell_lat,
-            'cell_center_lon': cell_lon,
-            'area_km2': cama_cell_area_km2(cell_lat),
-            'resolution': '0.25° (~28 km)',
-            'bbox': bbox,
-        },
-    }
-
-
 def lookup_camaflood_binary_cell(
     bin_path: Path,
     lat: float,
@@ -391,8 +245,8 @@ def lookup_camaflood_binary_cell(
     """
     if not bin_path.exists():
         raise FileNotFoundError(f'CaMa-Flood binary file not found: {bin_path}')
-    nlat = int(round(180.0 / res_deg))
-    nlon = int(round(360.0 / res_deg))
+    nlat = round(180.0 / res_deg)
+    nlon = round(360.0 / res_deg)
     dt = np.dtype(dtype)
     expected_bytes = nlat * nlon * dt.itemsize
     actual_bytes = bin_path.stat().st_size
@@ -402,9 +256,9 @@ def lookup_camaflood_binary_cell(
             f'expected {expected_bytes} bytes ({nlat}x{nlon}), got {actual_bytes}.'
         )
     cell_lat, cell_lon = snap_cama_cell(lat, lon, res=res_deg)
-    row = min(max(int(round((90.0 - cell_lat) / res_deg - 0.5)), 0), nlat - 1)
+    row = min(max(round((90.0 - cell_lat) / res_deg - 0.5), 0), nlat - 1)
     col = min(
-        max(int(round((cell_lon + 180.0) / res_deg - 0.5)), 0),
+        max(round((cell_lon + 180.0) / res_deg - 0.5), 0),
         nlon - 1,
     )
     grid = np.fromfile(bin_path, dtype=dt).reshape((nlat, nlon))
@@ -491,11 +345,8 @@ __all__ = [
     'TE_CATALOG_TOKENS',
     'TODAYS_EARTH_EMULATION_NOTE',
     'TodaysEarthClient',
-    'camaflood_unit_feature',
-    'emulate_camaflood_physics',
     'extract_te_series',
     'format_todays_earth_forecast',
     'lookup_camaflood_binary_cell',
     'parse_todays_earth_payload',
-    'route_floodplain_excess',
 ]

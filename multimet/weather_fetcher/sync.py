@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import xarray as xr
 
-from multimet.weather_viewer.config import (
+from multimet.weather_fetcher.config import (
     CHECK_INTERVAL_MINUTES,
     DEFAULT_MSLP_OFFSET_HPA,
     DEFAULT_SYNC_MODELS,
@@ -61,7 +61,7 @@ def require_data_dir(data_dir: Union[str, Path, None]) -> Path:
   """Validates that an explicit data_dir path was supplied."""
   if data_dir is None or str(data_dir).strip() == "":
     raise ValueError(
-        "An explicit data_dir path is required for multimet.weather_viewer."
+        "An explicit data_dir path is required for multimet.weather_fetcher."
     )
   return Path(data_dir).expanduser().resolve()
 
@@ -74,13 +74,13 @@ def aggregate_rates(
   """Computes mean rate over each output interval (previous output lead, lead].
 
   rates[i] is the model's mean rate over (in_leads[i-1], in_leads[i]].
-  Hourly GFS rain is averaged over each 3-hour viewer step instead of sampling
+  Hourly GFS rain is averaged over each 3-hour step instead of sampling
   one hour in three. Lead 0 has no preceding interval and is all zeros.
 
   Args:
     rates: Input rate array of shape (n_in_leads, ...).
     in_leads: Input lead hours corresponding to axis 0 of ``rates``.
-    out_leads: Output viewer lead hours.
+    out_leads: Output lead hours.
 
   Returns:
     Float32 array of shape (len(out_leads), ...).
@@ -128,6 +128,38 @@ def current_run_dir(data_dir: Union[str, Path]) -> Optional[Path]:
   if root.exists() and any(root.glob("*.bin")):
     return root.resolve()
   return None
+
+
+def list_available_runs(data_dir: Union[str, Path]) -> List[Dict[str, Any]]:
+  """Lists all completed forecast run directories stored under `<data_dir>/runs`."""
+  root = require_data_dir(data_dir)
+  runs_dir = root / "runs"
+  active = current_run_dir(root)
+  results: List[Dict[str, Any]] = []
+  if not runs_dir.is_dir():
+    if active is not None:
+      runs_meta = load_run_metadata(active)
+      if runs_meta:
+        results.append({
+            "run_name": active.name,
+            "path": str(active),
+            "is_current": True,
+            "models": runs_meta,
+        })
+    return results
+
+  for item in sorted(runs_dir.iterdir()):
+    if not item.is_dir() or item.name.endswith(".partial"):
+      continue
+    resolved = item.resolve()
+    runs_meta = load_run_metadata(resolved)
+    results.append({
+        "run_name": item.name,
+        "path": str(resolved),
+        "is_current": active is not None and resolved == active,
+        "models": runs_meta,
+    })
+  return results
 
 
 def read_sync_status(data_dir: Union[str, Path]) -> Dict[str, Any]:
@@ -353,7 +385,9 @@ def sync_all_models(
   root = require_data_dir(data_dir)
   runs_root = root / "runs"
   runs_root.mkdir(parents=True, exist_ok=True)
-  selected_models = list(models) if models is not None else list(DEFAULT_SYNC_MODELS)
+  selected_models = (
+      list(models) if models is not None else list(DEFAULT_SYNC_MODELS)
+  )
   for m in selected_models:
     if m not in DYNAMICAL_MODELS:
       raise ValueError(
@@ -370,7 +404,9 @@ def sync_all_models(
 
   run_dir, current = current_models_metadata(root)
   active_catalog = catalog if catalog is not None else open_dynamical_catalog()
-  dataset_opener = open_dataset if open_dataset is not None else open_dynamical_dataset
+  dataset_opener = (
+      open_dataset if open_dataset is not None else open_dynamical_dataset
+  )
 
   plan: Dict[str, str] = {}
   datasets: Dict[str, xr.Dataset] = {}
@@ -415,7 +451,6 @@ def sync_all_models(
     new_dir.mkdir(parents=True, exist_ok=True)
     entries: Dict[str, Dict[str, Any]] = {}
 
-    # Preserve existing non-queried models as well as queried models
     all_candidate_models = list(
         dict.fromkeys(list(current.keys()) + selected_models)
     )
@@ -532,6 +567,10 @@ class WeatherSynchronizer:
   def current_run_dir(self) -> Optional[Path]:
     """Returns the resolved current run directory, or None if not synced."""
     return current_run_dir(self.data_dir)
+
+  def list_runs(self) -> List[Dict[str, Any]]:
+    """Lists all available forecast runs in data_dir."""
+    return list_available_runs(self.data_dir)
 
   def get_status(self) -> Dict[str, Any]:
     """Returns the synchronization status dictionary."""

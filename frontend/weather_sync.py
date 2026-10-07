@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Frontend adapter for weather synchronization delegating to multimet.weather_viewer."""
+"""Frontend adapter for weather synchronization delegating to multimet.weather_fetcher."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ _ws_root = str(Path(__file__).resolve().parents[1])
 if _ws_root not in sys.path:
   sys.path.insert(0, _ws_root)
 
-from multimet.weather_viewer.cli import resolve_default_weather_data_dir
-from multimet.weather_viewer.config import (
+from multimet.weather_fetcher.cli import resolve_default_weather_data_dir
+from multimet.weather_fetcher.config import (
     CHECK_INTERVAL_MINUTES,
     DEFAULT_SYNC_MODELS,
     DYNAMICAL_MODELS,
@@ -45,7 +45,7 @@ from multimet.weather_viewer.config import (
     to_stored_units,
     VIEWER_STEP_HOURS,
 )
-from multimet.weather_viewer.sync import (
+from multimet.weather_fetcher.sync import (
     aggregate_rates,
     current_models_metadata,
     download_model_run,
@@ -98,7 +98,7 @@ def sync_latest(
 ) -> Dict[str, Any]:
   """Checks dynamical.org and downloads the models whose newest run changed.
 
-  Delegates core synchronization to `multimet.weather_viewer.sync.sync_all_models`
+  Delegates core synchronization to `multimet.weather_fetcher.sync.sync_all_models`
   while providing non-blocking file locking and default path resolution for the
   frontend server.
   """

@@ -32,9 +32,7 @@ import numpy as np
 import pyogrio
 import shapely
 import xarray as xr
-from shapely import affinity
 from shapely.geometry import Point, mapping
-from shapely.ops import unary_union
 
 from maas.config import (
     CAMA_GRID_RES_DEG,
@@ -999,70 +997,6 @@ def trace_main_stem_chain(
     return start, chain, snap_km
 
 
-def polygonal_only(geom: Any) -> Any | None:
-    """Keep only the `(Multi)Polygon` part of a shapely geometry."""
-    if geom is None or geom.is_empty:
-        return None
-    if geom.geom_type in ('Polygon', 'MultiPolygon'):
-        return geom
-    if geom.geom_type == 'GeometryCollection':
-        parts = [
-            g for g in geom.geoms if g.geom_type in ('Polygon', 'MultiPolygon')
-        ]
-        return unary_union(parts) if parts else None
-    return None
-
-
-def buffer_reach_corridor(
-    reaches: Sequence[Mapping[str, Any]],
-    half_width_m: Any,
-    ref_lat: float,
-    clip: Any | None = None,
-) -> Any | None:
-    """Metric buffer of reach lines (local equirectangular scaling), optionally clipped."""
-    cos_lat = max(math.cos(math.radians(ref_lat)), 0.05)
-    parts = []
-    for r in reaches:
-        hw = half_width_m(r) if callable(half_width_m) else float(half_width_m)
-        if hw <= 0:
-            continue
-        scaled = affinity.scale(
-            r['geometry'], xfact=cos_lat, yfact=1.0, origin=(0, 0)
-        )
-        parts.append(scaled.buffer(hw / 111320.0, quad_segs=4))
-    if not parts:
-        return None
-    geom = affinity.scale(
-        unary_union(parts), xfact=1.0 / cos_lat, yfact=1.0, origin=(0, 0)
-    )
-    if clip is not None:
-        geom = geom.intersection(clip)
-    geom = polygonal_only(geom)
-    return (
-        polygonal_only(geom.simplify(0.0002, preserve_topology=True))
-        if geom is not None
-        else None
-    )
-
-
-def chain_length_km(
-    reaches: Sequence[Mapping[str, Any]],
-    ref_lat: float,
-    clip: Any | None = None,
-) -> float:
-    """Total length in kilometers of a sequence of reach geometries."""
-    if not reaches:
-        return 0.0
-    lines = unary_union([r['geometry'] for r in reaches])
-    if clip is not None:
-        lines = lines.intersection(clip)
-    cos_lat = max(math.cos(math.radians(ref_lat)), 0.05)
-    return (
-        affinity.scale(lines, xfact=cos_lat, yfact=1.0, origin=(0, 0)).length
-        * 111.32
-    )
-
-
 __all__ = [
     'CACHE_VERSION',
     'FLOODHUB_LOD',
@@ -1072,13 +1006,11 @@ __all__ = [
     'NETWORK_LABELS',
     'TE_LOD',
     'as_linkno',
-    'buffer_reach_corridor',
     'build_geoglows_pyramid',
     'build_glofas_and_te_pyramids',
     'cama_cell_area_km2',
     'cama_cell_id',
     'cama_cell_polygon',
-    'chain_length_km',
     'extract_level_features',
     'glofas_cell_center',
     'glofas_cell_polygon',
@@ -1086,7 +1018,6 @@ __all__ = [
     'load_geoglows_lookup',
     'load_network_pyramid',
     'lod_for_zoom',
-    'polygonal_only',
     'pyramid_signature',
     'query_geoglows_reaches',
     'query_hydrorivers_reaches',
