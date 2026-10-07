@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
+import collections
 import datetime
 import math
 import mmap
 from pathlib import Path
+import threading
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -51,6 +53,18 @@ _PROBE_STREAM_SUFFIX: Dict[str, str] = {
     "wind_u": "u10",
     "wind_v": "v10",
 }
+
+_ACCUM_GRID_CACHE: "collections.OrderedDict[Tuple[int, str, Optional[str], int], np.ndarray]" = (
+    collections.OrderedDict()
+)
+_ACCUM_GRID_CACHE_SIZE: int = 32
+_ACCUM_GRID_LOCK = threading.Lock()
+
+
+def clear_accum_grid_cache() -> None:
+  """Clears the incremental accumulated precipitation grid cache."""
+  with _ACCUM_GRID_LOCK:
+    _ACCUM_GRID_CACHE.clear()
 
 
 def scan_streams(
@@ -343,11 +357,39 @@ def compute_accumulated_precip_grid(
   if lead_h > leads[-1]:
     return None
   k = max(i for i, lead in enumerate(leads) if lead <= lead_h)
-  total = np.zeros((N_LAT, N_LON), dtype=np.float32)
-  for i in range(1, k + 1):
-    rate = arrays[stream_id][i].astype(np.float32)
-    total += np.nan_to_num(rate, nan=0.0) * float(leads[i] - leads[i - 1])
-  return total, GRID_DEG
+  arr_obj = arrays[stream_id]
+  shape = (int(arr_obj.shape[1]), int(arr_obj.shape[2]))
+  init_tag = str(info.get("init_time") or info.get("file") or "")
+  cache_key = (id(arr_obj), stream_id, init_tag, k)
+
+  with _ACCUM_GRID_LOCK:
+    cached = _ACCUM_GRID_CACHE.get(cache_key)
+    if cached is not None:
+      _ACCUM_GRID_CACHE.move_to_end(cache_key)
+      return cached, GRID_DEG
+    start_k = 0
+    start_total: Optional[np.ndarray] = None
+    for (c_id, c_stream, c_init, c_k), c_total in _ACCUM_GRID_CACHE.items():
+      if (
+          c_id == id(arr_obj)
+          and c_stream == stream_id
+          and c_init == init_tag
+          and start_k <= c_k < k
+      ):
+        start_k = c_k
+        start_total = c_total
+    total = (
+        np.zeros(shape, dtype=np.float32)
+        if start_total is None
+        else start_total.copy()
+    )
+    for i in range(start_k + 1, k + 1):
+      rate = arr_obj[i].astype(np.float32)
+      total += np.nan_to_num(rate, nan=0.0) * float(leads[i] - leads[i - 1])
+    _ACCUM_GRID_CACHE[cache_key] = total
+    while len(_ACCUM_GRID_CACHE) > _ACCUM_GRID_CACHE_SIZE:
+      _ACCUM_GRID_CACHE.popitem(last=False)
+    return total, GRID_DEG
 
 
 def fetch_forecast_grid(
@@ -641,6 +683,7 @@ def fetch_point_timeseries(
     lat: float,
     lon: float,
     models: Optional[Sequence[str]] = None,
+    strict: bool = True,
 ) -> Dict[str, Any]:
   """Fetches comparative 10-day multi-model meteorological soundings at `(lat, lon)`."""
   lead_hours = [i * STEP_HOURS for i in range(NUM_STEPS)]
@@ -658,9 +701,11 @@ def fetch_point_timeseries(
     ]
 
   if not target_models:
-    raise FileNotFoundError(
-        "No synced forecast models available in data directory for point probe."
-    )
+    if strict:
+      raise FileNotFoundError(
+          "No synced forecast models available in data directory for point probe."
+      )
+    target_models = list(SUPPORTED_MODELS)
 
   results: Dict[str, Any] = {
       "latitude": round(float(lat), 4),
@@ -675,9 +720,20 @@ def fetch_point_timeseries(
       raise ValueError(f"Unknown weather model '{m_key}'")
     m_info = SUPPORTED_MODELS[m_key]
     data_info = get_model_data_info_from_streams(stream_info, m_key)
-    accum = extract_accumulation_series(
-        arrays, stream_info, m_key, lat, lon, lead_hours
-    )
+
+    has_precip = f"{m_key}_precip" in stream_info and f"{m_key}_precip" in arrays
+    has_temp = f"{m_key}_temp" in stream_info and f"{m_key}_temp" in arrays
+    if strict and (not has_precip or not has_temp):
+      raise FileNotFoundError(
+          f"Precipitation/temperature streams for '{m_key}' not found in synced data directory."
+      )
+
+    if has_precip:
+      accum = extract_accumulation_series(
+          arrays, stream_info, m_key, lat, lon, lead_hours
+      )
+    else:
+      accum = [None] * len(lead_hours)
 
     has_wind = (
         f"{m_key}_u10" in stream_info
@@ -694,22 +750,30 @@ def fetch_point_timeseries(
     pressure_curve: List[Optional[float]] = []
 
     for lead_h in lead_hours:
-      precip_curve.append(
-          round_or_none(
-              extract_point_value(
-                  arrays, stream_info, m_key, "precipitation", lead_h, lat, lon
-              ),
-              2,
-          )
-      )
-      temp_curve.append(
-          round_or_none(
-              extract_point_value(
-                  arrays, stream_info, m_key, "temperature", lead_h, lat, lon
-              ),
-              1,
-          )
-      )
+      if has_precip:
+        precip_curve.append(
+            round_or_none(
+                extract_point_value(
+                    arrays, stream_info, m_key, "precipitation", lead_h, lat, lon
+                ),
+                2,
+            )
+        )
+      else:
+        precip_curve.append(None)
+
+      if has_temp:
+        temp_curve.append(
+            round_or_none(
+                extract_point_value(
+                    arrays, stream_info, m_key, "temperature", lead_h, lat, lon
+                ),
+                1,
+            )
+        )
+      else:
+        temp_curve.append(None)
+
       if has_wind:
         u_w = extract_point_value(
             arrays, stream_info, m_key, "wind_u", lead_h, lat, lon
@@ -902,6 +966,7 @@ class WeatherDataFetcher:
 
   def close(self) -> None:
     """Closes any open memory-mapped stream handles."""
+    clear_accum_grid_cache()
     self.arrays.clear()
     for mm, _, _, _, _ in self.handles.values():
       if not mm.closed:
@@ -1007,10 +1072,16 @@ class WeatherDataFetcher:
       lat: float,
       lon: float,
       models: Optional[Sequence[str]] = None,
+      strict: bool = True,
   ) -> Dict[str, Any]:
     """Fetches 10-day multi-model meteogram time series at `(lat, lon)`."""
     return fetch_point_timeseries(
-        self.arrays, self.stream_info, lat=lat, lon=lon, models=models
+        self.arrays,
+        self.stream_info,
+        lat=lat,
+        lon=lon,
+        models=models,
+        strict=strict,
     )
 
   probe_point = fetch_point_timeseries
