@@ -188,6 +188,16 @@ class BaseTester(object):
             compute_scaler=False,
         )
 
+    def _set_random_seeds(self) -> None:
+        """Seed Python, NumPy, and PyTorch RNGs for reproducible evaluation."""
+        raw_seed = getattr(self.cfg, 'seed', None)
+        seed = raw_seed if isinstance(raw_seed, int) else 42
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     def evaluate(
         self,
         epoch: int = None,
@@ -237,6 +247,8 @@ class BaseTester(object):
                 raise RuntimeError(
                     'No model was initialized for the evaluation'
                 )
+
+        self._set_random_seeds()
 
         # during validation, depending on settings, only evaluate on a random subset of basins
         basins = self.basins
