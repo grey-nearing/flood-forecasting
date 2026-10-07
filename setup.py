@@ -42,6 +42,8 @@ setup(
         'multimet.static_extractor',
         'multimet.gridded_archive_builders',
         'multimet.timeseries_extractors',
+        'maas',
+        'maas.tools',
         'return_periods',
         'return_periods.tools',
     ],
@@ -74,6 +76,7 @@ setup(
             'extract-caravan-static-batch=multimet.static_extractor.batch_runner:main',
             'extract-static-attributes-batch=multimet.static_extractor.batch_runner:main',
             'benchmark-static-extractor=multimet.static_extractor.benchmark:main',
+            'fetch-maas-forecast=maas.cli:main',
             'benchmark-return-periods=return_periods.tools.run_caravan_usgs_benchmark:main',
         ]
     },
