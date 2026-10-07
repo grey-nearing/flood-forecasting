@@ -2013,33 +2013,6 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         self._send_error(f"Failed to run hydrological model: {e}", status=500)
         return
 
-    # 8. API: Upload Real-Time Streamflow CSV for Data Assimilation (/api/forecast/upload-streamflow-csv)
-    if path == "/api/forecast/upload-streamflow-csv":
-      user = self._get_request_username(data)
-      catchment_id = data.get("catchment_id") or data.get("basin_id")
-      csv_content = data.get("csv_content") or data.get("csv") or ""
-      input_units = data.get("input_units", "auto")
-      if not catchment_id or not csv_content:
-        self._send_error("catchment_id and csv_content are required", status=400)
-        return
-      try:
-        try:
-          from frontend.streamflow_csv_ingestor import ingest_realtime_streamflow_csv
-        except ImportError:
-          from streamflow_csv_ingestor import ingest_realtime_streamflow_csv
-
-        res = ingest_realtime_streamflow_csv(
-            csv_data=csv_content,
-            basin_id=str(catchment_id),
-            username=user,
-            input_units=input_units,
-        )
-        self._send_json(res)
-        return
-      except Exception as e:
-        self._send_error(f"Failed to ingest streamflow CSV: {e}", status=400)
-        return
-
     self._send_error("Not Found", status=404)
 
   def log_message(self, format, *args):
