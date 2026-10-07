@@ -51,53 +51,29 @@ def test_schema_definitions():
 
 
 def test_fao_pm_pet_calculation():
-  """Tests FAO-56 Penman-Monteith daily reference evapotranspiration across radiation units."""
+  """Tests FAO-56 Penman-Monteith daily reference evapotranspiration."""
   dates = pd.date_range("2020-01-01", periods=5, freq="D")
   sp = pd.Series([101.3] * 5, index=dates)
   t2m = pd.Series([20.0, 25.0, 15.0, 30.0, 10.0], index=dates)
   d2m = pd.Series([15.0, 18.0, 10.0, 20.0, 5.0], index=dates)
   u10 = pd.Series([2.0] * 5, index=dates)
   v10 = pd.Series([1.5] * 5, index=dates)
+  ssr = pd.Series([800000.0] * 5, index=dates)
+  str_s = pd.Series([200000.0] * 5, index=dates)
 
-  # Default W/m^2 (e.g. 200 W/m^2 solar + -50 W/m^2 thermal = 150 W/m^2 = 12.96 MJ/m^2/day)
-  ssr_wm2 = pd.Series([200.0] * 5, index=dates)
-  str_wm2 = pd.Series([-50.0] * 5, index=dates)
-  pet_wm2 = calculate_fao_pm_pet(
+  pet = calculate_fao_pm_pet(
       surface_pressure_kpa=sp,
       temperature_2m_c=t2m,
       dewpoint_temperature_2m_c=d2m,
       u_component_of_wind_10m=u10,
       v_component_of_wind_10m=v10,
-      surface_net_solar_radiation_mean=ssr_wm2,
-      surface_net_thermal_radiation_mean=str_wm2,
+      surface_net_solar_radiation_mean=ssr,
+      surface_net_thermal_radiation_mean=str_s,
   )
-  assert len(pet_wm2) == 5
-  assert (pet_wm2 >= 0.0).all()
-  assert 2.0 <= pet_wm2.mean() <= 6.0
 
-  # Equivalent daily accumulated J/m^2/day (W/m^2 * 86400) and hourly J/m^2/hr (W/m^2 * 3600)
-  pet_jm2_day = calculate_fao_pm_pet(
-      surface_pressure_kpa=sp,
-      temperature_2m_c=t2m,
-      dewpoint_temperature_2m_c=d2m,
-      u_component_of_wind_10m=u10,
-      v_component_of_wind_10m=v10,
-      surface_net_solar_radiation_mean=ssr_wm2 * 86400.0,
-      surface_net_thermal_radiation_mean=str_wm2 * 86400.0,
-      radiation_units="J/m^2/day",
-  )
-  pet_jm2_hr = calculate_fao_pm_pet(
-      surface_pressure_kpa=sp,
-      temperature_2m_c=t2m,
-      dewpoint_temperature_2m_c=d2m,
-      u_component_of_wind_10m=u10,
-      v_component_of_wind_10m=v10,
-      surface_net_solar_radiation_mean=ssr_wm2 * 3600.0,
-      surface_net_thermal_radiation_mean=str_wm2 * 3600.0,
-      radiation_units="J/m^2/hr",
-  )
-  np.testing.assert_allclose(pet_wm2.values, pet_jm2_day.values, rtol=1e-6)
-  np.testing.assert_allclose(pet_wm2.values, pet_jm2_hr.values, rtol=1e-6)
+  assert len(pet) == 5
+  assert (pet >= 0.0).all()
+  assert 2.0 <= pet.mean() <= 8.0
 
 
 def test_knoben_moisture_and_seasonality():
@@ -1026,97 +1002,4 @@ def test_no_download_in_memory_cloud_streaming(tmp_path, monkeypatch):
   df_out = pd.read_csv(out_csv, index_col=0)
   assert np.isclose(df_out.loc["cloud_cli", "ele_mt_sav"], 350.0, rtol=1e-3)
   assert np.isclose(df_out.loc["cloud_cli", "p_mean"], 4.5, rtol=1e-3)
-
-
-def test_timeseries_df_era5land_columns_and_on_the_fly_fao_pm(tmp_path):
-  """Tests timeseries_df extraction with era5land_* column names and on-the-fly FAO-PM PET."""
-  shp_path, era5_cache, _ = _build_synthetic_hydroatlas_env(tmp_path)
-  extractor = StaticAttributesExtractor(gdb_path=shp_path, era5_cache_dir=era5_cache)
-  query_poly = shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)
-
-  dates = pd.date_range("2000-01-01", periods=365, freq="D")
-  df_met = pd.DataFrame(
-      {
-          "era5land_total_precipitation": np.full(365, 3.0),
-          "era5land_temperature_2m": np.full(365, 18.0),
-          "era5land_dewpoint_temperature_2m": np.full(365, 12.0),
-          "era5land_surface_pressure": np.full(365, 98.0),
-          "era5land_surface_net_solar_radiation": np.full(365, 180.0),
-          "era5land_surface_net_thermal_radiation": np.full(365, -60.0),
-          "era5land_u_component_of_wind_10m": np.full(365, 1.5),
-          "era5land_v_component_of_wind_10m": np.full(365, 1.0),
-          "era5land_potential_evaporation_DEPRECATED": np.full(365, -8.5),
-      },
-      index=dates,
-  )
-
-  # 1. On-the-fly FAO-PM PET when era5land_potential_evaporation_FAO_PENMAN_MONTEITH is absent
-  res_on_fly = extractor.extract_attributes_for_polygon(
-      query_poly, catchment_id="ts_on_fly", timeseries_df=df_met
-  )["caravan_attributes"]
-  assert np.isclose(res_on_fly["p_mean"], 3.0, atol=1e-4)
-  assert np.isclose(res_on_fly["pet_mean_ERA5_LAND"], 8.5, atol=1e-4)
-  assert res_on_fly["pet_mean_FAO_PM"] > 1.5
-  assert not np.isnan(res_on_fly["aridity_FAO_PM"])
-  assert not np.isnan(res_on_fly["moisture_index_FAO_PM"])
-  assert not np.isnan(res_on_fly["seasonality_FAO_PM"])
-
-  # 2. Explicit pre-computed era5land_potential_evaporation_FAO_PENMAN_MONTEITH column matches
-  df_with_fao = df_met.copy()
-  df_with_fao["era5land_potential_evaporation_FAO_PENMAN_MONTEITH"] = calculate_fao_pm_pet(
-      surface_pressure_kpa=df_met["era5land_surface_pressure"],
-      temperature_2m_c=df_met["era5land_temperature_2m"],
-      dewpoint_temperature_2m_c=df_met["era5land_dewpoint_temperature_2m"],
-      u_component_of_wind_10m=df_met["era5land_u_component_of_wind_10m"],
-      v_component_of_wind_10m=df_met["era5land_v_component_of_wind_10m"],
-      surface_net_solar_radiation_mean=df_met["era5land_surface_net_solar_radiation"],
-      surface_net_thermal_radiation_mean=df_met["era5land_surface_net_thermal_radiation"],
-  )
-  res_explicit = extractor.extract_attributes_for_polygon(
-      query_poly, catchment_id="ts_explicit", timeseries_df=df_with_fao
-  )["caravan_attributes"]
-  assert np.isclose(res_on_fly["pet_mean_FAO_PM"], res_explicit["pet_mean_FAO_PM"], atol=1e-4)
-  assert np.isclose(res_on_fly["aridity_FAO_PM"], res_explicit["aridity_FAO_PM"], atol=1e-4)
-
-
-def test_gridded_era5_on_the_fly_fao_pm_pet(tmp_path):
-  """Tests ERA5GriddedExtractor computing FAO-PM PET from raw meteorological bands when pre-baked FAO_PM band is absent."""
-  shp_path, _, _ = _build_synthetic_hydroatlas_env(tmp_path)
-  zarr_dir = tmp_path / "gridded_raw_met.zarr"
-  root = zarr.open_group(str(zarr_dir), mode="w")
-  n_times = 60
-  lats = np.linspace(39.8, 41.2, 15, dtype=np.float32)
-  lons = np.linspace(-87.2, -84.8, 25, dtype=np.float32)
-  root.create_array("latitude", data=lats)
-  root.create_array("longitude", data=lons)
-  time_arr = root.create_array("time", data=np.arange(n_times, dtype=np.int64))
-  time_arr.attrs["units"] = "days since 2000-01-01"
-
-  shape = (n_times, len(lats), len(lons))
-  root.create_array("era5land_total_precipitation", data=np.full(shape, 3.0, dtype=np.float32))
-  root.create_array("era5land_temperature_2m", data=np.full(shape, 18.0, dtype=np.float32))
-  root.create_array("era5land_dewpoint_temperature_2m", data=np.full(shape, 12.0, dtype=np.float32))
-  root.create_array("era5land_surface_pressure", data=np.full(shape, 98.0, dtype=np.float32))
-  root.create_array("era5land_surface_net_solar_radiation", data=np.full(shape, 180.0, dtype=np.float32))
-  root.create_array("era5land_surface_net_thermal_radiation", data=np.full(shape, -60.0, dtype=np.float32))
-  root.create_array("era5land_u_component_of_wind_10m", data=np.full(shape, 1.5, dtype=np.float32))
-  root.create_array("era5land_v_component_of_wind_10m", data=np.full(shape, 1.0, dtype=np.float32))
-  root.create_array("era5land_potential_evaporation_DEPRECATED", data=np.full(shape, -8.5, dtype=np.float32))
-
-  extractor = StaticAttributesExtractor(
-      gdb_path=shp_path,
-      gridded_era5_uri=str(zarr_dir),
-      era5_source="gridded",
-  )
-  query_poly = shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)
-  res = extractor.extract_attributes_for_polygon(
-      query_poly, catchment_id="gridded_raw_01", era5_source="gridded"
-  )["caravan_attributes"]
-  assert np.isclose(res["p_mean"], 3.0, atol=1e-4)
-  assert np.isclose(res["pet_mean_ERA5_LAND"], 8.5, atol=1e-4)
-  assert res["pet_mean_FAO_PM"] > 1.5
-  assert not np.isnan(res["aridity_FAO_PM"])
-  assert not np.isnan(res["moisture_index_FAO_PM"])
-  assert not np.isnan(res["seasonality_FAO_PM"])
-
 

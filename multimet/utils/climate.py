@@ -89,32 +89,8 @@ def calculate_fao_pm_pet(
     v_component_of_wind_10m: pd.Series,
     surface_net_solar_radiation_mean: pd.Series,
     surface_net_thermal_radiation_mean: pd.Series,
-    radiation_units: str = "W/m^2",
 ) -> pd.Series:
-  """Calculates daily potential evapotranspiration (PET) following Caravan / FAO-56 Penman-Monteith guidelines.
-
-  Args:
-    surface_pressure_kpa: Daily mean surface pressure in kPa.
-    temperature_2m_c: Daily mean 2m air temperature in degrees Celsius.
-    dewpoint_temperature_2m_c: Daily mean 2m dewpoint temperature in degrees Celsius.
-    u_component_of_wind_10m: Daily mean 10m eastward wind component in m/s.
-    v_component_of_wind_10m: Daily mean 10m northward wind component in m/s.
-    surface_net_solar_radiation_mean: Daily mean surface net solar radiation (default W/m^2).
-    surface_net_thermal_radiation_mean: Daily mean surface net thermal radiation (default W/m^2).
-    radiation_units: Units of the input radiation series ('W/m^2' [default], 'J/m^2/day', or 'J/m^2/hr').
-  """
-  rad_u = (radiation_units or "W/m^2").strip().lower()
-  if rad_u in {"w/m^2", "w m-2", "w m**-2", "w/m2", "w m^-2"}:
-    rad_scale = 86400.0 / 1e6
-  elif rad_u in {"j/m^2", "j m-2", "j m**-2", "j/m2", "j/m^2/day", "j/m2/day"}:
-    rad_scale = 1.0 / 1e6
-  elif rad_u in {"j/m^2/h", "j/m^2/hr", "j/m2/h", "j/m2/hr"}:
-    rad_scale = 24.0 / 1e6
-  else:
-    raise ValueError(
-        f"Unsupported radiation_units {radiation_units!r}; expected 'W/m^2', 'J/m^2/day', or 'J/m^2/hr'."
-    )
-
+  """Calculates daily potential evapotranspiration (PET) following Caravan / FAO-56 Penman-Monteith guidelines."""
   temp_windspeed10m_m_s = np.sqrt(
       u_component_of_wind_10m**2 + v_component_of_wind_10m**2
   )
@@ -123,8 +99,10 @@ def calculate_fao_pm_pet(
   )
 
   net_radiation_mj_m2 = (
-      surface_net_solar_radiation_mean + surface_net_thermal_radiation_mean
-  ) * rad_scale
+      (surface_net_solar_radiation_mean + surface_net_thermal_radiation_mean)
+      * 24.0
+      / 1e6
+  )
 
   lmbda = 2.45
   cp = 1.013e-3

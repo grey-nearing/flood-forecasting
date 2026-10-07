@@ -33,22 +33,13 @@ import zarr
 
 from multimet.static_extractor.config import CONTINENT_MAP
 from multimet.utils.climate import (
+    _split_list,
     calculate_fao_pm_pet,
     calculate_knoben_moisture_and_seasonality,
     compute_caravan_climate_metrics,
     depth_to_mm,
     temp_to_celsius,
 )
-
-__all__ = [
-    "ERA5ClimateLoader",
-    "ERA5GriddedExtractor",
-    "calculate_fao_pm_pet",
-    "calculate_knoben_moisture_and_seasonality",
-    "compute_caravan_climate_metrics",
-    "depth_to_mm",
-    "temp_to_celsius",
-]
 
 logger = logging.getLogger(__name__)
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
@@ -498,99 +489,6 @@ class ERA5GriddedExtractor:
           f"Available keys: {list(ds.keys())[:10]}"
       )
 
-    d2m_name = None
-    sp_name = None
-    ssr_name = None
-    str_name = None
-    u10_name = None
-    v10_name = None
-    can_compute_fao_pet = False
-    if pet_fao_name is None:
-      d2m_name = next(
-          (
-              v
-              for v in [
-                  "era5land_dewpoint_temperature_2m",
-                  "dewpoint_temperature_2m_mean",
-                  "dewpoint_temperature_2m",
-                  "2m_dewpoint_temperature",
-                  "d2m",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      sp_name = next(
-          (
-              v
-              for v in [
-                  "era5land_surface_pressure",
-                  "surface_pressure_mean",
-                  "surface_pressure",
-                  "sp",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      ssr_name = next(
-          (
-              v
-              for v in [
-                  "era5land_surface_net_solar_radiation",
-                  "surface_net_solar_radiation_mean",
-                  "surface_net_solar_radiation",
-                  "ssr",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      str_name = next(
-          (
-              v
-              for v in [
-                  "era5land_surface_net_thermal_radiation",
-                  "surface_net_thermal_radiation_mean",
-                  "surface_net_thermal_radiation",
-                  "str",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      u10_name = next(
-          (
-              v
-              for v in [
-                  "era5land_u_component_of_wind_10m",
-                  "u_component_of_wind_10m_mean",
-                  "u_component_of_wind_10m",
-                  "10m_u_component_of_wind",
-                  "u10",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      v10_name = next(
-          (
-              v
-              for v in [
-                  "era5land_v_component_of_wind_10m",
-                  "v_component_of_wind_10m_mean",
-                  "v_component_of_wind_10m",
-                  "10m_v_component_of_wind",
-                  "v10",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      can_compute_fao_pet = all(
-          (d2m_name, sp_name, ssr_name, str_name, u10_name, v10_name)
-      )
-
     # Parse time coordinate and restrict to baseline_years before reading any spatial chunks
     time_keys = [k for k in ["time", "date"] if k in ds]
     if not time_keys:
@@ -656,36 +554,6 @@ class ERA5GriddedExtractor:
         if pet_era5_name
         else None
     )
-    d2m_daily_raw = (
-        np.full((num_valid, total_span), np.nan, dtype=np.float64)
-        if can_compute_fao_pet
-        else None
-    )
-    sp_daily_raw = (
-        np.full((num_valid, total_span), np.nan, dtype=np.float64)
-        if can_compute_fao_pet
-        else None
-    )
-    ssr_daily_raw = (
-        np.full((num_valid, total_span), np.nan, dtype=np.float64)
-        if can_compute_fao_pet
-        else None
-    )
-    str_daily_raw = (
-        np.full((num_valid, total_span), np.nan, dtype=np.float64)
-        if can_compute_fao_pet
-        else None
-    )
-    u10_daily_raw = (
-        np.full((num_valid, total_span), np.nan, dtype=np.float64)
-        if can_compute_fao_pet
-        else None
-    )
-    v10_daily_raw = (
-        np.full((num_valid, total_span), np.nan, dtype=np.float64)
-        if can_compute_fao_pet
-        else None
-    )
 
     def _weighted_nanmean(cells: np.ndarray, w_matrix: np.ndarray) -> np.ndarray:
       valid_w = np.where(np.isnan(cells), 0.0, w_matrix)
@@ -712,36 +580,6 @@ class ERA5GriddedExtractor:
           if pet_era5_name
           else None
       )
-      d2m_block = (
-          ds[d2m_name][b_start:b_end, min_lat_i:max_lat_i, min_lon_i:max_lon_i]
-          if can_compute_fao_pet and d2m_name
-          else None
-      )
-      sp_block = (
-          ds[sp_name][b_start:b_end, min_lat_i:max_lat_i, min_lon_i:max_lon_i]
-          if can_compute_fao_pet and sp_name
-          else None
-      )
-      ssr_block = (
-          ds[ssr_name][b_start:b_end, min_lat_i:max_lat_i, min_lon_i:max_lon_i]
-          if can_compute_fao_pet and ssr_name
-          else None
-      )
-      str_block = (
-          ds[str_name][b_start:b_end, min_lat_i:max_lat_i, min_lon_i:max_lon_i]
-          if can_compute_fao_pet and str_name
-          else None
-      )
-      u10_block = (
-          ds[u10_name][b_start:b_end, min_lat_i:max_lat_i, min_lon_i:max_lon_i]
-          if can_compute_fao_pet and u10_name
-          else None
-      )
-      v10_block = (
-          ds[v10_name][b_start:b_end, min_lat_i:max_lat_i, min_lon_i:max_lon_i]
-          if can_compute_fao_pet and v10_name
-          else None
-      )
 
       for i, (_, lat_idx, lon_idx, w_matrix) in enumerate(valid_specs):
         r_lat = lat_idx - min_lat_i
@@ -756,37 +594,15 @@ class ERA5GriddedExtractor:
           pet_era5_daily_raw[i, rel_slice] = _weighted_nanmean(
               pet_era5_block[:, r_lat, r_lon], w_matrix
           )
-        if can_compute_fao_pet:
-          d2m_daily_raw[i, rel_slice] = _weighted_nanmean(
-              d2m_block[:, r_lat, r_lon], w_matrix
-          )
-          sp_daily_raw[i, rel_slice] = _weighted_nanmean(
-              sp_block[:, r_lat, r_lon], w_matrix
-          )
-          ssr_daily_raw[i, rel_slice] = _weighted_nanmean(
-              ssr_block[:, r_lat, r_lon], w_matrix
-          )
-          str_daily_raw[i, rel_slice] = _weighted_nanmean(
-              str_block[:, r_lat, r_lon], w_matrix
-          )
-          u10_daily_raw[i, rel_slice] = _weighted_nanmean(
-              u10_block[:, r_lat, r_lon], w_matrix
-          )
-          v10_daily_raw[i, rel_slice] = _weighted_nanmean(
-              v10_block[:, r_lat, r_lon], w_matrix
-          )
 
     p_units = dict(ds[p_name].attrs).get("units")
     t_units = dict(ds[t_name].attrs).get("units")
     pet_fao_units = dict(ds[pet_fao_name].attrs).get("units") if pet_fao_name else None
     pet_era5_units = dict(ds[pet_era5_name].attrs).get("units") if pet_era5_name else None
-    d2m_units = dict(ds[d2m_name].attrs).get("units") if d2m_name else None
-    sp_units = dict(ds[sp_name].attrs).get("units") if sp_name else None
-    ssr_units = dict(ds[ssr_name].attrs).get("units") if ssr_name else None
 
-    if pet_fao_name is None and not can_compute_fao_pet:
+    if pet_fao_name is None:
       logger.warning(
-          "No FAO-56 Penman-Monteith PET variable or full meteorological bands found in %s; "
+          "No FAO-56 Penman-Monteith PET variable found in %s; "
           "unsuffixed and *_FAO_PM PET attributes will be NaN.",
           self.zarr_uri,
       )
@@ -821,31 +637,6 @@ class ERA5GriddedExtractor:
               np.abs(self._depth_to_mm(fao_vals, pet_fao_units, pet_fao_name)),
               index=date_index,
           )
-      elif can_compute_fao_pet:
-        d2m_c = self._temp_to_celsius(
-            d2m_daily_raw[i, rel_t_indices], d2m_units, d2m_name
-        )
-        sp_vals = sp_daily_raw[i, rel_t_indices]
-        sp_u = (sp_units or "").strip().lower()
-        sp_kpa = (
-            sp_vals / 1000.0
-            if sp_u in {"pa", "pascal", "pascals"}
-            else sp_vals
-        )
-        ssr_vals = ssr_daily_raw[i, rel_t_indices]
-        str_vals = str_daily_raw[i, rel_t_indices]
-        u10_vals = u10_daily_raw[i, rel_t_indices]
-        v10_vals = v10_daily_raw[i, rel_t_indices]
-        pet_fao_s = calculate_fao_pm_pet(
-            surface_pressure_kpa=pd.Series(sp_kpa, index=date_index),
-            temperature_2m_c=pd.Series(t_series, index=date_index),
-            dewpoint_temperature_2m_c=pd.Series(d2m_c, index=date_index),
-            u_component_of_wind_10m=pd.Series(u10_vals, index=date_index),
-            v_component_of_wind_10m=pd.Series(v10_vals, index=date_index),
-            surface_net_solar_radiation_mean=pd.Series(ssr_vals, index=date_index),
-            surface_net_thermal_radiation_mean=pd.Series(str_vals, index=date_index),
-            radiation_units=ssr_units or "W/m^2",
-        )
 
       pet_era5_s = None
       if pet_era5_daily_raw is not None and pet_era5_name is not None:
