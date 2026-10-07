@@ -24,7 +24,6 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
-from shapely.geometry import box
 
 from multimet.catchment_delineation import (
     RES_DEG,
@@ -35,10 +34,6 @@ from multimet.catchment_delineation import (
     latlon_to_tile_key,
     list_available_tiles,
     tile_key_to_filename,
-)
-from multimet.catchment_delineation.benchmark import (
-    compute_iou_and_metrics,
-    run_benchmark,
 )
 from multimet.catchment_delineation.cli import (
     _sanitize_feature_for_export,
@@ -419,43 +414,6 @@ def test_cli_preserve_caravan_dirs(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_benchmark_metrics_return_nan_not_zero(tmp_path: Path) -> None:
-    """Metric calculation failures or zero ref areas must return NaN, not 0.0."""
-    poly = box(0, 0, 1, 1)
-    iou, dice, bias, abs_err = compute_iou_and_metrics(poly, poly, 0.0, 100.0)
-    assert math.isnan(iou)
-    assert math.isnan(dice)
-    assert math.isnan(bias)
-    assert math.isnan(abs_err)
-
-    tiles_dir = tmp_path / 'tiles'
-    _write_synthetic_tile(tiles_dir)
-    bench_pq = tmp_path / 'bench.parquet'
-    pd.DataFrame(
-        {
-            'gauge_id': ['valid_1', 'ooc_1'],
-            'continent': ['North America', 'North America'],
-            'hemisphere': ['NW', 'NW'],
-            'size_tier': ['1_micro', '1_micro'],
-            'latitude': [39.6828, 65.0],
-            'longitude': [-88.7729, -150.0],
-            'reference_area_km2': [0.03, 100.0],
-            'geometry_wkt': [
-                box(-88.78, 39.68, -88.77, 39.69).wkt,
-                box(-150.1, 64.9, -149.9, 65.1).wkt,
-            ],
-        }
-    ).to_parquet(bench_pq, index=False)
-
-    res_df = run_benchmark(
-        dataset_path=bench_pq, tiles_dir=tiles_dir, workers=1
-    )
-    ooc_row = res_df[res_df['gauge_id'] == 'ooc_1'].iloc[0]
-    assert math.isnan(ooc_row['iou'])
-    assert math.isnan(ooc_row['area_bias_pct'])
-
-
-@pytest.mark.unit
 def test_gcs_helpers() -> None:
     assert is_gcs_path('gs://bucket/path')
     assert is_gcs_path('gcs://bucket/path')
@@ -613,123 +571,3 @@ def test_area_hint_skips_candidates_exceeding_max_cells_without_try_except(
         area_tolerance=0.25,
     )
     assert feat['properties']['upstream_cells_count'] == 10
-
-
-@pytest.mark.unit
-def test_build_benchmark_dataset_cli_explicit_args(tmp_path: Path) -> None:
-    """build_benchmark_dataset.py requires --shapes, --world-geojson, and --output."""
-    from multimet.catchment_delineation.tools.build_benchmark_dataset import (
-        main as build_bench_main,
-    )
-
-    with pytest.raises(SystemExit):
-        build_bench_main([])
-
-    with pytest.raises(SystemExit):
-        build_bench_main(
-            [
-                '--data-dir',
-                str(tmp_path),
-                '--output',
-                str(tmp_path / 'o.parquet'),
-            ]
-        )
-
-    world_path = tmp_path / 'world.geojson'
-    gpd.GeoDataFrame(
-        {'continent': ['North America']},
-        geometry=[box(-130.0, 20.0, -60.0, 55.0)],
-        crs='EPSG:4326',
-    ).to_file(world_path, driver='GeoJSON')
-
-    out_pq = tmp_path / 'benchmark.parquet'
-    with pytest.raises(
-        FileNotFoundError, match='Shapefile path does not exist'
-    ):
-        build_bench_main(
-            [
-                '--shapes',
-                str(tmp_path / 'missing_shapes.shp'),
-                '--world-geojson',
-                str(world_path),
-                '--output',
-                str(out_pq),
-            ]
-        )
-
-    shapes_dir = tmp_path / 'shapes_dir'
-    shapes_dir.mkdir()
-    shp_file = shapes_dir / 'camels_basin_shapes.shp'
-    gpd.GeoDataFrame(
-        {'gauge_id': ['camels_001', 'camels_002']},
-        geometry=[
-            box(-88.80, 39.65, -88.70, 39.75),
-            box(-86.95, 40.35, -86.80, 40.50),
-        ],
-        crs='EPSG:4326',
-    ).to_file(shp_file)
-
-    coords_csv = tmp_path / 'coords.csv'
-    pd.DataFrame(
-        {
-            'gauge_id': ['camels_001', 'camels_002'],
-            'latitude': [39.6828, 40.4172],
-            'longitude': [-88.7729, -86.8858],
-            'calculated_drain_area': [95.0, 210.0],
-        }
-    ).to_csv(coords_csv, index=False)
-
-    with pytest.raises(
-        FileNotFoundError, match='Coordinate CSV does not exist'
-    ):
-        build_bench_main(
-            [
-                '--shapes',
-                str(shapes_dir),
-                '--coords-csv',
-                str(tmp_path / 'nonexistent_coords.csv'),
-                '--world-geojson',
-                str(world_path),
-                '--output',
-                str(out_pq),
-            ]
-        )
-
-    # Sibling coordinates.csv must NOT be implicitly read when --coords-csv is omitted,
-    # and empty matched basins must raise ValueError instead of writing a 0-row file.
-    sibling_csv = shapes_dir / 'coordinates.csv'
-    sibling_csv.write_text(coords_csv.read_text(encoding='utf-8'), encoding='utf-8')
-    with pytest.raises(
-        ValueError, match='No valid benchmark basins matched'
-    ):
-        build_bench_main(
-            [
-                '--shapes',
-                str(shapes_dir),
-                '--world-geojson',
-                str(world_path),
-                '--output',
-                str(out_pq),
-            ]
-        )
-    assert not out_pq.exists()
-
-    rc = build_bench_main(
-        [
-            '--shapes',
-            str(shapes_dir),
-            '--coords-csv',
-            str(coords_csv),
-            '--world-geojson',
-            str(world_path),
-            '--output',
-            str(out_pq),
-        ]
-    )
-    assert rc == 0
-    assert out_pq.is_file()
-    df = pd.read_parquet(out_pq)
-    assert len(df) == 2
-    assert set(df['gauge_id']) == {'camels_001', 'camels_002'}
-    assert 'geometry_wkt' in df.columns
-    assert 'reference_area_km2' in df.columns

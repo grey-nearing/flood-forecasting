@@ -232,7 +232,7 @@ To build a stratified reference benchmark Parquet file from reference shapefiles
 
 .. code-block:: bash
 
-   python multimet/catchment_delineation/tools/build_benchmark_dataset.py \
+   python benchmarks/tools/build_benchmark_dataset.py \
      --shapes /path/to/grdc_basin_shapes.shp /path/to/camels_shapefiles_dir \
      --coords-csv /path/to/grdc_attributes.csv /path/to/caravan_coordinates.csv \
      --world-geojson /path/to/naturalearth_lowres.geojson \

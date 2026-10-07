@@ -615,54 +615,6 @@ def test_batch_runner_discovery(tmp_path):
     discover_datasets(input_files=[str(tmp_path / "missing.shp")])
 
 
-def test_benchmark_metrics_continuous():
-  """Tests continuous statistical validation metrics calculation."""
-  from multimet.static_extractor.benchmark import compute_continuous_metrics
-
-  y_true = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
-  y_pred = np.array([10.1, 19.9, 30.2, 39.8, 50.1])
-
-  res = compute_continuous_metrics(y_true, y_pred)
-  assert res["n"] == 5
-  assert res["pearson_r"] > 0.999
-  assert res["spearman_rho"] == 1.0
-  assert res["r2"] > 0.999
-  assert res["mae"] < 0.2
-  assert res["rmse"] < 0.2
-  assert res["max_abs_error"] == 0.2
-  assert res["med_rel_error_pct"] < 1.0
-  assert res["max_rel_error_pct"] < 1.5
-
-
-def test_benchmark_metrics_categorical():
-  """Tests categorical classification accuracy calculation."""
-  from multimet.static_extractor.benchmark import compute_categorical_metrics
-
-  y_true = np.array([1, 2, 3, 4, 5, 2, 1, 3])
-  y_pred = np.array([1, 2, 3, 4, 5, 2, 1, 4])
-
-  res = compute_categorical_metrics(y_true, y_pred)
-  assert res["n"] == 8
-  assert res["accuracy_pct"] == 87.5
-  assert res["classes_count"] == 5
-
-
-def test_benchmark_attribute_categorization():
-  """Tests categorization of all standard attribute names."""
-  from multimet.static_extractor.benchmark import get_attribute_category
-
-  assert get_attribute_category("ele_mt_sav") == "Topography"
-  assert get_attribute_category("tmp_dc_syr") == "Climate (HydroATLAS)"
-  assert get_attribute_category("p_mean") == "Caravan ERA5 Climate"
-  assert get_attribute_category("aridity_ERA5_LAND") == "Caravan ERA5 Climate"
-  assert get_attribute_category("run_mm_syr") == "Hydrology"
-  assert get_attribute_category("cly_pc_sav") == "Soils & Geology"
-  assert get_attribute_category("for_pc_sse") == "Land Cover"
-  assert get_attribute_category("ppd_pk_sav") == "Anthropogenic"
-  assert get_attribute_category("glc_cl_smj") == "Land Cover"
-  assert get_attribute_category("wet_cl_smj") == "Hydrology"
-
-
 def test_batch_runner_gcs_output_and_args(tmp_path, monkeypatch):
   """Verifies GCS output handling and multi parent-dir argument parsing."""
   from unittest.mock import MagicMock

@@ -10,3 +10,4 @@ Modules
    gridded_archive_builders
    timeseries_extractors
    return_periods
+   benchmarks
