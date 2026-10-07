@@ -127,10 +127,10 @@ gfortran -shared -fPIC -O2 \
 git clone https://github.com/cran/MGBT.git /tmp/usgs_src/MGBT
 ```
 
-4. **Run the benchmark across all 11,213 Caravan basins:** Point `run_caravan_usgs_benchmark.py` (or the installed `benchmark-return-periods` CLI) at your local Caravan directory and the two cloned USGS repositories (this writes `caravan_benchmark_results.csv` and the comparison figures into `./benchmark_output`):
+4. **Run the benchmark across all 11,213 Caravan basins:** Point `benchmarks.return_periods` (or the installed `benchmark-return-periods` CLI) at your local Caravan directory and the two cloned USGS repositories (this writes `caravan_benchmark_results.csv` and the comparison figures into `./benchmark_output`):
 
 ```bash
-python -m return_periods.tools.run_caravan_usgs_benchmark \
+python -m benchmarks.return_periods \
     --caravan-dir /path/to/caravan \
     --peakfqr-repo /tmp/usgs_src/peakfqr \
     --mgbt-repo /tmp/usgs_src/MGBT \

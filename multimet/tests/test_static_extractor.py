@@ -582,7 +582,7 @@ def test_batch_runner_discovery(tmp_path):
 
 def test_benchmark_metrics_continuous():
   """Tests continuous statistical validation metrics calculation."""
-  from multimet.static_extractor.benchmark import compute_continuous_metrics
+  from benchmarks.static_extractor import compute_continuous_metrics
 
   y_true = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
   y_pred = np.array([10.1, 19.9, 30.2, 39.8, 50.1])
@@ -601,7 +601,7 @@ def test_benchmark_metrics_continuous():
 
 def test_benchmark_metrics_categorical():
   """Tests categorical classification accuracy calculation."""
-  from multimet.static_extractor.benchmark import compute_categorical_metrics
+  from benchmarks.static_extractor import compute_categorical_metrics
 
   y_true = np.array([1, 2, 3, 4, 5, 2, 1, 3])
   y_pred = np.array([1, 2, 3, 4, 5, 2, 1, 4])
@@ -614,7 +614,7 @@ def test_benchmark_metrics_categorical():
 
 def test_benchmark_attribute_categorization():
   """Tests categorization of all standard attribute names."""
-  from multimet.static_extractor.benchmark import get_attribute_category
+  from benchmarks.static_extractor import get_attribute_category
 
   assert get_attribute_category("ele_mt_sav") == "Topography"
   assert get_attribute_category("tmp_dc_syr") == "Climate (HydroATLAS)"

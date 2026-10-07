@@ -30,14 +30,6 @@ multimet.static_extractor.batch_runner
    :show-inheritance:
    :undoc-members:
 
-multimet.static_extractor.benchmark
------------------------------------
-
-.. automodule:: multimet.static_extractor.benchmark
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 multimet.static_extractor.cli
 -----------------------------
 

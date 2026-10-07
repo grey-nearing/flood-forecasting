@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for ``model.evaluation.benchmark``."""
+"""Unit tests for ``benchmarks.model``."""
 
 from pathlib import Path
 
@@ -21,7 +21,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from model.evaluation.benchmark import (
+from benchmarks.model import (
     DEFAULT_STATIC_ATTRIBUTES,
     _assert_no_fallback_or_imputation,
     _build_base_config_dict,

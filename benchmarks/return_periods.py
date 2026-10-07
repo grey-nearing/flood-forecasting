@@ -100,7 +100,7 @@ Ensure `git`, `gfortran` (with LAPACK/BLAS), and `R` (`Rscript`) are installed:
 
 4. Run the Full Caravan Benchmark (Python vs. Compiled Fortran vs. CRAN R)
 --------------------------------------------------------------------------
-  python -m return_periods.tools.run_caravan_usgs_benchmark \\
+  python -m benchmarks.return_periods \\
       --caravan-dir /path/to/caravan \\
       --peakfqr-repo /tmp/usgs_src/peakfqr \\
       --mgbt-repo /tmp/usgs_src/MGBT \\

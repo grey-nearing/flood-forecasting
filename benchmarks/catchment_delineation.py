@@ -52,7 +52,7 @@ from multimet.catchment_delineation.tiles import (
 )
 from multimet.utils.gcs import is_gcs_path, normalize_gcs_path
 
-logger = logging.getLogger('multimet.catchment_delineation.benchmark')
+logger = logging.getLogger('benchmarks.catchment_delineation')
 
 _MAX_PRECACHE_THREADS: int = 16
 _PROGRESS_INTERVAL: int = 50
