@@ -32,6 +32,12 @@ class Product(enum.Enum):
   CHIRPS = "CHIRPS"
   CHIRPS_GEFS = "CHIRPS_GEFS"
   HRES = "HRES"
+  AIFS = "AIFS"
+  AIFS_ENS = "AIFS_ENS"
+  GFS = "GFS"
+  GEFS = "GEFS"
+  IFS_ENS = "IFS_ENS"
+  DYNAMICAL_IMERG = "DYNAMICAL_IMERG"
 
 
 PRODUCT_TYPES: Mapping[Product, ProductType] = {
@@ -41,12 +47,107 @@ PRODUCT_TYPES: Mapping[Product, ProductType] = {
     Product.CHIRPS: ProductType.NOWCAST,
     Product.CHIRPS_GEFS: ProductType.FORECAST,
     Product.HRES: ProductType.FORECAST,
+    Product.AIFS: ProductType.FORECAST,
+    Product.AIFS_ENS: ProductType.FORECAST,
+    Product.GFS: ProductType.FORECAST,
+    Product.GEFS: ProductType.FORECAST,
+    Product.IFS_ENS: ProductType.FORECAST,
+    Product.DYNAMICAL_IMERG: ProductType.NOWCAST,
 }
 
 FORECAST_LEAD_DAYS: Mapping[Product, int] = {
     Product.CHIRPS_GEFS: 16,
     Product.HRES: 10,
+    Product.AIFS: 10,
+    Product.AIFS_ENS: 10,
+    Product.GFS: 10,
+    Product.GEFS: 10,
+    Product.IFS_ENS: 10,
 }
+
+ENSEMBLE_STAT_SUFFIXES: Tuple[str, ...] = (
+    "mean",
+    "std",
+    "min",
+    "max",
+    "p10",
+    "p50",
+    "p90",
+)
+
+_ECMWF_DYNAMICAL_BASE_VARS: Tuple[str, ...] = (
+    "dewpoint_temperature_2m",
+    "downward_long_wave_radiation",
+    "downward_short_wave_radiation",
+    "surface_pressure",
+    "temperature_2m",
+    "total_precipitation",
+    "u_component_of_wind_10m",
+    "v_component_of_wind_10m",
+)
+
+_NOAA_DYNAMICAL_BASE_VARS: Tuple[str, ...] = (
+    "downward_long_wave_radiation",
+    "downward_short_wave_radiation",
+    "surface_pressure",
+    "temperature_2m",
+    "temperature_2m_max",
+    "temperature_2m_min",
+    "total_precipitation",
+    "u_component_of_wind_10m",
+    "v_component_of_wind_10m",
+)
+
+
+def _build_ensemble_stat_bands(
+    prefix: str, base_vars: Tuple[str, ...]
+) -> Tuple[str, ...]:
+  return tuple(
+      f"{prefix}_{var}_{stat}"
+      for var in base_vars
+      for stat in ENSEMBLE_STAT_SUFFIXES
+  )
+
+
+def _build_ensemble_member_bands(
+    prefix: str, base_vars: Tuple[str, ...]
+) -> Tuple[str, ...]:
+  return tuple(f"{prefix}_{var}_ensemble" for var in base_vars)
+
+
+DYNAMICAL_PRODUCTS: frozenset[str] = frozenset({
+    "AIFS",
+    "AIFS_ENS",
+    "GFS",
+    "GEFS",
+    "IFS_ENS",
+    "DYNAMICAL_IMERG",
+})
+
+ENSEMBLE_MEMBER_COUNTS: Mapping[Product, int] = {
+    Product.AIFS_ENS: 51,
+    Product.GEFS: 31,
+    Product.IFS_ENS: 51,
+}
+
+ENSEMBLE_MEMBER_BANDS: Mapping[Product, Tuple[str, ...]] = {
+    Product.AIFS_ENS: _build_ensemble_member_bands(
+        "aifs_ens", _ECMWF_DYNAMICAL_BASE_VARS
+    ),
+    Product.GEFS: _build_ensemble_member_bands(
+        "gefs", _NOAA_DYNAMICAL_BASE_VARS
+    ),
+    Product.IFS_ENS: _build_ensemble_member_bands(
+        "ifs_ens", _ECMWF_DYNAMICAL_BASE_VARS
+    ),
+}
+
+ENSEMBLE_MISSING_FRACTION_VAR: Mapping[Product, str] = {
+    Product.AIFS_ENS: "aifs_ens_missing_fraction_ensemble",
+    Product.GEFS: "gefs_missing_fraction_ensemble",
+    Product.IFS_ENS: "ifs_ens_missing_fraction_ensemble",
+}
+
 
 # Target bands / data variable names per product in Caravan-MultiMet.
 # Aligned with canonical Caravan v1.5 specification.
@@ -106,6 +207,16 @@ PRODUCT_BANDS: Mapping[Product, Tuple[str, ...]] = {
         "hres_temperature_2m",
         "hres_total_precipitation",
     ),
+    Product.AIFS: tuple(f"aifs_{v}" for v in _ECMWF_DYNAMICAL_BASE_VARS),
+    Product.AIFS_ENS: _build_ensemble_stat_bands(
+        "aifs_ens", _ECMWF_DYNAMICAL_BASE_VARS
+    ),
+    Product.GFS: tuple(f"gfs_{v}" for v in _NOAA_DYNAMICAL_BASE_VARS),
+    Product.GEFS: _build_ensemble_stat_bands("gefs", _NOAA_DYNAMICAL_BASE_VARS),
+    Product.IFS_ENS: _build_ensemble_stat_bands(
+        "ifs_ens", _ECMWF_DYNAMICAL_BASE_VARS
+    ),
+    Product.DYNAMICAL_IMERG: ("dynamical_imerg_precipitation",),
 }
 
 # Companion audit variable recording the area-weighted fraction [0.0, 1.0] of
@@ -118,6 +229,12 @@ MISSING_FRACTION_VAR: Mapping[Product, str] = {
     Product.CHIRPS: "chirps_missing_fraction",
     Product.CHIRPS_GEFS: "chirpsgefs_missing_fraction",
     Product.HRES: "hres_missing_fraction",
+    Product.AIFS: "aifs_missing_fraction",
+    Product.AIFS_ENS: "aifs_ens_missing_fraction",
+    Product.GFS: "gfs_missing_fraction",
+    Product.GEFS: "gefs_missing_fraction",
+    Product.IFS_ENS: "ifs_ens_missing_fraction",
+    Product.DYNAMICAL_IMERG: "dynamical_imerg_missing_fraction",
 }
 
 GITHUB_REPO_URL = "https://github.com/google-research/flood-forecasting"
@@ -552,6 +669,189 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
         "Units": "precipitation [mm]",
         "Version": "1.1",
     },
+    Product.AIFS: {
+        "Citation": (
+            "Lang, S., Alexe, M., Chantry, M., Dramsch, J., Pinault, F.,"
+            " Raoult, B., Clare, M. C., Lessig, C., Maier-Gerber, M., Magnusson,"
+            " L., Bouallègue, Z. B., Nemni, A. P., Dueben, P. D., Charlton-Perez,"
+            " A., & Rabier, F. (2024). AIFS – ECMWF's data-driven forecasting"
+            " system. arXiv:2406.01465."
+        ),
+        "License": (
+            "Creative Commons Attribution 4.0 International (CC-BY-4.0)"
+            " (https://creativecommons.org/licenses/by/4.0/)."
+        ),
+        "Product": "ECMWF AIFS Single (10-day forecast via dynamical.org)",
+        "Sources": (
+            "ECMWF Artificial Intelligence Forecasting System (AIFS)"
+            " deterministic 0.25-degree forecasts via dynamical.org"
+            " (ecmwf-aifs-single-forecast)."
+        ),
+        "Code_Repository": GITHUB_REPO_URL,
+        "Code_Package": GITHUB_PACKAGE_URL,
+        "Units": (
+            "aifs_dewpoint_temperature_2m: Dew point temperature [°C]\n"
+            "aifs_downward_long_wave_radiation: Downward long-wave radiation"
+            " flux [W/m2]\n"
+            "aifs_downward_short_wave_radiation: Downward short-wave radiation"
+            " flux [W/m2]\n"
+            "aifs_surface_pressure: Surface pressure [kPa]\n"
+            "aifs_temperature_2m: 2m air temperature [°C]\n"
+            "aifs_total_precipitation: Total precipitation [mm/day]\n"
+            "aifs_u_component_of_wind_10m: U-component of wind at 10m [m/s]\n"
+            "aifs_v_component_of_wind_10m: V-component of wind at 10m [m/s]"
+        ),
+        "Version": "1.1",
+    },
+    Product.AIFS_ENS: {
+        "Citation": (
+            "Lang, S., Alexe, M., Chantry, M., Dramsch, J., Pinault, F.,"
+            " Raoult, B., Clare, M. C., Lessig, C., Maier-Gerber, M., Magnusson,"
+            " L., Bouallègue, Z. B., Nemni, A. P., Dueben, P. D., Charlton-Perez,"
+            " A., & Rabier, F. (2024). AIFS – ECMWF's data-driven forecasting"
+            " system. arXiv:2406.01465."
+        ),
+        "License": (
+            "Creative Commons Attribution 4.0 International (CC-BY-4.0)"
+            " (https://creativecommons.org/licenses/by/4.0/)."
+        ),
+        "Product": (
+            "ECMWF AIFS Ensemble (51-member 10-day forecast via dynamical.org)"
+        ),
+        "Sources": (
+            "ECMWF Artificial Intelligence Forecasting System Ensemble"
+            " (AIFS-ENS) 51-member 0.25-degree forecasts via dynamical.org"
+            " (ecmwf-aifs-ens-forecast)."
+        ),
+        "Code_Repository": GITHUB_REPO_URL,
+        "Code_Package": GITHUB_PACKAGE_URL,
+        "Units": (
+            "Summary statistics (mean, std, min, max, p10, p50, p90) across 51"
+            " ensemble members for aifs_ens_dewpoint_temperature_2m [°C],"
+            " aifs_ens_downward_long_wave_radiation [W/m2],"
+            " aifs_ens_downward_short_wave_radiation [W/m2],"
+            " aifs_ens_surface_pressure [kPa],"
+            " aifs_ens_temperature_2m [°C],"
+            " aifs_ens_total_precipitation [mm/day],"
+            " aifs_ens_u_component_of_wind_10m [m/s],"
+            " aifs_ens_v_component_of_wind_10m [m/s]"
+        ),
+        "Version": "1.1",
+    },
+    Product.GFS: {
+        "Citation": (
+            "National Centers for Environmental Prediction / National Weather"
+            " Service / NOAA / U.S. Department of Commerce (2015). NCEP GFS"
+            " 0.25 Degree Global Forecast Grids Historical Archive."
+        ),
+        "License": "U.S. Government Public Domain Work (17 U.S.C. § 105).",
+        "Product": "NOAA GFS (10-day forecast via dynamical.org)",
+        "Sources": (
+            "NOAA Global Forecast System (GFS) 0.25-degree operational"
+            " forecasts via dynamical.org (noaa-gfs-forecast)."
+        ),
+        "Code_Repository": GITHUB_REPO_URL,
+        "Code_Package": GITHUB_PACKAGE_URL,
+        "Units": (
+            "gfs_downward_long_wave_radiation: Downward long-wave radiation"
+            " flux [W/m2]\n"
+            "gfs_downward_short_wave_radiation: Downward short-wave radiation"
+            " flux [W/m2]\n"
+            "gfs_surface_pressure: Surface pressure [kPa]\n"
+            "gfs_temperature_2m: Daily mean 2m air temperature [°C]\n"
+            "gfs_temperature_2m_max: Daily maximum 2m air temperature [°C]\n"
+            "gfs_temperature_2m_min: Daily minimum 2m air temperature [°C]\n"
+            "gfs_total_precipitation: Total precipitation [mm/day]\n"
+            "gfs_u_component_of_wind_10m: U-component of wind at 10m [m/s]\n"
+            "gfs_v_component_of_wind_10m: V-component of wind at 10m [m/s]"
+        ),
+        "Version": "1.1",
+    },
+    Product.GEFS: {
+        "Citation": (
+            "Zhou, X., Zhu, Y., Hou, D., Luo, Y., Peng, J., & Wobus, R."
+            " (2017). Performance of the New NCEP Global Ensemble Forecast"
+            " System in a Parallel Experiment. Weather and Forecasting, 32(5),"
+            " 1989–2004."
+        ),
+        "License": "U.S. Government Public Domain Work (17 U.S.C. § 105).",
+        "Product": (
+            "NOAA GEFS (31-member 10-day forecast via dynamical.org)"
+        ),
+        "Sources": (
+            "NOAA Global Ensemble Forecast System (GEFS) 31-member 0.25-degree"
+            " forecasts via dynamical.org (noaa-gefs-forecast-35-day)."
+        ),
+        "Code_Repository": GITHUB_REPO_URL,
+        "Code_Package": GITHUB_PACKAGE_URL,
+        "Units": (
+            "Summary statistics (mean, std, min, max, p10, p50, p90) across 31"
+            " ensemble members for gefs_downward_long_wave_radiation [W/m2],"
+            " gefs_downward_short_wave_radiation [W/m2],"
+            " gefs_surface_pressure [kPa],"
+            " gefs_temperature_2m [°C], gefs_temperature_2m_max [°C],"
+            " gefs_temperature_2m_min [°C], gefs_total_precipitation [mm/day],"
+            " gefs_u_component_of_wind_10m [m/s],"
+            " gefs_v_component_of_wind_10m [m/s]"
+        ),
+        "Version": "1.1",
+    },
+    Product.IFS_ENS: {
+        "Citation": (
+            "ECMWF (2024): IFS Ensemble (ENS) Operational Atmospheric Model"
+            " Forecasts. European Centre for Medium-Range Weather Forecasts."
+        ),
+        "License": (
+            "Creative Commons Attribution 4.0 International (CC-BY-4.0)"
+            " (https://creativecommons.org/licenses/by/4.0/)."
+        ),
+        "Product": (
+            "ECMWF IFS ENS (51-member 10-day forecast via dynamical.org)"
+        ),
+        "Sources": (
+            "ECMWF Integrated Forecasting System Ensemble (IFS ENS) 51-member"
+            " 0.25-degree forecasts via dynamical.org"
+            " (ecmwf-ifs-ens-forecast-15-day-0-25-degree)."
+        ),
+        "Code_Repository": GITHUB_REPO_URL,
+        "Code_Package": GITHUB_PACKAGE_URL,
+        "Units": (
+            "Summary statistics (mean, std, min, max, p10, p50, p90) across 51"
+            " ensemble members for ifs_ens_dewpoint_temperature_2m [°C],"
+            " ifs_ens_downward_long_wave_radiation [W/m2],"
+            " ifs_ens_downward_short_wave_radiation [W/m2],"
+            " ifs_ens_surface_pressure [kPa],"
+            " ifs_ens_temperature_2m [°C],"
+            " ifs_ens_total_precipitation [mm/day],"
+            " ifs_ens_u_component_of_wind_10m [m/s],"
+            " ifs_ens_v_component_of_wind_10m [m/s]"
+        ),
+        "Version": "1.1",
+    },
+    Product.DYNAMICAL_IMERG: {
+        "Citation": (
+            "Huffman, G.J., E.F. Stocker, D.T. Bolvin, E.J. Nelkin, Jackson"
+            " Tan (2024), GPM IMERG Early Precipitation L3 Half Hourly 0.1"
+            " degree x 0.1 degree V07, Greenbelt, MD, Goddard Earth Sciences"
+            " Data and Information Services Center (GES DISC), DOI:"
+            " 10.5067/GPM/IMERG/3B-HH-E/07"
+        ),
+        "License": (
+            "NASA Earth Science Open Data Policy (Full and Open Sharing;"
+            " CC-BY-4.0)."
+        ),
+        "Product": "NASA GPM IMERG Early (via dynamical.org Icechunk)",
+        "Sources": (
+            "1998-01-01 to present: NASA GPM IMERG Early Run V07 0.1-degree"
+            " half-hourly precipitation rate via dynamical.org"
+            " (nasa-imerg-analysis-early), aggregated to daily UTC"
+            " precipitation depth [mm/day]."
+        ),
+        "Code_Repository": GITHUB_REPO_URL,
+        "Code_Package": GITHUB_PACKAGE_URL,
+        "Units": "dynamical_imerg_precipitation: precipitation [mm/day]",
+        "Version": "1.1",
+    },
 }
 
 # Upstream agency HTTP endpoints for direct third-party downloading.
@@ -588,6 +888,24 @@ DEFAULT_STORAGE_PATHS: Mapping[Product, Mapping[str, str]] = {
     Product.HRES: {
         # ECMWF Open Data public HTTP archive
         "ecmwf_open_data": "https://data.ecmwf.int/forecasts/",
+    },
+    Product.AIFS: {
+        "dynamical_dataset_id": "ecmwf-aifs-single-forecast",
+    },
+    Product.AIFS_ENS: {
+        "dynamical_dataset_id": "ecmwf-aifs-ens-forecast",
+    },
+    Product.GFS: {
+        "dynamical_dataset_id": "noaa-gfs-forecast",
+    },
+    Product.GEFS: {
+        "dynamical_dataset_id": "noaa-gefs-forecast-35-day",
+    },
+    Product.IFS_ENS: {
+        "dynamical_dataset_id": "ecmwf-ifs-ens-forecast-15-day-0-25-degree",
+    },
+    Product.DYNAMICAL_IMERG: {
+        "dynamical_dataset_id": "nasa-imerg-analysis-early",
     },
 }
 

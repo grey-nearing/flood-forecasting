@@ -63,6 +63,18 @@ from multimet.timeseries_extractors.config import (
     ProductType,
 )
 from multimet.timeseries_extractors.cpc import CPCExtractor
+from multimet.timeseries_extractors.dynamical import (
+    DYNAMICAL_FORECAST_DATASETS,
+    AIFSEnsExtractor,
+    AIFSExtractor,
+    DynamicalDataLoader,
+    DynamicalForecastExtractor,
+    DynamicalIMERGExtractor,
+    GEFSExtractor,
+    GFSExtractor,
+    IFSEnsExtractor,
+    find_latest_dynamical_forecast_date,
+)
 from multimet.timeseries_extractors.hres import (
     ECMWF_OPEN_DATA_BUCKET,
     HRESExtractor,
@@ -77,6 +89,26 @@ from multimet.utils.zonal import ZonalWeightMatrix
 logger = logging.getLogger(__name__)
 
 DEFAULT_REALTIME_PRODUCTS: Tuple[str, ...] = ("HRES", "IMERG", "CPC")
+SUPPORTED_REALTIME_PRODUCTS: Tuple[str, ...] = (
+    "HRES",
+    "IMERG",
+    "CPC",
+    "AIFS",
+    "AIFS_ENS",
+    "GFS",
+    "GEFS",
+    "IFS_ENS",
+    "DYNAMICAL_IMERG",
+)
+DYNAMICAL_FORECAST_EXTRACTOR_CLASSES: Mapping[
+    str, type[DynamicalForecastExtractor]
+] = {
+    "AIFS": AIFSExtractor,
+    "AIFS_ENS": AIFSEnsExtractor,
+    "GFS": GFSExtractor,
+    "GEFS": GEFSExtractor,
+    "IFS_ENS": IFSEnsExtractor,
+}
 DEFAULT_COLDSTART_LOOKBACK_DAYS: int = 365
 DEFAULT_HOTSTART_LOOKBACK_DAYS: int = 7
 DEFAULT_FULL_FORECAST_DAYS: int = 2
@@ -296,6 +328,8 @@ class RealtimeForcingFetcher:
       netrc_path: Optional[str] = None,
       gcp_project: Optional[str] = None,
       hres_fs: Optional[Any] = None,
+      dynamical_loaders: Optional[Mapping[str, DynamicalDataLoader]] = None,
+      include_ensemble_members: bool = False,
   ):
     self.output_dir = os.fspath(output_dir)
     self.hres_bucket = hres_bucket
@@ -316,6 +350,12 @@ class RealtimeForcingFetcher:
     self.netrc_path = netrc_path
     self.gcp_project = gcp_project
     self.hres_fs = hres_fs
+    self.dynamical_loaders: Dict[str, DynamicalDataLoader] = (
+        {str(k).strip().upper(): v for k, v in dynamical_loaders.items()}
+        if dynamical_loaders is not None
+        else {}
+    )
+    self.include_ensemble_members = bool(include_ensemble_members)
 
     if self.output_dir.startswith(("gs://", "gcs://")) or gcp_project:
       self.gcp_project = configure_gcp_project(gcp_project)
@@ -328,19 +368,79 @@ class RealtimeForcingFetcher:
       self,
       reference_date: Optional[Union[str, pd.Timestamp]] = None,
       require_full_10d: bool = True,
+      products: Optional[Sequence[Union[str, Product]]] = None,
   ) -> pd.Timestamp:
-    """Resolves the forecast issue date ``t0`` (auto-discovering latest HRES if omitted)."""
+    """Resolves the forecast issue date ``t0`` across all requested forecast products."""
     if reference_date is None or str(reference_date).strip().lower() == "latest":
-      t0 = find_latest_hres_open_data_date(
-          bucket=self.hres_bucket,
-          require_full_10d=require_full_10d,
-          fs=self.hres_fs,
+      norm_prods = (
+          [
+              p.value if isinstance(p, Product) else str(p).strip().upper()
+              for p in products
+          ]
+          if products is not None
+          else list(DEFAULT_REALTIME_PRODUCTS)
       )
-      logger.info(
-          "Auto-discovered latest published ECMWF HRES initialization date: %s",
-          t0.strftime("%Y-%m-%d"),
+      dyn_forecast_prods = [
+          p for p in norm_prods if p in DYNAMICAL_FORECAST_EXTRACTOR_CLASSES
+      ]
+      discovered_dates: List[pd.Timestamp] = []
+
+      if "HRES" in norm_prods:
+        t_hres = find_latest_hres_open_data_date(
+            bucket=self.hres_bucket,
+            require_full_10d=require_full_10d,
+            fs=self.hres_fs,
+        )
+        logger.info(
+            "Auto-discovered latest published ECMWF HRES initialization date: %s",
+            t_hres.strftime("%Y-%m-%d"),
+        )
+        discovered_dates.append(t_hres)
+
+      for prod_name in dyn_forecast_prods:
+        ext_cls = DYNAMICAL_FORECAST_EXTRACTOR_CLASSES[prod_name]
+        loader = self.dynamical_loaders.get(prod_name)
+        if loader is None:
+          loader = DynamicalDataLoader(ext_cls.DEFAULT_DATASET_ID)
+          self.dynamical_loaders[prod_name] = loader
+        t_prod = find_latest_dynamical_forecast_date(
+            ext_cls.DEFAULT_DATASET_ID,
+            require_full_10d=require_full_10d,
+            loader=loader,
+        )
+        discovered_dates.append(t_prod)
+
+      if discovered_dates:
+        t0 = min(discovered_dates)
+        if dyn_forecast_prods:
+          logger.info(
+              "Auto-discovered latest published forecast initialization date"
+              " across %s: %s",
+              norm_prods,
+              t0.strftime("%Y-%m-%d"),
+          )
+        return t0
+
+      if "DYNAMICAL_IMERG" in norm_prods:
+        loader = self.dynamical_loaders.get("DYNAMICAL_IMERG")
+        if loader is None:
+          loader = DynamicalDataLoader(
+              DynamicalIMERGExtractor.DEFAULT_DATASET_ID
+          )
+          self.dynamical_loaders["DYNAMICAL_IMERG"] = loader
+        raw_times = pd.DatetimeIndex(
+            pd.to_datetime(loader.ds[loader.time_dim].values).tz_localize(None)
+        )
+        last_ts = raw_times[-1]
+        last_day = last_ts.floor("D")
+        if int(np.sum(raw_times.floor("D") == last_day)) >= 48:
+          return pd.Timestamp(last_day)
+        return pd.Timestamp(last_day - pd.Timedelta(days=1))
+
+      return (
+          pd.Timestamp.now("UTC").tz_localize(None).floor("D")
+          - pd.Timedelta(days=1)
       )
-      return t0
     return pd.to_datetime(reference_date).floor("D")
 
   def plan_product_window(
@@ -457,17 +557,26 @@ class RealtimeForcingFetcher:
       weights_matrix: Optional[ZonalWeightMatrix] = None,
   ) -> xr.Dataset:
     """Runs the live upstream extractor for a single product over ``[start_dt, end_dt]``."""
+    spinup_cutoff: Optional[pd.Timestamp] = None
+    if spinup_only_lead_1d:
+      spinup_cutoff = reference_dt - pd.Timedelta(
+          days=max(0, int(full_forecast_days) - 1)
+      )
+
     if prod_name == "HRES":
       extractor = HRESExtractor(
           data_dir=self.hres_bucket,
           source="open_data",
           fs=self.hres_fs,
       )
-      spinup_cutoff: Optional[pd.Timestamp] = None
-      if spinup_only_lead_1d:
-        spinup_cutoff = reference_dt - pd.Timedelta(
-            days=max(0, int(full_forecast_days) - 1)
-        )
+      if (
+          weights_matrix is not None
+          and extractor.lats is not None
+          and extractor.lons is not None
+          and weights_matrix.grid_shape
+          != (len(extractor.lats), len(extractor.lons))
+      ):
+        weights_matrix = None
       return extractor.extract_for_basins_open_data(
           basins_gdf,
           start_date=start_dt,
@@ -475,6 +584,39 @@ class RealtimeForcingFetcher:
           weights_matrix=weights_matrix,
           use_bounding_box=True,
           spinup_only_before=spinup_cutoff,
+      )
+
+    if prod_name in DYNAMICAL_FORECAST_EXTRACTOR_CLASSES:
+      extractor_cls = DYNAMICAL_FORECAST_EXTRACTOR_CLASSES[prod_name]
+      loader = self.dynamical_loaders.get(prod_name)
+      if extractor_cls.DEFAULT_IS_ENSEMBLE:
+        extractor = extractor_cls(
+            loader=loader,
+            include_ensemble_members=self.include_ensemble_members,
+        )
+      else:
+        extractor = extractor_cls(loader=loader)
+      self.dynamical_loaders[prod_name] = extractor.loader
+      return extractor.extract_for_basins(
+          basins_gdf,
+          start_date=start_dt,
+          end_date=end_dt,
+          weights_matrix=weights_matrix,
+          use_bounding_box=True,
+          spinup_only_before=spinup_cutoff,
+      )
+
+    if prod_name == "DYNAMICAL_IMERG":
+      extractor = DynamicalIMERGExtractor(
+          loader=self.dynamical_loaders.get("DYNAMICAL_IMERG")
+      )
+      self.dynamical_loaders["DYNAMICAL_IMERG"] = extractor.loader
+      return extractor.extract_for_basins(
+          basins_gdf,
+          start_date=start_dt,
+          end_date=end_dt,
+          weights_matrix=weights_matrix,
+          use_bounding_box=True,
       )
 
     if prod_name == "IMERG":
@@ -485,6 +627,14 @@ class RealtimeForcingFetcher:
           token=self.earthdata_token,
           netrc_path=self.netrc_path,
       )
+      if (
+          weights_matrix is not None
+          and extractor.lats is not None
+          and extractor.lons is not None
+          and weights_matrix.grid_shape
+          != (len(extractor.lats), len(extractor.lons))
+      ):
+        weights_matrix = None
       return extractor.extract_for_basins(
           basins_gdf,
           start_date=start_dt,
@@ -498,6 +648,14 @@ class RealtimeForcingFetcher:
           source="psl",
           cache_dir=self.cpc_cache_dir,
       )
+      if (
+          weights_matrix is not None
+          and extractor.lats is not None
+          and extractor.lons is not None
+          and weights_matrix.grid_shape
+          != (len(extractor.lats), len(extractor.lons))
+      ):
+        weights_matrix = None
       return extractor.extract_for_basins(
           basins_gdf,
           start_date=start_dt,
@@ -508,7 +666,7 @@ class RealtimeForcingFetcher:
 
     raise ValueError(
         f"Unsupported real-time product {prod_name!r}. "
-        f"Supported real-time products: {list(DEFAULT_REALTIME_PRODUCTS)}"
+        f"Supported real-time products: {list(SUPPORTED_REALTIME_PRODUCTS)}"
     )
 
   def fetch(
@@ -537,20 +695,21 @@ class RealtimeForcingFetcher:
         file + 10-day forecast).
       reference_date: Forecast issue date ``t0`` (``"YYYY-MM-DD"``, Timestamp,
         or ``"latest"`` / ``None`` to auto-discover the newest published HRES
-        00z forecast on ``gs://ecmwf-open-data``).
+        or dynamical.org 00z forecast).
       lookback_days: Optional explicit lookback window in days before
         ``reference_date`` (defaults to ``365`` for ``coldstart`` and ``7`` for
         ``hotstart`` when no existing Zarr store is present).
       products: Sequence of products to fetch (defaults to
-        ``("HRES", "IMERG", "CPC")``).
+        ``("HRES", "IMERG", "CPC")``; also supports ``"AIFS"``, ``"AIFS_ENS"``,
+        ``"GFS"``, ``"GEFS"``, ``"IFS_ENS"``, and ``"DYNAMICAL_IMERG"``).
       hot_start_state_path: Optional path to a saved ``openhydronet``
         hot-start ``.npz`` state file or directory of ``*.npz`` files.
-      spinup_only_lead_1d: When ``True`` (default), historical HRES dates before
-        the forecast issue window only download ``step=24h`` (``lead_time=1D``),
-        cutting Cold-Start HRES download volume by 10x. Set ``False`` to fetch
-        all 10 lead days for every historical spin-up date.
+      spinup_only_lead_1d: When ``True`` (default), historical forecast dates
+        before the forecast issue window only download ``lead_time=1D``
+        (``0h..24h``), cutting Cold-Start download volume by 10x. Set ``False``
+        to fetch all 10 lead days for every historical spin-up date.
       full_forecast_days: Number of trailing initialization dates up to and
-        including ``reference_date`` for which all 10 HRES lead days are
+        including ``reference_date`` for which all 10 forecast lead days are
         fetched (default ``2``, i.e. ``reference_date - 1d`` and ``reference_date``).
       id_column: Optional basin ID column name in ``basins``.
       overwrite: Whether to rebuild the destination Zarr stores from scratch.
@@ -571,7 +730,14 @@ class RealtimeForcingFetcher:
           for p in products
       ]
 
-    ref_dt = self.resolve_reference_date(reference_date)
+    for prod_name in target_prods:
+      if prod_name not in SUPPORTED_REALTIME_PRODUCTS:
+        raise ValueError(
+            f"Unsupported product {prod_name!r}. Supported products: "
+            f"{list(SUPPORTED_REALTIME_PRODUCTS)}"
+        )
+
+    ref_dt = self.resolve_reference_date(reference_date, products=target_prods)
     state_dt: Optional[pd.Timestamp] = None
     if hot_start_state_path is not None:
       state_dt = read_hot_start_state_date(hot_start_state_path)
@@ -594,11 +760,6 @@ class RealtimeForcingFetcher:
     overall_end = ref_dt
 
     for prod_name in target_prods:
-      if prod_name not in Product.__members__:
-        raise ValueError(
-            f"Unsupported product {prod_name!r}. Supported products: "
-            f"{list(DEFAULT_REALTIME_PRODUCTS)}"
-        )
       prod_enum = Product[prod_name]
 
       start_dt, end_dt = self.plan_product_window(
@@ -683,6 +844,8 @@ def fetch_realtime_multimet(
     netrc_path: Optional[str] = None,
     gcp_project: Optional[str] = None,
     hres_fs: Optional[Any] = None,
+    dynamical_loaders: Optional[Mapping[str, DynamicalDataLoader]] = None,
+    include_ensemble_members: bool = False,
 ) -> RealtimeFetchResult:
   """Convenience entry point to fetch Cold-Start or Hot-Start real-time forcings.
 
@@ -693,16 +856,18 @@ def fetch_realtime_multimet(
       (incremental catch-up + 10-day forecast).
     reference_date: Forecast issue date ``t0`` (``"YYYY-MM-DD"`` or ``"latest"``).
     lookback_days: Optional override for spin-up / catch-up lookback days.
-    products: Products to fetch (defaults to ``("HRES", "IMERG", "CPC")``).
+    products: Products to fetch (defaults to ``("HRES", "IMERG", "CPC")``; also
+      supports ``"AIFS"``, ``"AIFS_ENS"``, ``"GFS"``, ``"GEFS"``, ``"IFS_ENS"``,
+      and ``"DYNAMICAL_IMERG"``).
     hot_start_state_path: Optional path to ``openhydronet`` hot-start state
       ``.npz`` file or directory.
     imerg_source: ``"gesdisc"`` (NASA GES DISC HTTP with Earthdata Login).
     hres_bucket: GCS bucket name for ECMWF Open Data (default ``"ecmwf-open-data"``).
     cpc_cache_dir: Local cache directory for yearly NOAA PSL CPC NetCDF files.
     spinup_only_lead_1d: Whether to fetch only ``lead_time=1D`` (``step=24h``)
-      for historical HRES spin-up dates prior to the forecast issue window.
+      for historical forecast spin-up dates prior to the forecast issue window.
     full_forecast_days: Number of trailing initialization dates up to ``t0``
-      with full 10-day HRES lead extraction (default ``2``).
+      with full 10-day forecast lead extraction (default ``2``).
     id_column: Optional column name for basin identifiers in ``basins``.
     overwrite: Whether to overwrite existing Zarr stores from scratch.
     weights_cache: Optional path to cached ``.npz`` zonal weight matrix.
@@ -712,6 +877,11 @@ def fetch_realtime_multimet(
     netrc_path: Optional path to custom ``.netrc`` file.
     gcp_project: Optional GCP project ID for GCS operations.
     hres_fs: Optional custom filesystem object for testing HRES Open Data reads.
+    dynamical_loaders: Optional mapping of dynamical.org product names to
+      pre-initialized :class:`DynamicalDataLoader` instances.
+    include_ensemble_members: Whether to include raw 4D
+      ``(basin, date, ensemble_member, lead_time)`` bands alongside ensemble
+      summary statistics for ``IFS_ENS``, ``GEFS``, and ``AIFS_ENS``.
 
   Returns:
     :class:`RealtimeFetchResult` mapping product names to Zarr store paths.
@@ -727,6 +897,8 @@ def fetch_realtime_multimet(
       netrc_path=netrc_path,
       gcp_project=gcp_project,
       hres_fs=hres_fs,
+      dynamical_loaders=dynamical_loaders,
+      include_ensemble_members=include_ensemble_members,
   )
   return fetcher.fetch(
       basins=basins,
@@ -781,7 +953,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
       default="latest",
       help=(
           "Forecast initialization date (YYYY-MM-DD) or 'latest' to auto-discover "
-          "the newest published ECMWF Open Data 00z HRES run."
+          "the newest published 00z forecast run."
       ),
   )
   parser.add_argument(
@@ -797,7 +969,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
       "--products",
       type=str,
       default=",".join(DEFAULT_REALTIME_PRODUCTS),
-      help="Comma-separated list of real-time products to fetch (HRES,IMERG,CPC).",
+      help=(
+          "Comma-separated list of real-time products to fetch "
+          f"({','.join(SUPPORTED_REALTIME_PRODUCTS)})."
+      ),
+  )
+  parser.add_argument(
+      "--include_ensemble_members",
+      action="store_true",
+      help=(
+          "Also emit raw 4D (basin, date, ensemble_member, lead_time) variables "
+          "for ensemble products (IFS_ENS, GEFS, AIFS_ENS)."
+      ),
   )
   parser.add_argument(
       "--hot_start_state",
@@ -838,7 +1021,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
       default=DEFAULT_FULL_FORECAST_DAYS,
       help=(
           "Number of trailing initialization dates up to reference_date for "
-          "which all 10 HRES lead days are fetched."
+          "which all 10 forecast lead days are fetched."
       ),
   )
   parser.add_argument(
@@ -926,6 +1109,7 @@ def main(argv: Optional[Sequence[str]] = None) -> RealtimeFetchResult:
       earthdata_token=args.earthdata_token,
       netrc_path=args.netrc_path,
       gcp_project=args.gcp_project,
+      include_ensemble_members=args.include_ensemble_members,
   )
   print(
       f"\n✓ Completed real-time {result.mode} fetch for reference_date="

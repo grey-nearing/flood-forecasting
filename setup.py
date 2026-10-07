@@ -110,6 +110,12 @@ setup(
         'xarray',
         'zarr',
     ],
+    extras_require={
+        'dynamical': [
+            'dynamical-catalog',
+            'icechunk',
+        ],
+    },
     classifiers=[
         'Programming Language :: Python :: 3',
         'Operating System :: OS Independent',
