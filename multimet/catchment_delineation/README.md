@@ -228,7 +228,7 @@ print("Area (km²):", feature["properties"]["area_km2"])
 To create a stratified reference benchmark Parquet file (`geometry_wkt` and `reference_area_km2` across continents and basin size tiers) from reference shapefiles and coordinate tables:
 
 ```bash
-python multimet/catchment_delineation/tools/build_benchmark_dataset.py \
+python benchmarks/tools/build_benchmark_dataset.py \
   --shapes /path/to/grdc_basin_shapes.shp /path/to/camels_shapefiles_dir \
   --coords-csv /path/to/grdc_attributes.csv /path/to/caravan_coordinates.csv \
   --world-geojson /path/to/naturalearth_lowres.geojson \

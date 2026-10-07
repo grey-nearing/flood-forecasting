@@ -117,6 +117,9 @@ Inspect every test file in the PR with the same scrutiny as production code (see
    - Require end-to-end integration tests for new features (e.g., verifying partial-basin loading produces bit-identical metrics to full-basin loading, or running an actual training + evaluation loop).
    - Require explicit negative tests proving missing/corrupt/out-of-domain inputs fail loudly with the expected exception.
    - Flag redundant or bloated tests, verify Pytest markers (`@pytest.mark.unit`, `integration`, `slow`, `gpu`, `canary`), and confirm `pyproject.toml` (`testpaths`) and `.github/workflows/pytest-ci.yml` (`--cov=<package>`) include the package's test suite.
+6. **Require Both Unit Tests AND a Manual, Comprehensive Canonical Benchmark (`benchmarks/`) for New Submodules:**
+   - Whenever a PR introduces a new submodule, subpackage, or major algorithmic component, require **both** automated unit/integration tests in `<package>/tests/` **and** a manual, comprehensive canonical benchmark in the root `benchmarks/` package (`benchmarks/<component>.py`, with unit tests in `benchmarks/tests/` and CLI registration in `setup.py`) following [`skills/benchmarking.md`](./benchmarking.md) (zero fallback to canonical data, zero silent `NaN` masking, zero imputation, and mandatory lower-tail `[Min, P1, P5, P10, P25, P50]` and failure-rate reporting).
+   - **Exemption for Non-Benchmarkable Features:** Features such as user interfaces (UI), interactive frontends, plotting/visualization helpers, or pure configuration/scaffolding tools where quantitative canonical benchmarking does not make sense or is not possible are exempt from adding a `benchmarks/` module, provided they include appropriate unit/integration tests.
 
 ---
 
@@ -130,8 +133,8 @@ Evaluate how the PR fits into the broader codebase (see [`skills/repo-organizati
 2. **Code Redundancy & Shared Utilities (`multimet/utils/`):**
    - Search across packages and subpackages for duplicated utilities (GCS/Zarr storage, CF time decoding, HTTP/Earthdata downloads, FAO-56 Penman-Monteith PET, Caravan climate indices, polygon/zonal geometry).
    - Consolidate shared domain utilities into `multimet/utils/` (even if a specific function in that utility module is currently called by only one subpackage) and remove thin re-export shims.
-3. **Package Layout, Explicit CLI Paths, & Dead-Code Removal:**
-   - Verify files live in their canonical package/subpackage locations (`model/`, `multimet/<subpackage>/`, `return_periods/`), tests live in `<package>/tests/`, and auxiliary scripts live in `<package>/tools/` (never in root `scripts/` or `tools/` folders, and never with subpackage `.github/workflows/`).
+3. **Package Layout, Root `benchmarks/` Submodule, Explicit CLI Paths, & Dead-Code Removal:**
+   - Verify files live in their canonical package/subpackage locations (`model/`, `multimet/<subpackage>/`, `return_periods/`, `benchmarks/`), tests live in `<package>/tests/`, canonical benchmarks live in the root `benchmarks/` package (never scattered inside subpackages), and auxiliary scripts live in `<package>/tools/` (never in root `scripts/` or `tools/` folders, and never with subpackage `.github/workflows/`).
    - Ensure all input and output paths are required explicitly via caller arguments or CLI flags—flag and remove any hardcoded `gs://open-multimet/data`, `/tmp/`, local user paths, or implicit default output paths.
    - Remove dead code, unused archival paths, vestigial multi-frequency code, out-of-scope product code (e.g., unfinished HRES/ERA5 code in a CPC/IMERG PR), and temporary working-note `.md` plan files in the repository root.
 4. **PR Scope Discipline & Zero Review-Induced Scope Creep:**

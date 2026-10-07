@@ -24,12 +24,13 @@ OpenHydroNet (`google-research/flood-forecasting`) provides open-source implemen
 | **MultiMet Data Pipelines** | [`multimet/`](./multimet/) | End-to-end meteorological and static data pipelines ([`multimet/README.md`](./multimet/README.md)):<br>• **Gridded Archive Builders** ([`README.md`](./multimet/gridded_archive_builders/README.md)): CLI builders (`build-cpc-archive`, `build-imerg-archive`) for constructing and updating global Zarr weather archives (CPC, IMERG).<br>• **Timeseries Extractors** ([`README.md`](./multimet/timeseries_extractors/README.md)): Area-weighted catchment timeseries extraction from gridded archives (`ERA5-Land`, `IMERG`, `CPC`, `HRES`, `CHIRPS`, `CHIRPS-GEFS`) and real-time operational forecasts (`multimet-realtime`).<br>• **Static Attribute Extractor** ([`multimet/static_extractor/`](./multimet/static_extractor/)): HydroATLAS/Caravan static watershed attribute extraction. |
 | **Catchment Delineation** | [`multimet/catchment_delineation/`](./multimet/catchment_delineation/) | Global 90m (`3-arcsec`) flow-direction watershed polygon delineation and pour-point snapping (`delineate-catchment`) ([`README.md`](./multimet/catchment_delineation/README.md)). |
 | **Return Periods** | [`return_periods/`](./return_periods/) | USGS Bulletin 17C flood frequency analysis (`MGBT` low-outlier screening and `EMA` Log-Pearson Type III fitting) ([`README.md`](./return_periods/README.md)). |
+| **Canonical Benchmarks** | [`benchmarks/`](./benchmarks/) | Standalone canonical benchmark suite (`benchmark-catchment`, `benchmark-static-extractor`, `benchmark-gridded-archive`, `benchmark-timeseries-extractor`, `benchmark-return-periods`, `benchmark-model`) ([`README.md`](./benchmarks/README.md)). |
 
 ---
 
 ## Installation
 
-Use **Conda** to install Python, PyTorch, geospatial libraries, and command-line tools. Installing the repository in editable mode registers the `openhydronet` package (`model`, `multimet`, and `return_periods` modules) along with the `run`, `delineate-catchment`, and `multimet-realtime` CLI entry points:
+Use **Conda** to install Python, PyTorch, geospatial libraries, and command-line tools. Installing the repository in editable mode registers the `openhydronet` package (`model`, `multimet`, `return_periods`, and `benchmarks` modules) along with the `run`, `delineate-catchment`, `multimet-realtime`, and `benchmark-*` CLI entry points:
 
 ```bash
 # 1. Create and activate the Conda environment
