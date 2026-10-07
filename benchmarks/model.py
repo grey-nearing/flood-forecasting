@@ -36,9 +36,10 @@ and zero-fallback guarantees:
 import argparse
 import copy
 import gc
+import importlib
+import importlib.util
 import json
 import random
-import resource
 import shutil
 import time
 import tracemalloc
@@ -59,6 +60,12 @@ from model.evaluation.tester import RegressionTester
 from model.evaluation.utils import BasinBatchSampler, get_samples_indexes
 from model.training.train import start_training
 from model.utils.config import Config
+
+_RESOURCE_MOD = (
+    importlib.import_module('resource')
+    if importlib.util.find_spec('resource') is not None
+    else None
+)
 
 DEFAULT_HINDCAST_INPUTS: dict[str, list[str]] = {
     'cpc': ['cpc_precipitation'],
@@ -122,14 +129,18 @@ def _get_current_rss_mb() -> float:
             if line.startswith('VmRSS:'):
                 parts = line.split()
                 return float(parts[1]) / 1024.0
-    rusage = resource.getrusage(resource.RUSAGE_SELF)
-    return float(rusage.ru_maxrss) / 1024.0
+    if _RESOURCE_MOD is not None:
+        rusage = _RESOURCE_MOD.getrusage(_RESOURCE_MOD.RUSAGE_SELF)
+        return float(rusage.ru_maxrss) / 1024.0
+    return float('nan')
 
 
 def _get_max_rss_mb() -> float:
     """Return peak resident set size (ru_maxrss) in MiB."""
-    rusage = resource.getrusage(resource.RUSAGE_SELF)
-    return float(rusage.ru_maxrss) / 1024.0
+    if _RESOURCE_MOD is not None:
+        rusage = _RESOURCE_MOD.getrusage(_RESOURCE_MOD.RUSAGE_SELF)
+        return float(rusage.ru_maxrss) / 1024.0
+    return float('nan')
 
 
 def _assert_no_fallback_or_imputation(cfg: Config) -> None:
