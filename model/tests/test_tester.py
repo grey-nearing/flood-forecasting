@@ -332,3 +332,69 @@ def test_load_model_weights_strips_orig_mod_prefix(tmp_path: Path) -> None:
         torch.testing.assert_close(
             param.data, torch.full_like(param.data, -1.25)
         )
+
+
+def test_evaluate_seeds_rng_for_reproducible_cmal_sampling(
+    make_minimal_config, tmp_path: Path
+) -> None:
+    """Consecutive UncertaintyTester.evaluate() calls produce bit-identical CMAL samples."""
+    import shutil
+    import pandas as pd
+    import xarray as xr
+    from model.training.basetrainer import BaseTrainer
+
+    run_dir = tmp_path / 'cmal_seed_run'
+    cfg = make_minimal_config(
+        {
+            'experiment_name': 'cmal_seed_test',
+            'run_dir': run_dir,
+            'base_run_dir': run_dir,
+            'head': 'cmal',
+            'loss': 'cmalloss',
+            'n_distributions': 2,
+            'n_samples': 25,
+            'tester_sample_reduction': 'mean',
+            'negative_sample_handling': 'clip',
+            'epochs': 1,
+            'save_weights_every': 1,
+            'validate_every': 0,
+            'metrics': ['NSE', 'KGE'],
+            'seed': 123,
+            'verbose': 0,
+        }
+    )
+
+    trainer = BaseTrainer(cfg)
+    trainer.initialize_training()
+    trainer.train_and_validate()
+
+    tester = get_tester(
+        cfg=trainer.cfg,
+        run_dir=trainer.cfg.run_dir,
+        period='test',
+        init_model=True,
+    )
+    tester.evaluate(save_results=True, metrics=['NSE', 'KGE'])
+
+    eval_dir = trainer.cfg.run_dir / 'test' / 'model_epoch001'
+    metrics_1 = pd.read_csv(eval_dir / 'test_metrics.csv', index_col='basin')
+    ds_1 = xr.open_zarr(eval_dir / 'test_results.zarr', consolidated=False).load()
+
+    # Remove saved evaluation outputs and perturb global RNG states between evaluations
+    shutil.rmtree(trainer.cfg.run_dir / 'test')
+    torch.manual_seed(99999)
+    np.random.seed(99999)
+
+    tester.evaluate(save_results=True, metrics=['NSE', 'KGE'])
+
+    metrics_2 = pd.read_csv(eval_dir / 'test_metrics.csv', index_col='basin')
+    ds_2 = xr.open_zarr(eval_dir / 'test_results.zarr', consolidated=False).load()
+
+    np.testing.assert_array_equal(
+        ds_1['streamflow_sim'].values,
+        ds_2['streamflow_sim'].values,
+    )
+    pd.testing.assert_frame_equal(metrics_1, metrics_2)
+
+
+
