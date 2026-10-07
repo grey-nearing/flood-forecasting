@@ -829,13 +829,297 @@ def assemble_master_csv(
     return df
 
 
+def run_live_python_benchmark(
+    caravan_dir: Path,
+    output_dir: Path,
+    *,
+    dataset_parquet: Path | None = None,
+    min_valid_days_per_year: int = 330,
+    min_years: int = 10,
+    max_basins: int | None = None,
+) -> pd.DataFrame:
+    """Run pure-Python live verification benchmark (unit invariance & GEMA vs LP3)."""
+    if not caravan_dir.exists():
+        raise FileNotFoundError(f'Caravan directory not found: {caravan_dir}')
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    streamflow_zarr = caravan_dir / 'streamflow.zarr'
+    attributes_zarr = caravan_dir / 'attributes.zarr'
+    rps = np.array([2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 200.0, 500.0])
+    aep = 1.0 / rps
+
+    records: list[dict[str, Any]] = []
+    if streamflow_zarr.exists():
+        ds_sf = xr.open_zarr(streamflow_zarr, consolidated=False)
+        sf_basins = {
+            str(b).rstrip('\x00'): b for b in ds_sf['basin'].values
+        }
+        area_map: dict[str, float] = {}
+        if dataset_parquet is not None:
+            if not dataset_parquet.exists():
+                raise FileNotFoundError(
+                    f'Benchmark dataset not found: {dataset_parquet}'
+                )
+            df_meta = pd.read_parquet(dataset_parquet)
+            id_col = (
+                'gauge_id'
+                if 'gauge_id' in df_meta.columns
+                else df_meta.columns[0]
+            )
+            area_col = (
+                'ref_area_km2'
+                if 'ref_area_km2' in df_meta.columns
+                else (
+                    'reference_area_km2'
+                    if 'reference_area_km2' in df_meta.columns
+                    else 'area_km2'
+                )
+            )
+            target_ids = [
+                str(gid)
+                for gid in df_meta[id_col].astype(str)
+                if str(gid) in sf_basins
+            ]
+            if area_col in df_meta.columns:
+                for gid, aval in zip(
+                    df_meta[id_col].astype(str), df_meta[area_col], strict=False
+                ):
+                    if pd.notna(aval) and float(aval) > 0.0:
+                        area_map[str(gid)] = float(aval)
+        else:
+            target_ids = sorted(sf_basins.keys())
+
+        if attributes_zarr.exists():
+            ds_attr = xr.open_zarr(attributes_zarr, consolidated=False)
+            if 'area' in ds_attr:
+                attr_areas = ds_attr['area'].to_series()
+                for k, v in attr_areas.items():
+                    k_str = str(k).rstrip('\x00')
+                    if (
+                        k_str not in area_map
+                        and pd.notna(v)
+                        and float(v) > 0.0
+                    ):
+                        area_map[k_str] = float(v)
+
+        if max_basins is not None:
+            target_ids = target_ids[:max_basins]
+
+        raw_keys = [sf_basins[b] for b in target_ids]
+        sf_sub = ds_sf['streamflow'].sel(basin=raw_keys).load()
+        dates = pd.DatetimeIndex(pd.to_datetime(sf_sub['date'].values))
+        wy_arr = dates.year + (dates.month >= 10).astype(int)
+
+        for idx, bid in enumerate(target_ids):
+            area = area_map.get(bid, float('nan'))
+            vals = np.asarray(sf_sub.isel(basin=idx).values, dtype=np.float64)
+            valid_mask = np.isfinite(vals) & (vals >= 0.0)
+            if not np.any(valid_mask) or not np.isfinite(area) or area <= 0.0:
+                records.append(
+                    {
+                        'basin_id': bid,
+                        'status': 'INSUFFICIENT_DATA',
+                        'valid_10yr': False,
+                        'fit_failed': False,
+                        'n_years': 0,
+                        'klow_mm': np.nan,
+                        'klow_cfs': np.nan,
+                        'klow_exact_match': False,
+                        'q100_unit_rel_diff_pct': np.nan,
+                        'q100_lp3_vs_gema_rel_diff_pct': np.nan,
+                    }
+                )
+                continue
+
+            s = pd.Series(vals[valid_mask], index=wy_arr[valid_mask])
+            counts = s.groupby(level=0).count()
+            valid_wys = counts[counts >= min_valid_days_per_year].index
+            ann_max_mm = (
+                s[s.index.isin(valid_wys)]
+                .groupby(level=0)
+                .max()
+                .to_numpy(dtype=np.float64)
+            )
+            pos_vals = ann_max_mm[ann_max_mm > 0.0]
+            if len(ann_max_mm) < min_years or len(np.unique(pos_vals)) < 3:
+                records.append(
+                    {
+                        'basin_id': bid,
+                        'status': 'INSUFFICIENT_YEARS',
+                        'valid_10yr': False,
+                        'fit_failed': False,
+                        'n_years': int(len(ann_max_mm)),
+                        'klow_mm': np.nan,
+                        'klow_cfs': np.nan,
+                        'klow_exact_match': False,
+                        'q100_unit_rel_diff_pct': np.nan,
+                        'q100_lp3_vs_gema_rel_diff_pct': np.nan,
+                    }
+                )
+                continue
+
+            ann_max_cfs = ann_max_mm * area * MM_DAY_KM2_TO_CFS
+            mgbt_mm = MultipleGrubbsBeckTester(
+                data=ann_max_mm, is_log_transformed=False
+            )
+            mgbt_cfs = MultipleGrubbsBeckTester(
+                data=ann_max_cfs, is_log_transformed=False
+            )
+            gema_mm = GEMAFitter(data=ann_max_mm, log_transform=True)
+            gema_cfs = GEMAFitter(data=ann_max_cfs, log_transform=True)
+            lp3_mm = SimpleLogPearson3Fitter(
+                data=ann_max_mm, log_transform=True
+            )
+
+            q_mm = gema_mm.flow_values_from_exceedance_probabilities(aep)
+            q_cfs_in_mm = gema_cfs.flow_values_from_exceedance_probabilities(
+                aep
+            ) / (area * MM_DAY_KM2_TO_CFS)
+            q_lp3_mm = lp3_mm.flow_values_from_exceedance_probabilities(aep)
+
+            fit_failed = bool(
+                not np.all(np.isfinite(q_mm))
+                or not np.all(np.isfinite(q_cfs_in_mm))
+                or q_mm[5] <= 0.0
+            )
+            q100_unit_rel = (
+                float(100.0 * abs(q_mm[5] - q_cfs_in_mm[5]) / q_mm[5])
+                if not fit_failed
+                else float('nan')
+            )
+            q100_lp3_rel = (
+                float(100.0 * abs(q_lp3_mm[5] - q_mm[5]) / q_mm[5])
+                if not fit_failed
+                else float('nan')
+            )
+            records.append(
+                {
+                    'basin_id': bid,
+                    'status': 'FIT_FAILED' if fit_failed else 'OK',
+                    'valid_10yr': True,
+                    'fit_failed': fit_failed,
+                    'n_years': int(len(ann_max_mm)),
+                    'klow_mm': int(mgbt_mm.klow),
+                    'klow_cfs': int(mgbt_cfs.klow),
+                    'klow_exact_match': bool(mgbt_mm.klow == mgbt_cfs.klow),
+                    'q100_unit_rel_diff_pct': q100_unit_rel,
+                    'q100_lp3_vs_gema_rel_diff_pct': q100_lp3_rel,
+                }
+            )
+    else:
+        peaks_npz = output_dir / 'caravan_annual_peaks.npz'
+        data = extract_caravan_peaks(
+            caravan_dir,
+            peaks_npz,
+            min_valid_days_per_year=min_valid_days_per_year,
+            min_years=min_years,
+        )
+        n_tot = len(data['basin_ids'])
+        if max_basins is not None:
+            n_tot = min(n_tot, max_basins)
+        for i in range(n_tot):
+            bid = str(data['basin_ids'][i])
+            area = float(data['areas_km2'][i])
+            ann_max_mm = np.asarray(data['peaks_mm'][i], dtype=np.float64)
+            ann_max_cfs = np.asarray(data['peaks_cfs'][i], dtype=np.float64)
+            mgbt_mm = MultipleGrubbsBeckTester(
+                data=ann_max_mm, is_log_transformed=False
+            )
+            mgbt_cfs = MultipleGrubbsBeckTester(
+                data=ann_max_cfs, is_log_transformed=False
+            )
+            gema_mm = GEMAFitter(data=ann_max_mm, log_transform=True)
+            gema_cfs = GEMAFitter(data=ann_max_cfs, log_transform=True)
+            lp3_mm = SimpleLogPearson3Fitter(
+                data=ann_max_mm, log_transform=True
+            )
+            q_mm = gema_mm.flow_values_from_exceedance_probabilities(aep)
+            q_cfs_in_mm = gema_cfs.flow_values_from_exceedance_probabilities(
+                aep
+            ) / (area * MM_DAY_KM2_TO_CFS)
+            q_lp3_mm = lp3_mm.flow_values_from_exceedance_probabilities(aep)
+            fit_failed = bool(
+                not np.all(np.isfinite(q_mm))
+                or not np.all(np.isfinite(q_cfs_in_mm))
+                or q_mm[5] <= 0.0
+            )
+            records.append(
+                {
+                    'basin_id': bid,
+                    'status': 'FIT_FAILED' if fit_failed else 'OK',
+                    'valid_10yr': True,
+                    'fit_failed': fit_failed,
+                    'n_years': int(len(ann_max_mm)),
+                    'klow_mm': int(mgbt_mm.klow),
+                    'klow_cfs': int(mgbt_cfs.klow),
+                    'klow_exact_match': bool(mgbt_mm.klow == mgbt_cfs.klow),
+                    'q100_unit_rel_diff_pct': (
+                        float(100.0 * abs(q_mm[5] - q_cfs_in_mm[5]) / q_mm[5])
+                        if not fit_failed
+                        else float('nan')
+                    ),
+                    'q100_lp3_vs_gema_rel_diff_pct': (
+                        float(100.0 * abs(q_lp3_mm[5] - q_mm[5]) / q_mm[5])
+                        if not fit_failed
+                        else float('nan')
+                    ),
+                }
+            )
+
+    df = pd.DataFrame(records)
+    csv_path = output_dir / 'return_periods_live_benchmark.csv'
+    df.to_csv(csv_path, index=False)
+
+    valid_10yr_df = df[df['valid_10yr']].copy()
+    ok_df = valid_10yr_df[~valid_10yr_df['fit_failed']].copy()
+    if not valid_10yr_df.empty:
+        cond_unit_err = ok_df['q100_unit_rel_diff_pct'].dropna().to_numpy()
+        uncond_unit_err = (
+            valid_10yr_df['q100_unit_rel_diff_pct'].fillna(100.0).to_numpy()
+        )
+        p_cond = (
+            np.percentile(cond_unit_err, [50, 75, 90, 95, 99, 100])
+            if len(cond_unit_err) > 0
+            else [np.nan] * 6
+        )
+        p_uncond = np.percentile(uncond_unit_err, [50, 75, 90, 95, 99, 100])
+        klow_cond = (
+            float(100.0 * np.mean(ok_df['klow_exact_match']))
+            if not ok_df.empty
+            else float('nan')
+        )
+        klow_uncond = float(
+            100.0
+            * np.mean(
+                valid_10yr_df['klow_exact_match'] & ~valid_10yr_df['fit_failed']
+            )
+        )
+        print(
+            f'Live Return Periods Benchmark: {len(ok_df)}/{len(valid_10yr_df)} '
+            f'valid >=10yr basins succeeded (fit_failed={int(valid_10yr_df["fit_failed"].sum())}).'
+        )
+        print(
+            f'  MGBT klow unit-invariance match: conditional={klow_cond:.4f}%, '
+            f'unconditional={klow_uncond:.4f}%'
+        )
+        print(
+            f'  Q100 unit-invariance rel diff (%) [P50, P75, P90, P95, P99, Max]: '
+            f'conditional=[{p_cond[0]:.3e}, {p_cond[1]:.3e}, {p_cond[2]:.3e}, '
+            f'{p_cond[3]:.3e}, {p_cond[4]:.3e}, {p_cond[5]:.3e}], '
+            f'unconditional=[{p_uncond[0]:.3e}, {p_uncond[1]:.3e}, {p_uncond[2]:.3e}, '
+            f'{p_uncond[3]:.3e}, {p_uncond[4]:.3e}, {p_uncond[5]:.3e}]'
+        )
+    return df
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for the Caravan USGS benchmark runner."""
     parser = argparse.ArgumentParser(
+        prog='benchmark-return-periods',
         description=(
             'Run the Caravan USGS Bulletin 17C benchmark comparing Python '
             '`return_periods` against compiled USGS Fortran (`peakfqr`) and '
-            'CRAN R (`MGBT`).'
+            'CRAN R (`MGBT`), or run pure-Python live unit-invariance verification.'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=SETUP_INSTRUCTIONS,
@@ -846,10 +1130,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='Print detailed instructions for cloning and building the USGS R and Fortran repos and exit.',
     )
     parser.add_argument(
+        '--mode',
+        choices=['external-usgs', 'live'],
+        default='external-usgs',
+        help="Benchmark mode: 'external-usgs' (compiled Fortran + CRAN R) or 'live' (pure-Python verification).",
+    )
+    parser.add_argument(
         '--caravan-dir',
         type=Path,
         default=None,
-        help='Path to the Caravan dataset root directory.',
+        help='Explicit path to the Caravan dataset root directory (NetCDF or Zarr).',
+    )
+    parser.add_argument(
+        '--dataset',
+        type=Path,
+        default=None,
+        help='Optional benchmark basin Parquet file to filter basins in --mode live.',
     )
     parser.add_argument(
         '--peaks-npz',
@@ -860,8 +1156,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--peakfqr-repo',
         type=Path,
-        default=Path('/tmp/usgs_src/peakfqr'),
-        help='Path to cloned `https://code.usgs.gov/water/peakfqr.git` repository.',
+        default=None,
+        help='Explicit path to cloned `https://code.usgs.gov/water/peakfqr.git` repository (required in external-usgs mode).',
     )
     parser.add_argument(
         '--peakfq-so',
@@ -882,14 +1178,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--mgbt-r-lib',
         dest='mgbt_repo',
         type=Path,
-        default=Path('/tmp/usgs_src/MGBT'),
-        help='Path to cloned `https://github.com/cran/MGBT.git` repository.',
+        default=None,
+        help='Explicit path to cloned `https://github.com/cran/MGBT.git` repository (required in external-usgs mode).',
     )
     parser.add_argument(
         '--output-dir',
+        '-o',
         type=Path,
-        default=Path('./benchmark_output'),
-        help='Directory to write benchmark results CSV and figures.',
+        default=None,
+        help='Explicit directory to write benchmark results CSV and figures.',
     )
     parser.add_argument(
         '--workers',
@@ -1158,9 +1455,45 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(
             '--caravan-dir is required unless --print-setup-instructions is passed.'
         )
+    if args.output_dir is None:
+        raise ValueError(
+            '--output-dir is required unless --print-setup-instructions is passed.'
+        )
 
     output_dir: Path = args.output_dir.resolve()
+
+    if args.mode == 'live':
+        output_dir.mkdir(parents=True, exist_ok=True)
+        run_live_python_benchmark(
+            caravan_dir=args.caravan_dir.resolve(),
+            output_dir=output_dir,
+            dataset_parquet=(
+                args.dataset.resolve() if args.dataset is not None else None
+            ),
+            max_basins=args.max_basins,
+        )
+        return 0
+
+    if args.peakfqr_repo is None:
+        raise ValueError(
+            '--peakfqr-repo is required when --mode=external-usgs.'
+        )
+    if args.mgbt_repo is None:
+        raise ValueError('--mgbt-repo is required when --mode=external-usgs.')
+
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    peakfqr_repo = args.peakfqr_repo.resolve()
+    mgbt_repo = args.mgbt_repo.resolve()
+    if not peakfqr_repo.exists():
+        raise FileNotFoundError(
+            f'USGS peakfqr repository not found at {peakfqr_repo}.\n{SETUP_INSTRUCTIONS}'
+        )
+    if not mgbt_repo.exists():
+        raise FileNotFoundError(
+            f'CRAN MGBT repository not found at {mgbt_repo}.\n{SETUP_INSTRUCTIONS}'
+        )
+
     peaks_npz = (
         args.peaks_npz.resolve()
         if args.peaks_npz is not None
@@ -1172,7 +1505,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_basins is not None:
         total_basins = min(total_basins, args.max_basins)
 
-    peakfqr_repo = args.peakfqr_repo.resolve()
     peakfq_so = (
         args.peakfq_so.resolve()
         if args.peakfq_so is not None
@@ -1205,7 +1537,7 @@ def main(argv: list[str] | None = None) -> int:
     r_rows, r_crashes = run_r_mgbt_workers(
         peaks_npz_path=peaks_npz,
         r_bin=args.r_bin,
-        mgbt_repo=args.mgbt_repo.resolve(),
+        mgbt_repo=mgbt_repo,
         output_dir=output_dir,
         total_basins=total_basins,
         num_workers=args.workers,

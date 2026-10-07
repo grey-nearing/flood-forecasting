@@ -60,22 +60,22 @@ Every benchmark run and report MUST strictly enforce the following **five invari
    - `gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr` (`0.5°`, `360 x 720`)
    - `gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr` (`0.1°`, `1800 x 3600`)
    - `gs://open-multimet/gridded-data-archives/HRES/daily_surface.zarr` (`0.1°`, `10 x 1801 x 3600`)
-- **Staged Benchmark Datasets & Ancillary Files (`hydro_user-large-1` / `gs://open-multimet/ancillary-data/`):**
-   - `1,200`-Basin Global Delineation Benchmark: `~/ancillary-data/benchmarks/benchmark_basins_1000.parquet` (`200` basins per continent across 6 continents, stratified across 5 size tiers).
-   - `490`-Basin Caravan Multi-Component Benchmark: `~/ancillary-data/benchmarks/benchmark_basins_500.parquet` (`70` basins per Caravan dataset across `camels`, `camelsaus`, `camelsbr`, `camelscl`, `camelsgb`, `hysets`, `lamah`, with `geometry_wkt`, `ref_area_km2`, and `210` `ref_*` attributes).
-   - HydroSHEDS 3-arcsec (`90m`) D8 Flow-Direction Tiles: `~/data/DEMs/tiles_5deg/` (`gs://open-multimet/ancillary-data/dems/hydrosheds_dir_3s_tiles_5deg/`).
+- **Staged Benchmark Datasets & Ancillary Files (`gs://open-multimet/ancillary-data/`):**
+   - `1,200`-Basin Global Delineation Benchmark: `<BENCHMARK_DATA_DIR>/benchmark_basins_1000.parquet` (`200` basins per continent across 6 continents, stratified across 5 size tiers).
+   - `490`-Basin Caravan Multi-Component Benchmark: `<BENCHMARK_DATA_DIR>/benchmark_basins_500.parquet` (`70` basins per Caravan dataset across `camels`, `camelsaus`, `camelsbr`, `camelscl`, `camelsgb`, `hysets`, `lamah`, with `geometry_wkt`, `ref_area_km2`, and `210` `ref_*` attributes).
+   - HydroSHEDS 3-arcsec (`90m`) D8 Flow-Direction Tiles: `<DEM_TILES_DIR>/` (`gs://open-multimet/ancillary-data/dems/hydrosheds_dir_3s_tiles_5deg/`).
    - HydroATLAS Level 12 Geodatabase: `<CACHE_DIR>/hydroatlas/BasinATLAS_v10.gdb` (`gs://open-multimet/ancillary-data/hydroatlas/BasinATLAS_v10.gdb/`).
    - HydroATLAS Pre-Aggregated ERA5 Climate Tables: `<CACHE_DIR>/era5_climate/` (`gs://open-multimet/ancillary-data/hydroatlas/era5_climate/`).
-   - Caravan Streamflow & Static Zarr Stores: `~/Projects/caravan_data/Caravan-zarr/` (`streamflow.zarr`, `attributes.zarr`).
+   - Caravan Streamflow & Static Zarr Stores: `<CARAVAN_ZARR_DIR>/` (`streamflow.zarr`, `attributes.zarr`).
 
 ### 2.3 Post-ERA5-Land Archive Checklist & Completed Code Updates (Tracked in Issue #46)
 
-Once `gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr` and the basin-clipped `ERA5_LAND/timeseries.zarr` stores are finalized, complete the post-archive data regeneration steps below (the required code fixes in `multimet/` are already implemented):
+Once `gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr` and the basin-clipped `ERA5_LAND/timeseries.zarr` stores are finalized, complete the post-archive data regeneration steps below (the required code fixes in `multimet/` are already implemented in PR #74):
 
 1. **Completed Code Fixes (`multimet/utils/climate.py` & `multimet/static_extractor/`):**
-   - **Fixed `W/m² -> MJ/m²/day` unit factor in `calculate_fao_pm_pet` (`multimet/utils/climate.py`):** Uses `* 86400.0 / 1e6` (`86,400` seconds/day) by default (`radiation_units="W/m^2"`), reproducing canonical `era5land_potential_evaporation_FAO_PENMAN_MONTEITH` to `Pearson r = 0.999999997` (`max_abs_diff = 0.0014 mm/day`).
-   - **Added `era5land_*` column support & on-the-fly `FAO_PM` PET in `StaticAttributesExtractor.extract_attributes_for_polygon` (`multimet/static_extractor/extractor.py`):** Recognizes `era5land_*` columns, applies `np.abs(...)` to PET series, and computes `FAO_PM` PET on-the-fly if `pet_fao` is absent from `timeseries_df`.
-   - **Added on-the-fly `FAO_PM` PET fallback in `ERA5GriddedExtractor` (`multimet/static_extractor/climate.py`):** Computes daily `pet_fao` on-the-fly from the 7 extracted daily surface variables (`t2m`, `d2m`, `sp`, `ssr`, `str`, `u10`, `v10`) via `calculate_fao_pm_pet` whenever the gridded archive does not store a pre-baked `FAO_PENMAN_MONTEITH` variable.
+   - **Unified `calculate_fao_pm_pet` in `multimet/utils/climate.py` matching Kratzert's Caravan `code/pet.py`:** Uses `86,400` seconds/day (`W/m² -> MJ/m²/day`) by default (`radiation_units="W/m^2"`), reproducing canonical `era5land_potential_evaporation_FAO_PENMAN_MONTEITH` to `Pearson r = 0.999999997` (`max_abs_diff = 0.0014 mm/day`).
+   - **Added `era5land_*` column support, Caravan whole-series sign convention, & on-the-fly `FAO_PM` PET in `StaticAttributesExtractor.extract_attributes_for_polygon` (`multimet/static_extractor/extractor.py`):** Recognizes `era5land_*` columns, flips whole-series `pev` sign only when the whole-series mean `< 0` (preserving small negative winter condensation days per Caravan `caravan_utils.py`), and computes `FAO_PM` PET on-the-fly if `pet_fao` is absent from `timeseries_df`.
+   - **Added cosine-latitude area-weighted polygon extraction & on-the-fly `FAO_PM` PET in `ERA5GriddedExtractor` (`multimet/static_extractor/climate.py`):** Uses `ZonalWeightMatrix` (with nearest-cell fallback for sub-grid polygons) and computes daily `pet_fao` on-the-fly from the 7 extracted daily surface variables (`t2m`, `d2m`, `sp`, `ssr`, `str`, `u10`, `v10`) via `calculate_fao_pm_pet`.
 2. **Post-Archive Ancillary & Dataset Regeneration Steps (Issue #46):**
    - **Step A — Regenerate the 9 continental HydroATLAS Level 12 climate tables (`gs://open-multimet/ancillary-data/hydroatlas/era5_climate/{continent}_climate_indices.txt`):** Run `ERA5GriddedExtractor.extract_climate_metrics_for_polygons_batch` (`baseline_years=(1981, 2020)`) over all HydroATLAS Level 12 sub-basins (`HYBAS_ID`) for `af`, `ar`, `as`, `au`, `eu`, `gr`, `na`, `sa`, `si`. Writing the full 18-key output of `compute_caravan_climate_metrics` into `{continent}_climate_indices.txt` populates the 4 missing `*_ERA5_LAND` keys (`pet_mean_ERA5_LAND`, `aridity_ERA5_LAND`, `moisture_index_ERA5_LAND`, `seasonality_ERA5_LAND`) and replaces the legacy unclipped Knoben `seasonality`/`moisture_index` values so `--era5-source hybas` works accurately for arbitrary user polygons without requiring the gridded Zarr store.
    - **Step B — Update canonical `attributes.zarr` climate columns from basin-clipped `ERA5_LAND/timeseries.zarr`:** For canonical Caravan-MultiMet basins, compute the 14 climate attributes directly from `ERA5_LAND/timeseries.zarr` (`1981-01-01 .. 2020-12-31`) via `compute_caravan_climate_metrics` (verified to match canonical Caravan v1.1 within `0.0001–0.004`).
@@ -100,33 +100,34 @@ All six component benchmark harnesses live in the root **`benchmarks/`** package
 ```bash
 # Run 1A: 1,200 Global Basins WITH Area Hint
 python -m benchmarks.catchment_delineation \
-  --dataset ~/ancillary-data/benchmarks/benchmark_basins_1000.parquet \
-  --tiles-dir ~/data/DEMs/tiles_5deg \
+  --dataset <BENCHMARK_DATA_DIR>/benchmark_basins_1000.parquet \
+  --tiles-dir <DEM_TILES_DIR> \
   --workers 16 \
   --output <OUT_DIR>/catchment_1000_with_hint.parquet
 
 # Run 1B: 1,200 Global Basins WITHOUT Area Hint (Blind Coordinate Snapping)
 python -m benchmarks.catchment_delineation \
-  --dataset ~/ancillary-data/benchmarks/benchmark_basins_1000.parquet \
-  --tiles-dir ~/data/DEMs/tiles_5deg \
+  --dataset <BENCHMARK_DATA_DIR>/benchmark_basins_1000.parquet \
+  --tiles-dir <DEM_TILES_DIR> \
   --no-area-hint \
   --workers 16 \
   --output <OUT_DIR>/catchment_1000_no_hint.parquet
 
-# Run 1C: 490 Caravan Basins WITH Area Hint & Saved Re-Delineated Geometries (for Cascaded Benchmarks)
+# Run 1C: 490 Caravan Basins WITH Area Hint & Exported Re-Delineated Dataset (for Cascaded Benchmarks)
 python -m benchmarks.catchment_delineation \
-  --dataset ~/ancillary-data/benchmarks/benchmark_basins_500.parquet \
-  --tiles-dir ~/data/DEMs/tiles_5deg \
+  --dataset <BENCHMARK_DATA_DIR>/benchmark_basins_500.parquet \
+  --tiles-dir <DEM_TILES_DIR> \
   --save-geometries \
   --workers 16 \
-  --output <OUT_DIR>/catchment_500_with_geom.parquet
+  --output <OUT_DIR>/catchment_500_with_geom.parquet \
+  --export-redelineated-dataset <OUT_DIR>/benchmark_basins_500_redelineated_all490.parquet
 ```
 
 ### 3.2 Phase 2: Static Attribute Extractor (`benchmark-static-extractor`)
 ```bash
 # Run 2A-HydroATLAS: Pure 196 HydroATLAS Level 12 Attributes on All 490 Canonical Polygons
 python -m benchmarks.static_extractor \
-  --dataset ~/ancillary-data/benchmarks/benchmark_basins_500.parquet \
+  --dataset <BENCHMARK_DATA_DIR>/benchmark_basins_500.parquet \
   --gdb-path <CACHE_DIR>/hydroatlas/BasinATLAS_v10.gdb \
   --era5-source none \
   --workers 16 \
@@ -134,7 +135,7 @@ python -m benchmarks.static_extractor \
 
 # Run 2A: Full 210 Attributes (HydroATLAS + Pre-Aggregated hybas ERA5) on All 490 Canonical Polygons
 python -m benchmarks.static_extractor \
-  --dataset ~/ancillary-data/benchmarks/benchmark_basins_500.parquet \
+  --dataset <BENCHMARK_DATA_DIR>/benchmark_basins_500.parquet \
   --gdb-path <CACHE_DIR>/hydroatlas/BasinATLAS_v10.gdb \
   --era5-source hybas \
   --era5-cache-dir <CACHE_DIR>/era5_climate \
@@ -168,7 +169,7 @@ python -m benchmarks.gridded_archive_builders \
 
 # Phase 3B: Reconstruct Canonical Caravan-MultiMet v1.1 Timeseries (CPC, IMERG, HRES across all 3 upstream HRES tiers)
 python -m benchmarks.timeseries_extractors \
-  --dataset ~/ancillary-data/benchmarks/benchmark_basins_500.parquet \
+  --dataset <BENCHMARK_DATA_DIR>/benchmark_basins_500.parquet \
   --canonical-dir gs://caravan-multimet/v1.1 \
   --archive-store CPC=gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr \
   --date-windows 1985-01-01:1985-12-31 1995-01-01:1995-12-31 2005-01-01:2005-12-31 2016-01-01:2023-12-31 \
@@ -176,7 +177,7 @@ python -m benchmarks.timeseries_extractors \
   --num-workers 8
 
 python -m benchmarks.timeseries_extractors \
-  --dataset ~/ancillary-data/benchmarks/benchmark_basins_500.parquet \
+  --dataset <BENCHMARK_DATA_DIR>/benchmark_basins_500.parquet \
   --canonical-dir gs://caravan-multimet/v1.1 \
   --archive-store IMERG=gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr \
   --date-windows 2005-06-01:2005-06-15 2010-01-01:2010-01-15 2015-07-01:2015-07-30 2020-01-01:2020-01-31 2022-05-01:2022-06-15 2024-01-01:2024-01-15 \
@@ -184,7 +185,7 @@ python -m benchmarks.timeseries_extractors \
   --num-workers 8
 
 python -m benchmarks.timeseries_extractors \
-  --dataset ~/ancillary-data/benchmarks/benchmark_basins_500.parquet \
+  --dataset <BENCHMARK_DATA_DIR>/benchmark_basins_500.parquet \
   --canonical-dir gs://caravan-multimet/v1.1 \
   --archive-store HRES=gs://open-multimet/gridded-data-archives/HRES/daily_surface.zarr \
   --date-windows 2018-06-01:2018-06-10 2020-01-01:2020-01-10 2020-06-01:2020-06-10 2022-05-01:2022-05-15 2023-03-01:2023-03-10 2023-06-01:2023-06-10 2023-09-01:2023-09-10 2024-03-01:2024-03-10 \
@@ -205,10 +206,19 @@ python -m benchmarks.timeseries_extractors \
 
 ### 3.4 Phase 4: Return Period Calculator (`benchmark-return-periods`)
 ```bash
-# Full USGS Fortran peakfqr v8.0 & CRAN R MGBT v1.1.6 Parity Benchmark
+# Mode A: Pure-Python Live Verification (Unit Invariance & GEMA vs SimpleLP3 Tail Divergence)
 python -m benchmarks.return_periods \
-  --caravan-dir ~/Projects/caravan_data/Caravan-nc \
-  --peakfq-so /tmp/peakfqr/src/peakfq.so \
+  --mode live \
+  --caravan-dir <CARAVAN_ZARR_DIR> \
+  --dataset <BENCHMARK_DATA_DIR>/benchmark_basins_500.parquet \
+  --output-dir <OUT_DIR>/return_periods_live
+
+# Mode B: Full USGS Fortran peakfqr v8.0 & CRAN R MGBT v1.1.6 Parity Benchmark
+python -m benchmarks.return_periods \
+  --mode external \
+  --caravan-dir <CARAVAN_NC_DIR> \
+  --peakfq-so <PEAKFQR_SO_PATH> \
+  --mgbt-repo <MGBT_REPO_DIR> \
   --output-dir <OUT_DIR>/return_periods_usgs
 ```
 
@@ -217,11 +227,10 @@ python -m benchmarks.return_periods \
 # Run compare_forcings, benchmark_architectures, and benchmark_hot_start (NO ERA5_LAND, NO GRAPHCAST)
 python -m benchmarks.model \
   --mode all \
-  --basins-file <STAGED_DIR>/basins_25.txt \
-  --statics-dir ~/Projects/caravan_data/Caravan-zarr \
-  --targets-dir ~/Projects/caravan_data/Caravan-zarr \
-  --canonical-dynamics-dir <STAGED_DIR>/canonical_zarr \
-  --reconstructed-dynamics-dir <STAGED_DIR>/reconstructed_zarr \
+  --basin-file <STAGED_DIR>/basins_25.txt \
+  --caravan-dir <CARAVAN_ZARR_DIR> \
+  --canonical-multimet-dir <STAGED_DIR>/canonical_zarr \
+  --reconstructed-multimet-dir <STAGED_DIR>/reconstructed_zarr \
   --output-dir <OUT_DIR>/model_benchmark \
   --seq-length 180 \
   --lead-time 7 \

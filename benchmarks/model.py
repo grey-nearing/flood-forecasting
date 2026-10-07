@@ -37,6 +37,7 @@ import argparse
 import copy
 import gc
 import json
+import random
 import resource
 import shutil
 import time
@@ -102,6 +103,15 @@ BENCHMARK_METRICS: list[str] = [
     'FMS',
     'FLV',
 ]
+
+
+def _seed_all(seed: int) -> None:
+    """Seed Python, NumPy, and PyTorch RNGs for deterministic benchmark runs."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _get_current_rss_mb() -> float:
@@ -456,6 +466,7 @@ def compare_forcings(
         )
         train_cfg = Config(cfg_dict)
         _assert_no_fallback_or_imputation(train_cfg)
+        _seed_all(seed)
         start_training(train_cfg)
         actual_run_dir = sorted(train_root.glob('*'))[-1]
     else:
@@ -468,6 +479,7 @@ def compare_forcings(
         can_dir,
         eval_epoch,
     )
+    _seed_all(seed)
     t0_can = time.perf_counter()
     start_evaluation(cfg=cfg_can, run_dir=eval_can_dir, epoch=eval_epoch, period='test')
     can_eval_sec = time.perf_counter() - t0_can
@@ -479,6 +491,7 @@ def compare_forcings(
         rec_dir,
         eval_epoch,
     )
+    _seed_all(seed)
     t0_rec = time.perf_counter()
     start_evaluation(cfg=cfg_rec, run_dir=eval_rec_dir, epoch=eval_epoch, period='test')
     rec_eval_sec = time.perf_counter() - t0_rec
@@ -537,6 +550,10 @@ def compare_forcings(
                         'RMSE_canonical': float('nan'),
                         'RMSE_reconstructed': float('nan'),
                         'delta_RMSE': float('nan'),
+                        'Alpha_NSE_canonical': float('nan'),
+                        'Alpha_NSE_reconstructed': float('nan'),
+                        'Beta_NSE_canonical': float('nan'),
+                        'Beta_NSE_reconstructed': float('nan'),
                         'FHV_canonical': float('nan'),
                         'FHV_reconstructed': float('nan'),
                         'delta_FHV': float('nan'),
@@ -661,8 +678,10 @@ def compare_forcings(
                 'total_basins': total_basins,
                 'evaluated_basins': evaluated_basins,
                 'failed_or_nan_basins': int(
-                    grp['NSE_canonical'].isna().sum()
-                    + grp['NSE_reconstructed'].isna().sum()
+                    (
+                        grp['NSE_canonical'].isna()
+                        | grp['NSE_reconstructed'].isna()
+                    ).sum()
                 ),
                 'pred_nan_when_obs_valid_can': int(
                     grp['pred_nan_when_obs_valid_can'].sum()
@@ -670,17 +689,31 @@ def compare_forcings(
                 'pred_nan_when_obs_valid_rec': int(
                     grp['pred_nan_when_obs_valid_rec'].sum()
                 ),
+                'min_NSE_canonical': float(grp['NSE_canonical'].min()),
+                'p10_NSE_canonical': float(grp['NSE_canonical'].quantile(0.10)),
                 'median_NSE_canonical': float(grp['NSE_canonical'].median()),
+                'min_NSE_reconstructed': float(grp['NSE_reconstructed'].min()),
+                'p10_NSE_reconstructed': float(
+                    grp['NSE_reconstructed'].quantile(0.10)
+                ),
                 'median_NSE_reconstructed': float(
                     grp['NSE_reconstructed'].median()
                 ),
                 'median_abs_delta_NSE': float(grp['abs_delta_NSE'].median()),
+                'p95_abs_delta_NSE': float(grp['abs_delta_NSE'].quantile(0.95)),
                 'max_abs_delta_NSE': float(grp['abs_delta_NSE'].max()),
+                'min_KGE_canonical': float(grp['KGE_canonical'].min()),
+                'p10_KGE_canonical': float(grp['KGE_canonical'].quantile(0.10)),
                 'median_KGE_canonical': float(grp['KGE_canonical'].median()),
+                'min_KGE_reconstructed': float(grp['KGE_reconstructed'].min()),
+                'p10_KGE_reconstructed': float(
+                    grp['KGE_reconstructed'].quantile(0.10)
+                ),
                 'median_KGE_reconstructed': float(
                     grp['KGE_reconstructed'].median()
                 ),
                 'median_abs_delta_KGE': float(grp['abs_delta_KGE'].median()),
+                'p95_abs_delta_KGE': float(grp['abs_delta_KGE'].quantile(0.95)),
                 'max_abs_delta_KGE': float(grp['abs_delta_KGE'].max()),
                 'median_RMSE_canonical': float(grp['RMSE_canonical'].median()),
                 'median_RMSE_reconstructed': float(
@@ -712,17 +745,39 @@ def compare_forcings(
         'pred_nan_when_obs_valid_rec': pred_nan_when_obs_valid_rec,
         'canonical_eval_sec': can_eval_sec,
         'reconstructed_eval_sec': rec_eval_sec,
+        'min_NSE_canonical': float(per_basin_df['NSE_canonical'].min()),
+        'p10_NSE_canonical': float(
+            per_basin_df['NSE_canonical'].quantile(0.10)
+        ),
         'median_NSE_canonical': float(per_basin_df['NSE_canonical'].median()),
+        'min_NSE_reconstructed': float(per_basin_df['NSE_reconstructed'].min()),
+        'p10_NSE_reconstructed': float(
+            per_basin_df['NSE_reconstructed'].quantile(0.10)
+        ),
         'median_NSE_reconstructed': float(
             per_basin_df['NSE_reconstructed'].median()
         ),
         'median_abs_delta_NSE': float(per_basin_df['abs_delta_NSE'].median()),
+        'p95_abs_delta_NSE': float(
+            per_basin_df['abs_delta_NSE'].quantile(0.95)
+        ),
         'max_abs_delta_NSE': float(per_basin_df['abs_delta_NSE'].max()),
+        'min_KGE_canonical': float(per_basin_df['KGE_canonical'].min()),
+        'p10_KGE_canonical': float(
+            per_basin_df['KGE_canonical'].quantile(0.10)
+        ),
         'median_KGE_canonical': float(per_basin_df['KGE_canonical'].median()),
+        'min_KGE_reconstructed': float(per_basin_df['KGE_reconstructed'].min()),
+        'p10_KGE_reconstructed': float(
+            per_basin_df['KGE_reconstructed'].quantile(0.10)
+        ),
         'median_KGE_reconstructed': float(
             per_basin_df['KGE_reconstructed'].median()
         ),
         'median_abs_delta_KGE': float(per_basin_df['abs_delta_KGE'].median()),
+        'p95_abs_delta_KGE': float(
+            per_basin_df['abs_delta_KGE'].quantile(0.95)
+        ),
         'max_abs_delta_KGE': float(per_basin_df['abs_delta_KGE'].max()),
         'pred_mean_abs_diff': float(per_basin_df['pred_mean_abs_diff'].mean()),
         'pred_max_abs_diff': float(per_basin_df['pred_max_abs_diff'].max()),
@@ -829,6 +884,7 @@ def benchmark_architectures(
         cfg = Config(cfg_dict)
         _assert_no_fallback_or_imputation(cfg)
 
+        _seed_all(seed)
         t0_train = time.perf_counter()
         start_training(cfg)
         train_sec = time.perf_counter() - t0_train
@@ -849,7 +905,7 @@ def benchmark_architectures(
         n_params = int(sum(v.numel() for v in ckpt_state.values()))
 
         train_ds = get_dataset(
-            cfg= Config(actual_run_dir / 'config.yml'),
+            cfg=Config(actual_run_dir / 'config.yml'),
             is_train=False,
             period='train',
             compute_scaler=False,
@@ -1009,6 +1065,7 @@ def benchmark_architectures(
             }
         )
 
+
     arch_df = pd.DataFrame(arch_rows)
     mem_df = pd.DataFrame(mem_rows)
     all_leads_df = (
@@ -1108,11 +1165,13 @@ def benchmark_hot_start(
         )
         cfg = Config(cfg_dict)
         _assert_no_fallback_or_imputation(cfg)
+        _seed_all(seed)
         start_training(cfg)
         actual_run_dir = sorted(hs_root.glob('*'))[-1]
 
         eval_cfg = Config(actual_run_dir / 'config.yml')
         eval_cfg.update_config({'batch_size': 1, 'save_state': True})
+        _assert_no_fallback_or_imputation(eval_cfg)
         tester = RegressionTester(eval_cfg, run_dir=actual_run_dir, period='test')
         tester._load_weights(epoch=1)
         model = tester.model
@@ -1252,7 +1311,10 @@ def benchmark_hot_start(
         static_attributes=static_attributes,
         target_variables=target_variables,
     )
-    start_training(Config(pretrain_cfg_dict))
+    pretrain_cfg = Config(pretrain_cfg_dict)
+    _assert_no_fallback_or_imputation(pretrain_cfg)
+    _seed_all(seed)
+    start_training(pretrain_cfg)
     base_run_dir = sorted((conv_root / 'pretrain').glob('*'))[-1]
 
     # Cold-start run with different seed (seed + 1) vs Warm-start finetuning from base_run_dir
@@ -1281,8 +1343,11 @@ def benchmark_hot_start(
         static_attributes=static_attributes,
         target_variables=target_variables,
     )
+    cold_cfg = Config(cold_cfg_dict)
+    _assert_no_fallback_or_imputation(cold_cfg)
+    _seed_all(seed + 1)
     t0_cold_tr = time.perf_counter()
-    start_training(Config(cold_cfg_dict))
+    start_training(cold_cfg)
     cold_train_sec = time.perf_counter() - t0_cold_tr
     cold_run_dir = sorted((conv_root / 'cold_start').glob('*'))[-1]
 
@@ -1318,8 +1383,11 @@ def benchmark_hot_start(
             'finetune_modules': ['hindcast_lstm', 'forecast_lstm', 'head'],
         }
     )
+    warm_cfg = Config(warm_cfg_dict)
+    _assert_no_fallback_or_imputation(warm_cfg)
+    _seed_all(seed + 1)
     t0_warm_tr = time.perf_counter()
-    start_training(Config(warm_cfg_dict))
+    start_training(warm_cfg)
     warm_train_sec = time.perf_counter() - t0_warm_tr
     warm_run_dir = sorted((conv_root / 'warm_start').glob('*'))[-1]
 
@@ -1329,7 +1397,9 @@ def benchmark_hot_start(
         ('warm_start_checkpoint', warm_run_dir, warm_train_sec),
     ]:
         r_cfg = Config(r_dir / 'config.yml')
+        _assert_no_fallback_or_imputation(r_cfg)
         for ep in range(1, epochs + 1):
+            _seed_all(seed + 1)
             start_evaluation(cfg=r_cfg, run_dir=r_dir, epoch=ep, period='test')
             metrics_csv = (
                 r_dir / 'test' / f'model_epoch{ep:03d}' / 'test_metrics.csv'
@@ -1375,36 +1445,61 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--mode',
-        choices=['all', 'compare-forcings', 'architectures', 'hot-start'],
+        choices=[
+            'all',
+            'compare-forcings',
+            'forcing-sensitivity',
+            'architectures',
+            'hot-start',
+        ],
         default='all',
         help='Benchmark sub-suite to run.',
     )
     parser.add_argument(
         '--canonical-multimet-dir',
+        '--canonical-dynamics-dir',
+        dest='canonical_multimet_dir',
         type=Path,
         required=True,
         help='Path to canonical MultiMet Zarr directory.',
     )
     parser.add_argument(
         '--reconstructed-multimet-dir',
+        '--reconstructed-dynamics-dir',
+        dest='reconstructed_multimet_dir',
         type=Path,
-        required=True,
-        help='Path to locally reconstructed MultiMet Zarr directory.',
+        default=None,
+        help=(
+            'Path to locally reconstructed MultiMet Zarr directory '
+            '(required when --mode is all, compare-forcings, forcing-sensitivity, or architectures).'
+        ),
     )
     parser.add_argument(
         '--caravan-dir',
+        '--targets-dir',
+        dest='caravan_dir',
         type=Path,
         required=True,
         help='Path to Caravan directory (streamflow.zarr and attributes.zarr).',
     )
     parser.add_argument(
+        '--statics-dir',
+        type=Path,
+        default=None,
+        help='Optional separate static attributes directory (defaults to --caravan-dir).',
+    )
+    parser.add_argument(
         '--basin-file',
+        '--basins-file',
+        dest='basin_file',
         type=Path,
         required=True,
         help='Path to basin list file.',
     )
     parser.add_argument(
         '--output-dir',
+        '-o',
+        dest='output_dir',
         type=Path,
         required=True,
         help='Directory to write benchmark CSV/JSON outputs.',
@@ -1417,6 +1512,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--epochs', type=int, default=2)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--train-start-date', type=str, default='01/04/2018')
     parser.add_argument('--train-end-date', type=str, default='15/05/2018')
     parser.add_argument('--test-start-date', type=str, default='01/04/2018')
@@ -1427,7 +1523,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help='Architectures to benchmark in architectures mode.',
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if (
+        args.mode in ('all', 'compare-forcings', 'forcing-sensitivity', 'architectures')
+        and args.reconstructed_multimet_dir is None
+    ):
+        parser.error(
+            f'--reconstructed-multimet-dir is required when --mode is {args.mode!r}.'
+        )
+    return args
 
 
 def main(argv: list[str] | None = None) -> dict[str, Any]:
@@ -1436,7 +1540,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {}
 
-    if args.mode in ('all', 'compare-forcings'):
+    if args.mode in ('all', 'compare-forcings', 'forcing-sensitivity'):
         comp_res = compare_forcings(
             canonical_multimet_dir=args.canonical_multimet_dir,
             reconstructed_multimet_dir=args.reconstructed_multimet_dir,
@@ -1519,3 +1623,4 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
 
 if __name__ == '__main__':
     main()
+
