@@ -32,6 +32,8 @@ from benchmarks.model import (
 )
 from model.utils.config import Config
 
+pytestmark = pytest.mark.unit
+
 
 def _write_zarr_v2(ds: xr.Dataset, path: Path) -> None:
     ds = ds.copy()

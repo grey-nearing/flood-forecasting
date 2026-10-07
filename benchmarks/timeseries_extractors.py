@@ -141,11 +141,11 @@ def _derive_size_tier(area_km2: float) -> str:
   """Assigns a basin size tier from drainage area in km^2."""
   if not np.isfinite(area_km2) or area_km2 <= 0.0:
     return "unknown"
-  if area_km2 < 50.0:
+  if area_km2 < 100.0:
     return "1_micro"
-  if area_km2 < 250.0:
+  if area_km2 < 500.0:
     return "2_small"
-  if area_km2 < 1000.0:
+  if area_km2 < 2500.0:
     return "3_medium"
   if area_km2 < 10000.0:
     return "4_large"
@@ -172,7 +172,7 @@ def load_benchmark_dataset(
   Returns:
     GeoDataFrame indexed by `basin_id` with columns:
     `['geometry', 'dataset', 'size_tier', 'ref_area_km2', 'spherical_area_km2',
-      'area_rel_diff', 'is_geometry_revised']`.
+      'area_rel_diff', 'is_geometry_revised', 'is_out_of_coverage']`.
   """
   if not dataset_path or not str(dataset_path).strip():
     raise ValueError("--dataset path must be a non-empty string.")
@@ -262,6 +262,14 @@ def load_benchmark_dataset(
   else:
     gdf["dataset"] = gdf["dataset"].astype(str)
 
+  if "delineation_status" in gdf.columns:
+    gdf["is_out_of_coverage"] = [
+        str(s).startswith("OUT_OF_COVERAGE")
+        for s in gdf["delineation_status"].fillna("")
+    ]
+  else:
+    gdf["is_out_of_coverage"] = False
+
   # Compute spherical polygon area: geom.area * 111^2 * cos(lat)
   has_nonempty_geom = np.array(
       [g is not None and not g.is_empty for g in gdf.geometry], dtype=bool
@@ -318,6 +326,7 @@ def load_benchmark_dataset(
       "spherical_area_km2",
       "area_rel_diff",
       "is_geometry_revised",
+      "is_out_of_coverage",
   ]
   return gdf[keep_cols].copy()
 
@@ -489,6 +498,39 @@ def compute_array_metrics(
 
   n_basins = int(ext_arr.shape[0])
   total_points = int(ext_arr.size)
+  nan_metric_fields = {
+      "pearson_r": float("nan"),
+      "bias": float("nan"),
+      "mae": float("nan"),
+      "rmse": float("nan"),
+      "variance_ratio": float("nan"),
+      "median_abs_err": float("nan"),
+      "p75_abs_err": float("nan"),
+      "p90_abs_err": float("nan"),
+      "p95_abs_err": float("nan"),
+      "p99_abs_err": float("nan"),
+      "max_abs_err": float("nan"),
+      "frac_within_1e_3": float("nan"),
+      "frac_within_1e_5": float("nan"),
+      "min_nse": float("nan"),
+      "p1_nse": float("nan"),
+      "p5_nse": float("nan"),
+      "p10_nse": float("nan"),
+      "p25_nse": float("nan"),
+      "median_nse": float("nan"),
+      "mean_nse": float("nan"),
+      "uncond_p10_nse": float("nan"),
+      "uncond_median_nse": float("nan"),
+      "min_kge": float("nan"),
+      "p1_kge": float("nan"),
+      "p5_kge": float("nan"),
+      "p10_kge": float("nan"),
+      "p25_kge": float("nan"),
+      "median_kge": float("nan"),
+      "mean_kge": float("nan"),
+      "uncond_p10_kge": float("nan"),
+      "uncond_median_kge": float("nan"),
+  }
   if total_points == 0 or n_basins == 0:
     return {
         "n_basins": n_basins,
@@ -502,23 +544,7 @@ def compute_array_metrics(
         "extracted_only_nan_pct": float("nan"),
         "canonical_only_nan_pct": float("nan"),
         "has_extracted_only_nan_discrepancy": False,
-        "pearson_r": float("nan"),
-        "bias": float("nan"),
-        "mae": float("nan"),
-        "rmse": float("nan"),
-        "variance_ratio": float("nan"),
-        "median_abs_err": float("nan"),
-        "p95_abs_err": float("nan"),
-        "p99_abs_err": float("nan"),
-        "max_abs_err": float("nan"),
-        "frac_within_1e_3": float("nan"),
-        "frac_within_1e_5": float("nan"),
-        "median_nse": float("nan"),
-        "mean_nse": float("nan"),
-        "p10_nse": float("nan"),
-        "median_kge": float("nan"),
-        "mean_kge": float("nan"),
-        "p10_kge": float("nan"),
+        **nan_metric_fields,
     }
 
   ext_valid = np.isfinite(ext_arr)
@@ -550,25 +576,7 @@ def compute_array_metrics(
   }
 
   if both_valid_count == 0:
-    out.update({
-        "pearson_r": float("nan"),
-        "bias": float("nan"),
-        "mae": float("nan"),
-        "rmse": float("nan"),
-        "variance_ratio": float("nan"),
-        "median_abs_err": float("nan"),
-        "p95_abs_err": float("nan"),
-        "p99_abs_err": float("nan"),
-        "max_abs_err": float("nan"),
-        "frac_within_1e_3": float("nan"),
-        "frac_within_1e_5": float("nan"),
-        "median_nse": float("nan"),
-        "mean_nse": float("nan"),
-        "p10_nse": float("nan"),
-        "median_kge": float("nan"),
-        "mean_kge": float("nan"),
-        "p10_kge": float("nan"),
-    })
+    out.update(nan_metric_fields)
     return out
 
   ev = ext_arr[both_valid].astype(np.float64)
@@ -579,7 +587,9 @@ def compute_array_metrics(
   bias = float(np.mean(diff))
   mae = float(np.mean(abs_err))
   rmse = float(np.sqrt(np.mean(diff * diff)))
-  p50, p95, p99 = np.percentile(abs_err, [50.0, 95.0, 99.0])
+  p50, p75, p90, p95, p99 = np.percentile(
+      abs_err, [50.0, 75.0, 90.0, 95.0, 99.0]
+  )
   max_abs = float(np.max(abs_err))
   frac_1e3 = float(np.mean(abs_err <= 1e-3))
   frac_1e5 = float(np.mean(abs_err <= 1e-5))
@@ -617,6 +627,24 @@ def compute_array_metrics(
   valid_nse = nse_arr[np.isfinite(nse_arr)]
   valid_kge = kge_arr[np.isfinite(kge_arr)]
 
+  # Unconditional per-basin NSE/KGE: basins that have extracted-only NaN points
+  # and failed NSE/KGE (NaN) are penalized as -1e9 so failed basins are never
+  # excluded from lower-tail percentiles.
+  basin_has_ext_only_nan = np.any((~np.isfinite(ext_2d)) & np.isfinite(can_2d), axis=1)
+  uncond_nse_list: list[float] = []
+  uncond_kge_list: list[float] = []
+  for b_idx in range(n_basins):
+    if np.isfinite(nse_arr[b_idx]):
+      uncond_nse_list.append(float(nse_arr[b_idx]))
+    elif basin_has_ext_only_nan[b_idx]:
+      uncond_nse_list.append(-1e9)
+    if np.isfinite(kge_arr[b_idx]):
+      uncond_kge_list.append(float(kge_arr[b_idx]))
+    elif basin_has_ext_only_nan[b_idx]:
+      uncond_kge_list.append(-1e9)
+  uncond_nse = np.asarray(uncond_nse_list, dtype=np.float64)
+  uncond_kge = np.asarray(uncond_kge_list, dtype=np.float64)
+
   out.update({
       "pearson_r": pearson_r,
       "bias": bias,
@@ -624,33 +652,31 @@ def compute_array_metrics(
       "rmse": rmse,
       "variance_ratio": variance_ratio,
       "median_abs_err": float(p50),
+      "p75_abs_err": float(p75),
+      "p90_abs_err": float(p90),
       "p95_abs_err": float(p95),
       "p99_abs_err": float(p99),
       "max_abs_err": max_abs,
       "frac_within_1e_3": frac_1e3,
       "frac_within_1e_5": frac_1e5,
-      "median_nse": (
-          float(np.median(valid_nse)) if len(valid_nse) > 0 else float("nan")
-      ),
-      "mean_nse": (
-          float(np.mean(valid_nse)) if len(valid_nse) > 0 else float("nan")
-      ),
-      "p10_nse": (
-          float(np.percentile(valid_nse, 10.0))
-          if len(valid_nse) > 0
-          else float("nan")
-      ),
-      "median_kge": (
-          float(np.median(valid_kge)) if len(valid_kge) > 0 else float("nan")
-      ),
-      "mean_kge": (
-          float(np.mean(valid_kge)) if len(valid_kge) > 0 else float("nan")
-      ),
-      "p10_kge": (
-          float(np.percentile(valid_kge, 10.0))
-          if len(valid_kge) > 0
-          else float("nan")
-      ),
+      "min_nse": float(np.min(valid_nse)) if len(valid_nse) > 0 else float("nan"),
+      "p1_nse": float(np.percentile(valid_nse, 1.0)) if len(valid_nse) > 0 else float("nan"),
+      "p5_nse": float(np.percentile(valid_nse, 5.0)) if len(valid_nse) > 0 else float("nan"),
+      "p10_nse": float(np.percentile(valid_nse, 10.0)) if len(valid_nse) > 0 else float("nan"),
+      "p25_nse": float(np.percentile(valid_nse, 25.0)) if len(valid_nse) > 0 else float("nan"),
+      "median_nse": float(np.median(valid_nse)) if len(valid_nse) > 0 else float("nan"),
+      "mean_nse": float(np.mean(valid_nse)) if len(valid_nse) > 0 else float("nan"),
+      "uncond_p10_nse": float(np.percentile(uncond_nse, 10.0)) if len(uncond_nse) > 0 else float("nan"),
+      "uncond_median_nse": float(np.median(uncond_nse)) if len(uncond_nse) > 0 else float("nan"),
+      "min_kge": float(np.min(valid_kge)) if len(valid_kge) > 0 else float("nan"),
+      "p1_kge": float(np.percentile(valid_kge, 1.0)) if len(valid_kge) > 0 else float("nan"),
+      "p5_kge": float(np.percentile(valid_kge, 5.0)) if len(valid_kge) > 0 else float("nan"),
+      "p10_kge": float(np.percentile(valid_kge, 10.0)) if len(valid_kge) > 0 else float("nan"),
+      "p25_kge": float(np.percentile(valid_kge, 25.0)) if len(valid_kge) > 0 else float("nan"),
+      "median_kge": float(np.median(valid_kge)) if len(valid_kge) > 0 else float("nan"),
+      "mean_kge": float(np.mean(valid_kge)) if len(valid_kge) > 0 else float("nan"),
+      "uncond_p10_kge": float(np.percentile(uncond_kge, 10.0)) if len(uncond_kge) > 0 else float("nan"),
+      "uncond_median_kge": float(np.median(uncond_kge)) if len(uncond_kge) > 0 else float("nan"),
   })
   return out
 
@@ -692,7 +718,9 @@ def compute_per_basin_dataframe(
       bias = float(np.mean(diff))
       mae = float(np.mean(abs_err))
       rmse = float(np.sqrt(np.mean(diff * diff)))
-      p50, p95, p99 = np.percentile(abs_err, [50.0, 95.0, 99.0])
+      p50, p75, p90, p95, p99 = np.percentile(
+          abs_err, [50.0, 75.0, 90.0, 95.0, 99.0]
+      )
       max_abs = float(np.max(abs_err))
       e_var = float(np.var(ev))
       c_var = float(np.var(cv))
@@ -706,6 +734,8 @@ def compute_per_basin_dataframe(
       mae = float("nan")
       rmse = float("nan")
       p50 = float("nan")
+      p75 = float("nan")
+      p90 = float("nan")
       p95 = float("nan")
       p99 = float("nan")
       max_abs = float("nan")
@@ -739,6 +769,8 @@ def compute_per_basin_dataframe(
         "rmse": rmse,
         "variance_ratio": var_ratio,
         "median_abs_err": float(p50),
+        "p75_abs_err": float(p75),
+        "p90_abs_err": float(p90),
         "p95_abs_err": float(p95),
         "p99_abs_err": float(p99),
         "max_abs_err": max_abs,
@@ -1138,22 +1170,27 @@ def run_timeseries_benchmark(
       str(b).rstrip("\x00"): b for b in first_canon_ds["basin"].values
   }
 
+  n_out_of_coverage = int(full_gdf["is_out_of_coverage"].sum())
+  in_cov_gdf = full_gdf[~full_gdf["is_out_of_coverage"]].copy()
+
   matched_ids = [
-      str(b) for b in full_gdf.index if str(b) in canon_basin_map
+      str(b) for b in in_cov_gdf.index if str(b) in canon_basin_map
   ]
   if not matched_ids:
     raise ValueError(
-        f"Zero basins from {dataset_path} (n={total_input_basins}) matched "
+        f"Zero in-coverage basins from {dataset_path} (n={len(in_cov_gdf)}, "
+        f"out_of_coverage={n_out_of_coverage}) matched "
         f"canonical store {first_canon_uri} (n={len(canon_basin_map)})."
     )
 
-  matched_gdf = full_gdf.loc[matched_ids].copy()
+  matched_gdf = in_cov_gdf.loc[matched_ids].copy()
   n_revised = int(matched_gdf["is_geometry_revised"].sum())
   logger.info(
-      "Matched %d / %d basins against canonical store (%d unrevised geometry, "
-      "%d revised geometry > %.0f%% area diff).",
+      "Matched %d / %d in-coverage basins against canonical store (%d out of coverage, "
+      "%d unrevised geometry, %d revised geometry > %.0f%% area diff).",
       len(matched_gdf),
-      total_input_basins,
+      len(in_cov_gdf),
+      n_out_of_coverage,
       len(matched_gdf) - n_revised,
       n_revised,
       area_mismatch_threshold * 100.0,
@@ -1183,6 +1220,11 @@ def run_timeseries_benchmark(
   hres_lead_rows: list[dict[str, Any]] = []
   per_basin_dfs: list[pd.DataFrame] = []
   timings: dict[str, dict[str, float]] = {}
+
+  expected_date_list: list[pd.Timestamp] = []
+  for start_dt, end_dt, _ in parsed_windows:
+    expected_date_list.extend(pd.date_range(start_dt, end_dt, freq="1D"))
+  expected_all_dates = pd.DatetimeIndex(sorted(set(expected_date_list)))
 
   for prod_key in target_products:
     prod_enum = Product[prod_key]
@@ -1237,19 +1279,21 @@ def run_timeseries_benchmark(
     ext_dates_all = pd.DatetimeIndex(
         pd.to_datetime(ds_ext_full["date"].values).floor("D")
     )
+    ds_ext_full = ds_ext_full.assign_coords(date=ext_dates_all)
     if ext_dates_all.duplicated().any():
       keep_idx = np.where(~ext_dates_all.duplicated(keep="first"))[0]
       ds_ext_full = ds_ext_full.isel(date=keep_idx)
     ds_ext_full = ds_ext_full.sortby("date")
+    ds_ext_full = ds_ext_full.reindex(
+        basin=matched_ids, date=expected_all_dates.values, fill_value=np.nan
+    )
 
     if writer is not None:
       writer.write_or_append(
           ds_ext_full, prod_enum, overwrite_existing_basins=True
       )
 
-    full_target_dates = pd.DatetimeIndex(
-        pd.to_datetime(ds_ext_full["date"].values).floor("D")
-    )
+    full_target_dates = expected_all_dates
     ds_can_full = _align_canonical_slice(
         ds_canon,
         prod_canon_basin_map,

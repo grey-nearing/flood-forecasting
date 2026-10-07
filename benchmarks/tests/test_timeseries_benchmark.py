@@ -236,26 +236,38 @@ def test_timeseries_benchmark_end_to_end_with_polygon_revision(tmp_path: Path):
   dates_w2 = pd.date_range("2023-09-01", "2023-09-02", freq="1D")
   all_dates = dates_w1.append(dates_w2)
 
-  lats = np.linspace(-89.5, 89.5, 180, dtype=np.float32)
-  lons = np.linspace(-179.5, 179.5, 360, dtype=np.float32)
-  lon_grid, lat_grid = np.meshgrid(lons, lats)
+  # Native 0.5 deg CPC grid and 0.25 deg HRES grid over cropped domain [-40..50 N, 5..25 E]
+  cpc_lats = np.arange(-40.25, 50.5, 0.5, dtype=np.float32)
+  cpc_lons = np.arange(5.25, 25.5, 0.5, dtype=np.float32)
+  cpc_lon_grid, cpc_lat_grid = np.meshgrid(cpc_lons, cpc_lats)
 
   # Spatial gradient so revised polygon produces different basin average than unrevised
-  spatial_pattern = (0.2 * np.abs(lat_grid) + 0.3 * np.abs(lon_grid)).astype(
-      np.float32
-  )
+  cpc_spatial_pattern = (
+      0.2 * np.abs(cpc_lat_grid) + 0.3 * np.abs(cpc_lon_grid)
+  ).astype(np.float32)
   time_factors = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)[
       :, np.newaxis, np.newaxis
   ]
-  cpc_3d = time_factors * spatial_pattern[np.newaxis, :, :]
+  cpc_3d = time_factors * cpc_spatial_pattern[np.newaxis, :, :]
 
   cpc_grid_zarr = tmp_path / "cpc_grid.zarr"
   xr.Dataset(
       data_vars={
           "cpc_precipitation": (["time", "latitude", "longitude"], cpc_3d)
       },
-      coords={"time": all_dates.values, "latitude": lats, "longitude": lons},
+      coords={
+          "time": all_dates.values,
+          "latitude": cpc_lats,
+          "longitude": cpc_lons,
+      },
   ).to_zarr(cpc_grid_zarr)
+
+  hres_lats = np.arange(-40.0, 50.25, 0.25, dtype=np.float32)
+  hres_lons = np.arange(5.0, 25.25, 0.25, dtype=np.float32)
+  hres_lon_grid, hres_lat_grid = np.meshgrid(hres_lons, hres_lats)
+  hres_spatial_pattern = (
+      0.2 * np.abs(hres_lat_grid) + 0.3 * np.abs(hres_lon_grid)
+  ).astype(np.float32)
 
   leads = np.arange(1, 11, dtype=np.int64)
   lead_factors = np.linspace(1.0, 1.9, 10, dtype=np.float32)[
@@ -264,7 +276,7 @@ def test_timeseries_benchmark_end_to_end_with_polygon_revision(tmp_path: Path):
   hres_base_4d = (
       time_factors[:, np.newaxis, :, :]
       * lead_factors
-      * spatial_pattern[np.newaxis, np.newaxis, :, :]
+      * hres_spatial_pattern[np.newaxis, np.newaxis, :, :]
   )
   # In Tier 3 (indices 2 and 3), solar and thermal radiation are NaN
   hres_rad_4d = hres_base_4d.copy()
@@ -297,8 +309,8 @@ def test_timeseries_benchmark_end_to_end_with_polygon_revision(tmp_path: Path):
       coords={
           "time": all_dates.values,
           "lead_time": leads,
-          "latitude": lats,
-          "longitude": lons,
+          "latitude": hres_lats,
+          "longitude": hres_lons,
       },
   ).to_zarr(hres_grid_zarr)
 
@@ -375,6 +387,7 @@ def test_timeseries_benchmark_end_to_end_with_polygon_revision(tmp_path: Path):
   assert np.isclose(unrev_cpc["pearson_r"], 1.0, atol=1e-6)
   assert np.isclose(unrev_cpc["median_nse"], 1.0, atol=1e-6)
   assert np.isclose(unrev_cpc["median_kge"], 1.0, atol=1e-6)
+  assert np.isclose(unrev_cpc["uncond_median_nse"], 1.0, atol=1e-6)
 
   # Check all_matched subset (includes camelscl_rev with revised polygon) has non-zero MAE
   all_cpc = summary_df[
@@ -417,7 +430,9 @@ def test_timeseries_benchmark_end_to_end_with_polygon_revision(tmp_path: Path):
       )
 
 
-def test_timeseries_benchmark_preserves_none_geometry_as_extracted_only_nan(tmp_path: Path):
+def test_timeseries_benchmark_preserves_none_geometry_as_extracted_only_nan(
+    tmp_path: Path,
+):
   """Verifies that None geometry_wkt rows are retained, never fall back to canonical, and flag extracted_only_nan."""
   poly_valid = shapely.geometry.box(10.0, 45.0, 11.0, 46.0)
   poly_failed_canon = shapely.geometry.box(12.0, 45.0, 13.0, 46.0)
@@ -438,12 +453,20 @@ def test_timeseries_benchmark_preserves_none_geometry_as_extracted_only_nan(tmp_
   bench_df.to_parquet(dataset_parquet, index=False)
 
   dates = pd.date_range("2020-06-01", "2020-06-02", freq="1D")
-  lats = np.linspace(-89.5, 89.5, 180, dtype=np.float32)
-  lons = np.linspace(-179.5, 179.5, 360, dtype=np.float32)
-  cpc_3d = np.full((len(dates), len(lats), len(lons)), 5.0, dtype=np.float32)
+  lats = np.arange(40.25, 50.25, 0.5, dtype=np.float32)
+  lons = np.arange(5.25, 20.25, 0.5, dtype=np.float32)
+  cpc_3d = np.stack(
+      [
+          np.full((len(lats), len(lons)), 5.0, dtype=np.float32),
+          np.full((len(lats), len(lons)), 10.0, dtype=np.float32),
+      ],
+      axis=0,
+  )
   cpc_grid_zarr = tmp_path / "cpc_grid_none.zarr"
   xr.Dataset(
-      data_vars={"cpc_precipitation": (["time", "latitude", "longitude"], cpc_3d)},
+      data_vars={
+          "cpc_precipitation": (["time", "latitude", "longitude"], cpc_3d)
+      },
       coords={"time": dates.values, "latitude": lats, "longitude": lons},
   ).to_zarr(cpc_grid_zarr)
 
@@ -480,6 +503,11 @@ def test_timeseries_benchmark_preserves_none_geometry_as_extracted_only_nan(tmp_
   assert int(all_row["both_valid_count"]) == 2
   assert int(all_row["extracted_only_nan_count"]) == 2
   assert bool(all_row["has_extracted_only_nan_discrepancy"]) is True
+  # Conditional NSE is 1.0 (for camels_ok), whereas unconditional P10 NSE is penalized (-1e9)
+  assert np.isclose(all_row["median_nse"], 1.0)
+  assert all_row["uncond_p10_nse"] <= -1e8
 
   report_text = (out_dir / "benchmark_report.md").read_text(encoding="utf-8")
   assert "DISCREPANCY (2)" in report_text
+
+

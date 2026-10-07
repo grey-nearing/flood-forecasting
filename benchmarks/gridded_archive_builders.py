@@ -183,6 +183,8 @@ def _compute_grid_comparison_metrics(
         "rmse": float("nan"),
         "bias": float("nan"),
         "p50_abs_err": float("nan"),
+        "p75_abs_err": float("nan"),
+        "p90_abs_err": float("nan"),
         "p95_abs_err": float("nan"),
         "p99_abs_err": float("nan"),
         "max_abs_err": float("nan"),
@@ -204,7 +206,9 @@ def _compute_grid_comparison_metrics(
   mae = float(np.mean(abs_err))
   rmse = float(np.sqrt(np.mean(diff * diff)))
   bias = float(np.mean(diff))
-  p50, p95, p99 = np.percentile(abs_err, [50.0, 95.0, 99.0])
+  p50, p75, p90, p95, p99 = np.percentile(
+      abs_err, [50.0, 75.0, 90.0, 95.0, 99.0]
+  )
   max_abs = float(np.max(abs_err))
   frac_1e5 = float(np.mean(abs_err <= 1e-5))
   frac_exact = float(np.mean(abs_err == 0.0))
@@ -233,6 +237,8 @@ def _compute_grid_comparison_metrics(
       "rmse": rmse,
       "bias": bias,
       "p50_abs_err": float(p50),
+      "p75_abs_err": float(p75),
+      "p90_abs_err": float(p90),
       "p95_abs_err": float(p95),
       "p99_abs_err": float(p99),
       "max_abs_err": max_abs,
@@ -306,18 +312,21 @@ def compare_gridded_archives(
       pd.to_datetime(ds_ref_win["time"].values).floor("D")
   )
 
+  if len(ref_times) != len(expected_dates) or not (ref_times == expected_dates).all():
+    raise ValueError(
+        f"Reference archive time coordinate does not match expected window "
+        f"[{start_date}, {end_date}]: reference has {len(ref_times)} dates, "
+        f"expected {len(expected_dates)}."
+    )
+
   time_exact_match = bool(
       len(reb_times) == len(expected_dates)
-      and len(ref_times) == len(expected_dates)
       and (reb_times == expected_dates).all()
-      and (ref_times == expected_dates).all()
   )
-  if not time_exact_match:
-    raise ValueError(
-        f"Time coordinate parity check failed for [{start_date}, {end_date}]: "
-        f"rebuilt has {len(reb_times)} dates, reference has {len(ref_times)} "
-        f"dates, expected {len(expected_dates)}."
-    )
+  ds_ref_win = ds_ref_win.assign_coords(time=ref_times)
+  ds_reb_win = ds_reb_win.assign_coords(time=reb_times).reindex(
+      time=ref_times, fill_value=np.nan
+  )
 
   reb_lats = np.asarray(ds_reb_win["latitude"].values, dtype=np.float64)
   ref_lats = np.asarray(ds_ref_win["latitude"].values, dtype=np.float64)
@@ -460,8 +469,8 @@ def _write_markdown_report(
       "",
       "## 3. Numerical Accuracy & Companion Mask Breakdown",
       "",
-      "| Product | Variable | Total Cells | Both Valid (Count / %) | Rebuilt-Only NaN (Count / %) | Ref-Only NaN (Count / %) | Pearson $r$ | MAE | RMSE | Bias | P50 Abs Err | P95 Abs Err | P99 Abs Err | Max Abs Err | Within `1e-5` (%) | Exact Match (%) |",
-      "| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+      "| Product | Variable | Total Cells | Both Valid (Count / %) | Rebuilt-Only NaN (Count / %) | Ref-Only NaN (Count / %) | Pearson $r$ | MAE | RMSE | Bias | P50 Abs Err | P75 Abs Err | P90 Abs Err | P95 Abs Err | P99 Abs Err | Max Abs Err | Within `1e-5` (%) | Exact Match (%) |",
+      "| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   ])
   for _, row in summary_df.iterrows():
     lines.append(
@@ -475,6 +484,8 @@ def _write_markdown_report(
         f"{row['rmse']:.6e} | "
         f"{row['bias']:.6e} | "
         f"{row['p50_abs_err']:.6e} | "
+        f"{row['p75_abs_err']:.6e} | "
+        f"{row['p90_abs_err']:.6e} | "
         f"{row['p95_abs_err']:.6e} | "
         f"{row['p99_abs_err']:.6e} | "
         f"{row['max_abs_err']:.6e} | "
