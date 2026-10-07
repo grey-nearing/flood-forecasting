@@ -32,66 +32,20 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-def calculate_fao56_penman_monteith_pet(
-    t2m_k: np.ndarray,
-    d2m_k: np.ndarray,
-    sp_pa: np.ndarray,
-    ssr_jm2: np.ndarray,
-    str_jm2: np.ndarray,
-    u10_ms: np.ndarray,
-    v10_ms: np.ndarray,
-) -> np.ndarray:
-  """Computes daily FAO-56 Penman-Monteith Reference Evapotranspiration (mm/day).
-
-  Args:
-    t2m_k: Daily mean 2m air temperature in Kelvin (K).
-    d2m_k: Daily mean 2m dewpoint temperature in Kelvin (K).
-    sp_pa: Daily mean surface pressure in Pascals (Pa).
-    ssr_jm2: Daily accumulated surface net solar radiation in J/m^2.
-    str_jm2: Daily accumulated surface net thermal radiation in J/m^2.
-    u10_ms: Daily mean 10m eastward wind component in m/s.
-    v10_ms: Daily mean 10m northward wind component in m/s.
-
-  Returns:
-    Array of daily potential evapotranspiration in mm/day (float32).
-  """
-  t_c = t2m_k - 273.15
-  td_c = d2m_k - 273.15
-  p_kpa = sp_pa / 1000.0
-  rn_mj = (ssr_jm2 + str_jm2) / 1.0e6
-  g_mj = 0.0
-
-  u10 = np.sqrt(u10_ms**2 + v10_ms**2)
-  u2 = u10 * (4.87 / np.log(67.8 * 10.0 - 5.42))
-
-  es = 0.6108 * np.exp((17.27 * t_c) / (t_c + 237.3))
-  ea = 0.6108 * np.exp((17.27 * td_c) / (td_c + 237.3))
-  vpd = np.maximum(0.0, es - ea)
-
-  delta = (4098.0 * es) / ((t_c + 237.3) ** 2)
-  gamma = 0.000665 * p_kpa
-
-  numerator = (
-      0.408 * delta * (rn_mj - g_mj)
-      + gamma * (900.0 / (t_c + 273.0)) * u2 * vpd
-  )
-  denominator = delta + gamma * (1.0 + 0.34 * u2)
-
-  pet = np.where(denominator > 0.0, numerator / denominator, np.nan)
-  return np.maximum(0.0, pet).astype(np.float32)
-
-
 def calculate_fao_pm_pet(
-    surface_pressure_kpa: pd.Series,
-    temperature_2m_c: pd.Series,
-    dewpoint_temperature_2m_c: pd.Series,
-    u_component_of_wind_10m: pd.Series,
-    v_component_of_wind_10m: pd.Series,
-    surface_net_solar_radiation_mean: pd.Series,
-    surface_net_thermal_radiation_mean: pd.Series,
+    surface_pressure_kpa: pd.Series | np.ndarray,
+    temperature_2m_c: pd.Series | np.ndarray,
+    dewpoint_temperature_2m_c: pd.Series | np.ndarray,
+    u_component_of_wind_10m: pd.Series | np.ndarray,
+    v_component_of_wind_10m: pd.Series | np.ndarray,
+    surface_net_solar_radiation_mean: pd.Series | np.ndarray,
+    surface_net_thermal_radiation_mean: pd.Series | np.ndarray,
     radiation_units: str = "W/m^2",
-) -> pd.Series:
-  """Calculates daily potential evapotranspiration (PET) following Caravan / FAO-56 Penman-Monteith guidelines.
+) -> pd.Series | np.ndarray:
+  """Calculates daily potential evapotranspiration (PET) following Caravan / FAO-56 Penman-Monteith.
+
+  Matches ``get_fao_pm_pet`` in ``kratzert/Caravan`` (``code/pet.py``), derived
+  from Singer et al. (2021) and Allen et al. (1998).
 
   Args:
     surface_pressure_kpa: Daily mean surface pressure in kPa.
@@ -101,18 +55,56 @@ def calculate_fao_pm_pet(
     v_component_of_wind_10m: Daily mean 10m northward wind component in m/s.
     surface_net_solar_radiation_mean: Daily mean surface net solar radiation (default W/m^2).
     surface_net_thermal_radiation_mean: Daily mean surface net thermal radiation (default W/m^2).
-    radiation_units: Units of the input radiation series ('W/m^2' [default], 'J/m^2/day', or 'J/m^2/hr').
+    radiation_units: Units of the input radiation series ('W/m^2' [default],
+      'J/m^2/day', 'J/m^2/hr', or 'MJ/m^2/day').
+
+  Returns:
+    Daily potential evapotranspiration in mm/day (as a ``pd.Series`` if
+    ``temperature_2m_c`` is a ``pd.Series``, otherwise ``np.ndarray``).
   """
-  rad_u = (radiation_units or "W/m^2").strip().lower()
+  if not isinstance(radiation_units, str) or not radiation_units.strip():
+    raise ValueError(
+        f"Unsupported radiation_units {radiation_units!r}; expected 'W/m^2', "
+        "'J/m^2/day', 'J/m^2/hr', or 'MJ/m^2/day'."
+    )
+  rad_u = radiation_units.strip().lower()
   if rad_u in {"w/m^2", "w m-2", "w m**-2", "w/m2", "w m^-2"}:
     rad_scale = 86400.0 / 1e6
-  elif rad_u in {"j/m^2", "j m-2", "j m**-2", "j/m2", "j/m^2/day", "j/m2/day"}:
+  elif rad_u in {
+      "j/m^2",
+      "j m-2",
+      "j m**-2",
+      "j/m2",
+      "j/m^2/day",
+      "j/m2/day",
+      "j m-2 d-1",
+      "j m**-2 d**-1",
+  }:
     rad_scale = 1.0 / 1e6
-  elif rad_u in {"j/m^2/h", "j/m^2/hr", "j/m2/h", "j/m2/hr"}:
+  elif rad_u in {
+      "j/m^2/h",
+      "j/m^2/hr",
+      "j/m2/h",
+      "j/m2/hr",
+      "j m-2 h-1",
+      "j m**-2 h**-1",
+  }:
     rad_scale = 24.0 / 1e6
+  elif rad_u in {
+      "mj/m^2/day",
+      "mj/m2/day",
+      "mj/m^2/d",
+      "mj/m2/d",
+      "mj/m^2",
+      "mj/m2",
+      "mj m-2 d-1",
+      "mj m**-2 d**-1",
+  }:
+    rad_scale = 1.0
   else:
     raise ValueError(
-        f"Unsupported radiation_units {radiation_units!r}; expected 'W/m^2', 'J/m^2/day', or 'J/m^2/hr'."
+        f"Unsupported radiation_units {radiation_units!r}; expected 'W/m^2', "
+        "'J/m^2/day', 'J/m^2/hr', or 'MJ/m^2/day'."
     )
 
   temp_windspeed10m_m_s = np.sqrt(
@@ -141,12 +133,12 @@ def calculate_fao_pm_pet(
       (17.27 * dewpoint_temperature_2m_c)
       / (dewpoint_temperature_2m_c + 237.3)
   )
-  svpdeficit_kpa = np.maximum(0.0, svp_kpa - avp_kpa)
+  svpdeficit_kpa = svp_kpa - avp_kpa
 
   numerator = (
       0.408 * delta_kpa_c * (net_radiation_mj_m2 - soil_heat_flux)
       + psychometric_kpa_c
-      * (900.0 / (temperature_2m_c + 273.15))
+      * (900.0 / (temperature_2m_c + 273.0))
       * windspeed2m_m_s
       * svpdeficit_kpa
   )
@@ -154,10 +146,11 @@ def calculate_fao_pm_pet(
       1.0 + 0.34 * windspeed2m_m_s
   )
 
-  et0_mm_day = numerator / denominator
-  return pd.Series(
-      np.clip(et0_mm_day, 0.0, None), index=temperature_2m_c.index
-  )
+  et0_mm_day = np.clip(numerator / denominator, 0.0, None)
+  if isinstance(temperature_2m_c, pd.Series):
+    return pd.Series(et0_mm_day, index=temperature_2m_c.index)
+  return np.asarray(et0_mm_day)
+
 
 
 def calculate_knoben_moisture_and_seasonality(
@@ -409,6 +402,10 @@ def temp_to_celsius(
 ) -> np.ndarray:
   """Converts a temperature series to degrees Celsius using declared array units."""
   if units is None:
+    arr = np.asarray(series, dtype=float)
+    valid = arr[~np.isnan(arr)]
+    if valid.size > 0 and float(np.mean(valid)) > 150.0:
+      return series - 273.15
     return series
   u = units.strip().lower()
   if u in {"k", "kelvin", "kelvins", "degk", "degrees_kelvin"}:
@@ -418,3 +415,45 @@ def temp_to_celsius(
   raise ValueError(
       f"Unsupported temperature units {units!r} for variable {var_name!r}; expected K or degC."
   )
+
+
+def pressure_to_kpa(
+    series: np.ndarray, units: Optional[str], var_name: str
+) -> np.ndarray:
+  """Converts a surface pressure series to kilopascals (kPa)."""
+  if units is None:
+    arr = np.asarray(series, dtype=float)
+    valid = arr[~np.isnan(arr)]
+    if valid.size > 0 and float(np.mean(valid)) > 2000.0:
+      return series / 1000.0
+    return series
+  u = units.strip().lower()
+  if u in {"pa", "pascal", "pascals", "n m-2", "n m**-2", "n/m^2", "n/m2"}:
+    return series / 1000.0
+  if u in {"hpa", "hectopascal", "hectopascals", "mbar", "millibar", "millibars"}:
+    return series / 10.0
+  if u in {"kpa", "kilopascal", "kilopascals"}:
+    return series
+  raise ValueError(
+      f"Unsupported pressure units {units!r} for variable {var_name!r}; expected Pa, hPa, or kPa."
+  )
+
+
+def normalize_era5_pet_sign(
+    series: pd.Series | np.ndarray,
+) -> pd.Series | np.ndarray:
+  """Normalizes ERA5-Land potential evaporation sign following Kratzert's Caravan.
+
+  In raw ECMWF ERA5-Land, upward evaporative flux has a negative sign
+  (whole-series mean < 0), which Caravan converts to upward-positive via
+  ``df["potential_evaporation"] = df["potential_evaporation"] * -1``
+  without taking element-wise ``np.abs()`` (preserving small negative winter
+  condensation days). If the input series already follows Caravan's
+  upward-positive convention (whole-series mean >= 0), it is returned unchanged.
+  """
+  arr = np.asarray(series, dtype=float)
+  valid = arr[~np.isnan(arr)]
+  if valid.size > 0 and float(np.mean(valid)) < 0.0:
+    return -series
+  return series
+
