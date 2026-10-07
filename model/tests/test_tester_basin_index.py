@@ -116,14 +116,11 @@ def nan_basin_env(tmp_path_factory: pytest.TempPathFactory):
         'test_basin_file': str(test_file.resolve()),
     }
 
-    try:
-        from model.datasetzoo.multimet import _open_zarr
+    from model.datasetzoo.multimet import _open_zarr
 
-        _open_zarr.cache_clear()
-    except Exception:
-        pass
+    _open_zarr.cache_clear()
     gc.collect()
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    shutil.rmtree(tmp_dir)
 
 
 def _config(env: dict, run_dir: Path) -> Config:
@@ -269,21 +266,10 @@ def test_exclusion_drops_only_the_excluded_basin(trained_run_dir):
 @pytest.mark.slow
 @pytest.mark.integration
 @pytest.mark.parametrize('lazy_load', [False, True])
-def test_limit_n_basins_does_not_change_evaluation_results(
+def test_max_basins_in_memory_does_not_change_evaluation_results(
     trained_run_dir, lazy_load
 ):
-    """Bounding evaluation memory must not change the answer.
-
-    With `limit_n_basins` the tester no longer materializes the whole basin
-    pool up front; it loads only the basins it is about to evaluate. For the
-    `test` period that is still every basin, so the metrics must come out
-    bit-for-bit identical to a run that loaded everything eagerly. If they
-    differ, something about deferring the load has perturbed the data --
-    scaling, ordering, or the sample index.
-
-    Parametrized over both loading modes because they take different paths:
-    eager materializes the subset into memory, lazy keeps it as a graph.
-    """
+    """Windowed evaluation with max_basins_in_memory matches full evaluation."""
     baseline = _evaluate_frame(
         trained_run_dir,
         tester_skip_obs_all_nan=True,
@@ -293,7 +279,7 @@ def test_limit_n_basins_does_not_change_evaluation_results(
         trained_run_dir,
         tester_skip_obs_all_nan=True,
         lazy_load=lazy_load,
-        limit_n_basins=2,
+        max_basins_in_memory=2,
     )
 
     assert list(limited['basin']) == list(baseline['basin'])
@@ -302,39 +288,42 @@ def test_limit_n_basins_does_not_change_evaluation_results(
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_tester_defers_loading_until_evaluation(trained_run_dir):
-    """The memory win itself: nothing is resident until we ask for it.
-
-    This is what PR 5 buys. Previously `BaseTester.__init__` materialized
-    every basin in the pool and the trainer then held that tester for the
-    whole run, so the validation set was resident from the first epoch to
-    the last regardless of how few basins each round actually scored.
-    """
+def test_tester_defers_loading_and_unloads_after_windowed_evaluation(
+    trained_run_dir,
+):
+    """Tester defers loading during __init__, loads in windows, and unloads after evaluate()."""
     from model.evaluation.tester import RegressionTester
 
     cfg = Config(trained_run_dir / 'config.yml')
     cfg.tester_skip_obs_all_nan = True
-    cfg.limit_n_basins = 2
+    cfg.max_basins_in_memory = 2
 
     tester = RegressionTester(
-        cfg=cfg, run_dir=trained_run_dir, period='test', init_model=False
+        cfg=cfg, run_dir=trained_run_dir, period='test', init_model=True
     )
 
-    # Exclusions were still computed -- over the full pool, off the lazy
-    # graph -- without materializing anything.
     assert not tester.dataset.is_loaded
     assert sorted(tester.basins) == EXPECTED_EVALUATED
 
-    # And loading is scoped to exactly what was asked for.
-    tester._load_basins_for_evaluation(EXPECTED_EVALUATED[:3])
-    assert tester.dataset.is_loaded
-    assert tester.dataset.loaded_basins == sorted(EXPECTED_EVALUATED[:3])
+    loaded_windows = []
+    original_load_basins = tester.dataset.load_basins
+
+    def recording_load_basins(basins=None):
+        original_load_basins(basins)
+        loaded_windows.append(list(tester.dataset.loaded_basins))
+
+    tester.dataset.load_basins = recording_load_basins
+    tester.evaluate(epoch=1, save_results=False, metrics=['NSE'])
+
+    assert [len(w) for w in loaded_windows] == [2, 2, 2, 1]
+    assert [b for w in loaded_windows for b in w] == EXPECTED_EVALUATED
+    assert not tester.dataset.is_loaded
 
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_tester_loads_eagerly_without_limit_n_basins(trained_run_dir):
-    """Runs that did not opt in must be completely unaffected."""
+def test_tester_loads_eagerly_without_max_basins_in_memory(trained_run_dir):
+    """When max_basins_in_memory is 0, all basins are loaded during __init__."""
     from model.evaluation.tester import RegressionTester
 
     cfg = Config(trained_run_dir / 'config.yml')
@@ -347,7 +336,6 @@ def test_tester_loads_eagerly_without_limit_n_basins(trained_run_dir):
     assert tester.dataset.is_loaded
     assert tester.dataset.loaded_basins == sorted(TEST_BASINS)
 
-    # A no-op: the helper must not narrow a dataset it did not defer.
     tester._load_basins_for_evaluation(EXPECTED_EVALUATED[:3])
     assert tester.dataset.loaded_basins == sorted(TEST_BASINS)
 

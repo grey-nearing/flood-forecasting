@@ -174,35 +174,31 @@ Data settings
 -  ``nan_handling_method``: ``masked_mean``, ``input_replacing``, or ``attention``. Strategy for handling missing input data.
 -  ``nan_handling_pos_encoding_size``: Size of positional encoding for NaN handling methods.
 -  ``lazy_load``: Whether to access data lazily rather than load all in-memory. Each batch is loaded dynamically. Default: ``False``.
--  ``limit_n_basins``: Train on at most this many basins at a time, rotating the set each epoch to bound memory. ``0`` (default) disables it. See `Limiting basins in memory`_.
+-  ``max_basins_in_memory``: Maximum number of basins to keep in memory at one time during training and evaluation. ``0`` (default) disables the limit and loads all basins at once. See `Limiting basins in memory`_.
 
 Limiting basins in memory
 -------------------------
 
-``limit_n_basins: W`` keeps only ``W`` training basins materialized at a time
-and swaps the set at the start of every epoch, so peak memory is bounded by
-``W`` rather than by the size of the dataset. ``0`` (the default) disables the
-feature and loads every basin.
+``max_basins_in_memory: W`` keeps at most ``W`` basins in memory at one time.
+Set ``max_basins_in_memory: 0`` (the default) to load all basins at once.
 
-Basins are permuted once -- seeded by ``seed``, so a resumed run reproduces the
-same schedule -- and then visited in disjoint windows. Every basin is therefore
-trained on exactly once per ``ceil(n_basins / W)`` epochs. Picking a fresh
-random window each epoch instead would sample *with replacement* and leave a
-large fraction of basins untrained: at 16,000 basins and ``W = 100``, about 37%
-would never be seen in 160 epochs.
+During training, the full basin list is shuffled once using ``seed`` and split
+into non-overlapping groups of at most ``W`` basins. Each training epoch loads
+the next group in order. After ``ceil(n_basins / W)`` epochs, every basin has
+been used once and the cycle repeats from the first group.
 
-Two caveats:
+During validation and testing, basins are evaluated in groups of at most ``W``
+basins and unloaded after evaluation finishes.
 
--  **Epochs get shorter.** An epoch now covers ``W`` basins instead of all of
-   them, so epoch-indexed settings -- ``epochs``,
-   ``learning_rate_epochs_drop``, ``validate_every`` and
-   ``save_weights_every`` -- have to be rescaled by ``ceil(n_basins / W)`` to
-   describe the same amount of training.
--  **Training only.** Validation, evaluation and inference still load every
-   basin, so memory during those phases is unchanged.
+Important notes:
 
-Normalization is unaffected: the scaler is computed over all basins before any
-window is loaded.
+-  **Each epoch uses fewer basins.** When ``max_basins_in_memory: W`` is set,
+   one epoch trains on ``W`` basins instead of all basins. You may want to
+   multiply epoch-based settings (``epochs``, ``learning_rate_epochs_drop``,
+   ``validate_every``, and ``save_weights_every``) by ``ceil(n_basins / W)`` to
+   keep the same total number of training updates.
+-  **Normalization still uses all basins.** The data scaler is computed across
+   all training basins before the first group of basins is loaded.
 
 Temporal alignment of forecasts
 -------------------------------

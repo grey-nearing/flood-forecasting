@@ -1367,43 +1367,64 @@ def test_multimet_basin_index_consistent_int64_across_128_boundary(
 # --- Basin load/unload lifecycle ---
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_dataset_is_loaded_after_init(
-    mock_load_data,
-    mock_load_basin_file,
+def _build_real_multimet_config(
+    tmp_path: Path,
     get_config,
-    sample_basins,
-    mock_load_data_return,
-):
-    """__init__ must leave the dataset ready to sample.
+    name: str = 'default',
+    basins: list[str] | None = None,
+) -> tuple[Config, list[str]]:
+    """Write a 3-basin Zarr store with distinct per-basin values and return (cfg, basins)."""
+    if basins is None:
+        basins = ['basin_01', 'basin_02', 'basin_03']
+    dates = pd.date_range('1999-12-25', '2000-01-05', freq='D')
+    lead_times = [np.timedelta64(1, 'D'), np.timedelta64(2, 'D')]
+    ds = _day_offset_dataset(basins, dates, lead_times)
+    # Give each basin distinct dynamic and target values so scaling and stds are non-trivial.
+    basin_scales = np.arange(1, len(basins) + 1, dtype=np.float32)[:, None]
+    ds['era5land_2d'] = (('basin', 'date'), ds['era5land_2d'].values * basin_scales)
+    ds['target_v1'] = (('basin', 'date'), ds['target_v1'].values * basin_scales)
 
-    Guards against reintroducing a two-phase init where callers have to
-    remember to call load_basins() themselves.
-    """
-    cfg = get_config('default')
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+    store_dir = tmp_path / f'stores_{name}'
+    cfg = get_config(name)
+    _write_multimet_stores(store_dir, cfg, ds, basins)
+    basin_file = store_dir / 'basins.txt'
+    basin_file.write_text('\n'.join(basins) + '\n')
+    cfg.update_config(
+        {
+            'train_basin_file': basin_file,
+            'validation_basin_file': basin_file,
+            'test_basin_file': basin_file,
+            'seq_length': 3,
+            'lead_time': 2,
+            'forecast_overlap': 1,
+            'predict_last_n': 2,
+            'hindcast_inputs': ['era5land_2d'],
+            'forecast_inputs': ['hres_3d'],
+            'train_start_date': ['01/01/2000'],
+            'train_end_date': ['02/01/2000'],
+            'validation_start_date': ['01/01/2000'],
+            'validation_end_date': ['02/01/2000'],
+            'test_start_date': ['01/01/2000'],
+            'test_end_date': ['02/01/2000'],
+        }
+    )
+    return cfg, basins
+
+
+def test_dataset_is_loaded_after_init(tmp_path: Path, get_config):
+    """By default, __init__ loads all configured basins into memory."""
+    cfg, basins = _build_real_multimet_config(tmp_path, get_config)
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
 
     assert dataset.is_loaded
-    assert len(dataset) > 0
+    assert dataset.loaded_basins == basins
+    assert len(dataset) == len(basins) * 2
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_unload_basins_releases_and_reports_clearly(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
-):
-    """After unloading, sampling must fail loudly rather than obscurely."""
-    cfg = get_config('default')
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+def test_unload_basins_releases_and_reports_clearly(tmp_path: Path, get_config):
+    """After unloading, sampling raises a clear RuntimeError."""
+    cfg, _ = _build_real_multimet_config(tmp_path, get_config)
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
     dataset.unload_basins()
@@ -1413,41 +1434,20 @@ def test_unload_basins_releases_and_reports_clearly(
         len(dataset)
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_unload_basins_is_idempotent(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
-):
-    """unload_basins() must be safe to call from any state."""
-    cfg = get_config('default')
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+def test_unload_basins_is_idempotent(tmp_path: Path, get_config):
+    """unload_basins() can be called repeatedly without error."""
+    cfg, _ = _build_real_multimet_config(tmp_path, get_config)
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
-
     dataset.unload_basins()
-    dataset.unload_basins()  # must not raise
+    dataset.unload_basins()
 
     assert not dataset.is_loaded
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_reload_after_unload_restores_dataset(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
-):
-    """unload -> load must round-trip back to the same sample count."""
-    cfg = get_config('default')
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+def test_reload_after_unload_restores_dataset(tmp_path: Path, get_config):
+    """Unloading and reloading restores the full sample count."""
+    cfg, _ = _build_real_multimet_config(tmp_path, get_config)
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
     original_length = len(dataset)
@@ -1459,25 +1459,16 @@ def test_reload_after_unload_restores_dataset(
     assert len(dataset) == original_length
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
 def test_load_basins_subset_restricts_to_those_basins(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
+    tmp_path: Path, get_config
 ):
-    """Loading a subset must yield strictly fewer samples, over only those
-    basins. This is the capability the limit_n_basins work builds on."""
-    cfg = get_config('default')
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+    """Loading a basin subset restricts samples and dataset coordinates to that subset."""
+    cfg, basins = _build_real_multimet_config(tmp_path, get_config)
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
     full_length = len(dataset)
 
-    subset = sample_basins[:1]
+    subset = basins[:1]
     dataset.load_basins(subset)
 
     assert dataset.is_loaded
@@ -1485,51 +1476,56 @@ def test_load_basins_subset_restricts_to_those_basins(
     assert list(dataset._dataset.basin.values) == subset
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_loaded_basins_tracks_the_subset_not_the_configured_list(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
+def test_load_basins_rejects_empty_and_duplicate_basins(
+    tmp_path: Path, get_config
 ):
-    """`loaded_basins` must follow `load_basins`; `_basins` must not.
+    """load_basins rejects empty lists and duplicate basin IDs."""
+    cfg, basins = _build_real_multimet_config(tmp_path, get_config)
+    dataset = Multimet(cfg=cfg, is_train=True, period='train')
 
-    Sample metadata stores basin *positions*, not names, and those positions
-    index the loaded subset. Callers resolving them need a list that shrinks
-    with the subset -- `_basins` keeps the full configured list forever, so
-    using it names the wrong basin (or runs off the end) after a subset load.
-    """
-    cfg = get_config('default')
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+    with pytest.raises(ValueError, match='must not be empty'):
+        dataset.load_basins([])
+
+    with pytest.raises(ValueError, match='must not contain duplicates'):
+        dataset.load_basins([basins[0], basins[0]])
+
+
+@pytest.mark.parametrize('invalid_value', [-1, -5, True, False, 1.5, '2'])
+def test_max_basins_in_memory_rejects_invalid_values(
+    tmp_path: Path, get_config, invalid_value
+):
+    """Config rejects negative, boolean, and non-integer max_basins_in_memory values."""
+    cfg, _ = _build_real_multimet_config(tmp_path, get_config)
+
+    with pytest.raises(ValueError, match='max_basins_in_memory must be'):
+        cfg.max_basins_in_memory = invalid_value
+
+    with pytest.raises(ValueError, match='max_basins_in_memory must be'):
+        Config({**cfg.as_dict(), 'max_basins_in_memory': invalid_value})
+
+
+def test_loaded_basins_tracks_the_subset_not_the_configured_list(
+    tmp_path: Path, get_config
+):
+    """loaded_basins tracks the currently loaded subset while _basins retains the full list."""
+    cfg, basins = _build_real_multimet_config(tmp_path, get_config)
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
-    assert dataset.loaded_basins == list(sample_basins)
+    assert dataset.loaded_basins == list(basins)
 
-    subset = sample_basins[:1]
+    subset = basins[:1]
     dataset.load_basins(subset)
 
     assert dataset.loaded_basins == subset
-    # The divergence that made this property necessary.
-    assert dataset._basins == list(sample_basins)
+    assert dataset._basins == list(basins)
     assert dataset.loaded_basins != dataset._basins
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
 def test_loaded_basins_raises_when_nothing_is_loaded(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
+    tmp_path: Path, get_config
 ):
-    """Better to fail loudly than to hand back a stale basin list."""
-    cfg = get_config('default')
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+    """Accessing loaded_basins when unloaded raises RuntimeError."""
+    cfg, _ = _build_real_multimet_config(tmp_path, get_config)
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
     dataset.unload_basins()
@@ -1538,35 +1534,18 @@ def test_loaded_basins_raises_when_nothing_is_loaded(
         _ = dataset.loaded_basins
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
 def test_per_basin_target_stds_do_not_depend_on_the_loaded_subset(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
+    tmp_path: Path, get_config
 ):
-    """A basin's NSE target std must be the same in any subset.
-
-    `load_basins` recomputes these, so if the reduction ever picked up a
-    cross-basin dependency, narrowing the loaded set would silently change
-    the NSE loss -- and only for runs that bound their memory, which is
-    exactly the kind of difference nobody would think to look for.
-
-    The reduction is over every dimension except `basin`, so this holds;
-    the test is here to keep it that way.
-    """
-    cfg = get_config('default')
+    """Per-basin target standard deviations for NSE loss match between full and subset loads."""
+    cfg, basins = _build_real_multimet_config(tmp_path, get_config)
     cfg.loss = 'NSE'
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
     assert dataset._per_basin_target_stds is not None
     full = dataset._per_basin_target_stds.compute()
 
-    subset = sample_basins[:1]
+    subset = basins[:1]
     dataset.load_basins(subset)
     narrowed = dataset._per_basin_target_stds.compute()
 
@@ -1575,51 +1554,28 @@ def test_per_basin_target_stds_do_not_depend_on_the_loaded_subset(
     )
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_unload_basins_clears_data_cache(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
-):
-    """The cache pins the arrays we are trying to free, and is keyed on
-    id(dataset), so a stale entry could collide with a recycled address.
-    It must not survive an unload."""
-    cfg = get_config('default')
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+def test_unload_basins_clears_data_cache(tmp_path: Path, get_config):
+    """unload_basins clears the per-basin numpy array cache."""
+    cfg, _ = _build_real_multimet_config(tmp_path, get_config)
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
-    dataset[0]  # populate the cache
+    dataset[0]
     assert dataset._data_cache
 
     dataset.unload_basins()
 
     assert not dataset._data_cache
 
-# --- limit_n_basins deferred load ---
+
+# --- max_basins_in_memory deferred load ---
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_limit_n_basins_defers_load_for_training(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
+def test_max_basins_in_memory_defers_load_for_training(
+    tmp_path: Path, get_config
 ):
-    """With limit_n_basins on, a training dataset must not materialize.
-
-    Materializing every basin in __init__ would incur exactly the peak
-    memory the setting exists to avoid, so the trainer owns the load.
-    """
-    cfg = get_config('default')
-    cfg.update_config({'limit_n_basins': 1})
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+    """When max_basins_in_memory > 0, __init__ does not load basins into memory."""
+    cfg, _ = _build_real_multimet_config(tmp_path, get_config)
+    cfg.update_config({'max_basins_in_memory': 1})
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
 
@@ -1628,39 +1584,16 @@ def test_limit_n_basins_defers_load_for_training(
         len(dataset)
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
 @pytest.mark.parametrize('period', ['train', 'validation', 'test'])
-def test_limit_n_basins_defers_for_every_period(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
-    period,
+def test_max_basins_in_memory_defers_for_every_period(
+    tmp_path: Path, get_config, period
 ):
-    """With `limit_n_basins`, no period loads its basins up front.
-
-    This deliberately inverts an earlier assertion that only training
-    deferred. The reason evaluation could not defer was that basins were
-    resolved by position against a list that did not track what was loaded,
-    so a partial load silently evaluated the wrong basins. Resolution is now
-    by name against `loaded_basins`, which removes that hazard -- and the
-    validation pool is typically as large as the training pool, so leaving
-    it fully resident for the whole run wasted most of the benefit.
-
-    The safety property the old test was really protecting is asserted at
-    the end: a partial load still reports exactly which basins it holds.
-    """
-    cfg = get_config('default')
-    cfg.update_config({'limit_n_basins': 1})
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+    """When max_basins_in_memory > 0, train, validation, and test datasets defer loading."""
+    cfg, basins = _build_real_multimet_config(tmp_path, get_config)
+    cfg.update_config({'max_basins_in_memory': 1})
 
     is_train = period == 'train'
     if not is_train:
-        # Non-training periods load rather than compute the scaler, so a
-        # training dataset has to write one out first.
         Multimet(cfg=cfg, is_train=True, period='train', compute_scaler=True)
 
     dataset = Multimet(
@@ -1672,61 +1605,32 @@ def test_limit_n_basins_defers_for_every_period(
 
     assert dataset.defers_basin_load
     assert not dataset.is_loaded
+    assert list(dataset.full_dataset.basin.values) == basins
 
-    # The full graph is still reachable without materializing anything,
-    # which is how the tester computes exclusions before it loads.
-    assert list(dataset.full_dataset.basin.values) == sample_basins
-
-    # And a partial load reports itself honestly.
-    dataset.load_basins(sample_basins[:1])
-    assert dataset.loaded_basins == sample_basins[:1]
+    dataset.load_basins(basins[:1])
+    assert dataset.loaded_basins == basins[:1]
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_limit_n_basins_unset_loads_eagerly(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
-):
-    """The default path must be untouched by the feature."""
-    cfg = get_config('default')
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+def test_max_basins_in_memory_unset_loads_eagerly(tmp_path: Path, get_config):
+    """When max_basins_in_memory is 0, __init__ loads all basins immediately."""
+    cfg, basins = _build_real_multimet_config(tmp_path, get_config)
 
     dataset = Multimet(cfg=cfg, is_train=True, period='train')
 
-    assert cfg.limit_n_basins == 0
+    assert cfg.max_basins_in_memory == 0
     assert dataset.is_loaded
-    assert list(dataset._dataset.basin.values) == sample_basins
+    assert list(dataset._dataset.basin.values) == basins
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_limit_n_basins_keeps_scaler_global(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
-):
-    """Normalization must not depend on which basins happen to be resident.
-
-    The scaler is computed before the load is deferred, so it must match
-    the scaler from a full eager load exactly. If this ever regresses,
-    models trained with the feature on become silently incomparable to
-    models trained with it off.
-    """
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
-
-    cfg_full = get_config('full')
+def test_max_basins_in_memory_keeps_scaler_global(tmp_path: Path, get_config):
+    """The scaler computed with max_basins_in_memory > 0 matches the full-dataset scaler."""
+    cfg_full, _ = _build_real_multimet_config(tmp_path, get_config, name='full')
     full = Multimet(cfg=cfg_full, is_train=True, period='train')
 
-    cfg_limited = get_config('limited')
-    cfg_limited.update_config({'limit_n_basins': 1})
+    cfg_limited, _ = _build_real_multimet_config(
+        tmp_path, get_config, name='limited'
+    )
+    cfg_limited.update_config({'max_basins_in_memory': 1})
     limited = Multimet(cfg=cfg_limited, is_train=True, period='train')
 
     assert not limited.is_loaded
@@ -1735,33 +1639,41 @@ def test_limit_n_basins_keeps_scaler_global(
         xr.testing.assert_allclose(limited.scaler.scaler[key], expected)
 
 
-@patch('model.datasetzoo.multimet.load_basin_file')
-@patch.object(Multimet, '_load_data')
-def test_limit_n_basins_window_rotation_is_sample_consistent(
-    mock_load_data,
-    mock_load_basin_file,
-    get_config,
-    sample_basins,
-    mock_load_data_return,
+@pytest.mark.parametrize('lazy_load', [False, True])
+def test_max_basins_in_memory_window_rotation_matches_full_samples(
+    tmp_path: Path, get_config, lazy_load
 ):
-    """Rotating the window must leave the dataset fully usable each time.
+    """Rotating basin windows yields identical scaled samples to a full dataset load."""
+    cfg_full, basins = _build_real_multimet_config(
+        tmp_path, get_config, name=f'full_{lazy_load}'
+    )
+    cfg_full.update_config({'lazy_load': lazy_load})
+    full_ds = Multimet(cfg=cfg_full, is_train=True, period='train')
 
-    This is the per-epoch operation the trainer performs, so a stale
-    sample index or cache surviving the swap would surface here.
-    """
-    cfg = get_config('default')
-    cfg.update_config({'limit_n_basins': 1})
-    mock_load_basin_file.return_value = sample_basins
-    mock_load_data.return_value = mock_load_data_return
+    cfg_win, _ = _build_real_multimet_config(
+        tmp_path, get_config, name=f'win_{lazy_load}'
+    )
+    cfg_win.update_config({'max_basins_in_memory': 1, 'lazy_load': lazy_load})
+    win_ds = Multimet(cfg=cfg_win, is_train=True, period='train')
 
-    dataset = Multimet(cfg=cfg, is_train=True, period='train')
+    for basin_idx, basin in enumerate(basins):
+        win_ds.load_basins([basin])
 
-    for basin in sample_basins:
-        dataset.load_basins([basin])
+        assert win_ds.is_loaded
+        assert win_ds.loaded_basins == [basin]
+        assert len(win_ds) == 2
 
-        assert dataset.is_loaded
-        assert list(dataset._dataset.basin.values) == [basin]
-        assert len(dataset) > 0
-        # Every index the loader could draw must resolve.
-        dataset[0]
-        dataset[len(dataset) - 1]
+        for offset in range(2):
+            win_sample = win_ds[offset]
+            full_sample = full_ds[basin_idx * 2 + offset]
+            np.testing.assert_allclose(
+                win_sample['x_d_hindcast']['era5land_2d'],
+                full_sample['x_d_hindcast']['era5land_2d'],
+            )
+            np.testing.assert_allclose(
+                win_sample['x_d_forecast']['hres_3d'],
+                full_sample['x_d_forecast']['hres_3d'],
+            )
+            np.testing.assert_allclose(win_sample['x_s'], full_sample['x_s'])
+            np.testing.assert_allclose(win_sample['y'], full_sample['y'])
+

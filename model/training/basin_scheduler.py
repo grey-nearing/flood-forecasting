@@ -12,41 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Chooses which basins are resident in memory for each training epoch."""
+"""Selects which basins are loaded into memory for each training epoch."""
 
 import numpy as np
 
 
 class BasinWindowScheduler:
-    """Yields the basins to materialize for a given epoch.
+    """Selects a subset of basins to load into memory for each training epoch.
 
-    ``limit_n_basins: W`` trains on W basins at a time, swapping the set each
-    epoch so that peak memory is bounded by W rather than by the size of the
-    full dataset.
+    When ``max_basins_in_memory`` is set to a positive integer ``window``,
+    this scheduler shuffles the full basin list once using ``seed`` and splits
+    it into non-overlapping groups of at most ``window`` basins. Each training
+    epoch (1-indexed) loads the next group in order, and the cycle repeats once
+    every basin has been visited.
 
-    Which W basins to pick matters more than it first appears:
+    Args:
+        basins: Full list of training basin IDs. Must not be empty.
+        window: Maximum number of basins to load per epoch. ``0`` disables
+            windowing and loads all basins at once.
+        seed: Random seed used to shuffle the basin list. Required when
+            ``window > 0`` so resumed runs use the same basin order.
 
-    * **Coverage.** Choosing a fresh random window each epoch samples *with
-      replacement*, so some basins are never trained on. For B=16000 and
-      W=100 the fraction never seen after E epochs is ``(1 - W/B)**E`` --
-      about 37% after 160 epochs, and still ~4% after 500.
-    * **Correlation.** Basin files are ordered by gauge ID, which correlates
-      with agency and geography, so a window that is contiguous *in file
-      order* is roughly one region. Every gradient in that epoch then comes
-      from a spatially correlated sample.
-    * **Extraction cost.** A contiguous ``.sel(basin=...)`` against a chunked
-      dask array is much cheaper than a scattered one, so windows do want to
-      be contiguous in storage order.
-
-    This class satisfies all three by permuting the basin list **once** and
-    then walking **disjoint** consecutive windows over that permutation.
-    Windows stay contiguous (cheap to extract), coverage becomes exact (every
-    basin exactly once per sweep, zero variance), and each window is a
-    geographically arbitrary sample.
-
-    The permutation is seeded, so a resumed run reconstructs the identical
-    schedule from the epoch number alone. `seed` is therefore required
-    whenever rotation is enabled, and has no default.
+    Raises:
+        ValueError: If ``basins`` is empty, ``window`` is negative or not an
+            integer, or ``window > 0`` and ``seed`` is ``None``.
     """
 
     def __init__(
@@ -54,6 +43,10 @@ class BasinWindowScheduler:
     ) -> None:
         if not basins:
             raise ValueError('basins must not be empty.')
+        if isinstance(window, bool) or not isinstance(window, int) or window < 0:
+            raise ValueError(
+                f'window must be a non-negative integer (>= 0), got {window!r}.'
+            )
 
         self._basins = list(basins)
         self._window = window
@@ -61,11 +54,6 @@ class BasinWindowScheduler:
 
         if self._enabled:
             if seed is None:
-                # The schedule is reconstructed from the epoch number alone,
-                # which only works if the permutation is identical every
-                # time the process starts. An unseeded permutation would
-                # still *look* correct within a single run and only lose
-                # coverage across a resume, so refuse it outright.
                 raise ValueError(
                     'A seed is required when basin rotation is enabled, so '
                     'that a resumed run reproduces the same schedule.'
@@ -74,8 +62,6 @@ class BasinWindowScheduler:
                 len(self._basins)
             )
             self._order = [self._basins[i] for i in permutation]
-            # Ceiling division: the final window of a sweep is short rather
-            # than wrapping, so no basin is visited twice within one sweep.
             self._windows_per_sweep = -(-len(self._basins) // window)
         else:
             self._order = self._basins
@@ -83,24 +69,34 @@ class BasinWindowScheduler:
 
     @property
     def enabled(self) -> bool:
-        """Whether basin rotation is active."""
+        """Whether per-epoch basin rotation is active."""
         return self._enabled
 
     @property
     def windows_per_sweep(self) -> int:
-        """Epochs needed for every basin to be trained on exactly once."""
+        """Number of epochs needed to visit every basin once."""
         return self._windows_per_sweep
 
     def basins_for_epoch(self, epoch: int) -> list[str] | None:
-        """Basins to load for ``epoch``, or ``None`` meaning "all of them".
+        """Return the basin list for 1-indexed ``epoch``, or ``None`` for all basins.
 
-        ``None`` rather than the full list is returned when rotation is off,
-        so callers can hand it straight to ``load_basins()`` and take the
-        cheaper no-subsetting path.
+        Args:
+            epoch: 1-indexed training epoch number (``>= 1``).
+
+        Returns:
+            List of basin IDs for the given epoch when rotation is enabled, or
+            ``None`` when rotation is disabled (``window == 0``).
+
+        Raises:
+            ValueError: If ``epoch`` is not an integer ``>= 1``.
         """
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1:
+            raise ValueError(
+                f'epoch must be a positive integer (>= 1), got {epoch!r}.'
+            )
         if not self._enabled:
             return None
 
-        index = epoch % self._windows_per_sweep
+        index = (epoch - 1) % self._windows_per_sweep
         start = index * self._window
         return self._order[start : start + self._window]

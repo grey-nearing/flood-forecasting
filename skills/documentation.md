@@ -73,5 +73,7 @@ Every user-facing package or subpackage must be documented in Sphinx (`docs/`):
   - Always state physical units and formats clearly (for example, `mm/day`, $\text{km}^2$, `EPSG:4326` latitude/longitude degrees, UTC dates in `YYYY-MM-DD`).
 - **Use Standard Domain Terms With Plain Explanations:**
   - Use standard hydrological terms (for example, official USGS Bulletin 17C terms in `return_periods`), and briefly state what they mean in plain words so non-experts can follow.
+- **Use Plain-English Names for Config Keys and Parameters:**
+  - Choose self-explanatory config keys and parameter names that ESL readers and non-experts can understand without reading the source code (for example, `max_basins_in_memory` instead of abbreviated or ambiguous names like `limit_n_basins`).
 - **Clean Visual Formatting:**
   - Avoid excessive inline bolding in paragraphs and reports (`REPORT.md`). Use Markdown tables, code blocks, and short headings to organize information cleanly.
