@@ -45,6 +45,7 @@ import xarray as xr
 from multimet.static_extractor.climate import (
     ERA5ClimateLoader,
     ERA5GriddedExtractor,
+    calculate_fao_pm_pet,
     compute_caravan_climate_metrics,
 )
 from multimet.static_extractor.config import (
@@ -811,10 +812,66 @@ class StaticAttributesExtractor:
     era5_indices = {}
     if not _skip_climate:
       if timeseries_df is not None and not timeseries_df.empty:
-        p_col = next((c for c in ["total_precipitation", "prcp", "precip", "tp"] if c in timeseries_df.columns), None)
-        t_col = next((c for c in ["temperature", "2m_temperature", "temp", "t2m"] if c in timeseries_df.columns), None)
-        pet_era5_col = next((c for c in ["potential_evaporation", "pet_era5", "pev"] if c in timeseries_df.columns), None)
-        pet_fao_col = next((c for c in ["pet_fao", "pet_mean_FAO_PM", "fao_pet"] if c in timeseries_df.columns), None)
+        p_col = next(
+            (
+                c
+                for c in [
+                    "era5land_total_precipitation",
+                    "total_precipitation_sum",
+                    "total_precipitation",
+                    "prcp",
+                    "precip",
+                    "tp",
+                ]
+                if c in timeseries_df.columns
+            ),
+            None,
+        )
+        t_col = next(
+            (
+                c
+                for c in [
+                    "era5land_temperature_2m",
+                    "temperature_2m_mean",
+                    "temperature_2m",
+                    "temperature",
+                    "2m_temperature",
+                    "temp",
+                    "t2m",
+                ]
+                if c in timeseries_df.columns
+            ),
+            None,
+        )
+        pet_era5_col = next(
+            (
+                c
+                for c in [
+                    "era5land_potential_evaporation_DEPRECATED",
+                    "potential_evaporation_sum_ERA5_LAND",
+                    "potential_evaporation_sum",
+                    "potential_evaporation",
+                    "pet_era5",
+                    "pev",
+                ]
+                if c in timeseries_df.columns
+            ),
+            None,
+        )
+        pet_fao_col = next(
+            (
+                c
+                for c in [
+                    "era5land_potential_evaporation_FAO_PENMAN_MONTEITH",
+                    "potential_evaporation_sum_FAO_PENMAN_MONTEITH",
+                    "pet_fao",
+                    "pet_mean_FAO_PM",
+                    "fao_pet",
+                ]
+                if c in timeseries_df.columns
+            ),
+            None,
+        )
 
         if not p_col or not t_col:
           raise ValueError(
@@ -822,8 +879,106 @@ class StaticAttributesExtractor:
           )
         p_series = timeseries_df[p_col]
         t_series = timeseries_df[t_col]
-        pet_era5_series = timeseries_df[pet_era5_col] if pet_era5_col else None
-        pet_fao_series = timeseries_df[pet_fao_col] if pet_fao_col else None
+        pet_era5_series = (
+            np.abs(timeseries_df[pet_era5_col]) if pet_era5_col else None
+        )
+        if pet_fao_col:
+          pet_fao_series = np.abs(timeseries_df[pet_fao_col])
+        else:
+          d2m_col = next(
+              (
+                  c
+                  for c in [
+                      "era5land_dewpoint_temperature_2m",
+                      "dewpoint_temperature_2m_mean",
+                      "dewpoint_temperature_2m",
+                      "2m_dewpoint_temperature",
+                      "d2m",
+                  ]
+                  if c in timeseries_df.columns
+              ),
+              None,
+          )
+          sp_col = next(
+              (
+                  c
+                  for c in [
+                      "era5land_surface_pressure",
+                      "surface_pressure_mean",
+                      "surface_pressure",
+                      "sp",
+                  ]
+                  if c in timeseries_df.columns
+              ),
+              None,
+          )
+          ssr_col = next(
+              (
+                  c
+                  for c in [
+                      "era5land_surface_net_solar_radiation",
+                      "surface_net_solar_radiation_mean",
+                      "surface_net_solar_radiation",
+                      "ssr",
+                  ]
+                  if c in timeseries_df.columns
+              ),
+              None,
+          )
+          str_col = next(
+              (
+                  c
+                  for c in [
+                      "era5land_surface_net_thermal_radiation",
+                      "surface_net_thermal_radiation_mean",
+                      "surface_net_thermal_radiation",
+                      "str",
+                  ]
+                  if c in timeseries_df.columns
+              ),
+              None,
+          )
+          u10_col = next(
+              (
+                  c
+                  for c in [
+                      "era5land_u_component_of_wind_10m",
+                      "u_component_of_wind_10m_mean",
+                      "u_component_of_wind_10m",
+                      "10m_u_component_of_wind",
+                      "u10",
+                  ]
+                  if c in timeseries_df.columns
+              ),
+              None,
+          )
+          v10_col = next(
+              (
+                  c
+                  for c in [
+                      "era5land_v_component_of_wind_10m",
+                      "v_component_of_wind_10m_mean",
+                      "v_component_of_wind_10m",
+                      "10m_v_component_of_wind",
+                      "v10",
+                  ]
+                  if c in timeseries_df.columns
+              ),
+              None,
+          )
+          if all((d2m_col, sp_col, ssr_col, str_col, u10_col, v10_col)):
+            pet_fao_series = calculate_fao_pm_pet(
+                surface_pressure_kpa=timeseries_df[sp_col],
+                temperature_2m_c=t_series,
+                dewpoint_temperature_2m_c=timeseries_df[d2m_col],
+                u_component_of_wind_10m=timeseries_df[u10_col],
+                v_component_of_wind_10m=timeseries_df[v10_col],
+                surface_net_solar_radiation_mean=timeseries_df[ssr_col],
+                surface_net_thermal_radiation_mean=timeseries_df[str_col],
+            )
+          else:
+            pet_fao_series = None
+
         era5_indices = compute_caravan_climate_metrics(
             precipitation=p_series,
             temperature=t_series,
