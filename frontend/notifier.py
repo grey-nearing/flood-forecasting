@@ -103,21 +103,21 @@ Earthkit Hydro Team
 <head>
   <meta charset="utf-8">
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.5; color: #1e293b; background-color: #f8fafc; margin: 0; padding: 24px; }}
-    .card {{ background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; max-width: 640px; margin: 0 auto; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }}
-    .header {{ background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #ffffff; padding: 24px; }}
-    .badge {{ display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; background: #059669; color: #ffffff; }}
+    body {{ font-family: 'Google Sans', Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; line-height: 1.5; color: #202124; background-color: #f8f9fa; margin: 0; padding: 24px; }}
+    .card {{ background: #ffffff; border: 1px solid #dadce0; border-radius: 12px; max-width: 640px; margin: 0 auto; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }}
+    .header {{ background: linear-gradient(135deg, #1a73e8 0%, #174ea6 100%); color: #ffffff; padding: 24px; }}
+    .badge {{ display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; background: #1e8e3e; color: #ffffff; }}
     .title {{ font-size: 20px; font-weight: 700; margin: 12px 0 4px 0; color: #ffffff; }}
-    .subtitle {{ font-size: 13px; color: #94a3b8; }}
+    .subtitle {{ font-size: 13px; color: #d2e3fc; }}
     .content {{ padding: 24px; }}
     .stats-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }}
-    .stat-box {{ background: #f1f5f9; padding: 12px 16px; border-radius: 8px; }}
-    .stat-label {{ font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase; }}
-    .stat-val {{ font-size: 15px; font-weight: 700; color: #0f172a; margin-top: 2px; }}
-    .section-title {{ font-size: 13px; font-weight: 700; color: #334155; text-transform: uppercase; letter-spacing: 0.05em; margin: 20px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }}
-    .path-box {{ background: #0f172a; color: #38bdf8; padding: 12px 16px; border-radius: 8px; font-family: monospace; font-size: 12px; word-break: break-all; margin-top: 6px; }}
-    .footer {{ background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 16px 24px; font-size: 12px; color: #64748b; text-align: center; }}
-    .btn {{ display: inline-block; background: #d97706; color: #ffffff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; font-size: 13px; margin-top: 12px; }}
+    .stat-box {{ background: #f8f9fa; border: 1px solid #e8eaed; padding: 12px 16px; border-radius: 8px; }}
+    .stat-label {{ font-size: 11px; color: #5f6368; font-weight: 600; text-transform: uppercase; }}
+    .stat-val {{ font-size: 15px; font-weight: 700; color: #202124; margin-top: 2px; }}
+    .section-title {{ font-size: 13px; font-weight: 700; color: #202124; text-transform: uppercase; letter-spacing: 0.05em; margin: 20px 0 8px 0; border-bottom: 1px solid #dadce0; padding-bottom: 4px; }}
+    .path-box {{ background: #f1f3f4; color: #174ea6; border: 1px solid #dadce0; padding: 12px 16px; border-radius: 8px; font-family: monospace; font-size: 12px; word-break: break-all; margin-top: 6px; }}
+    .footer {{ background: #f8f9fa; border-top: 1px solid #dadce0; padding: 16px 24px; font-size: 12px; color: #5f6368; text-align: center; }}
+    .btn {{ display: inline-block; background: #1a73e8; color: #ffffff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; font-size: 13px; margin-top: 12px; }}
   </style>
 </head>
 <body>

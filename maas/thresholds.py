@@ -48,40 +48,40 @@ EXCEEDANCE_CLASSES: tuple[dict[str, Any], ...] = (
         'label': 'Normal',
         'risk_level': 'NORMAL',
         'return_period': '< 2-yr',
-        'color': '#22c55e',
+        'color': '#1e8e3e',
     },
     {
         'rank': 1,
         'label': '2-Yr Warning',
         'risk_level': 'WARNING',
         'return_period': '≥ 2-yr',
-        'color': '#eab308',
+        'color': '#f9ab00',
     },
     {
         'rank': 2,
         'label': '5-Yr Severe',
         'risk_level': 'SEVERE',
         'return_period': '≥ 5-yr',
-        'color': '#f97316',
+        'color': '#e8710a',
     },
     {
         'rank': 3,
         'label': '20-Yr+ Extreme',
         'risk_level': 'EXTREME',
         'return_period': '≥ 20-yr',
-        'color': '#dc2626',
+        'color': '#d93025',
     },
     {
         'rank': 4,
         'label': '100-Yr+ Extreme',
         'risk_level': 'EXTREME',
         'return_period': '≥ 100-yr',
-        'color': '#7e22ce',
+        'color': '#a50e0e',
     },
 )
 
 UNASSESSED_LABEL = 'Not assessed (offline fallback)'
-UNASSESSED_COLOR = '#94a3b8'
+UNASSESSED_COLOR = '#80868b'
 RISK_RANK: dict[str, int] = {
     'UNKNOWN': -1,
     'NORMAL': 0,
