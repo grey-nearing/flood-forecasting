@@ -211,7 +211,7 @@ DYNAMICAL_MODELS: Dict[str, Dict[str, Any]] = {
         "dataset": "ecmwf-ifs-ens-forecast-15-day-0-25-degree",
         "title": "ECMWF IFS ENS control member (0.25°)",
         "ensemble_member": 0,
-        "streams": ("precip", "temp"),
+        "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
     "ecmwf_aifs": {
         "dataset": "ecmwf-aifs-single-forecast",
