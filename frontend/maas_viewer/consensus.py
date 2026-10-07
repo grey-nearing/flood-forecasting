@@ -237,7 +237,7 @@ def build_aligned_timeline(
     """Build a date-aligned daily timeline for multi-model hydrograph charting."""
     fh_daily = (
         daily_series((fh_fc or {}).get('data'), 'discharge')
-        if (fh_fc and fh_fc.get('data') and fh_is_q)
+        if (fh_fc and fh_fc.get('data'))
         else {}
     )
     gl_daily = (
@@ -251,8 +251,16 @@ def build_aligned_timeline(
     gl_p75_d = (
         daily_series((gl_fc or {}).get('data'), 'discharge_p75') if gl_fc else {}
     )
+    gl_max_d = (
+        daily_series((gl_fc or {}).get('data'), 'discharge_max') if gl_fc else {}
+    )
+    gl_min_d = (
+        daily_series((gl_fc or {}).get('data'), 'discharge_min') if gl_fc else {}
+    )
     gg_daily = (
-        daily_series((gg_fc or {}).get('data'), 'flow_med') if gg_fc else {}
+        daily_series((gg_fc or {}).get('data'), 'flow_med', 'flow_avg')
+        if gg_fc
+        else {}
     )
     gg_p25_d = (
         daily_series((gg_fc or {}).get('data'), 'flow_25p') if gg_fc else {}
@@ -260,8 +268,20 @@ def build_aligned_timeline(
     gg_p75_d = (
         daily_series((gg_fc or {}).get('data'), 'flow_75p') if gg_fc else {}
     )
+    gg_max_d = (
+        daily_series((gg_fc or {}).get('data'), 'flow_max') if gg_fc else {}
+    )
+    gg_min_d = (
+        daily_series((gg_fc or {}).get('data'), 'flow_min') if gg_fc else {}
+    )
     te_daily = (
         daily_series((te_fc or {}).get('data'), 'discharge_mean') if te_fc else {}
+    )
+    te_p25_d = (
+        daily_series((te_fc or {}).get('data'), 'discharge_p25') if te_fc else {}
+    )
+    te_p75_d = (
+        daily_series((te_fc or {}).get('data'), 'discharge_p75') if te_fc else {}
     )
     te_riv_d = daily_series((te_fc or {}).get('data'), 'rivout') if te_fc else {}
     te_fld_d = daily_series((te_fc or {}).get('data'), 'fldout') if te_fc else {}
@@ -276,24 +296,40 @@ def build_aligned_timeline(
     )
     timeline_series: dict[str, Any] = {}
     if 'floodhub' in models and fh_daily:
+        fh_aligned = align_daily_series(fh_daily, dates)
         timeline_series['floodhub'] = {
-            'discharge': align_daily_series(fh_daily, dates)
+            'central': fh_aligned,
+            'discharge': fh_aligned,
+            'unit': 'm³/s' if fh_is_q else 'm',
+            'axis': 'discharge' if fh_is_q else 'stage',
         }
     if 'glofas' in models and gl_daily:
+        gl_aligned = align_daily_series(gl_daily, dates)
         timeline_series['glofas'] = {
-            'median': align_daily_series(gl_daily, dates),
+            'central': gl_aligned,
+            'median': gl_aligned,
             'p25': align_daily_series(gl_p25_d, dates),
             'p75': align_daily_series(gl_p75_d, dates),
+            'max': align_daily_series(gl_max_d, dates),
+            'min': align_daily_series(gl_min_d, dates),
         }
     if 'geoglows' in models and gg_daily:
+        gg_aligned = align_daily_series(gg_daily, dates)
         timeline_series['geoglows'] = {
-            'median': align_daily_series(gg_daily, dates),
+            'central': gg_aligned,
+            'median': gg_aligned,
             'p25': align_daily_series(gg_p25_d, dates),
             'p75': align_daily_series(gg_p75_d, dates),
+            'max': align_daily_series(gg_max_d, dates),
+            'min': align_daily_series(gg_min_d, dates),
         }
     if 'todays_earth' in models and te_daily:
+        te_aligned = align_daily_series(te_daily, dates)
         timeline_series['todays_earth'] = {
-            'mean': align_daily_series(te_daily, dates),
+            'central': te_aligned,
+            'mean': te_aligned,
+            'p25': align_daily_series(te_p25_d, dates),
+            'p75': align_daily_series(te_p75_d, dates),
             'rivout': align_daily_series(te_riv_d, dates),
             'fldout': align_daily_series(te_fld_d, dates),
             'flddph_m': align_daily_series(te_dph_d, dates, 3),
@@ -303,4 +339,14 @@ def build_aligned_timeline(
         'dates': dates,
         'unit': 'm³/s',
         'series': timeline_series,
+        'status': {
+            'floodhub': (fh_fc or {}).get('status') if fh_fc else None,
+            'glofas': (gl_fc or {}).get('status') if gl_fc else None,
+            'geoglows': (gg_fc or {}).get('status') if gg_fc else None,
+            'todays_earth': (
+                ('emulated' if te_fc.get('emulated') else te_fc.get('status'))
+                if te_fc
+                else None
+            ),
+        },
     }
