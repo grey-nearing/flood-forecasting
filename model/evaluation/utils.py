@@ -70,7 +70,7 @@ class BasinBatchSampler(BatchSampler):
         self,
         sample_index: SampleIndexer,
         batch_size: int,
-        basins_indexes: np.typing.NDArray[np.integer],
+        basins_indexes: np.typing.NDArray[np.integer] | None = None,
     ):
         super().__init__(
             SequentialSampler(range(len(sample_index))),
@@ -81,7 +81,7 @@ class BasinBatchSampler(BatchSampler):
 
         col = sample_index.get_column('basin')
 
-        if len(basins_indexes):  # Binary search the already sorted indexes
+        if basins_indexes is not None:  # Binary search the already sorted indexes
             starts = np.searchsorted(col, basins_indexes, side='left')
             ends = np.searchsorted(col, basins_indexes, side='right')
             self._starts, self._counts = starts, ends - starts

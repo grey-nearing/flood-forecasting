@@ -89,7 +89,7 @@ def load_caravan_attributes(
     zarr_store = _resolve_zarr_store(data_dir, 'attributes.zarr')
     if zarr_store is not None:
         LOGGER.debug('Loading attributes from Zarr store: %s', zarr_store)
-        ds = xarray.open_zarr(zarr_store, chunks='auto')
+        ds = xarray.open_zarr(zarr_store, chunks={})
         if features:
             missing_features = sorted(
                 set(features) - (set(ds.data_vars) | set(ds.coords))
@@ -196,7 +196,7 @@ def load_caravan_timeseries(
     zarr_store = _resolve_zarr_store(data_dir, 'streamflow.zarr')
     if zarr_store is not None:
         LOGGER.debug('Loading timeseries from Zarr store: %s', zarr_store)
-        ds = xarray.open_zarr(zarr_store, chunks='auto')
+        ds = xarray.open_zarr(zarr_store, chunks={})
         if target_features:
             missing_targets = sorted(set(target_features) - set(ds.data_vars))
             if missing_targets:

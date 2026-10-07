@@ -108,21 +108,17 @@ class BaseTrainer(object):
         self._set_random_seeds()
         self._set_device()
 
-        # `limit_n_basins` trains on a rotating window of basins to bound
-        # memory; disabled (all basins resident) when the setting is 0.
-        # Built *after* `_set_random_seeds`, which is what turns a `None`
-        # seed into a concrete one and writes it to the config. Building it
-        # any earlier would leave the permutation unseeded, so a resumed run
-        # would rotate through a different schedule than the original.
         self._basin_scheduler = BasinWindowScheduler(
-            self.basins, window=self.cfg.limit_n_basins, seed=self.cfg.seed
+            self.basins,
+            window=self.cfg.max_basins_in_memory,
+            seed=self.cfg.seed,
         )
         self._loaded_basin_epoch = None
         if self._basin_scheduler.enabled:
             LOGGER.info(
-                'limit_n_basins=%d: training on a rotating window of basins; '
-                'every basin is seen once per %d epochs.',
-                self.cfg.limit_n_basins,
+                'max_basins_in_memory=%d: training on a rotating window of '
+                'basins; every basin is seen once per %d epochs.',
+                self.cfg.max_basins_in_memory,
                 self._basin_scheduler.windows_per_sweep,
             )
 
@@ -205,15 +201,7 @@ class BaseTrainer(object):
             )
 
     def _load_basins_for_epoch(self, epoch: int) -> None:
-        """Materialize the basin window for `epoch`, if rotation is enabled.
-
-        Idempotent per epoch, so the window loaded during
-        `initialize_training` is not loaded a second time by the first pass
-        of the training loop.
-
-        `load_basins` releases the previous window before materializing the
-        next, so peak memory stays at one window rather than two.
-        """
+        """Load the basin window for ``epoch`` when basin rotation is enabled."""
         if not self._basin_scheduler.enabled:
             return
         if self._loaded_basin_epoch == epoch:
@@ -225,9 +213,6 @@ class BaseTrainer(object):
         )
         self.ds.load_basins(basins)
         self._loaded_basin_epoch = epoch
-
-        # The sample count changes with the window, so the loader -- which
-        # samples over `len(ds)` -- has to be rebuilt against the new set.
         self.loader = self._get_data_loader(ds=self.ds)
 
     def initialize_training(self):
@@ -240,13 +225,12 @@ class BaseTrainer(object):
         # Initialize dataset before the model is loaded.
         ds = self._get_dataset(compute_scaler=(not self.cfg.is_finetuning))
         self.ds = ds
-        # With `limit_n_basins`, the dataset defers its initial load so the
-        # full basin set is never materialized. Load the first window here so
-        # that the emptiness check and the loader below have real data.
-        self._load_basins_for_epoch(self._epoch + 1)
+        if self._basin_scheduler.enabled:
+            self._load_basins_for_epoch(self._epoch + 1)
+        else:
+            self.loader = self._get_data_loader(ds=ds)
         if len(ds) == 0:
             raise ValueError('Dataset contains no samples.')
-        self.loader = self._get_data_loader(ds=ds)
 
         LOGGER.debug('init model')
         self.model = self._get_model().to(self.device)
@@ -301,22 +285,15 @@ class BaseTrainer(object):
                 LOGGER.warning(''.join(warn_msg))
                 self.cfg.validate_n_random_basins = self.cfg.number_of_basins
             if self._basin_scheduler.enabled:
-                # Validation used to hold the entire pool for the lifetime of
-                # the run, which could OOM a run that had been training
-                # happily; this warning said so. That is no longer true --
-                # the tester defers and loads only the basins each round
-                # scores -- so state the bound that actually applies now.
-                #
-                # Note "at most ... at a time", not "released": each round
-                # replaces the previous subset, so one subset stays resident
-                # between rounds. The peak is bounded, which is the point;
-                # it is not zero.
                 LOGGER.info(
-                    'limit_n_basins=%d bounds training and validation. '
-                    'Validation holds at most %d basins at a time, sampled '
-                    'fresh from %s each round, rather than the whole file.',
-                    self.cfg.limit_n_basins,
-                    self.cfg.validate_n_random_basins,
+                    'max_basins_in_memory=%d bounds training and validation. '
+                    'Validation loads at most %d basins at a time from %s and '
+                    'releases them after each validation pass.',
+                    self.cfg.max_basins_in_memory,
+                    min(
+                        self.cfg.validate_n_random_basins,
+                        self.cfg.max_basins_in_memory,
+                    ),
                     self.cfg.validation_basin_file,
                 )
 

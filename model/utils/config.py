@@ -311,8 +311,28 @@ class Config(object):
         if 'data_dir' in cfg and 'targets_data_dir' not in cfg:
             cfg['targets_data_dir'] = cfg['data_dir']
 
+        if 'max_basins_in_memory' in cfg:
+            cfg['max_basins_in_memory'] = Config._validate_max_basins_in_memory(
+                cfg['max_basins_in_memory']
+            )
+
         # Add more config parsing if necessary
         return cfg
+
+    @staticmethod
+    def _validate_max_basins_in_memory(value: object) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                'max_basins_in_memory must be a non-negative integer, '
+                f'got {value!r} ({type(value).__name__}).'
+            )
+        if value < 0:
+            raise ValueError(
+                f'max_basins_in_memory must be >= 0, got {value}.'
+            )
+        return value
 
     @staticmethod
     def _read_and_parse_config(yml_path: Path):
@@ -344,17 +364,20 @@ class Config(object):
         self._cfg['lazy_load'] = value
 
     @property
-    def limit_n_basins(self) -> int:
-        """How many basins to hold in memory at once during training.
+    def max_basins_in_memory(self) -> int:
+        """Maximum number of basins to hold in memory at one time.
 
-        `0` (the default) disables the feature and loads every basin, which
-        is the historical behaviour.
+        ``0`` (the default) loads all configured basins into memory at once.
         """
-        return int(self._cfg.get('limit_n_basins', 0) or 0)
+        return self._validate_max_basins_in_memory(
+            self._cfg.get('max_basins_in_memory', 0)
+        )
 
-    @limit_n_basins.setter
-    def limit_n_basins(self, value: int):
-        self._cfg['limit_n_basins'] = int(value)
+    @max_basins_in_memory.setter
+    def max_basins_in_memory(self, value: int) -> None:
+        self._cfg['max_basins_in_memory'] = self._validate_max_basins_in_memory(
+            value
+        )
 
     @property
     def print_warnings_once(self) -> bool:

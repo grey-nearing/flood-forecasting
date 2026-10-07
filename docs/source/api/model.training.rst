@@ -8,6 +8,7 @@ Submodules
    :maxdepth: 4
 
    model.training.basetrainer
+   model.training.basin_scheduler
    model.training.logger
    model.training.loss
    model.training.regularization

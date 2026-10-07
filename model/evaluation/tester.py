@@ -189,27 +189,12 @@ class BaseTester(object):
         )
 
     def _load_basins_for_evaluation(self, basins: list[str]) -> None:
-        """Materialize exactly the basins this evaluation will touch.
-
-        Without `limit_n_basins` the dataset loaded every basin in its own
-        `__init__` and there is nothing to do -- narrowing it here would
-        change the behaviour of runs that never asked for it, and would
-        throw away work on every call.
-
-        With `limit_n_basins` the dataset deferred, and this is where the
-        basin set gets chosen. Validation samples a fresh random subset per
-        call, so the resident set is bounded by `validate_n_random_basins`
-        rather than by the size of the validation pool -- which is the whole
-        point, since that pool can be as large as the training one.
-        """
+        """Load ``basins`` into memory when deferred loading is enabled."""
         if not self.dataset.defers_basin_load:
             return
 
         required = sorted(basins)
         if self.dataset.is_loaded and self.dataset.loaded_basins == required:
-            # Same subset as last time (the common case for `test`, which
-            # evaluates every basin every call). Reloading would be pure
-            # cost.
             return
 
         LOGGER.debug(
@@ -219,6 +204,64 @@ class BaseTester(object):
             len(self.basins),
         )
         self.dataset.load_basins(required)
+
+    def _iter_evaluated_basins(
+        self,
+        model: torch.nn.Module,
+        basins: list[str],
+        *,
+        data_assimilation: bool,
+        suffix: str,
+    ) -> Iterator[tuple[dict, int]]:
+        """Yield ``(basin_data, weight)`` in memory-bounded basin windows."""
+        if not basins:
+            return
+
+        window_size = (
+            self.cfg.max_basins_in_memory
+            if self.dataset.defers_basin_load
+            else 0
+        )
+        basin_windows = (
+            [
+                basins[i : i + window_size]
+                for i in range(0, len(basins), window_size)
+            ]
+            if window_size > 0
+            else [basins]
+        )
+        try:
+            for window_basins in basin_windows:
+                self._load_basins_for_evaluation(window_basins)
+                batch_sampler = BasinBatchSampler(
+                    sample_index=self.dataset._sample_index,
+                    batch_size=self.cfg.batch_size,
+                    basins_indexes=get_samples_indexes(
+                        self.dataset.loaded_basins,
+                        samples=list(window_basins),
+                    ),
+                )
+                loader = MultimetDataLoader(
+                    self.dataset,
+                    lazy_load=self.cfg.lazy_load,
+                    logging_level=self.cfg.logging_level,
+                    batch_sampler=batch_sampler,
+                    num_workers=0,
+                    collate_fn=self.dataset.collate_fn,
+                    pin_memory=True,  # avoid 1 of 2 mem copies to gpu
+                )
+                weight = 1 if window_size > 0 else len(loader)
+                for basin_data in self._evaluate(
+                    model,
+                    loader,
+                    window_basins,
+                    data_assimilation=data_assimilation,
+                    suffix=suffix,
+                ):
+                    yield basin_data, weight
+        finally:
+            if self.dataset.defers_basin_load:
+                self.dataset.unload_basins()
 
     def evaluate(
         self,
@@ -278,32 +321,7 @@ class BaseTester(object):
         ):
             basins = random.sample(basins, k=self.cfg.validate_n_random_basins)
 
-        self._load_basins_for_evaluation(basins)
-
         model.eval()
-
-        # `basins_indexes` are positions along the dataset's basin axis, which
-        # is what `_sample_index` numbers its basin column against. Resolving
-        # them against `self.basins` instead only happens to work while the
-        # two lists are identical; they are not, because `__init__` drops
-        # all-NaN basins from `self.basins` but not from the dataset (and
-        # `load_basins` can narrow the dataset without touching `self.basins`).
-        batch_sampler = BasinBatchSampler(
-            sample_index=self.dataset._sample_index,
-            batch_size=self.cfg.batch_size,
-            basins_indexes=get_samples_indexes(
-                self.dataset.loaded_basins, samples=list(basins)
-            ),
-        )
-        loader = MultimetDataLoader(
-            self.dataset,
-            lazy_load=self.cfg.lazy_load,
-            logging_level=self.cfg.logging_level,
-            batch_sampler=batch_sampler,
-            num_workers=0,
-            collate_fn=self.dataset.collate_fn,
-            pin_memory=True,  # avoid 1 of 2 mem copies to gpu
-        )
 
         max_figures = min(
             self.cfg.validate_n_random_basins,
@@ -312,9 +330,8 @@ class BaseTester(object):
         )
         basins_for_figures = random.sample(list(basins), k=max_figures)
 
-        eval_data_it = self._evaluate(
+        eval_data_it = self._iter_evaluated_basins(
             model,
-            loader,
             basins,
             data_assimilation=data_assimilation,
             suffix=suffix,
@@ -336,7 +353,7 @@ class BaseTester(object):
 
         metrics_results = {}
 
-        for basin_data in pbar:
+        for basin_data, loss_weight in pbar:
             basin = basin_data['basin']
             y_hat = basin_data['preds']
             y = basin_data['obs']
@@ -346,7 +363,7 @@ class BaseTester(object):
             # log loss of this basin plus number of samples in the logger to compute epoch aggregates later
             if experiment_logger is not None:
                 experiment_logger.log_step(
-                    **{k: (v, len(loader)) for k, v in all_losses.items()}
+                    **{k: (v, loss_weight) for k, v in all_losses.items()}
                 )
 
             predict_last_n = self.cfg.predict_last_n
@@ -548,20 +565,11 @@ class BaseTester(object):
                     LOGGER.warning('Could not consolidate metadata for %s: %s', result_file, e)
 
     def _calc_exclude_basins(self) -> Iterator[str]:
-        """Basins with no usable observations over an evaluation window.
+        """Yield basins that have no valid observations in an evaluation window.
 
-        A basin is excluded when, for any one of the configured windows,
-        every observation it has inside that window is NaN.
-
-        Equivalently -- and this is how it used to be written -- some
-        maximal run of NaNs in the record fully covers the window. The two
-        phrasings agree exactly, *provided* the record spans the window: a
-        run of NaNs cannot extend past data that does not exist, so a basin
-        whose record stops short of the window was never excluded by the old
-        code. That precondition used to be implicit in the run endpoints;
-        it is now checked outright, because reducing over a truncated (or
-        empty) window would otherwise report "all NaN" and quietly shrink
-        the evaluation set.
+        A basin is excluded when every observation inside any configured
+        evaluation date window is NaN, provided the dataset record covers
+        that full date window.
         """
         if not self.cfg.tester_skip_obs_all_nan:
             return
@@ -575,6 +583,11 @@ class BaseTester(object):
                 self.cfg.validation_start_date,
                 self.cfg.validation_end_date,
             )
+        elif self.period == 'train':
+            period_start, period_end = (
+                self.cfg.train_start_date,
+                self.cfg.train_end_date,
+            )
 
         if self.cfg.lazy_load:
             LOGGER.warning(
@@ -582,30 +595,17 @@ class BaseTester(object):
                 'it goes over all the data.'
             )
 
-        # Deliberately the *full* lazy graph, not `_dataset`: this runs
-        # during `__init__`, before anything is loaded, and it has to see
-        # every candidate basin to decide which to drop. Reading it stays
-        # cheap because the reduction below touches one variable over one
-        # date window. Scaling does not affect the answer -- it is a linear
-        # transform, so NaNs stay NaN.
+        # Read the full dataset graph because this runs during __init__
+        # before any basin window is loaded into memory.
         dataset = self.dataset.full_dataset
         observations = dataset.streamflow
         record_dates = dataset.date.values
         record_start, record_end = record_dates.min(), record_dates.max()
 
-        # One reduction over every basin at once. This used to be a Python
-        # loop with a `.sel(basin=...)` per basin, measured at ~0.37 ms per
-        # basin against in-memory data and ~4.6 ms per basin against a
-        # chunked dask array -- roughly 6 s and 1.2 min respectively at
-        # 16k basins, paid at startup before the first epoch. The lazy
-        # figure is a floor: it was measured against an in-process array,
-        # whereas a real store adds per-chunk I/O to every one of those
-        # `.sel` calls.
         excluded = None
         for start, end in zip(period_start, period_end):
             if record_start > start or record_end < end:
-                # The record does not span this window, so nothing in it can
-                # have been excluded on this window's account.
+                # Skip windows that extend outside the dataset date range.
                 continue
 
             window = observations.sel(date=slice(start, end))

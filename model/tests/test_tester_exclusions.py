@@ -12,24 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Differential tests for `BaseTester._calc_exclude_basins`.
-
-The method was rewritten from a per-basin Python loop into a single
-vectorized reduction. These tests keep a transcription of the original
-implementation and assert the new one agrees with it, including on randomly
-generated NaN patterns, so the rewrite is pinned to observed behaviour
-rather than to my reading of it.
-
-The one deliberate difference is documented in
-`test_short_record_is_not_excluded_by_either`: both implementations must
-decline to exclude a basin whose record does not span the evaluation window.
-That case is the whole reason the new code carries an explicit guard -- a
-plain "is everything in the window NaN?" reduction answers `True` for a
-window that is empty or truncated, which the old code never did.
-"""
+"""Tests for `BaseTester._calc_exclude_basins`."""
 
 from types import SimpleNamespace
 
+import dask.array as dask_array
 import numpy as np
 import pandas as pd
 import pytest
@@ -42,12 +29,8 @@ RECORD_DAYS = 60
 BASINS = [f'b{i:02d}' for i in range(6)]
 
 
-def _legacy_calc_exclude_basins(tester):
-    """Transcription of the pre-vectorization implementation.
-
-    Kept verbatim (modulo the `self.` prefixes) so the differential tests
-    compare against what actually shipped, not a paraphrase of it.
-    """
+def _reference_calc_exclude_basins(tester):
+    """Per-basin run-endpoint reference calculation for differential checks."""
     if not tester.cfg.tester_skip_obs_all_nan:
         return
 
@@ -60,6 +43,11 @@ def _legacy_calc_exclude_basins(tester):
             tester.cfg.validation_start_date,
             tester.cfg.validation_end_date,
         )
+    elif tester.period == 'train':
+        period_start, period_end = (
+            tester.cfg.train_start_date,
+            tester.cfg.train_end_date,
+        )
 
     for basin in tester.basins:
         basin_ds = tester.dataset.full_dataset.sel(basin=basin)
@@ -68,13 +56,13 @@ def _legacy_calc_exclude_basins(tester):
 
         nan_date_starts = basin_ds.date.data[starts]
         nan_date_ends = basin_ds.date.data[ends - 1]
-        for start, end in zip(period_start, period_end):
+        for start, end in zip(period_start, period_end, strict=False):
             if np.any((nan_date_starts <= start) & (nan_date_ends >= end)):
                 yield basin
 
 
 def _make_tester(values, windows, *, record_start=RECORD_START, days=None):
-    """A stub exposing only what `_calc_exclude_basins` actually reads."""
+    """Build a lightweight stub for `_calc_exclude_basins`."""
     days = values.shape[1] if days is None else days
     dates = pd.date_range(record_start, periods=days, freq='D')
     dataset = xr.Dataset(
@@ -86,6 +74,8 @@ def _make_tester(values, windows, *, record_start=RECORD_START, days=None):
     cfg = SimpleNamespace(
         tester_skip_obs_all_nan=True,
         lazy_load=False,
+        train_start_date=starts,
+        train_end_date=ends,
         test_start_date=starts,
         test_end_date=ends,
         validation_start_date=starts,
@@ -95,17 +85,13 @@ def _make_tester(values, windows, *, record_start=RECORD_START, days=None):
         cfg=cfg,
         period='test',
         basins=list(dataset.basin.values),
-        # `full_dataset` is the graph for every configured basin. The old
-        # implementation read `_dataset`, which at this point in `__init__`
-        # was the eagerly-loaded full basin set -- the same content, so the
-        # differential comparison below stays apples-to-apples.
         dataset=SimpleNamespace(full_dataset=dataset),
     )
 
 
 def _both(tester):
     return (
-        set(_legacy_calc_exclude_basins(tester)),
+        set(_reference_calc_exclude_basins(tester)),
         set(BaseTester._calc_exclude_basins(tester)),
     )
 
@@ -115,12 +101,12 @@ def test_disabled_flag_excludes_nothing():
     tester = _make_tester(values, [('2000-01-10', '2000-01-20')])
     tester.cfg.tester_skip_obs_all_nan = False
 
-    legacy, vectorized = _both(tester)
-    assert legacy == vectorized == set()
+    reference, vectorized = _both(tester)
+    assert reference == vectorized == set()
 
 
 def test_agrees_on_hand_built_patterns():
-    """Each basin exercises a different relationship to the window."""
+    """Each basin exercises a different relationship to the evaluation window."""
     window = ('2000-01-11', '2000-01-20')  # positions 10..19
     values = np.ones((6, RECORD_DAYS))
     # b00: no NaNs at all                                  -> keep
@@ -136,23 +122,48 @@ def test_agrees_on_hand_built_patterns():
     # b05: entire record NaN                               -> exclude
     values[5, :] = np.nan
 
-    legacy, vectorized = _both(_make_tester(values, [window]))
+    reference, vectorized = _both(_make_tester(values, [window]))
 
-    assert legacy == vectorized
+    assert reference == vectorized
     assert vectorized == {'b01', 'b02', 'b05'}
 
 
 def test_agrees_across_multiple_windows():
-    """A basin is excluded if *any* configured window is fully missing."""
+    """A basin is excluded if any configured window is fully missing."""
     windows = [('2000-01-05', '2000-01-08'), ('2000-02-01', '2000-02-05')]
     values = np.ones((3, RECORD_DAYS))
     values[1, 4:8] = np.nan  # covers only the first window
     values[2, 31:36] = np.nan  # covers only the second window
 
-    legacy, vectorized = _both(_make_tester(values, windows))
+    reference, vectorized = _both(_make_tester(values, windows))
 
-    assert legacy == vectorized
+    assert reference == vectorized
     assert vectorized == {'b01', 'b02'}
+
+
+def test_respects_train_validation_and_test_period_dates():
+    """Each period uses its own configured start and end date windows."""
+    values = np.ones((3, RECORD_DAYS))
+    values[0, 0:5] = np.nan  # NaN during train window
+    values[1, 10:15] = np.nan  # NaN during validation window
+    values[2, 20:25] = np.nan  # NaN during test window
+
+    tester = _make_tester(values, [('2000-01-21', '2000-01-25')])
+    tester.cfg.train_start_date = [pd.Timestamp('2000-01-01')]
+    tester.cfg.train_end_date = [pd.Timestamp('2000-01-05')]
+    tester.cfg.validation_start_date = [pd.Timestamp('2000-01-11')]
+    tester.cfg.validation_end_date = [pd.Timestamp('2000-01-15')]
+    tester.cfg.test_start_date = [pd.Timestamp('2000-01-21')]
+    tester.cfg.test_end_date = [pd.Timestamp('2000-01-25')]
+
+    tester.period = 'train'
+    assert set(BaseTester._calc_exclude_basins(tester)) == {'b00'}
+
+    tester.period = 'validation'
+    assert set(BaseTester._calc_exclude_basins(tester)) == {'b01'}
+
+    tester.period = 'test'
+    assert set(BaseTester._calc_exclude_basins(tester)) == {'b02'}
 
 
 @pytest.mark.parametrize(
@@ -164,37 +175,27 @@ def test_agrees_across_multiple_windows():
     ],
 )
 def test_short_record_is_not_excluded_by_either(window):
-    """The case that forced an explicit guard in the vectorized version.
-
-    Every basin here is entirely NaN, so a naive "is the window all NaN?"
-    reduction would exclude all of them -- for an empty window it would even
-    reduce over nothing and answer True. The original never did that,
-    because a run of NaNs cannot extend past the end of the record.
-    """
+    """Windows extending outside the dataset record do not exclude basins."""
     values = np.full((3, RECORD_DAYS), np.nan)
 
-    legacy, vectorized = _both(_make_tester(values, [window]))
+    reference, vectorized = _both(_make_tester(values, [window]))
 
-    assert legacy == vectorized == set()
+    assert reference == vectorized == set()
 
 
 def test_window_exactly_spanning_the_record_is_excluded():
-    """The boundary that must still fire: window == record, all NaN."""
+    """A window equal to the full record excludes all-NaN basins."""
     values = np.full((2, RECORD_DAYS), np.nan)
     last = pd.Timestamp(RECORD_START) + pd.Timedelta(days=RECORD_DAYS - 1)
     window = (RECORD_START, last.strftime('%Y-%m-%d'))
 
-    legacy, vectorized = _both(_make_tester(values, [window]))
+    reference, vectorized = _both(_make_tester(values, [window]))
 
-    assert legacy == vectorized == {'b00', 'b01'}
+    assert reference == vectorized == {'b00', 'b01'}
 
 
 def test_agrees_on_randomized_nan_patterns():
-    """Fuzz the two implementations against each other.
-
-    Random run lengths and window placements, with the window kept inside
-    the record so both implementations are in their agreed domain.
-    """
+    """Compare reference and vectorized implementations on random NaN runs."""
     rng = np.random.default_rng(20250922)
     dates = pd.date_range(RECORD_START, periods=RECORD_DAYS, freq='D')
 
@@ -210,43 +211,31 @@ def test_agrees_on_randomized_nan_patterns():
         j = int(rng.integers(i, RECORD_DAYS))
         window = (dates[i].strftime('%Y-%m-%d'), dates[j].strftime('%Y-%m-%d'))
 
-        legacy, vectorized = _both(_make_tester(values, [window]))
-        assert legacy == vectorized, (
+        reference, vectorized = _both(_make_tester(values, [window]))
+        assert reference == vectorized, (
             f'disagreement on window {window}: '
-            f'legacy={sorted(legacy)} vectorized={sorted(vectorized)}'
+            f'reference={sorted(reference)} vectorized={sorted(vectorized)}'
         )
 
 
 def test_agrees_when_data_is_dask_backed():
-    """Both loading modes must give the same answer.
-
-    With `lazy_load: true` the observations are a chunked dask array rather
-    than a numpy one, so the reduction builds a graph that has to be
-    computed before the basin names can be indexed out of it. Chunking the
-    basin axis is what makes this a real test: the reduction has to combine
-    partial results across chunks.
-    """
-    dask_array = pytest.importorskip('dask.array')
-
+    """Eager numpy and chunked Dask arrays produce identical exclusions."""
     window = ('2000-01-11', '2000-01-20')
     values = np.ones((6, RECORD_DAYS))
-    values[1, 10:20] = np.nan  # exactly the window
-    values[2, 5:40] = np.nan  # superset of the window
-    values[4, 10:19] = np.nan  # one day short
-    values[5, :] = np.nan  # everything
+    values[1, 10:20] = np.nan
+    values[2, 5:40] = np.nan
+    values[4, 10:19] = np.nan
+    values[5, :] = np.nan
 
     eager = _make_tester(values, [window])
     lazy = _make_tester(values, [window])
-    # Chunk across both axes so no single chunk holds a whole basin.
     lazy.dataset.full_dataset['streamflow'] = (
         ('basin', 'date'),
         dask_array.from_array(values, chunks=(2, 16)),
     )
     lazy.cfg.lazy_load = True
 
-    legacy, vectorized_eager = _both(eager)
+    reference, vectorized_eager = _both(eager)
     vectorized_lazy = set(BaseTester._calc_exclude_basins(lazy))
 
-    assert legacy == vectorized_eager == vectorized_lazy
-    assert vectorized_lazy == {'b01', 'b02', 'b05'}
-
+    assert reference == vectorized_eager == vectorized_lazy

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import contextlib
 import functools
 import itertools
 import logging
@@ -231,12 +230,19 @@ class Multimet(Dataset):
             getattr(cfg, f'{period}_basin_file')
         )
 
+        self._dataset: xr.Dataset | None = None
+        self._loaded_basins: list[str] | None = None
+        self._sample_index: SampleIndexer | None = None
+        self._num_samples: int = 0
+        self._per_basin_target_stds: xr.Dataset | None = None
+        self._data_cache: dict[str, xr.DataArray] = {}
+
         # Load & preprocess the data.
         LOGGER.debug('load data')
-        self._dataset = self._load_data()
+        self._raw_dataset = self._load_data()
         memory.release()
         LOGGER.debug('validate all floats are float32')
-        _assert_floats_are_float32(self._dataset)
+        _assert_floats_are_float32(self._raw_dataset)
 
         # Extract date ranges.
         # TODO (future) :: Make this work for non-continuous date ranges.
@@ -245,7 +251,9 @@ class Multimet(Dataset):
         self._lead_times = []
         if self._forecast_features:
             self._min_lead_time = int(
-                (self._dataset.lead_time.min() / np.timedelta64(1, 'D')).item()
+                (
+                    self._raw_dataset.lead_time.min() / np.timedelta64(1, 'D')
+                ).item()
             )
             # The date arithmetic in `_calc_date_range` and `_extract_hindcasts`
             # relies on the shortest loaded lead time being the Caravan-MultiMet
@@ -265,7 +273,7 @@ class Multimet(Dataset):
         self._hindcast_features_with_lead_time = [
             feature
             for feature in self._hindcast_features
-            if 'lead_time' in self._dataset[feature].dims
+            if 'lead_time' in self._raw_dataset[feature].dims
         ]
         self._hindcast_features_without_lead_time = [
             feature
@@ -288,12 +296,8 @@ class Multimet(Dataset):
             end_date + pd.Timedelta(days=self.lead_time)
             for end_date in end_dates
         ]
-        extended_dates = self._union_ranges(
+        self._extended_dates = self._union_ranges(
             extended_start_dates, extended_end_dates
-        )
-        LOGGER.debug('reindex data')
-        self._dataset = self._dataset.reindex(date=extended_dates).sel(
-            date=extended_dates
         )
 
         # Timestep counters indicate the lead time of each forecast timestep.
@@ -310,12 +314,11 @@ class Multimet(Dataset):
                     [overlap_counter, self._forecast_counter], 0
                 )
 
-        # Union features to extend certain data records.
-        # Martin suggests doing this step prior to training models and then saving the unioned dataset locally.
-        # If you do that, then remove this line.
-        if self._union_mapping:
-            LOGGER.debug('union features')
-            self._dataset = union_features(self._dataset, self._union_mapping)
+        unscaled_all = (
+            self._prepare_dataset(self._raw_dataset)
+            if (compute_scaler or not self.defers_basin_load)
+            else None
+        )
 
         # Scale the dataset AFTER cropping dates so that we do not calcualte scalers using test or eval data.
         LOGGER.debug('init scaler')
@@ -323,19 +326,8 @@ class Multimet(Dataset):
             scaler_dir=(cfg.base_run_dir if cfg.is_finetuning else cfg.run_dir),
             calculate_scaler=compute_scaler,
             custom_normalization=cfg.custom_normalization,
-            dataset=(self._dataset if compute_scaler else None),
+            dataset=(unscaled_all if compute_scaler else None),
         )
-
-        # Note: dep chain to avoid multi passes on all data (lazy mode)
-        # scaler computed  1>  scale dataset  2>  create valid masks
-        # 1>  else sampling from dataset needs re-scaling on everything,
-        # 2>  else calcuation wouldn't be equivalent to as originally done.
-        # TODO(future): Invariant 2> may be unneeded.
-        # Note: keep materialized `self.scaler.scaler` as also trainer uses it.
-        # Note: in non-lazy_mode, dataset is scaled with the non-materialized
-        #       scaler, computing scaler needs going over all data, and
-        #       computing indices needs going over all data (scaled) - so -
-        #       those 3 are computed together.
 
         LOGGER.debug('compute scaler')
         (self.scaler.scaler,) = dask.compute(self.scaler.scaler)
@@ -347,123 +339,93 @@ class Multimet(Dataset):
             LOGGER.debug('scaler save')
             self.scaler.save()
 
-        LOGGER.debug('scale data')
-        # `_dataset_all` holds the (still lazy) graph for every basin. The
-        # per-basin-set materialization lives in `load_basins`, so that a
-        # caller can later swap which basins are resident without rebuilding
-        # the dataset. Loading every basin remains the default, and happens
-        # just below unless the caller has opted into driving it themselves.
-        self._dataset_all = self.scaler.scale(self._dataset)
-        del self._dataset
-
         if self.defers_basin_load:
-            # The caller drives which basins are resident -- the trainer
-            # rotates a window per epoch, the tester loads the basins it is
-            # about to evaluate. Materializing everything here first would
-            # incur exactly the peak memory `limit_n_basins` exists to avoid,
-            # so skip it; `load_basins()` must be called before this dataset
-            # is sampled. Note the scaler above was still computed over
-            # *every* basin, so normalization statistics remain global.
+            self._dataset_all = None
+            del unscaled_all
             LOGGER.debug(
-                '[limit_n_basins=%d] deferring initial basin load (%s)',
-                self._cfg.limit_n_basins,
+                '[max_basins_in_memory=%d] deferring initial basin load (%s)',
+                self._cfg.max_basins_in_memory,
                 self._period,
             )
         else:
+            LOGGER.debug('scale data')
+            assert unscaled_all is not None
+            self._dataset_all = self.scaler.scale(unscaled_all)
+            del unscaled_all
             self.load_basins()
 
         LOGGER.debug('forecast dataset init complete (%s)', self._period)
 
+    def _prepare_dataset(self, ds: xr.Dataset) -> xr.Dataset:
+        """Crop dates and apply fallback feature unioning to ``ds``."""
+        LOGGER.debug('reindex data')
+        ds = ds.reindex(date=self._extended_dates).sel(
+            date=self._extended_dates
+        )
+        if self._union_mapping:
+            LOGGER.debug('union features')
+            ds = union_features(ds, self._union_mapping)
+        return ds
+
     @property
     def defers_basin_load(self) -> bool:
-        """Whether `__init__` leaves the basin set for the caller to load.
-
-        Gated on `limit_n_basins` so that runs which do not opt in keep the
-        original eager behaviour exactly. When it is on, *every* period
-        defers, including validation and test: the validation pool is
-        typically as large as the training pool, and holding all of it for
-        the lifetime of the run defeats the point of bounding the training
-        side.
-
-        Callers that defer must call `load_basins()` before sampling.
-        """
-        return self._cfg.limit_n_basins > 0
+        """Whether ``__init__`` leaves the basin set for the caller to load."""
+        return self._cfg.max_basins_in_memory > 0
 
     @property
     def is_loaded(self) -> bool:
-        """Whether a basin set is currently materialized."""
-        return hasattr(self, '_dataset')
+        """Whether a basin set is currently loaded in memory."""
+        return self._dataset is not None
 
     @property
     def full_dataset(self) -> xr.Dataset:
-        """The scaled graph for every configured basin, always available.
-
-        Unlike `_dataset` this exists regardless of what is loaded, and it
-        stays lazy: reading a small slice of it (a single variable over a
-        date window, say) costs only that slice, not a materialization of
-        the whole pool. That is what lets the tester decide which basins to
-        exclude before it commits to loading any of them.
-        """
-        return self._dataset_all
+        """The lazy dataset graph across all configured basins."""
+        if self._dataset_all is not None:
+            return self._dataset_all
+        return self._raw_dataset
 
     @property
     def loaded_basins(self) -> list[str]:
-        """The basins currently materialized, in sample-index order.
-
-        This is the index space of the positional basin codes stored in
-        `_sample_index` and handed out as `sample['basin_index']`, so it is
-        the only correct list to resolve those codes against. It is *not*
-        necessarily `self._basins`: `_basins` is the full configured basin
-        list and never changes, whereas this shrinks to the subset passed to
-        `load_basins`.
-        """
+        """The basins currently loaded in sample-index order."""
         self._check_loaded()
+        assert self._loaded_basins is not None
         return self._loaded_basins
 
     def unload_basins(self) -> None:
-        """Release the materialized basin set, keeping the lazy graph.
-
-        Safe to call when nothing is loaded. After this returns, the dataset
-        is unusable until `load_basins` is called again -- `__len__` and
-        `__getitem__` will raise.
-        """
-        for attribute in (
-            '_dataset',
-            '_loaded_basins',
-            '_sample_index',
-            '_num_samples',
-            '_per_basin_target_stds',
-        ):
-            # `suppress` so that one missing attribute does not strand the
-            # rest; `unload_basins` must be callable from any state.
-            with contextlib.suppress(AttributeError):
-                delattr(self, attribute)
-
-        # Must be cleared alongside `_dataset`: entries are keyed on
-        # `id(dataset)` and hold references into the materialized arrays, so
-        # keeping them would both pin the memory we are trying to free and
-        # risk a stale hit if a new dataset reused the same address.
-        self._data_cache: dict[str, xr.DataArray] = {}
-
+        """Release the loaded basin set while keeping the lazy dataset graph."""
+        self._dataset = None
+        self._loaded_basins = None
+        self._sample_index = None
+        self._num_samples = 0
+        self._per_basin_target_stds = None
+        self._data_cache = {}
         memory.release()
 
     def load_basins(self, basins: list[str] | None = None) -> None:
-        """Materialize `basins` (default: all of them) for sampling.
-
-        Replaces whatever was previously loaded.
-        """
+        """Load ``basins`` (or all configured basins if ``None``) for sampling."""
         self.unload_basins()
 
         if basins is None:
+            if self._dataset_all is None:
+                self._dataset_all = self.scaler.scale(
+                    self._prepare_dataset(self._raw_dataset)
+                )
             self._dataset = self._dataset_all
         else:
+            if not basins:
+                raise ValueError(
+                    'basins passed to load_basins() must not be empty.'
+                )
+            if len(set(basins)) != len(basins):
+                raise ValueError(
+                    'basins passed to load_basins() must not contain duplicates.'
+                )
             LOGGER.debug('[load %d basins] (%s)', len(basins), self._period)
-            self._dataset = self._dataset_all.sel(basin=basins)
+            raw_subset = self._raw_dataset.sel(basin=basins)
+            self._dataset = self.scaler.scale(
+                self._prepare_dataset(raw_subset)
+            )
 
-        # Read back from the coordinate rather than trusting `basins`: this is
-        # the exact axis `_create_sample_index` below numbers its positional
-        # basin codes against, so deriving it any other way reintroduces the
-        # possibility of the two disagreeing.
         self._loaded_basins = [
             str(basin) for basin in self._dataset.basin.values
         ]
@@ -474,6 +436,7 @@ class Multimet(Dataset):
             memory.release()
         else:
             LOGGER.debug('[lazy load] not computing dataset')
+            self._dataset = rechunk(self._dataset)
 
         LOGGER.debug('create valid sample mask and indices plan')
         valid_sample_mask, indices = self._create_valid_sample_mask()
@@ -490,8 +453,6 @@ class Multimet(Dataset):
         self._create_sample_index(valid_sample_mask, indices)
 
         # Compute stats for NSE-based loss functions.
-        # TODO (future) :: Find a better way to decide whether to calculate these. At least keep a list of
-        # losses that require them somewhere like `training.__init__.py`. Perhaps simply always calculate.
         self._per_basin_target_stds = None
         if _needs_per_basin_target_stds(self._cfg):
             LOGGER.debug('create per_basin_target_stds')
@@ -509,10 +470,8 @@ class Multimet(Dataset):
     def _check_loaded(self) -> None:
         if not self.is_loaded:
             raise RuntimeError(
-                'No basins are loaded. `load_basins()` must be called before '
-                'the dataset can be sampled (it is called by `__init__`, so '
-                'this means `unload_basins()` was called and not followed by '
-                'a matching `load_basins()`).'
+                'No basins are loaded. Call load_basins() before sampling '
+                'from the dataset.'
             )
 
     def __len__(self) -> int:
@@ -835,9 +794,6 @@ class Multimet(Dataset):
 
         LOGGER.debug('merge')
         ds = xr.merge(datasets, join='outer')
-
-        LOGGER.debug('rechunk')
-        ds = rechunk(ds)
 
         return ds
 
@@ -1174,7 +1130,7 @@ def _open_zarr(path: Path) -> xr.Dataset:
     is_cloud = str_path.startswith(('gs:', 'gs/'))
     return xr.open_zarr(
         store=store,
-        chunks='auto',
+        chunks={},
         decode_timedelta=True,
         consolidated=True if is_cloud else False,
     )
