@@ -75,9 +75,9 @@ FH_LEVEL_LABELS: dict[str, str] = {
     'LOW': 'Low likelihood',
 }
 FH_LEVEL_COLORS: dict[str, str] = {
-    'HIGH': '#0e7490',
-    'MEDIUM': '#06b6d4',
-    'LOW': '#67e8f9',
+    'HIGH': '#174ea6',
+    'MEDIUM': '#1a73e8',
+    'LOW': '#8ab4f8',
 }
 FLOODHUB_GAUGE_SEARCH_RADIUS_KM = 30.0
 

@@ -39,14 +39,14 @@ from maas.todays_earth import (
 def depth_color(depth_m: float | None) -> str:
     """Colour ramp for CaMa-Flood floodplain water depth (m)."""
     if depth_m is None or depth_m <= 0.0:
-        return '#bae6fd'
+        return '#d2e3fc'
     if depth_m < 0.5:
-        return '#38bdf8'
+        return '#8ab4f8'
     if depth_m < 1.0:
-        return '#0284c7'
+        return '#4285f4'
     if depth_m < 2.0:
-        return '#1d4ed8'
-    return '#1e3a8a'
+        return '#1a73e8'
+    return '#174ea6'
 
 
 def channel_half_width_m(mean_discharge: Any) -> float:

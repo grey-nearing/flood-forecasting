@@ -1413,7 +1413,7 @@ _FH_SEVERITY_LABELS = {
 }
 _FH_LEVEL_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
 _FH_LEVEL_LABELS = {"HIGH": "High likelihood", "MEDIUM": "Medium likelihood", "LOW": "Low likelihood"}
-_FH_LEVEL_COLORS = {"HIGH": "#0e7490", "MEDIUM": "#06b6d4", "LOW": "#67e8f9"}
+_FH_LEVEL_COLORS = {"HIGH": "#174ea6", "MEDIUM": "#1a73e8", "LOW": "#8ab4f8"}
 FLOODHUB_GAUGE_SEARCH_RADIUS_KM = 30.0
 
 
@@ -1733,7 +1733,7 @@ def fetch_floodhub_inundation(
               "area_km2": g.get("area_km2"),
               "map_type": map_set.get("inundationMapType"),
               "time_range": map_set.get("inundationMapsTimeRange"),
-              "color": _FH_LEVEL_COLORS.get(level, "#06b6d4"),
+              "color": _FH_LEVEL_COLORS.get(level, "#1a73e8"),
           },
       })
 
@@ -1783,15 +1783,15 @@ def fetch_floodhub_inundation(
 # ---------------------------------------------------------------------------
 
 _EXCEEDANCE_CLASSES = (
-    {"rank": 0, "label": "Normal", "risk_level": "NORMAL", "return_period": "< 2-yr", "color": "#22c55e"},
-    {"rank": 1, "label": "2-Yr Warning", "risk_level": "WARNING", "return_period": "≥ 2-yr", "color": "#eab308"},
-    {"rank": 2, "label": "5-Yr Severe", "risk_level": "SEVERE", "return_period": "≥ 5-yr", "color": "#f97316"},
-    {"rank": 3, "label": "20-Yr+ Extreme", "risk_level": "EXTREME", "return_period": "≥ 20-yr", "color": "#dc2626"},
-    {"rank": 4, "label": "100-Yr+ Extreme", "risk_level": "EXTREME", "return_period": "≥ 100-yr", "color": "#7e22ce"},
+    {"rank": 0, "label": "Normal", "risk_level": "NORMAL", "return_period": "< 2-yr", "color": "#1e8e3e"},
+    {"rank": 1, "label": "2-Yr Warning", "risk_level": "WARNING", "return_period": "≥ 2-yr", "color": "#f9ab00"},
+    {"rank": 2, "label": "5-Yr Severe", "risk_level": "SEVERE", "return_period": "≥ 5-yr", "color": "#e8710a"},
+    {"rank": 3, "label": "20-Yr+ Extreme", "risk_level": "EXTREME", "return_period": "≥ 20-yr", "color": "#d93025"},
+    {"rank": 4, "label": "100-Yr+ Extreme", "risk_level": "EXTREME", "return_period": "≥ 100-yr", "color": "#a50e0e"},
 )
 # Synthetic offline fallbacks are displayed but never classified against a climatology.
 _UNASSESSED_LABEL = "Not assessed (offline fallback)"
-_UNASSESSED_COLOR = "#94a3b8"
+_UNASSESSED_COLOR = "#80868b"
 _RISK_RANK = {"UNKNOWN": -1, "NORMAL": 0, "WARNING": 1, "SEVERE": 2, "EXTREME": 3}
 _FH_SEVERITY_TO_RISK = {
     "NO_FLOODING": "NORMAL",
@@ -1819,14 +1819,14 @@ def _classify_exceedance(peak: Optional[float], rps: Optional[Dict[str, Any]]) -
 
 def _depth_color(depth_m: Optional[float]) -> str:
   if depth_m is None or depth_m <= 0.0:
-    return "#bae6fd"
+    return "#d2e3fc"
   if depth_m < 0.5:
-    return "#38bdf8"
+    return "#8ab4f8"
   if depth_m < 1.0:
-    return "#0284c7"
+    return "#4285f4"
   if depth_m < 2.0:
-    return "#1d4ed8"
-  return "#1e3a8a"
+    return "#1a73e8"
+  return "#174ea6"
 
 
 def _channel_half_width_m(mean_discharge: Any) -> float:
@@ -2238,7 +2238,7 @@ def get_maas_flood_inundation(
           "probability_level": None,
           "label": f"FloodHub {fh.get('severity')} zone (derived)",
           "severity": fh.get("severity"),
-          "color": "#22d3ee",
+          "color": "#1a73e8",
       }))
 
   counts: Dict[str, int] = {}
