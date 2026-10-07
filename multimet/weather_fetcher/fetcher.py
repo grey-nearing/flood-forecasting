@@ -900,7 +900,16 @@ class WeatherDataFetcher:
     mtime = meta_file.stat().st_mtime_ns if meta_file.exists() else 0
     return (str(resolved), mtime)
 
+  def close(self) -> None:
+    """Closes any open memory-mapped stream handles."""
+    self.arrays.clear()
+    for mm, _, _, _, _ in self.handles.values():
+      if not mm.closed:
+        mm.close()
+    self.handles.clear()
+
   def _load_streams(self) -> None:
+    self.close()
     target_dir = self._resolve_active_dir()
     handles, infos, arrays = scan_streams(target_dir)
     self.handles = handles

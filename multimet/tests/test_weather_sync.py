@@ -41,6 +41,7 @@ from multimet.weather_fetcher.sync import (
     download_model_run,
     DYNAMICAL_MODELS,
     IncompleteRunError,
+    swap_current_symlink,
     sync_all_models,
     WeatherSynchronizer,
 )
@@ -251,3 +252,54 @@ def test_ensemble_selects_control_member_and_cli_status(
   captured = json.loads(capsys.readouterr().out)
   assert captured["last_result"] == "updated"
   assert "ecmwf_ifs" in captured["models"]
+
+
+@pytest.mark.unit
+def test_swap_current_symlink_windows_compatibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Verifies swap_current_symlink passes target_is_directory=True and unlinks existing link on Windows."""
+  (tmp_path / "runs" / "run1").mkdir(parents=True)
+  (tmp_path / "runs" / "run2").mkdir(parents=True)
+
+  calls: list[bool] = []
+  real_symlink = os.symlink
+  real_replace = os.replace
+
+  def tracked_symlink(
+      src: os.PathLike[str] | str,
+      dst: os.PathLike[str] | str,
+      target_is_directory: bool = False,
+      *,
+      dir_fd: int | None = None,
+  ) -> None:
+    calls.append(target_is_directory)
+    real_symlink(
+        src, dst, target_is_directory=target_is_directory, dir_fd=dir_fd
+    )
+
+  def strict_windows_replace(
+      src: os.PathLike[str] | str, dst: os.PathLike[str] | str
+  ) -> None:
+    if os.path.lexists(dst):
+      raise PermissionError(
+          "[WinError 5] Access is denied when replacing existing directory"
+          " symlink"
+      )
+    real_replace(src, dst)
+
+  monkeypatch.setattr(
+      "multimet.weather_fetcher.sync.Path", type(tmp_path)
+  )
+  monkeypatch.setattr(os, "symlink", tracked_symlink)
+  monkeypatch.setattr(os, "replace", strict_windows_replace)
+  monkeypatch.setattr(os, "name", "nt")
+
+  link1 = swap_current_symlink(tmp_path, "run1")
+  assert link1.resolve() == (tmp_path / "runs" / "run1").resolve()
+  assert calls == [True]
+
+  link2 = swap_current_symlink(tmp_path, "run2")
+  assert link2.resolve() == (tmp_path / "runs" / "run2").resolve()
+  assert calls == [True, True]
+
