@@ -1368,7 +1368,7 @@ def benchmark_hot_start(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse CLI arguments for ``model.evaluation.benchmark``."""
+    """Parse CLI arguments for ``benchmarks.model``."""
     parser = argparse.ArgumentParser(
         prog='benchmark-model',
         description='Canonical & Reconstructed MultiMet Benchmark Suite for OpenHydroNet.',

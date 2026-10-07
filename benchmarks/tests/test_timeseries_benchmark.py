@@ -19,7 +19,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import geopandas as gpd
-from multimet.gridded_archive_builders import benchmark as grid_bench
+from benchmarks import gridded_archive_builders as grid_bench
+from benchmarks import timeseries_extractors as ts_bench
 from multimet.gridded_archive_builders.build_cpc_archive import (
     CPC_LATS,
     CPC_LONS,
@@ -30,7 +31,6 @@ from multimet.gridded_archive_builders.build_imerg_archive import (
     IMERG_LONS,
     IMERG_VARIABLE,
 )
-from multimet.timeseries_extractors import benchmark as ts_bench
 from multimet.timeseries_extractors.config import Product
 from multimet.timeseries_extractors.gridded_archive import extract_from_archive
 from multimet.timeseries_extractors.zarr_writer import MultiMetZarrWriter

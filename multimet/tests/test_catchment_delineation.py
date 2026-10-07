@@ -36,7 +36,7 @@ from multimet.catchment_delineation import (
     list_available_tiles,
     tile_key_to_filename,
 )
-from multimet.catchment_delineation.benchmark import (
+from benchmarks.catchment_delineation import (
     compute_iou_and_metrics,
     run_benchmark,
 )
@@ -618,7 +618,7 @@ def test_area_hint_skips_candidates_exceeding_max_cells_without_try_except(
 @pytest.mark.unit
 def test_build_benchmark_dataset_cli_explicit_args(tmp_path: Path) -> None:
     """build_benchmark_dataset.py requires --shapes, --world-geojson, and --output."""
-    from multimet.catchment_delineation.tools.build_benchmark_dataset import (
+    from benchmarks.tools.build_benchmark_dataset import (
         main as build_bench_main,
     )
 
@@ -738,7 +738,7 @@ def test_build_benchmark_dataset_cli_explicit_args(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_benchmark_caravan_columns_and_save_geometries(tmp_path: Path) -> None:
     """Verify benchmark supports ref_area_km2, dataset, computed hemisphere, and --save-geometries."""
-    from multimet.catchment_delineation.benchmark import main as bench_main
+    from benchmarks.catchment_delineation import main as bench_main
 
     tiles_dir = tmp_path / 'tiles'
     _write_synthetic_tile(tiles_dir)
@@ -788,7 +788,7 @@ def test_benchmark_area_hint_failure_vs_out_of_coverage_unconditional_metrics(
     tmp_path: Path,
 ) -> None:
     """Verify AREA_HINT_FAILURE is distinguished from OUT_OF_COVERAGE and counted as 0.0 in unconditional metrics."""
-    from multimet.catchment_delineation.benchmark import summarize_results
+    from benchmarks.catchment_delineation import summarize_results
 
     tiles_dir = tmp_path / 'tiles'
     _write_synthetic_tile(tiles_dir)

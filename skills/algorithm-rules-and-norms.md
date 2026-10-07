@@ -81,3 +81,13 @@ Every model, data ingestion pipeline, spatial extractor, catchment delineator, a
 - **Incremental Extension (`--extend_archive`) & Cache Validation:**
   - Never trust a cached annual NetCDF file blindly by filename (`precip.{year}.nc`); always verify its internal timestamps cover the required end date (`_is_cached_cpc_netcdf_usable`).
   - Support `--extend_archive` (`--extend-archive`), which validates an existing target Zarr store's tail date and forces fresh upstream downloads (bypassing pre-cached files) for all newly appended dates.
+
+---
+
+## 7. Mandatory Comprehensive Canonical Benchmarks (`benchmarks/`)
+
+- **Every Algorithmic Submodule Must Have a Companion Benchmark in `benchmarks/`:**
+  - In addition to fast, hermetic unit and integration tests in `<package>/tests/`, every core package or subpackage (`model/`, `multimet/catchment_delineation/`, `multimet/static_extractor/`, `multimet/gridded_archive_builders/`, `multimet/timeseries_extractors/`, `return_periods/`, and any future algorithmic/data/model submodule) must provide a manual, comprehensive canonical benchmark in the root **`benchmarks/`** package (`benchmarks/<component>.py`, tested in `benchmarks/tests/` and registered as a `benchmark-<component>` CLI in `setup.py`).
+  - All benchmarks must strictly follow [`skills/benchmarking.md`](./benchmarking.md): zero fallback to canonical/reference data when a component fails, zero silent `NaN` masking (`pred_nan_when_ref_valid` / `extracted_only_nan_count` must be explicitly counted and penalized in unconditional metrics), zero imputation, zero dropping of failed/outlier basins from headline tables, and mandatory lower-tail (`[Min, P1, P5, P10, P25, P50]`) and failure-rate reporting.
+- **Exemption for Non-Benchmarkable Features (e.g., UI / Visualization):**
+  - New features or submodules where quantitative canonical benchmarking does not make sense or is not possible—such as user interfaces (UI), interactive web/notebook frontends, plotting utilities, or pure configuration/scaffolding tools—are exempt from adding a `benchmarks/` module, provided they still include thorough unit/integration tests in `<package>/tests/`.

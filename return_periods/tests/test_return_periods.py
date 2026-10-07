@@ -789,7 +789,7 @@ class TestCaravanUSGSBenchmarkCLI:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Verify `--print-setup-instructions` prints setup instructions."""
-        from return_periods.tools.run_caravan_usgs_benchmark import (  # noqa: PLC0415
+        from benchmarks.return_periods import (  # noqa: PLC0415
             SETUP_INSTRUCTIONS,
             main,
         )
@@ -806,7 +806,7 @@ class TestCaravanUSGSBenchmarkCLI:
         tmp_path: pathlib.Path,
     ) -> None:
         """Verify `parse_args` parses external R & Fortran repo paths."""
-        from return_periods.tools.run_caravan_usgs_benchmark import (  # noqa: PLC0415
+        from benchmarks.return_periods import (  # noqa: PLC0415
             parse_args,
         )
 

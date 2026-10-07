@@ -1,6 +1,18 @@
+---
+name: benchmarking
+description: >-
+  End-to-end canonical benchmarking protocol, anti-masking/anti-imputation/zero-fallback
+  hard rules, lower-tail and failure-rate reporting standards, CLI runbooks for
+  the root benchmarks/ package, and canonical baseline numbers across all core
+  flood-forecasting components. Use whenever running, adding, updating, or
+  reviewing canonical benchmarks.
+---
+
 # Canonical Benchmarking Protocol & Baseline Reference (`skills/benchmarking.md`)
 
-This skill defines the mandatory rules, CLI runbooks, lower-tail/failure-rate reporting standards, and canonical baseline numbers for benchmarking all core components of the `flood-forecasting` (`openhydronet`) repository against the canonical Caravan and Caravan-MultiMet v1.1 datasets (`gs://caravan-multimet/v1.1` and `gs://open-multimet/`).
+This skill defines the mandatory rules, CLI runbooks, lower-tail/failure-rate reporting standards, and canonical baseline numbers for benchmarking all core components of the `flood-forecasting` (`openhydronet`) repository in the root **`benchmarks/`** package against the canonical Caravan and Caravan-MultiMet v1.1 datasets (`gs://caravan-multimet/v1.1` and `gs://open-multimet/`).
+
+> **Mandatory Requirement for New Submodules (`benchmarks/`):** Every new submodule, subpackage, or major algorithmic component added to the repository must include **both** automated unit/integration tests in `<package>/tests/` **and** a manual, comprehensive canonical benchmark in `benchmarks/<component>.py` (with unit tests in `benchmarks/tests/` and CLI registration in `setup.py`). Features such as user interfaces (UI), interactive frontends, or visual-only helpers where quantitative canonical benchmarking does not make sense or is not possible are exempt from adding a `benchmarks/` module.
 
 ---
 
@@ -12,7 +24,7 @@ Every benchmark run and report MUST strictly enforce the following **five invari
 
 1. **Zero Fallback to Reference / Canonical Data:**
    - Components under test must **never** read or fall back to canonical ground-truth values (`ref_*` attribute columns, canonical reference polygons, canonical Zarr stores, or `union_mapping` to `ERA5_LAND`) when an extraction, delineation, or model prediction fails or outputs `NaN`.
-   - In `model/evaluation/benchmark.py`, `_assert_no_fallback_or_imputation(cfg)` must verify `not cfg.union_mapping` and `not cfg.tester_skip_obs_all_nan` before running any benchmark.
+   - In `benchmarks/model.py`, `_assert_no_fallback_or_imputation(cfg)` must verify `not cfg.union_mapping` and `not cfg.tester_skip_obs_all_nan` before running any benchmark.
    - In end-to-end cascaded benchmarks (`Catchment Delineation -> Static Attributes` and `Catchment Delineation -> Zonal Timeseries`), basins where delineation failed (`status != 'SUCCESS'`) must receive `geometry_wkt = None` (empty geometry) rather than substituting the canonical reference polygon.
 2. **Zero Silent `NaN` Masking of Predictions (`pred_nan_when_ref_valid` / `extracted_only_nan`):**
    - A pairwise mask such as `mask = ~(np.isnan(y_true) | np.isnan(y_pred))` is **never** sufficient on its own, because it silently drops points where the canonical reference `y_true` is valid (`~np.isnan(y_true)`) and the tool/model failed (`np.isnan(y_pred)`).
@@ -41,20 +53,20 @@ Every benchmark run and report MUST strictly enforce the following **five invari
 
 ### 2.2 Canonical Cloud & Staged Local Paths
 - **Canonical Caravan-MultiMet v1.1 Zarr Stores (Public, `token="anon"`):**
-  - `gs://caravan-multimet/v1.1/CPC/timeseries.zarr` (`cpc_precipitation`, `1979-01-01 .. 2024-07-31`)
-  - `gs://caravan-multimet/v1.1/IMERG/timeseries.zarr` (`imerg_precipitation`, `2000-06-01 .. 2024-10-31`)
-  - `gs://caravan-multimet/v1.1/HRES/timeseries.zarr` (7 variables, `lead_time: 1..10`, `2016-01-01 .. 2024-09-30`)
+   - `gs://caravan-multimet/v1.1/CPC/timeseries.zarr` (`cpc_precipitation`, `1979-01-01 .. 2024-07-31`)
+   - `gs://caravan-multimet/v1.1/IMERG/timeseries.zarr` (`imerg_precipitation`, `2000-06-01 .. 2024-10-31`)
+   - `gs://caravan-multimet/v1.1/HRES/timeseries.zarr` (7 variables, `lead_time: 1..10`, `2016-01-01 .. 2024-09-30`)
 - **Gridded Meteorological Archives (Internal GCS, `token="google_default"`):**
-  - `gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr` (`0.5°`, `360 x 720`)
-  - `gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr` (`0.1°`, `1800 x 3600`)
-  - `gs://open-multimet/gridded-data-archives/HRES/daily_surface.zarr` (`0.1°`, `10 x 1801 x 3600`)
+   - `gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr` (`0.5°`, `360 x 720`)
+   - `gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr` (`0.1°`, `1800 x 3600`)
+   - `gs://open-multimet/gridded-data-archives/HRES/daily_surface.zarr` (`0.1°`, `10 x 1801 x 3600`)
 - **Staged Benchmark Datasets & Ancillary Files (`gsnearing-large-1` / `gs://open-multimet/ancillary-data/`):**
-  - `1,200`-Basin Global Delineation Benchmark: `/usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_1000.parquet` (`200` basins per continent across 6 continents, stratified across 5 size tiers).
-  - `490`-Basin Caravan Multi-Component Benchmark: `/usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_500.parquet` (`70` basins per Caravan dataset across `camels`, `camelsaus`, `camelsbr`, `camelscl`, `camelsgb`, `hysets`, `lamah`, with `geometry_wkt`, `ref_area_km2`, and `210` `ref_*` attributes).
-  - HydroSHEDS 3-arcsec (`90m`) D8 Flow-Direction Tiles: `/usr/local/google/home/gsnearing/data/DEMs/tiles_5deg/` (`gs://open-multimet/ancillary-data/dems/hydrosheds_dir_3s_tiles_5deg/`).
-  - HydroATLAS Level 12 Geodatabase: `<CACHE_DIR>/hydroatlas/BasinATLAS_v10.gdb` (`gs://open-multimet/ancillary-data/hydroatlas/BasinATLAS_v10.gdb/`).
-  - HydroATLAS Pre-Aggregated ERA5 Climate Tables: `<CACHE_DIR>/era5_climate/` (`gs://open-multimet/ancillary-data/hydroatlas/era5_climate/`).
-  - Caravan Streamflow & Static Zarr Stores: `/usr/local/google/home/gsnearing/Projects/caravan_data/Caravan-zarr/` (`streamflow.zarr`, `attributes.zarr`).
+   - `1,200`-Basin Global Delineation Benchmark: `/usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_1000.parquet` (`200` basins per continent across 6 continents, stratified across 5 size tiers).
+   - `490`-Basin Caravan Multi-Component Benchmark: `/usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_500.parquet` (`70` basins per Caravan dataset across `camels`, `camelsaus`, `camelsbr`, `camelscl`, `camelsgb`, `hysets`, `lamah`, with `geometry_wkt`, `ref_area_km2`, and `210` `ref_*` attributes).
+   - HydroSHEDS 3-arcsec (`90m`) D8 Flow-Direction Tiles: `/usr/local/google/home/gsnearing/data/DEMs/tiles_5deg/` (`gs://open-multimet/ancillary-data/dems/hydrosheds_dir_3s_tiles_5deg/`).
+   - HydroATLAS Level 12 Geodatabase: `<CACHE_DIR>/hydroatlas/BasinATLAS_v10.gdb` (`gs://open-multimet/ancillary-data/hydroatlas/BasinATLAS_v10.gdb/`).
+   - HydroATLAS Pre-Aggregated ERA5 Climate Tables: `<CACHE_DIR>/era5_climate/` (`gs://open-multimet/ancillary-data/hydroatlas/era5_climate/`).
+   - Caravan Streamflow & Static Zarr Stores: `/usr/local/google/home/gsnearing/Projects/caravan_data/Caravan-zarr/` (`streamflow.zarr`, `attributes.zarr`).
 
 ### 2.3 Post-ERA5-Land Archive Checklist & Completed Code Updates (Tracked in Issue #46)
 
@@ -71,30 +83,30 @@ Once `gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr` and
 
 ---
 
-## 3. Component CLI Entrypoints & Standard Runbook Commands
+## 3. Component CLI Entrypoints & Standard Runbook Commands (`benchmarks/`)
 
-All six component benchmark harnesses are registered as console scripts in `setup.py` and obey the **Zero `try`/`except`** rule (`skills/algorithm-rules-and-norms.md`):
+All six component benchmark harnesses live in the root **`benchmarks/`** package, are registered as console scripts in `setup.py`, and obey the **Zero `try`/`except`** rule (`skills/algorithm-rules-and-norms.md`):
 
-| # | CLI Entrypoint | Module | Component Under Test |
+| # | CLI Entrypoint | Module (`benchmarks/`) | Component Under Test |
 | :--- | :--- | :--- | :--- |
-| **1** | `benchmark-catchment` | `multimet.catchment_delineation.benchmark` | 90m (`3-arcsec`) D8 watershed delineation & pour-point snapping (`DemDelineator`) |
-| **2** | `benchmark-static-extractor` | `multimet.static_extractor.benchmark` | HydroATLAS Level 12 & Caravan static catchment attribute extraction (`StaticAttributesExtractor`) |
-| **3a** | `benchmark-gridded-archive` | `multimet.gridded_archive_builders.benchmark` | Gridded Zarr archive builders (`CPCArchiveBuilder`, `IMERGArchiveBuilder`) vs. reference archives |
-| **3b** | `benchmark-timeseries-extractor` | `multimet.timeseries_extractors.benchmark` | Spherical cosine-latitude `ZonalWeightMatrix` & MultiMet catchment timeseries extractors (`CPC`, `IMERG`, `HRES`) |
-| **4** | `benchmark-return-periods` | `return_periods.tools.run_caravan_usgs_benchmark` | USGS Bulletin 17C `MultipleGrubbsBeckTester` (`MGBT`) & `GEMAFitter` (`EMA` LP-III) |
-| **5** | `benchmark-model` | `model.evaluation.benchmark` | Core deep learning forecasting models (`MeanEmbeddingForecastLSTM`, `HandoffForecastLSTM`), forcing sensitivity, and hot-start state handoff |
+| **1** | `benchmark-catchment` | `benchmarks.catchment_delineation` | 90m (`3-arcsec`) D8 watershed delineation & pour-point snapping (`DemDelineator`) |
+| **2** | `benchmark-static-extractor` | `benchmarks.static_extractor` | HydroATLAS Level 12 & Caravan static catchment attribute extraction (`StaticAttributesExtractor`) |
+| **3a** | `benchmark-gridded-archive` | `benchmarks.gridded_archive_builders` | Gridded Zarr archive builders (`CPCArchiveBuilder`, `IMERGArchiveBuilder`) vs. reference archives |
+| **3b** | `benchmark-timeseries-extractor` | `benchmarks.timeseries_extractors` | Spherical cosine-latitude `ZonalWeightMatrix` & MultiMet catchment timeseries extractors (`CPC`, `IMERG`, `HRES`) |
+| **4** | `benchmark-return-periods` | `benchmarks.return_periods` | USGS Bulletin 17C `MultipleGrubbsBeckTester` (`MGBT`) & `GEMAFitter` (`EMA` LP-III) |
+| **5** | `benchmark-model` | `benchmarks.model` | Core deep learning forecasting models (`MeanEmbeddingForecastLSTM`, `HandoffForecastLSTM`), forcing sensitivity, and hot-start state handoff |
 
 ### 3.1 Phase 1: Catchment Delineation (`benchmark-catchment`)
 ```bash
 # Run 1A: 1,200 Global Basins WITH Area Hint
-python -m multimet.catchment_delineation.benchmark \
+python -m benchmarks.catchment_delineation \
   --dataset /usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_1000.parquet \
   --tiles-dir /usr/local/google/home/gsnearing/data/DEMs/tiles_5deg \
   --workers 16 \
   --output <OUT_DIR>/catchment_1000_with_hint.parquet
 
 # Run 1B: 1,200 Global Basins WITHOUT Area Hint (Blind Coordinate Snapping)
-python -m multimet.catchment_delineation.benchmark \
+python -m benchmarks.catchment_delineation \
   --dataset /usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_1000.parquet \
   --tiles-dir /usr/local/google/home/gsnearing/data/DEMs/tiles_5deg \
   --no-area-hint \
@@ -102,7 +114,7 @@ python -m multimet.catchment_delineation.benchmark \
   --output <OUT_DIR>/catchment_1000_no_hint.parquet
 
 # Run 1C: 490 Caravan Basins WITH Area Hint & Saved Re-Delineated Geometries (for Cascaded Benchmarks)
-python -m multimet.catchment_delineation.benchmark \
+python -m benchmarks.catchment_delineation \
   --dataset /usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_500.parquet \
   --tiles-dir /usr/local/google/home/gsnearing/data/DEMs/tiles_5deg \
   --save-geometries \
@@ -113,7 +125,7 @@ python -m multimet.catchment_delineation.benchmark \
 ### 3.2 Phase 2: Static Attribute Extractor (`benchmark-static-extractor`)
 ```bash
 # Run 2A-HydroATLAS: Pure 196 HydroATLAS Level 12 Attributes on All 490 Canonical Polygons
-python -m multimet.static_extractor.benchmark \
+python -m benchmarks.static_extractor \
   --dataset /usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_500.parquet \
   --gdb-path <CACHE_DIR>/hydroatlas/BasinATLAS_v10.gdb \
   --era5-source none \
@@ -121,7 +133,7 @@ python -m multimet.static_extractor.benchmark \
   -o <OUT_DIR>/static_500_canonical_none
 
 # Run 2A: Full 210 Attributes (HydroATLAS + Pre-Aggregated hybas ERA5) on All 490 Canonical Polygons
-python -m multimet.static_extractor.benchmark \
+python -m benchmarks.static_extractor \
   --dataset /usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_500.parquet \
   --gdb-path <CACHE_DIR>/hydroatlas/BasinATLAS_v10.gdb \
   --era5-source hybas \
@@ -130,7 +142,7 @@ python -m multimet.static_extractor.benchmark \
   -o <OUT_DIR>/static_500_canonical_hybas
 
 # Run 2C (Unconditional All-490 Cascade): Re-Delineated Polygons from Run 1C (with None on failed delineations)
-python -m multimet.static_extractor.benchmark \
+python -m benchmarks.static_extractor \
   --dataset <OUT_DIR>/benchmark_basins_500_redelineated_all490.parquet \
   --gdb-path <CACHE_DIR>/hydroatlas/BasinATLAS_v10.gdb \
   --era5-source hybas \
@@ -142,20 +154,20 @@ python -m multimet.static_extractor.benchmark \
 ### 3.3 Phase 3A & 3B & 3C: Gridded Archive Builders & MultiMet Timeseries Reconstruction
 ```bash
 # Phase 3A: Spot-check rebuilt CPC & IMERG gridded archives against gs://open-multimet/gridded-data-archives/
-python -m multimet.gridded_archive_builders.benchmark \
+python -m benchmarks.gridded_archive_builders \
   --product CPC \
   --start-date 2020-01-01 --end-date 2020-01-31 \
   --reference-zarr gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr \
   --output-dir <OUT_DIR>/gridded_archive_cpc
 
-python -m multimet.gridded_archive_builders.benchmark \
+python -m benchmarks.gridded_archive_builders \
   --product IMERG \
   --start-date 2024-01-01 --end-date 2024-01-03 \
   --reference-zarr gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr \
   --output-dir <OUT_DIR>/gridded_archive_imerg
 
 # Phase 3B: Reconstruct Canonical Caravan-MultiMet v1.1 Timeseries (CPC, IMERG, HRES across all 3 upstream HRES tiers)
-python -m multimet.timeseries_extractors.benchmark \
+python -m benchmarks.timeseries_extractors \
   --dataset /usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_500.parquet \
   --canonical-dir gs://caravan-multimet/v1.1 \
   --archive-store CPC=gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr \
@@ -163,7 +175,7 @@ python -m multimet.timeseries_extractors.benchmark \
   --output-dir <OUT_DIR>/3b_cpc \
   --num-workers 8
 
-python -m multimet.timeseries_extractors.benchmark \
+python -m benchmarks.timeseries_extractors \
   --dataset /usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_500.parquet \
   --canonical-dir gs://caravan-multimet/v1.1 \
   --archive-store IMERG=gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr \
@@ -171,7 +183,7 @@ python -m multimet.timeseries_extractors.benchmark \
   --output-dir <OUT_DIR>/3b_imerg \
   --num-workers 8
 
-python -m multimet.timeseries_extractors.benchmark \
+python -m benchmarks.timeseries_extractors \
   --dataset /usr/local/google/home/gsnearing/ancillary-data/benchmarks/benchmark_basins_500.parquet \
   --canonical-dir gs://caravan-multimet/v1.1 \
   --archive-store HRES=gs://open-multimet/gridded-data-archives/HRES/daily_surface.zarr \
@@ -180,7 +192,7 @@ python -m multimet.timeseries_extractors.benchmark \
   --num-workers 8
 
 # Phase 3C (Unconditional All-490 Cascade): Re-Delineated Polygons -> Zonal Timeseries
-python -m multimet.timeseries_extractors.benchmark \
+python -m benchmarks.timeseries_extractors \
   --dataset <OUT_DIR>/benchmark_basins_500_redelineated_all490.parquet \
   --canonical-dir gs://caravan-multimet/v1.1 \
   --archive-store CPC=gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr \
@@ -194,7 +206,7 @@ python -m multimet.timeseries_extractors.benchmark \
 ### 3.4 Phase 4: Return Period Calculator (`benchmark-return-periods`)
 ```bash
 # Full USGS Fortran peakfqr v8.0 & CRAN R MGBT v1.1.6 Parity Benchmark
-python -m return_periods.tools.run_caravan_usgs_benchmark \
+python -m benchmarks.return_periods \
   --caravan-dir /usr/local/google/home/gsnearing/Projects/caravan_data/Caravan-nc \
   --peakfq-so /tmp/peakfqr/src/peakfq.so \
   --output-dir <OUT_DIR>/return_periods_usgs
@@ -203,7 +215,7 @@ python -m return_periods.tools.run_caravan_usgs_benchmark \
 ### 3.5 Phase 5: Core Forecasting Model (`benchmark-model`)
 ```bash
 # Run compare_forcings, benchmark_architectures, and benchmark_hot_start (NO ERA5_LAND, NO GRAPHCAST)
-python -m model.evaluation.benchmark \
+python -m benchmarks.model \
   --mode all \
   --basins-file <STAGED_DIR>/basins_25.txt \
   --statics-dir /usr/local/google/home/gsnearing/Projects/caravan_data/Caravan-zarr \

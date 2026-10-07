@@ -48,7 +48,7 @@ from multimet.static_extractor.extractor import (
     _get_worker_extractor,
 )
 
-logger = logging.getLogger("static_extractor.benchmark")
+logger = logging.getLogger("benchmarks.static_extractor")
 
 THEMATIC_DOMAINS = [
     "Topography",
