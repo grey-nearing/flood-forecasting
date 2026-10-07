@@ -6842,8 +6842,8 @@
             tip = `Real data: run from ${formatWeatherRunDate(d)}, ${info.max_lead_hours} h of forecast.`;
           } else if (info && info.data_source) {
             cls = 'synthetic';
-            text = 'synthetic';
-            tip = 'No data for this model on this server; the map shows a made-up pattern.';
+            text = 'not synced';
+            tip = 'This model has not been synced to the local weather_fetcher cache yet.';
           }
           btn.classList.toggle('active', active);
           btn.classList.toggle('is-synthetic', cls === 'synthetic');
@@ -6858,8 +6858,9 @@
       }
       const modelBadge = document.getElementById('weatherCurrentModelBadge');
       if (modelBadge) modelBadge.innerText = weatherModelLabel(activeWeatherModel);
-      // Per-layer "synthetic" tags for the selected model.
+      // Per-layer "not synced" tags for the selected model.
       document.querySelectorAll('[data-var-tag]').forEach(tag => {
+        tag.innerText = 'not synced';
         tag.classList.toggle('hidden', weatherVarSource(activeWeatherModel, tag.dataset.varTag) !== 'synthetic');
       });
       const windTag = document.getElementById('weatherWindSourceTag');
@@ -6868,7 +6869,7 @@
         const real = (hdr && hdr.model === activeWeatherModel)
           ? hdr.data_source === 'archived_run'
           : weatherVarSource(activeWeatherModel, 'wind') === 'real';
-        windTag.innerText = real ? '(real data)' : '(synthetic)';
+        windTag.innerText = real ? '(real data)' : '(not synced)';
       }
     }
 
@@ -6901,12 +6902,12 @@
         if (src === 'real') {
           const runDate = info.init_time ? ` from ${formatWeatherRunDate(new Date(info.init_time))}` : '';
           sourceEl.innerText = weatherAutoUpdating()
-            ? `Real forecast: the latest ${model} run${runDate}.`
+            ? `Real forecast via weather_fetcher: the latest ${model} run${runDate}.`
             : `Real data from the saved ${model} run${runDate}. This server is not updating it.`;
         } else if (src === 'synthetic' && info.data_source === 'archived_run') {
-          sourceEl.innerText = `Synthetic: this server has no ${WEATHER_VAR_NOUNS[activeWeatherVar] || activeWeatherVar} data for ${model}, so this is a made-up pattern.`;
+          sourceEl.innerText = `Not synced: this server has no ${WEATHER_VAR_NOUNS[activeWeatherVar] || activeWeatherVar} stream for ${model}.`;
         } else if (src === 'synthetic') {
-          sourceEl.innerText = `Synthetic: this server has no ${model} data, so this is a made-up pattern for testing the viewer.`;
+          sourceEl.innerText = `Not synced: this server has no synced ${model} forecast run in weather_fetcher.`;
         } else if (weatherModelsInfoError) {
           sourceEl.innerText = 'Could not reach /api/weather/models, so it is unknown whether this is real data.';
         } else if (weatherModelsInfo) {

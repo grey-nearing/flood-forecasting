@@ -268,128 +268,6 @@ def start_background_sync(
   return _SYNC_THREAD
 
 
-def build_global_tensors(target_dir: str = DATA_DIR) -> Dict[str, Any]:
-  """Compiles local fallback forecast binaries into target_dir for offline UI use."""
-  os.makedirs(target_dir, exist_ok=True)
-  now_utc = datetime.datetime.now(datetime.timezone.utc)
-  base_time = now_utc.replace(minute=0, second=0, microsecond=0)
-  timestamps = [
-      (base_time + datetime.timedelta(hours=h * 3)).strftime("%Y-%m-%dT%H:%M:%SZ")
-      for h in range(NUM_HOURS)
-  ]
-
-  lats = np.array([90.0 - r * 0.25 for r in range(N_LAT)], dtype=np.float32)[
-      :, None
-  ]
-  lons = np.array([c * 0.25 - 180.0 for c in range(N_LON)], dtype=np.float32)[
-      None, :
-  ]
-  lat_rad = np.radians(lats)
-  lon_rad = np.radians(lons)
-  sin_lat = np.sin(lat_rad)
-  cos_lat = np.cos(lat_rad)
-  base_temp = 28.0 * cos_lat - 36.0 * (sin_lat**2)
-  base_temp = np.where(lats > 70.0, base_temp - 16.0, base_temp)
-  base_temp = np.where(lats < -60.0, base_temp - 26.0, base_temp)
-  u_base = -7.0 * np.cos(lat_rad * 3.0) + 12.0 * np.exp(
-      -(((np.abs(lats) - 48.0) / 14.0) ** 2)
-  )
-  v_base = 2.0 * np.sin(lat_rad * 2.0)
-
-  streams = {
-      k: np.zeros((NUM_HOURS, N_LAT, N_LON), dtype=np.float16)
-      for k in GLOBAL_VARS
-  }
-  for step in range(NUM_HOURS):
-    lead_h = step * 3
-    step_dt = base_time + datetime.timedelta(hours=lead_h)
-    solar_hour = step_dt.hour
-    wave = (
-        np.sin(3 * lon_rad + lead_h * 0.05) * 4.5 * np.cos(lat_rad * 2.0)
-        + np.sin(5 * lon_rad - lead_h * 0.08) * 2.8 * sin_lat
-    )
-    local_solar = (solar_hour + lons / 15.0) % 24.0
-    diurnal = np.sin((local_solar - 8.0) * np.pi / 12.0) * 5.0 * cos_lat
-    temp_field = base_temp + wave + diurnal
-
-    itcz_dist = np.abs(lats - (4.0 * np.sin(lon_rad * 2.0 + lead_h * 0.02)))
-    storm_track = np.abs(
-        np.abs(lats) - 45.0 + 5.0 * np.sin(4 * lon_rad + lead_h * 0.04)
-    )
-    rain_itcz = np.maximum(
-        0.0,
-        (8.0 - itcz_dist)
-        * 0.9
-        * np.maximum(0.0, np.sin(lon_rad * 4.0 + lead_h * 0.1)),
-    )
-    rain_storms = np.maximum(
-        0.0,
-        (10.0 - storm_track)
-        * 0.7
-        * np.maximum(0.0, np.cos(lon_rad * 3.0 + lead_h * 0.06)),
-    )
-    precip_field = np.where(itcz_dist < 8.0, rain_itcz, 0.0) + np.where(
-        storm_track < 10.0, rain_storms, 0.0
-    )
-    u_field = u_base + wave * 0.8
-    v_field = v_base + np.cos(3 * lon_rad + lead_h * 0.05) * 4.2 * np.sin(
-        lat_rad * 2.0
-    )
-
-    streams["ecmwf_ifs_precip"][step] = precip_field.astype(np.float16)
-    streams["ecmwf_ifs_temp"][step] = temp_field.astype(np.float16)
-    streams["ecmwf_ifs_u10"][step] = u_field.astype(np.float16)
-    streams["ecmwf_ifs_v10"][step] = v_field.astype(np.float16)
-    streams["ecmwf_aifs_precip"][step] = np.maximum(
-        0.0, precip_field * 1.04 - 0.05
-    ).astype(np.float16)
-    streams["ecmwf_aifs_temp"][step] = (
-        temp_field + 0.2 * np.sin(lon_rad * 4.0)
-    ).astype(np.float16)
-    streams["graphcast_precip"][step] = np.maximum(
-        0.0, precip_field * 0.98 + np.where(precip_field > 0.5, 0.1, 0.0)
-    ).astype(np.float16)
-    streams["graphcast_temp"][step] = (
-        temp_field - 0.15 * np.cos(lat_rad * 3.0)
-    ).astype(np.float16)
-    streams["noaa_gfs_precip"][step] = np.maximum(
-        0.0, precip_field * 1.08 - 0.02
-    ).astype(np.float16)
-    streams["noaa_gfs_temp"][step] = (
-        temp_field + 0.3 * np.cos(lon_rad * 2.0)
-    ).astype(np.float16)
-
-  for var_name in GLOBAL_VARS:
-    var_path = os.path.join(target_dir, f"{var_name}.bin")
-    streams[var_name].tofile(var_path)
-
-  metadata = {
-      "status": "HEALTHY",
-      "service": "Earthkit Hydro Full-Earth Operational Weather Engine",
-      "source": "ECMWF Open Data / dynamical.org / DeepMind GraphCast",
-      "spatial_grid": {
-          "n_lat": N_LAT,
-          "n_lon": N_LON,
-          "total_points": N_LAT * N_LON,
-          "lat_bounds": [90.0, -90.0],
-          "lon_bounds": [-180.0, 180.0],
-          "resolution_deg": 0.25,
-      },
-      "temporal_grid": {
-          "num_hours": NUM_HOURS,
-          "cadence_hours": 3,
-          "horizon_days": 10,
-          "timestamps": timestamps,
-      },
-      "last_synced_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-      "sync_interval_hours": SYNC_INTERVAL_HOURS,
-  }
-  meta_path = os.path.join(target_dir, "global_meta.json")
-  with open(meta_path, "w", encoding="utf-8") as f_meta:
-    json.dump(metadata, f_meta, indent=2)
-  return metadata
-
-
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(
       description="Earthkit Hydro Global Weather Ingestion Worker"
@@ -425,16 +303,14 @@ if __name__ == "__main__":
   )
   args = parser.parse_args()
 
-  if args.fetch_latest:
-    result = sync_latest(
-        root=args.data_root,
-        models=[m for m in args.models.split(",") if m] or None,
-        force=args.force,
-        log=lambda msg: print(msg, flush=True),
-    )
-    sys.exit(
-        0
-        if result.get("last_result") in ("updated", "up_to_date", "busy")
-        else 1
-    )
-  build_global_tensors(args.target_dir)
+  result = sync_latest(
+      root=args.data_root,
+      models=[m for m in args.models.split(",") if m] or None,
+      force=args.force,
+      log=lambda msg: print(msg, flush=True),
+  )
+  sys.exit(
+      0
+      if result.get("last_result") in ("updated", "up_to_date", "busy")
+      else 1
+  )

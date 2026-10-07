@@ -333,8 +333,10 @@ def swap_current_symlink(data_dir: Union[str, Path], run_name: str) -> Path:
   tmp = root / f"current.tmp{os.getpid()}"
   if os.path.lexists(tmp):
     tmp.unlink()
-  os.symlink(Path("runs") / run_name, tmp)
+  os.symlink(Path("runs") / run_name, tmp, target_is_directory=True)
   current_link = root / "current"
+  if os.name == "nt" and os.path.lexists(current_link):
+    current_link.unlink()
   os.replace(tmp, current_link)
   return current_link
 
