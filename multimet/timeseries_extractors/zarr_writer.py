@@ -745,11 +745,13 @@ class MultiMetZarrWriter:
 
     new_slice = ds_to_write.sel(basin=new_basins)
     prod_type = PRODUCT_TYPES[product]
-    chunk_spec = (
+    chunk_spec = dict(
         DEFAULT_CHUNKS_NOWCAST
         if prod_type == ProductType.NOWCAST
         else DEFAULT_CHUNKS_FORECAST
     )
+    if "ensemble_member" in new_slice.dims:
+      chunk_spec["ensemble_member"] = -1
     new_slice = new_slice.chunk(chunk_spec)
 
     _safe_to_zarr(
@@ -782,11 +784,13 @@ class MultiMetZarrWriter:
     store_path = self.get_store_path(product)
     prod_type = PRODUCT_TYPES[product]
     is_forecast = prod_type == ProductType.FORECAST
-    chunk_spec = (
+    chunk_spec = dict(
         DEFAULT_CHUNKS_NOWCAST
         if prod_type == ProductType.NOWCAST
         else DEFAULT_CHUNKS_FORECAST
     )
+    if "ensemble_member" in ds_to_write.dims:
+      chunk_spec["ensemble_member"] = -1
 
     local_target = store_path
 

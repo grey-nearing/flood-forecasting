@@ -105,3 +105,49 @@ class TestNasaCmrImerg:
     )
     assert len(urls) == 1
     assert urls[0].endswith(".nc4")
+
+
+class TestDynamicalCatalog:
+  """Canaries for the dynamical.org Icechunk catalog feeds."""
+
+  def test_catalog_contains_all_supported_datasets(self) -> None:
+    from multimet.timeseries_extractors.dynamical import (
+        DYNAMICAL_FORECAST_DATASETS,
+        DynamicalIMERGExtractor,
+        list_catalog_datasets,
+    )
+
+    available = set(list_catalog_datasets())
+    for _, dataset_id, _, _, _ in DYNAMICAL_FORECAST_DATASETS.values():
+      assert dataset_id in available
+    assert DynamicalIMERGExtractor.DEFAULT_DATASET_ID in available
+
+  def test_live_gfs_and_dynamical_imerg_extraction(self) -> None:
+    import geopandas as gpd
+    from shapely.geometry import box
+    from multimet.timeseries_extractors.dynamical import (
+        DynamicalIMERGExtractor,
+        GFSExtractor,
+    )
+
+    gdf = gpd.GeoDataFrame(
+        {"basin_id": ["canary_basin"], "geometry": [box(-120.5, 38.5, -120.0, 39.0)]},
+        crs="EPSG:4326",
+    ).set_index("basin_id")
+
+    gfs = GFSExtractor(lead_days=2)
+    gfs_ds = gfs.extract_for_basins(
+        gdf, start_date="2025-06-01", end_date="2025-06-01"
+    )
+    assert np.all(np.isfinite(gfs_ds["gfs_total_precipitation"].values))
+    assert np.all(np.isfinite(gfs_ds["gfs_temperature_2m_max"].values))
+    assert np.all(np.isfinite(gfs_ds["gfs_temperature_2m_min"].values))
+
+    imerg = DynamicalIMERGExtractor(batch_days=1)
+    imerg_ds = imerg.extract_for_basins(
+        gdf, start_date="2025-06-01", end_date="2025-06-01"
+    )
+    assert np.all(
+        np.isfinite(imerg_ds["dynamical_imerg_precipitation"].values)
+    )
+

@@ -48,6 +48,14 @@ from multimet.timeseries_extractors.config import (
     Product,
 )
 from multimet.timeseries_extractors.cpc import CPCExtractor
+from multimet.timeseries_extractors.dynamical import (
+    AIFSEnsExtractor,
+    AIFSExtractor,
+    DynamicalIMERGExtractor,
+    GEFSExtractor,
+    GFSExtractor,
+    IFSEnsExtractor,
+)
 from multimet.timeseries_extractors.era5_land import ERA5LandExtractor
 from multimet.utils.geometry import load_basin_geometries
 from multimet.timeseries_extractors.hres import HRESExtractor
@@ -59,11 +67,26 @@ from multimet.utils.zonal import ZonalWeightMatrix
 
 logger = logging.getLogger(__name__)
 
+DYNAMICAL_PRODUCTS: frozenset[str] = frozenset({
+    "AIFS",
+    "AIFS_ENS",
+    "GFS",
+    "GEFS",
+    "IFS_ENS",
+    "DYNAMICAL_IMERG",
+})
+
 PRODUCT_MAP: Dict[str, Tuple[Product, type[BaseExtractor]]] = {
     "CPC": (Product.CPC, CPCExtractor),
     "ERA5_LAND": (Product.ERA5_LAND, ERA5LandExtractor),
     "IMERG": (Product.IMERG, IMERGExtractor),
     "HRES": (Product.HRES, HRESExtractor),
+    "AIFS": (Product.AIFS, AIFSExtractor),
+    "AIFS_ENS": (Product.AIFS_ENS, AIFSEnsExtractor),
+    "GFS": (Product.GFS, GFSExtractor),
+    "GEFS": (Product.GEFS, GEFSExtractor),
+    "IFS_ENS": (Product.IFS_ENS, IFSEnsExtractor),
+    "DYNAMICAL_IMERG": (Product.DYNAMICAL_IMERG, DynamicalIMERGExtractor),
 }
 
 
@@ -335,6 +358,11 @@ def extract_product_dask(
           "or archive_stores['ERA5_LAND']."
       )
   elif source_lower in ("archive", "gridded_archive", "zarr_archive"):
+    if prod_name in DYNAMICAL_PRODUCTS:
+      raise ValueError(
+          f"Product {prod_name} reads from the dynamical.org Icechunk "
+          "catalog and does not support source='archive'."
+      )
     extractor_kwargs["source"] = "archive"
     if not extractor_kwargs.get("data_dir"):
       raise ValueError(
@@ -368,6 +396,8 @@ def extract_product_dask(
         else ("local" if source_lower == "local" else source_lower)
     )
     extractor_kwargs["source"] = src
+  elif prod_name in DYNAMICAL_PRODUCTS:
+    extractor_kwargs["source"] = "dynamical"
 
   from multimet.timeseries_extractors.zarr_writer import check_zarr_store_exists
 
