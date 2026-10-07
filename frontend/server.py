@@ -673,6 +673,66 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         self._send_error(f"Failed to query MaaS watershed polygon: {e}", status=400)
         return
 
+    # API: Cross-Network Reach Resolution (/api/maas/reaches)
+    if path == "/api/maas/reaches":
+      try:
+        lat = float(query.get("lat", [32.756])[0])
+        lon = float(query.get("lon", [-117.252])[0])
+        gauge_id = query.get("gauge_id", [None])[0] or None
+        river_id = query.get("river_id", [None])[0] or None
+        upstream_area_km2 = query.get("upstream_area_km2", [None])[0]
+        area_min_km2 = query.get("area_min_km2", [None])[0]
+        network = query.get("network", [None])[0] or None
+
+        try:
+          from frontend.maas_engine import get_maas_fetcher
+        except ImportError:
+          from maas_engine import get_maas_fetcher
+
+        reaches = get_maas_fetcher().resolve_reaches(
+            lat,
+            lon,
+            upstream_area_km2=upstream_area_km2,
+            area_min_km2=area_min_km2,
+            network=network,
+            river_id=river_id,
+            gauge_id=gauge_id,
+        )
+        self._send_json(reaches)
+        return
+      except Exception as e:
+        self._send_error(f"Failed to resolve MaaS reaches: {e}", status=400)
+        return
+
+    # API: Provider Return Period Thresholds (/api/maas/return-periods)
+    if path == "/api/maas/return-periods":
+      try:
+        provider = (query.get("provider", ["glofas"])[0] or "glofas").strip().lower()
+        method = (query.get("method", ["gema"])[0] or "gema").strip().lower()
+        lat_str = query.get("lat", [None])[0]
+        lon_str = query.get("lon", [None])[0]
+        lat = float(lat_str) if lat_str is not None else None
+        lon = float(lon_str) if lon_str is not None else None
+        reach_id = query.get("reach_id", query.get("river_id", [None]))[0]
+
+        try:
+          from frontend.maas_engine import get_maas_fetcher
+        except ImportError:
+          from maas_engine import get_maas_fetcher
+
+        rps = get_maas_fetcher().fetch_return_periods(
+            provider,
+            reach_id=reach_id,
+            lat=lat,
+            lon=lon,
+            method=method,
+        )
+        self._send_json({"provider": provider, "method": method, "return_periods": rps})
+        return
+      except Exception as e:
+        self._send_error(f"Failed to query MaaS return periods: {e}", status=400)
+        return
+
     # API: Real-Time Forecast & Model Status (/api/forecast/status)
     if path == "/api/forecast/status":
       user = self._get_request_username()

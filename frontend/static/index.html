@@ -8942,7 +8942,6 @@
     // Shown above the chart whenever the selected model is not a live forecast.
     const MAAS_STATUS_NOTES = {
       emulated: "Emulated: no operational Today's Earth feed is configured, so this is a CaMa-Flood emulation forced by the GloFAS median.",
-      fallback: 'Offline fallback: the live service did not respond, so this curve is synthetic.',
       severity_only: 'FloodHub reports a flood status for this gauge but publishes no forecast hydrograph.',
       unavailable: 'No forecast from this model at this location.'
     };
@@ -8960,6 +8959,26 @@
     let maasRiverRenderer = null;
     let maasActiveProbeMarker = null;
     let maasHidMainRivers = false;
+
+    // Color ramp for river segments when `flow_percentile` (0-100) or `exceedance_rank` (0-4) is present on feature properties.
+    function maasFlowPercentileColor(props, fallbackColor) {
+      if (!props) return fallbackColor;
+      const pct = Number(props.flow_percentile);
+      if (props.flow_percentile !== null && props.flow_percentile !== undefined && isFinite(pct)) {
+        if (pct >= 99) return '#b31412';
+        if (pct >= 95) return '#d93025';
+        if (pct >= 90) return '#e8710a';
+        if (pct >= 75) return '#f9ab00';
+        if (pct >= 25) return '#1a73e8';
+        return '#8ab4f8';
+      }
+      const rank = Number(props.exceedance_rank);
+      if (props.exceedance_rank !== null && props.exceedance_rank !== undefined && isFinite(rank) && rank > 0) {
+        const rankColors = ['#1e8e3e', '#f9ab00', '#e8710a', '#d93025', '#b31412'];
+        return rankColors[Math.min(Math.max(Math.round(rank), 0), rankColors.length - 1)];
+      }
+      return fallbackColor;
+    }
 
     function renderMaaSMultiModelLists() {
       const mapList = document.getElementById('maasMapMultiModelList');
@@ -9117,7 +9136,7 @@
       return isNaN(d.getTime()) ? String(isoValue) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
     }
 
-    // Matches the backend's zoom thresholds in maas_networks.py so zooming into a finer level of detail
+    // Matches the backend's zoom thresholds in maas.networks / maas_networks.py so zooming into a finer level of detail
     // fetches new reaches while staying within the same level reuses the drawn layer.
     function maasLodKey(model, zoom) {
       const z = model === 'floodhub' ? Math.min(Math.max(zoom, 4), 11)
@@ -9154,7 +9173,7 @@
       maasRiversDebounceTimer = setTimeout(fetchMaaSViewportRivers, 300);
     }
 
-    // River network of the selected model for the current viewport; clicking a line opens its forecast.
+    // River network of the selected model for the current viewport at telescoping spatial resolution; clicking a line opens its forecast.
     async function fetchMaaSViewportRivers() {
       if (!map || currentActiveTabId !== 'tab-maas') return;
       initMaaSMapLayers();
@@ -9191,9 +9210,11 @@
         const riverLayer = L.geoJSON(geojson, {
           renderer: maasRiverRenderer,
           style: (feat) => {
+            const p = feat.properties || {};
             const areaKm2 = reachArea(feat);
             const weight = Math.max(1.2, Math.min(4.8, 0.85 * Math.log10(Math.max(areaKm2, 50)) - 0.5));
-            return { color: modelMeta.color, weight, opacity: 0.9, lineCap: 'round', lineJoin: 'round' };
+            const color = maasFlowPercentileColor(p, modelMeta.color);
+            return { color, weight, opacity: 0.9, lineCap: 'round', lineJoin: 'round' };
           },
           onEachFeature: (feat, layer) => {
             const p = feat.properties || {};
@@ -9202,7 +9223,10 @@
               ? (model === 'geoglows' ? `TDX-Hydro #${reachId}` : `Reach ${String(reachId).replace(/^HYRIV_/, '')}`)
               : modelMeta.reachLabel;
             const area = Number(p.upstream_area_km2) > 0 ? `${Math.round(Number(p.upstream_area_km2)).toLocaleString()} km² upstream` : '';
-            layer.bindTooltip(`<b>${maasEscapeHtml(name)}</b>${area ? `<br>${maasEscapeHtml(area)}` : ''}<br><span style="color:#5f6368">Click for forecast</span>`, { sticky: true });
+            const pctNote = (p.flow_percentile !== null && p.flow_percentile !== undefined && isFinite(Number(p.flow_percentile)))
+              ? `<br>Flow percentile: ${Number(p.flow_percentile).toFixed(0)}th`
+              : '';
+            layer.bindTooltip(`<b>${maasEscapeHtml(name)}</b>${area ? `<br>${maasEscapeHtml(area)}` : ''}${pctNote}<br><span style="color:#5f6368">Click for forecast</span>`, { sticky: true });
             layer.on('mouseover', () => layer.setStyle({ color: '#d93025', weight: layer.options.weight + 2 }));
             layer.on('mouseout', () => riverLayer.resetStyle(layer));
             layer.on('click', (e) => {
@@ -9220,8 +9244,8 @@
       }
     }
 
-    // Opens the forecast view for a clicked reach and fetches every model once; the dropdown then
-    // switches between models without refetching.
+    // Opens the forecast view for a clicked reach and fetches every model once via /api/maas/forecast;
+    // the dropdown then switches between models without refetching.
     function probeMaaSPoint(lat, lon, gaugeId = null, riverId = null, label = null, meta = null) {
       currentMaaSProbe = { lat, lon, gaugeId, riverId, label, meta };
       currentMaaSForecastData = null;
@@ -9314,12 +9338,12 @@
       });
     }
 
-    // Dashed flood thresholds from the selected model's own climatology (for FloodHub, the gauge's
-    // warning/danger levels), so they are consistent with the plotted curve.
+    // Dashed flood thresholds from the selected model's own return periods in `maas` (or FloodHub gauge thresholds).
     function maasModelThresholds(data, key) {
       const m = (data && data.models && data.models[key]) || {};
+      const rps = (data && data.return_periods) || {};
       const fh = key === 'floodhub';
-      const src = (fh ? m.thresholds : m.return_periods) || {};
+      const src = (fh ? m.thresholds : (m.return_periods || rps[key] || (key === 'todays_earth' ? rps.glofas : null))) || {};
       return [
         [fh ? 'Warning level' : '2-yr return period', fh ? src.warning_2yr : src.return_period_2, '#f9ab00'],
         [fh ? 'Danger level' : '5-yr return period', fh ? src.danger_5yr : src.return_period_5, '#e8710a'],
@@ -9349,26 +9373,32 @@
     }
 
     function maasSnappedReachSummary(data, keys) {
+      const reaches = (data && data.reaches) || {};
       const vs = (data && data.virtual_station) || {};
+      const gl = reaches.glofas || vs.glofas_cell;
+      const fh = reaches.floodhub || vs.floodhub_gauge;
+      const gg = reaches.geoglows || vs.geoglows_reach;
+      const te = reaches.todays_earth || vs.todays_earth_cell;
+      const probe = reaches.probe || vs.probe;
       const parts = [];
       for (const k of keys) {
-        if (k === 'glofas' && vs.glofas_cell) {
-          parts.push(`LISFLOOD (${Number(vs.glofas_cell.cell_center_lat).toFixed(2)}°, ${Number(vs.glofas_cell.cell_center_lon).toFixed(2)}°)`);
-        } else if (k === 'floodhub' && vs.floodhub_gauge && vs.floodhub_gauge.gauge_id) {
-          parts.push(`HydroSHEDS ${vs.floodhub_gauge.gauge_id}`);
-        } else if (k === 'geoglows' && vs.geoglows_reach && vs.geoglows_reach.river_id) {
-          parts.push(`TDX-Hydro #${vs.geoglows_reach.river_id}`);
-        } else if (k === 'todays_earth' && vs.todays_earth_cell) {
-          parts.push(`CaMa-Flood (${Number(vs.todays_earth_cell.cell_center_lat).toFixed(2)}°, ${Number(vs.todays_earth_cell.cell_center_lon).toFixed(2)}°)`);
+        if (k === 'glofas' && gl && gl.cell_center_lat !== undefined) {
+          parts.push(`LISFLOOD (${Number(gl.cell_center_lat).toFixed(2)}°, ${Number(gl.cell_center_lon).toFixed(2)}°)`);
+        } else if (k === 'floodhub' && fh && fh.gauge_id) {
+          parts.push(`HydroSHEDS ${fh.gauge_id}`);
+        } else if (k === 'geoglows' && gg && gg.river_id) {
+          parts.push(`TDX-Hydro #${gg.river_id}`);
+        } else if (k === 'todays_earth' && te && te.cell_center_lat !== undefined) {
+          parts.push(`CaMa-Flood (${Number(te.cell_center_lat).toFixed(2)}°, ${Number(te.cell_center_lon).toFixed(2)}°)`);
         }
       }
-      const targetArea = vs.probe && Number(vs.probe.upstream_area_km2) > 0
-        ? ` (~${Math.round(Number(vs.probe.upstream_area_km2)).toLocaleString()} km² upstream)`
+      const targetArea = probe && Number(probe.upstream_area_km2) > 0
+        ? ` (~${Math.round(Number(probe.upstream_area_km2)).toLocaleString()} km² upstream)`
         : '';
       return parts.length ? `Matched stream reaches${targetArea}: ${parts.join(' · ')}` : null;
     }
 
-    // Draws either the single selected model or the multi-model ensemble from the cached payload.
+    // Draws either the single selected model or the multi-model ensemble from the cached `maas` payload.
     function renderMaaSForecast() {
       initMaasCharts();
       const data = currentMaaSForecastData;
@@ -9441,14 +9471,15 @@
             const m = MAAS_MODELS[k];
             const st = (timeline.status || {})[k] || null;
             datasets.push({
-              label: m.name + (st === 'emulated' ? ' (emulated)' : st === 'fallback' ? ' (fallback)' : ''),
+              label: m.name + (st === 'emulated' ? ' (emulated)' : ''),
               data: sliced[k], unit: 'm³/s', borderColor: m.color, backgroundColor: m.color,
               borderWidth: 2.5, borderDash: st === 'emulated' ? [6, 3] : [], pointRadius: 2,
               tension: 0.3, spanGaps: true, order: 1
             });
           }
           const reachNote = maasSnappedReachSummary(data, usable);
-          note = [reachNote, skipped.length ? `Skipped: ${skipped.join(', ')}` : null].filter(Boolean).join(' · ') || null;
+          const agreementNote = (data.flood_summary && data.flood_summary.agreement) ? data.flood_summary.agreement : null;
+          note = [reachNote, agreementNote, skipped.length ? `Skipped: ${skipped.join(', ')}` : null].filter(Boolean).join(' · ') || null;
         }
       } else {
         const select = document.getElementById('maasModelSelect');
@@ -9487,12 +9518,10 @@
             borderColor: style.color, backgroundColor: style.color, borderWidth: 2.5, borderDash: status === 'emulated' ? [6, 3] : [],
             pointRadius: 2, tension: 0.3, spanGaps: true, order: 0
           });
-          if (status !== 'fallback') { // a synthetic curve is never judged against thresholds
-            maasModelThresholds(data, key).forEach(t => datasets.push({
-              label: t.label, data: Array(plotDates.length).fill(t.value), unit, isThreshold: true, borderColor: t.color,
-              backgroundColor: t.color, borderWidth: 1.5, borderDash: [5, 4], pointRadius: 0, pointHitRadius: 0, fill: false, order: 1
-            }));
-          }
+          maasModelThresholds(data, key).forEach(t => datasets.push({
+            label: t.label, data: Array(plotDates.length).fill(t.value), unit, isThreshold: true, borderColor: t.color,
+            backgroundColor: t.color, borderWidth: 1.5, borderDash: [5, 4], pointRadius: 0, pointHitRadius: 0, fill: false, order: 1
+          }));
           note = status && status !== 'live' ? (MAAS_STATUS_NOTES[status] || null) : null;
         }
       }

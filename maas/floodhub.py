@@ -27,6 +27,19 @@ from shapely.ops import unary_union
 
 from maas.config import FLOODHUB_BASE_URL, parse_finite_float
 
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in kilometres between two `(lat, lon)` points."""
+    rlat1, rlon1 = math.radians(lat1), math.radians(lon1)
+    rlat2, rlon2 = math.radians(lat2), math.radians(lon2)
+    dlat = rlat2 - rlat1
+    dlon = rlon2 - rlon1
+    a = (
+        math.sin(dlat / 2.0) ** 2
+        + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2.0) ** 2
+    )
+    return 6371.0 * 2.0 * math.atan2(math.sqrt(a), math.sqrt(max(1.0 - a, 0.0)))
+
 FH_SEVERITY_MAP: dict[str, str] = {
     'NO_FLOODING': 'NO_FLOODING',
     'ABOVE_NORMAL': 'WARNING',
@@ -508,6 +521,268 @@ class FloodHubClient:
                 ),
             },
             'area_km2': geom_area_km2(geom),
+        }
+
+    def find_nearest_gauge(
+        self,
+        lat: float,
+        lon: float,
+        radius_km: float = FLOODHUB_GAUGE_SEARCH_RADIUS_KM,
+    ) -> tuple[str | None, dict[str, Any] | None, float | None]:
+        """Find the closest FloodHub gauge within `radius_km` of `(lat, lon)`."""
+        if not self.api_key.strip():
+            return None, None, None
+        dlat = radius_km / 111.0
+        dlon = radius_km / max(111.0 * math.cos(math.radians(lat)), 1.0)
+        gauges = self.search_gauges_bbox(
+            min_lat=lat - dlat,
+            min_lon=lon - dlon,
+            max_lat=lat + dlat,
+            max_lon=lon + dlon,
+            page_size=100,
+            include_non_verified=True,
+        )
+        best: tuple[float, dict[str, Any]] | None = None
+        for g in gauges:
+            gid = g.get('gauge_id')
+            glat = parse_finite_float(g.get('lat'))
+            glon = parse_finite_float(g.get('lon'))
+            if not gid or glat is None or glon is None:
+                continue
+            d = haversine_km(lat, lon, glat, glon)
+            if d <= radius_km and (best is None or d < best[0]):
+                best = (d, g)
+        if best is None:
+            return None, None, None
+        dist_km, g = best
+        return (
+            str(g['gauge_id']),
+            {
+                'lat': g.get('lat'),
+                'lon': g.get('lon'),
+                'source': g.get('source'),
+                'quality_verified': g.get('quality_verified'),
+                'severity': g.get('severity'),
+                'forecast_trend': g.get('forecast_trend'),
+                'issued_time': g.get('issued_time'),
+            },
+            round(dist_km, 2),
+        )
+
+    def fetch_inundation(  # noqa: PLR0913
+        self,
+        gauge_id: str | None = None,
+        lat: float | None = None,
+        lon: float | None = None,
+        *,
+        include_polygons: bool = True,
+        forecast: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Fetch FloodHub severity, trend, thresholds, and optional inundation polygons."""
+        gid = gauge_id.strip() if gauge_id else None
+        dist_km: float | None = None
+        gauge_meta: dict[str, Any] | None = None
+        if (
+            not gid
+            and lat is not None
+            and lon is not None
+            and self.api_key.strip()
+        ):
+            try:
+                gid, gauge_meta, dist_km = self.find_nearest_gauge(
+                    float(lat), float(lon)
+                )
+            except requests.RequestException:
+                gid = None
+
+        if not gid or not self.api_key.strip():
+            return {
+                'provider': 'floodhub',
+                'status': 'unavailable',
+                'gauge_id': gid,
+                'gauge_location': gauge_meta,
+                'distance_km': dist_km,
+                'severity': 'UNKNOWN',
+                'severity_rank': 0,
+                'trend': 'UNKNOWN',
+                'severity_source': 'unavailable',
+                'issued_time': None,
+                'quality_verified': None,
+                'source': None,
+                'thresholds': {
+                    'warning_level': None,
+                    'danger_level': None,
+                    'extreme_danger_level': None,
+                    'unit': 'm³/s',
+                },
+                'inundation_maps_available': False,
+                'inundation_map_levels': [],
+                'inundation_maps_time_range': None,
+                'inundation_polygons': [],
+            }
+
+        status_obj: dict[str, Any] | None = None
+        try:
+            status_obj = self.fetch_flood_status(gid)
+        except requests.RequestException:
+            status_obj = None
+
+        fc: Mapping[str, Any]
+        if forecast is not None:
+            fc = forecast
+        else:
+            try:
+                fc = self.fetch_forecast(gid)
+            except requests.RequestException:
+                fc = {'available': False, 'status': 'unavailable', 'data': []}
+
+        th = fc.get('thresholds') or {}
+        loc = (
+            (status_obj or {}).get('gaugeLocation')
+            if isinstance(status_obj, Mapping)
+            else None
+        ) or {}
+        if (
+            dist_km is None
+            and lat is not None
+            and lon is not None
+            and 'latitude' in loc
+            and 'longitude' in loc
+        ):
+            dist_km = round(
+                haversine_km(
+                    float(lat),
+                    float(lon),
+                    float(loc['latitude']),
+                    float(loc['longitude']),
+                ),
+                2,
+            )
+
+        severity = normalize_floodhub_severity(
+            (status_obj or {}).get('severity')
+            if isinstance(status_obj, Mapping)
+            else None
+        )
+        trend = normalize_floodhub_trend(
+            (status_obj or {}).get('forecastTrend')
+            if isinstance(status_obj, Mapping)
+            else None
+        )
+        if severity != 'UNKNOWN':
+            sev_source = 'floodhub_flood_status'
+            out_status = 'live'
+        elif fc.get('available'):
+            severity, trend = derive_floodhub_severity_from_forecast(fc)
+            sev_source = (
+                'derived_from_forecast_and_thresholds'
+                if severity != 'UNKNOWN'
+                else 'unavailable'
+            )
+            out_status = str(fc.get('status') or 'live')
+        else:
+            sev_source = 'unavailable'
+            out_status = 'unavailable'
+
+        raw_maps = (
+            ((status_obj or {}).get('mapInference') or {}).get('inundationMaps')
+            if isinstance(status_obj, Mapping)
+            else None
+        ) or []
+        time_range = (
+            ((status_obj or {}).get('mapInference') or {}).get('timeRange')
+            if isinstance(status_obj, Mapping)
+            else None
+        )
+        levels = [
+            str(m.get('level') or '').replace('INUNDATION_MAP_LEVEL_', '')
+            for m in raw_maps
+            if isinstance(m, Mapping) and m.get('serializedPolygonId')
+        ]
+
+        polygons: list[dict[str, Any]] = []
+        if include_polygons and raw_maps:
+            ordered = sorted(
+                raw_maps,
+                key=lambda m: FH_LEVEL_ORDER.get(
+                    str(m.get('level') or '').replace(
+                        'INUNDATION_MAP_LEVEL_', ''
+                    ),
+                    -1,
+                ),
+            )
+            for item in ordered:
+                if not isinstance(item, Mapping):
+                    continue
+                pid = item.get('serializedPolygonId')
+                level = str(item.get('level') or '').replace(
+                    'INUNDATION_MAP_LEVEL_', ''
+                )
+                if not pid:
+                    continue
+                try:
+                    parsed = self.fetch_polygon_geometry(str(pid))
+                except requests.RequestException:
+                    parsed = None
+                if parsed is None:
+                    continue
+                polygons.append(
+                    {
+                        'type': 'Feature',
+                        'geometry': parsed['geometry'],
+                        'properties': {
+                            'layer': 'floodhub_extent',
+                            'provider': 'Google FloodHub',
+                            'source': 'FloodHub floodStatus.mapInference (serializedPolygons)',
+                            'derived': False,
+                            'gauge_id': gid,
+                            'probability_level': level,
+                            'label': f"FloodHub {FH_LEVEL_LABELS.get(level, level.title() + ' likelihood')} extent",
+                            'severity': severity,
+                            'trend': trend,
+                            'issued_time': (status_obj or {}).get('issuedTime'),
+                            'time_range': time_range,
+                            'serialized_polygon_id': pid,
+                            'area_km2': parsed['area_km2'],
+                            'color': FH_LEVEL_COLORS.get(level, '#1a73e8'),
+                        },
+                    }
+                )
+
+        unit_raw = str(fc.get('unit') or 'CUBIC_METERS_PER_SECOND').upper()
+        unit_label = (
+            'm³/s'
+            if unit_raw == 'CUBIC_METERS_PER_SECOND'
+            else ('m' if unit_raw == 'METERS' else unit_raw)
+        )
+        return {
+            'provider': 'floodhub',
+            'status': out_status,
+            'gauge_id': gid,
+            'gauge_location': (
+                {'lat': loc.get('latitude'), 'lon': loc.get('longitude')}
+                if loc
+                else gauge_meta
+            ),
+            'distance_km': dist_km,
+            'severity': severity,
+            'severity_rank': FH_SEVERITY_RANK.get(severity, 0),
+            'trend': trend,
+            'severity_source': sev_source,
+            'issued_time': (status_obj or {}).get('issuedTime')
+            or fc.get('issued_time'),
+            'quality_verified': (status_obj or {}).get('qualityVerified'),
+            'source': (status_obj or {}).get('source'),
+            'thresholds': {
+                'warning_level': th.get('warning_2yr'),
+                'danger_level': th.get('danger_5yr'),
+                'extreme_danger_level': th.get('extreme_20yr'),
+                'unit': unit_label,
+            },
+            'inundation_maps_available': bool(levels),
+            'inundation_map_levels': levels,
+            'inundation_maps_time_range': time_range,
+            'inundation_polygons': polygons,
         }
 
 
