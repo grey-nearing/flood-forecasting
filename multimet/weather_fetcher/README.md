@@ -1,23 +1,23 @@
-# Gridded Weather Viewer & Sync Engine (`multimet.weather_viewer`)
+# Gridded Weather Forecast Fetcher & Synchronizer (`multimet.weather_fetcher`)
 
-This package downloads global weather forecasts from [dynamical.org](https://dynamical.org/) and renders map tiles, wind vectors, and point forecasts for the OpenHydroNet Weather Viewer.
+This package downloads global weather forecasts from [dynamical.org](https://dynamical.org/) and provides a Python API for querying gridded forecast arrays, wind vector grids, point meteogram time series, and catchment weather summaries.
 
 > **Do you need these tools?**
 > If you only want to train or evaluate flood-forecasting models using the published MultiMet dataset, **you do not need to run these tools**. Point `dynamics_data_dir` in your training configuration file to `gs://caravan-multimet/v1.1`.
 >
-> Use `multimet.weather_viewer` when you run the OpenHydroNet web application (`openhydronet-ui`) or when you need to download and visualize live 10-day gridded weather forecasts on a map.
+> Use `multimet.weather_fetcher` when you need to download and query live 10-day gridded weather forecasts from operational numerical weather prediction (NWP) and AI weather models.
 
 ---
 
 ## Overview & Entry Points
 
-Installing this repository with `pip install -e .` provides the `sync-weather-viewer` command-line tool and the `multimet.weather_viewer` Python package.
+Installing this repository with `pip install -e .` provides the `sync-weather-forecasts` command-line tool and the `multimet.weather_fetcher` Python package.
 
 | Component | Entry Point | Purpose |
 | :--- | :--- | :--- |
-| **CLI Synchronizer** | `sync-weather-viewer` | Downloads the newest 10-day global forecast runs (`0.25°`, `721 × 1440`) and updates the active run folder. |
+| **CLI Synchronizer** | `sync-weather-forecasts` | Downloads the newest 10-day global forecast runs (`0.25°`, `721 × 1440`) and updates the active run folder. |
 | **Python Sync API** | `WeatherSynchronizer`, `sync_all_models` | Checks upstream forecast catalogs, converts units to `float16` binary grids, and swaps the `current` symlink. |
-| **Python Viewer Engine** | `WeatherViewerEngine` | Renders Web Mercator (`EPSG:3857`) PNG map tiles, full-world animation frames, wind vector grids, point meteograms, and catchment summaries. |
+| **Python Data Fetcher** | `WeatherDataFetcher` | Reads synced forecast runs to return 2D physical forecast grids, subsampled 10 m U/V wind arrays, 10-day point meteograms, and catchment-averaged summaries. |
 
 ### Supported Weather Models
 
@@ -56,31 +56,31 @@ No API keys or login credentials are required to download public forecasts from 
 
 ## Quick Start Examples
 
-### 1. Command-Line Usage (`sync-weather-viewer`)
+### 1. Command-Line Usage (`sync-weather-forecasts`)
 
 ```bash
 # Download the newest runs for default models (ECMWF IFS, ECMWF AIFS, NOAA GFS)
-sync-weather-viewer --data-dir /tmp/weather_cache
+sync-weather-forecasts --data-dir /tmp/weather_cache
 
 # Download only NOAA GFS and ECMWF AIFS
-sync-weather-viewer \
+sync-weather-forecasts \
   --data-dir /tmp/weather_cache \
   --models noaa_gfs,ecmwf_aifs
 
 # Force re-download even if the current run timestamp has not changed
-sync-weather-viewer \
+sync-weather-forecasts \
   --data-dir /tmp/weather_cache \
   --force
 
 # Print the current synchronization status as JSON
-sync-weather-viewer --data-dir /tmp/weather_cache --status
+sync-weather-forecasts --data-dir /tmp/weather_cache --status
 ```
 
 ### 2. Python API Usage
 
 ```python
 from pathlib import Path
-from multimet.weather_viewer import WeatherSynchronizer, WeatherViewerEngine
+from multimet.weather_fetcher import WeatherDataFetcher, WeatherSynchronizer
 
 data_dir = Path("/tmp/weather_cache")
 
@@ -91,17 +91,17 @@ synchronizer = WeatherSynchronizer(
 )
 status = synchronizer.sync_all()
 
-# 2. Open the viewer engine on the synced directory
-engine = WeatherViewerEngine(data_dir=data_dir)
+# 2. Open the data fetcher on the synced directory
+fetcher = WeatherDataFetcher(data_dir=data_dir)
 
-# Render a 256x256 Web Mercator PNG tile (step=2 -> +6h, zoom=2, x=1, y=1)
-tile_png = engine.render_tile("ecmwf_aifs", "precipitation", step_idx=2, z=2, x=1, y=1)
+# Fetch a 2D physical forecast grid (step=2 -> +6h)
+precip_grid = fetcher.fetch_forecast_grid("ecmwf_aifs", "precipitation", step_idx=2)
 
-# Extract subsampled global 10m U/V wind vectors
-wind = engine.get_wind_vectors("ecmwf_aifs", step_idx=2, subsample=2)
+# Fetch subsampled global 10m U/V wind vectors
+wind = fetcher.fetch_wind_grid("ecmwf_aifs", step_idx=2, subsample=2)
 
 # Query a 10-day multi-model point forecast meteogram
-probe = engine.probe_point(lat=40.42, lon=-86.92, models=["ecmwf_aifs", "noaa_gfs"])
+probe = fetcher.fetch_point_timeseries(lat=40.42, lon=-86.92, models=["ecmwf_aifs", "noaa_gfs"])
 ```
 
 ---
@@ -109,13 +109,13 @@ probe = engine.probe_point(lat=40.42, lon=-86.92, models=["ecmwf_aifs", "noaa_gf
 ## Architecture & What to Watch Out For
 
 * **Directory Layout:** Synchronized runs are written to `<data_dir>/runs/<timestamp>/` as memory-mapped `float16` binary grids (`<model>_<stream>.bin`) alongside `latest_dynamical_meta.json`. Once all streams for a run finish downloading, `<data_dir>/current` is updated to point to the new run folder.
-* **Required Explicit Path in Python API:** `WeatherViewerEngine`, `WeatherSynchronizer`, and `sync_all_models` require an explicit `data_dir` argument.
-* **Synced Data Required:** `WeatherViewerEngine` reads only real downloaded forecast files from `data_dir`. If you request tiles, wind vectors, or point probes for a model that has not been downloaded to `data_dir`, Python raises `FileNotFoundError`.
+* **Required Explicit Path in Python API:** `WeatherDataFetcher`, `WeatherSynchronizer`, and `sync_all_models` require an explicit `data_dir` argument.
+* **Synced Data Required:** `WeatherDataFetcher` reads only real downloaded forecast files from `data_dir`. If you request grids, wind vectors, or point time series for a model that has not been downloaded to `data_dir`, Python raises `FileNotFoundError`.
 * **Upstream Publication Delays:** Weather agencies publish forecast lead times progressively. If the newest run in the catalog still has missing values at the end of the 240-hour horizon, the synchronizer skips the incomplete run and keeps the previous complete run active.
 
 ---
 
-## Command-Line Arguments Reference (`sync-weather-viewer`)
+## Command-Line Arguments Reference (`sync-weather-forecasts`)
 
 | Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -131,5 +131,5 @@ probe = engine.probe_point(lat=40.42, lon=-86.92, models=["ecmwf_aifs", "noaa_gf
 Run the unit and integration test suites with `pytest`:
 
 ```bash
-pytest multimet/tests/test_weather_viewer.py multimet/tests/test_weather_sync.py -v
+pytest multimet/tests/test_weather_fetcher.py multimet/tests/test_weather_sync.py -v
 ```

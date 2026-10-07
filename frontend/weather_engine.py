@@ -1,8 +1,9 @@
 """Earthkit Hydro weather visualization UI adapter for the Weather Viewer tab.
 
-Delegates core catalog definitions, binary stream scanning, Web Mercator tile
-rendering, indexed PNG animation frame encoding, wind vector extraction, and
-point/catchment meteogram queries to `multimet.weather_viewer`.
+Delegates core catalog definitions, binary stream scanning, and point/catchment
+meteogram queries to `multimet.weather_fetcher`, and Web Mercator tile rendering,
+indexed PNG animation frame encoding, colormaps, and wind vector extraction to
+`frontend.weather_viewer`.
 """
 
 from __future__ import annotations
@@ -25,21 +26,39 @@ _ws_root = str(Path(__file__).resolve().parents[1])
 if _ws_root not in sys.path:
   sys.path.insert(0, _ws_root)
 
-from multimet.weather_viewer.cli import resolve_default_weather_data_dir
-from multimet.weather_viewer.config import (
-    DEFAULT_MSLP_OFFSET_HPA,
-    FRAME_SIZE,
-    FRAME_VARIABLES,
-    FRAME_VERSION,
-    GRID_DEG,
-    MAX_LEAD_HOURS,
-    MERCATOR_MAX_LAT,
-    N_LAT,
-    N_LON,
-    NUM_STEPS,
+from frontend.weather_viewer.colormaps import (
+    classify_values as _classify,
+    colorize_indexed as _colorize_indexed,
+    colorize_rgba as _colorize,
+    encode_indexed_png as _encode_indexed_png,
+    encode_rgba_png as _encode_rgba_png,
+    make_png_bytes,
     PRESSURE_LEVELS as _PRESSURE_LEVELS,
     RAIN_ACCUM_CLASSES,
     RAIN_RATE_CLASSES,
+    SUPPORTED_VARIABLES,
+    TEMP_LEVELS as _TEMP_LEVELS,
+)
+from frontend.weather_viewer.tiles import (
+    empty_frame as _empty_frame,
+    frame_coordinates as _frame_coordinates,
+    FRAME_SIZE,
+    FRAME_VARIABLES,
+    FRAME_VERSION,
+    MERCATOR_MAX_LAT,
+    tile_coordinates as _tile_coordinates,
+    TILE_VERSION,
+    transparent_tile as _transparent_tile,
+)
+from frontend.weather_viewer.wind import extract_wind_vectors
+from multimet.weather_fetcher.cli import resolve_default_weather_data_dir
+from multimet.weather_fetcher.config import (
+    DEFAULT_MSLP_OFFSET_HPA,
+    GRID_DEG,
+    MAX_LEAD_HOURS,
+    N_LAT,
+    N_LON,
+    NUM_STEPS,
     RUN_DATASET_TO_MODEL as _RUN_DATASET_TO_MODEL,
     run_lead_hours as _run_lead_hours,
     RUN_METADATA_FILE,
@@ -47,35 +66,19 @@ from multimet.weather_viewer.config import (
     STREAM_FILES as _STREAM_FILES,
     STREAM_SUFFIX as _STREAM_SUFFIX,
     SUPPORTED_MODELS,
-    SUPPORTED_VARIABLES,
     SYNC_STATUS_FILE,
-    TEMP_LEVELS as _TEMP_LEVELS,
-    TILE_VERSION,
 )
-from multimet.weather_viewer.probe import (
+from multimet.weather_fetcher.fetcher import (
     extract_accumulation_series,
     extract_point_value,
-    geometry_points as _geometry_points,
-    round_or_none as _round_or_none,
-)
-from multimet.weather_viewer.sync import load_run_metadata as _load_run_metadata
-from multimet.weather_viewer.tiles import (
-    classify_values as _classify,
-    colorize_indexed as _colorize_indexed,
-    colorize_rgba as _colorize,
-    empty_frame as _empty_frame,
-    encode_indexed_png as _encode_indexed_png,
-    encode_rgba_png as _encode_rgba_png,
     file_step_for_lead as _file_step_for_lead,
-    frame_coordinates as _frame_coordinates,
+    geometry_points as _geometry_points,
     grid_indices as _grid_indices,
-    make_png_bytes,
     rate_file_steps as _rate_file_steps,
+    round_or_none as _round_or_none,
     scan_streams as _scan_streams,
-    tile_coordinates as _tile_coordinates,
-    transparent_tile as _transparent_tile,
 )
-from multimet.weather_viewer.wind import extract_wind_vectors
+from multimet.weather_fetcher.sync import load_run_metadata as _load_run_metadata
 
 logger = logging.getLogger(__name__)
 

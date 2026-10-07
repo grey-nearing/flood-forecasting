@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit and integration tests for multimet.weather_viewer.sync and CLI."""
+"""Unit and integration tests for multimet.weather_fetcher.sync and CLI."""
 
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from multimet.weather_viewer import cli
-from multimet.weather_viewer.config import (
+from multimet.weather_fetcher import cli
+from multimet.weather_fetcher.config import (
     MSLP_OFFSET_HPA,
     N_LAT,
     N_LON,
@@ -34,8 +34,8 @@ from multimet.weather_viewer.config import (
     RUN_METADATA_FILE,
     to_stored_units,
 )
-from multimet.weather_viewer.probe import WeatherViewerEngine
-from multimet.weather_viewer.sync import (
+from multimet.weather_fetcher.fetcher import WeatherDataFetcher
+from multimet.weather_fetcher.sync import (
     aggregate_rates,
     current_run_dir,
     download_model_run,
@@ -156,9 +156,9 @@ def test_sync_atomic_swap_incremental_update_and_hot_reload(
   assert pytest.approx(float(precip[1, 0, 0]), abs=0.02) == 1.0
   assert float(precip[0, 0, 0]) == 0.0
 
-  engine = WeatherViewerEngine(tmp_path)
-  assert engine.get_model_info("ecmwf_aifs")["init_time"] == "2026-09-29T00:00:00Z"
-  assert not engine.reload_if_changed()
+  fetcher = WeatherDataFetcher(tmp_path)
+  assert fetcher.get_model_info("ecmwf_aifs")["init_time"] == "2026-09-29T00:00:00Z"
+  assert not fetcher.reload_if_changed()
 
   # Second check with no upstream changes -> up_to_date
   status2 = synchronizer.sync_all(
@@ -180,8 +180,8 @@ def test_sync_atomic_swap_incremental_update_and_hot_reload(
   assert (run2 / "ecmwf_aifs_precip.bin").exists()
   assert os.path.islink(tmp_path / "current")
 
-  assert engine.reload_if_changed()
-  assert engine.get_model_info("noaa_gfs")["init_time"] == "2026-09-29T06:00:00Z"
+  assert fetcher.reload_if_changed()
+  assert fetcher.get_model_info("noaa_gfs")["init_time"] == "2026-09-29T06:00:00Z"
 
 
 @pytest.mark.unit

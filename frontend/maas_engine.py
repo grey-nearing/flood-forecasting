@@ -64,13 +64,20 @@ from maas.config import (
     MaaSConfig,
     haversine_km as _haversine_km,
 )
-from maas.engine import (
+from frontend.maas_viewer.consensus import (
+    reach_exceedance_summary as _reach_exceedance_summary,
+)
+from frontend.maas_viewer.inundation import (
+    channel_half_width_m as _channel_half_width_m,
+    depth_color as _depth_color,
+    emulate_camaflood_physics,
+    route_floodplain_excess as _route_floodplain_excess,
+)
+from maas.fetcher import (
+    MaaSDataFetcher,
     MaaSEngine,
     SQLiteCache,
-    channel_half_width_m as _channel_half_width_m,
     daily_series as _daily_series,
-    depth_color as _depth_color,
-    reach_exceedance_summary as _reach_exceedance_summary,
     window_peak as _window_peak,
 )
 from maas.floodhub import (
@@ -129,11 +136,9 @@ from maas.todays_earth import (
     CAMA_FLOODPLAIN_K as _CAMA_FLOODPLAIN_K,
     TE_CATALOG_TOKENS as _TE_CATALOG_TOKENS,
     TODAYS_EARTH_EMULATION_NOTE,
-    emulate_camaflood_physics,
     extract_te_series as _te_series,
     format_todays_earth_forecast,
-     parse_todays_earth_payload,
-    route_floodplain_excess as _route_floodplain_excess,
+    parse_todays_earth_payload,
 )
 
 logger = logging.getLogger(__name__)

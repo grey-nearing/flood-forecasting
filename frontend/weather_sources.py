@@ -1,7 +1,7 @@
 """Weather data sources registry with dynamic CNS temporal range resolution.
 
 Delegates core catalog definitions and Zarr metadata parsing to
-`multimet.weather_viewer.config`.
+`multimet.weather_fetcher.config`.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import os
 import subprocess
 from typing import Any, Dict, List, Optional
 
-from multimet.weather_viewer.config import (
+from multimet.weather_fetcher.config import (
     parse_zarr_metadata_time_extent,
     WEATHER_SOURCES as _BASE_WEATHER_SOURCES,
     WeatherSource as _BaseWeatherSource,

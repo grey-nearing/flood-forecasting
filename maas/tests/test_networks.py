@@ -26,11 +26,9 @@ from shapely.geometry import LineString
 from maas.networks import (
     GLOFAS_LOD,
     as_linkno,
-    buffer_reach_corridor,
     cama_cell_area_km2,
     cama_cell_id,
     cama_cell_polygon,
-    chain_length_km,
     extract_level_features,
     glofas_cell_center,
     glofas_cell_polygon,
@@ -183,10 +181,10 @@ class TestPyramidSerializationAndSnapping:
         )
 
 
-class TestMainStemTracingAndBuffering:
-    """Tests topological main-stem chain tracing and perpendicular corridor polygon buffering."""
+class TestMainStemTracing:
+    """Tests topological main-stem chain tracing across HydroRIVERS reaches."""
 
-    def test_trace_main_stem_chain_and_buffer_corridor(self) -> None:
+    def test_trace_main_stem_chain(self) -> None:
         reaches = [
             {
                 'hyriv_id': 101,
@@ -220,11 +218,3 @@ class TestMainStemTracingAndBuffering:
         assert start is not None
         assert len(chain) == 3
         assert snap_km is not None and snap_km < 1.0
-
-        total_len = chain_length_km(chain, ref_lat=38.63)
-        assert total_len > 12.0
-
-        poly = buffer_reach_corridor(chain, half_width_m=600.0, ref_lat=38.63)
-        assert poly is not None
-        assert poly.geom_type in {'Polygon', 'MultiPolygon'}
-        assert poly.area > 0.0

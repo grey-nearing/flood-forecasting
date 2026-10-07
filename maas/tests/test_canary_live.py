@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from maas.config import MaaSConfig
-from maas.engine import MaaSEngine
+from maas.fetcher import MaaSDataFetcher
 
 LIVE_CANARY_ENABLED = os.environ.get('MAAS_LIVE_CANARY', '').strip() == '1'
 
@@ -43,8 +43,8 @@ class TestMaaSLiveCanary:
             cache_dir=tmp_path / 'cache',
             river_networks_dir=tmp_path / 'river_networks',
         )
-        engine = MaaSEngine(config)
-        fc = engine.glofas.fetch_forecast(38.6270, -90.1994, forecast_days=7)
+        fetcher = MaaSDataFetcher(config)
+        fc = fetcher.glofas.fetch_forecast(38.6270, -90.1994, forecast_days=7)
         assert fc['status'] == 'live'
         assert len(fc['data']) >= 5
 
@@ -55,7 +55,7 @@ class TestMaaSLiveCanary:
             cache_dir=tmp_path / 'cache',
             river_networks_dir=tmp_path / 'river_networks',
         )
-        engine = MaaSEngine(config)
-        fc = engine.geoglows.fetch_forecast(720010511)
+        fetcher = MaaSDataFetcher(config)
+        fc = fetcher.geoglows.fetch_forecast(720010511)
         assert fc['status'] == 'live'
         assert len(fc['data']) >= 5

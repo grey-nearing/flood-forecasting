@@ -23,8 +23,8 @@ from pathlib import Path
 import sys
 from typing import List, Optional, Sequence
 
-from multimet.weather_viewer.config import DYNAMICAL_MODELS
-from multimet.weather_viewer.sync import read_sync_status, sync_all_models
+from multimet.weather_fetcher.config import DYNAMICAL_MODELS
+from multimet.weather_fetcher.sync import read_sync_status, sync_all_models
 
 
 def resolve_default_weather_data_dir() -> Path:
@@ -36,9 +36,9 @@ def resolve_default_weather_data_dir() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-  """Builds the argument parser for `sync-weather-viewer`."""
+  """Builds the argument parser for `sync-weather-forecasts`."""
   parser = argparse.ArgumentParser(
-      prog="sync-weather-viewer",
+      prog="sync-weather-forecasts",
       description=(
           "Synchronize operational gridded NWP weather forecasts from "
           "dynamical.org into float16 binary streams with atomic directory swap."
@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-  """CLI entry point for `sync-weather-viewer`."""
+  """CLI entry point for `sync-weather-forecasts`."""
   parser = build_parser()
   args = parser.parse_args(argv)
 

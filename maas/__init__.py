@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Models-as-a-Service (`maas`) multi-model operational flood forecasting package.
+"""Models-as-a-Service (`maas`) multi-model operational flood data-fetching package.
 
 Provides unified clients, spatial river-network indexing, upstream-area reach
 snapping, return-period threshold calculators, and multi-model forecast
-aggregation across:
+data fetching across:
   1. Google FloodHub (`FloodHubClient`)
   2. Copernicus GloFAS v4 (`GloFASClient`)
   3. GEOGLOWS ECMWF v2 (`GeoGLOWSClient`)
@@ -50,19 +50,17 @@ from maas.config import (
     parse_float_or_nan,
     parse_int,
 )
-from maas.engine import (
+from maas.fetcher import (
+    MaaSDataFetcher,
     MaaSEngine,
     SQLiteCache,
     align_daily_series,
-    build_aligned_timeline,
-    build_consensus_row,
-    build_flood_summary,
-    channel_half_width_m,
     daily_series,
-    depth_color,
-    geojson_feature,
-    reach_exceedance_summary,
-    spread_confidence,
+    fetch_forecasts,
+    fetch_gauges,
+    fetch_historical,
+    fetch_return_periods,
+    resolve_reaches,
     window_peak,
 )
 from maas.floodhub import (
@@ -95,13 +93,11 @@ from maas.networks import (
     MODELS,
     TE_LOD,
     as_linkno,
-    buffer_reach_corridor,
     build_geoglows_pyramid,
     build_glofas_and_te_pyramids,
     cama_cell_area_km2,
     cama_cell_id,
     cama_cell_polygon,
-    chain_length_km,
     extract_level_features,
     glofas_cell_center,
     glofas_cell_polygon,
@@ -140,13 +136,10 @@ from maas.thresholds import (
 from maas.todays_earth import (
     TODAYS_EARTH_EMULATION_NOTE,
     TodaysEarthClient,
-    camaflood_unit_feature,
-    emulate_camaflood_physics,
     extract_te_series,
     format_todays_earth_forecast,
     lookup_camaflood_binary_cell,
     parse_todays_earth_payload,
-    route_floodplain_excess,
 )
 
 __all__ = [
@@ -181,23 +174,17 @@ __all__ = [
     'GeoGLOWSClient',
     'GloFASClient',
     'MaaSConfig',
+    'MaaSDataFetcher',
     'MaaSEngine',
     'SQLiteCache',
     'TodaysEarthClient',
     'align_daily_series',
     'as_linkno',
-    'buffer_reach_corridor',
-    'build_aligned_timeline',
-    'build_consensus_row',
-    'build_flood_summary',
     'build_geoglows_pyramid',
     'build_glofas_and_te_pyramids',
     'cama_cell_area_km2',
     'cama_cell_id',
     'cama_cell_polygon',
-    'camaflood_unit_feature',
-    'chain_length_km',
-    'channel_half_width_m',
     'classify_exceedance',
     'compute_empirical_weibull_return_periods',
     'compute_glofas_reanalysis_return_periods',
@@ -205,9 +192,7 @@ __all__ = [
     'compute_return_periods',
     'convert_discharge_units',
     'daily_series',
-    'depth_color',
     'derive_floodhub_severity_from_forecast',
-    'emulate_camaflood_physics',
     'estimate_return_period_years',
     'ev1_fit_line',
     'extract_annual_maxima',
@@ -215,8 +200,11 @@ __all__ = [
     'extract_glofas_zarr_series',
     'extract_level_features',
     'extract_te_series',
+    'fetch_forecasts',
+    'fetch_gauges',
+    'fetch_historical',
+    'fetch_return_periods',
     'format_todays_earth_forecast',
-    'geojson_feature',
     'geom_area_km2',
     'glofas_cell_center',
     'glofas_cell_polygon',
@@ -247,15 +235,13 @@ __all__ = [
     'pyramid_signature',
     'query_geoglows_reaches',
     'query_hydrorivers_reaches',
-    'reach_exceedance_summary',
     'resolve_cross_network_click',
-    'route_floodplain_excess',
+    'resolve_reaches',
     'save_network_pyramid',
     'scaled_index_flood_return_periods',
     'snap_cama_cell',
     'snap_geoglows_reach_from_gpkg',
     'snap_glofas_cell_from_network',
-    'spread_confidence',
     'thresholds_from_return_periods',
     'trace_main_stem_chain',
     'window_peak',

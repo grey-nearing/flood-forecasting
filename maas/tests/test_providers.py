@@ -12,28 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Offline unit tests for `maas` provider parsers, clients, SQLite cache, and `MaaSEngine`."""
+"""Offline unit tests for `maas` provider parsers and clients."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
-from unittest import mock
 
 import pytest
 
 from maas.config import (
-    MaaSConfig,
     convert_discharge_units,
     normalize_requested_models,
     parse_finite_float,
     parse_float_or_default,
     parse_float_or_nan,
     parse_int,
-)
-from maas.engine import (
-    MaaSEngine,
-    SQLiteCache,
 )
 from maas.floodhub import (
     derive_floodhub_severity_from_forecast,
@@ -54,10 +47,8 @@ from maas.glofas import (
     parse_glofas_forecast_response,
 )
 from maas.todays_earth import (
-    emulate_camaflood_physics,
     format_todays_earth_forecast,
     parse_todays_earth_payload,
-    route_floodplain_excess,
 )
 
 
@@ -281,48 +272,10 @@ class TestGloFASAndGeoGLOWSProviders:
         assert retro['return_period_100'] > retro['return_period_2']
 
 
-class TestTodaysEarthAndEngineAggregation:
-    """Tests JAXA Today's Earth CaMa-Flood routing and `MaaSEngine` multi-model bundle assembly."""
+class TestTodaysEarthPayloadParsing:
+    """Tests JAXA Today's Earth payload parsing and forecast formatting."""
 
-    def test_camaflood_physics_routing_and_payload_parsing(self) -> None:
-        glofas_records = [
-            {
-                'time': f'2026-04-0{day}',
-                'discharge_median': 1200.0 + 400.0 * day,
-                'discharge_mean': 1200.0 + 400.0 * day,
-                'discharge_p25': 1000.0 + 300.0 * day,
-                'discharge_p75': 1500.0 + 500.0 * day,
-                'discharge_min': 900.0 + 250.0 * day,
-                'discharge_max': 1800.0 + 600.0 * day,
-            }
-            for day in range(1, 7)
-        ]
-        rp = {
-            'return_period_2': 1800.0,
-            'return_period_5': 2400.0,
-            'return_period_20': 3200.0,
-            'mean_flow': 1100.0,
-            'status': 'live',
-        }
-        emulated = emulate_camaflood_physics(glofas_records, rp, elev=120.0)
-        series = emulated['series']
-        assert len(series['rivout']) == 6
-        assert len(series['flddph_m']) == 6
-        assert len(series['fldfrc_pct']) == 6
-        assert all(0.0 <= pct <= 100.0 for pct in series['fldfrc_pct'])
-
-        formatted = format_todays_earth_forecast(
-            38.627,
-            -90.199,
-            series,
-            live=False,
-            channel_params=emulated['channel_params'],
-            forcing_status=emulated['forcing_status'],
-        )
-        assert formatted['status'] == 'fallback'
-        assert formatted['emulated'] is True
-        assert len(formatted['data']) == 6
-
+    def test_todays_earth_payload_parsing_and_formatting(self) -> None:
         raw_te = {
             'timestamps': ['2026-04-01', '2026-04-02'],
             'rivout': [950.0, 1120.0],
@@ -335,130 +288,12 @@ class TestTodaysEarthAndEngineAggregation:
         assert len(parsed_te['rivout']) == 2
         assert parsed_te['fldfrc_pct'] == pytest.approx([8.0, 14.0])
 
-        routed = route_floodplain_excess(
-            [1000.0, 2000.0, 2500.0], q_bankfull=1500.0
+        formatted = format_todays_earth_forecast(
+            38.627,
+            -90.199,
+            parsed_te,
+            live=True,
         )
-        assert len(routed) == 3
-        assert routed[0] == 0.0
-        assert routed[1] > 0.0
-
-    def test_sqlite_cache_and_engine_unified_forecast(
-        self, tmp_path: Path
-    ) -> None:
-        cache = SQLiteCache(tmp_path / 'test_cache.sqlite')
-        cache.put('k1', {'val': 42})
-        assert cache.get('k1', max_age_s=60.0) == {'val': 42}
-
-        config = MaaSConfig(
-            cache_dir=tmp_path / 'cache',
-            river_networks_dir=tmp_path / 'river_networks',
-            floodhub_api_key='',
-        )
-        engine = MaaSEngine(config)
-
-        mock_glofas = {
-            'model': 'copernicus_glofas',
-            'available': True,
-            'status': 'live',
-            'data': [
-                {
-                    'time': '2026-04-01',
-                    'discharge_median': 2200.0,
-                    'discharge_mean': 2200.0,
-                    'discharge_min': 1800.0,
-                    'discharge_p25': 2000.0,
-                    'discharge_p75': 2500.0,
-                    'discharge_max': 2900.0,
-                },
-                {
-                    'time': '2026-04-02',
-                    'discharge_median': 2600.0,
-                    'discharge_mean': 2600.0,
-                    'discharge_min': 2100.0,
-                    'discharge_p25': 2350.0,
-                    'discharge_p75': 2900.0,
-                    'discharge_max': 3400.0,
-                },
-            ],
-        }
-        mock_geoglows = {
-            'model': 'geoglows',
-            'available': True,
-            'status': 'live',
-            'river_id': 720010511,
-            'data': [
-                {
-                    'time': '2026-04-01T00:00:00Z',
-                    'flow_med': 2100.0,
-                    'flow_avg': 2100.0,
-                    'flow_min': 1750.0,
-                    'flow_25p': 1950.0,
-                    'flow_75p': 2400.0,
-                    'flow_max': 2750.0,
-                },
-                {
-                    'time': '2026-04-02T00:00:00Z',
-                    'flow_med': 2500.0,
-                    'flow_avg': 2500.0,
-                    'flow_min': 2050.0,
-                    'flow_25p': 2250.0,
-                    'flow_75p': 2800.0,
-                    'flow_max': 3200.0,
-                },
-            ],
-        }
-        mock_rp = {
-            'return_period_2': 1800.0,
-            'return_period_5': 2400.0,
-            'return_period_10': 2900.0,
-            'return_period_20': 3500.0,
-            'return_period_50': 4200.0,
-            'return_period_100': 4900.0,
-            'source': 'unit_test_rp',
-            'status': 'live',
-        }
-
-        with (
-            mock.patch.object(
-                engine.glofas, 'fetch_forecast', return_value=mock_glofas
-            ),
-            mock.patch.object(
-                engine.glofas,
-                'fetch_reanalysis_return_periods',
-                return_value=mock_rp,
-            ),
-            mock.patch.object(
-                engine.geoglows, 'fetch_forecast', return_value=mock_geoglows
-            ),
-        ):
-            engine.flood_cache.put('geoglows_rp_720010511', mock_rp)
-            bundle = engine.fetch_unified_forecast(
-                38.6270,
-                -90.1994,
-                river_id=720010511,
-                requested_models=[
-                    'floodhub',
-                    'glofas',
-                    'geoglows',
-                    'todays_earth',
-                ],
-            )
-
-        assert set(bundle['models'].keys()) == {
-            'floodhub',
-            'glofas',
-            'geoglows',
-            'todays_earth',
-        }
-        assert bundle['models']['floodhub']['status'] == 'unavailable'
-        assert bundle['models']['glofas']['status'] == 'live'
-        assert bundle['models']['geoglows']['status'] == 'live'
-        assert bundle['models']['todays_earth']['emulated'] is True
-        assert bundle['flood_summary']['overall_risk_level'] in {
-            'WARNING',
-            'SEVERE',
-            'EXTREME',
-        }
-        assert 'glofas' in bundle['timeline']['series']
-        assert 'geoglows' in bundle['timeline']['series']
-        assert 'todays_earth' in bundle['timeline']['series']
+        assert formatted['status'] == 'live'
+        assert formatted['emulated'] is False
+        assert len(formatted['data']) == 2
