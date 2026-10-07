@@ -47,6 +47,10 @@ from multimet.static_extractor.climate import (
     ERA5GriddedExtractor,
     calculate_fao_pm_pet,
     compute_caravan_climate_metrics,
+    depth_to_mm,
+    normalize_era5_pet_sign,
+    pressure_to_kpa,
+    temp_to_celsius,
 )
 from multimet.static_extractor.config import (
     ADDITIONAL_PROPERTIES,
@@ -524,7 +528,7 @@ class StaticAttributesExtractor:
         "seasonality_ERA5_LAND",
     )
     gridded = self.gridded_extractor.extract_climate_metrics_for_polygon(
-        geom, baseline_years=baseline_years
+        geom, baseline_years=baseline_years, include_fao_pm=False
     )
     return {k: gridded.get(k, np.nan) for k in keys}
 
@@ -812,6 +816,17 @@ class StaticAttributesExtractor:
     era5_indices = {}
     if not _skip_climate:
       if timeseries_df is not None and not timeseries_df.empty:
+        ts_df = timeseries_df
+        if baseline_years is not None and isinstance(
+            timeseries_df.index, pd.DatetimeIndex
+        ):
+          sliced = timeseries_df.loc[
+              (timeseries_df.index.year >= baseline_years[0])
+              & (timeseries_df.index.year <= baseline_years[1])
+          ]
+          if not sliced.empty:
+            ts_df = sliced
+
         p_col = next(
             (
                 c
@@ -823,7 +838,7 @@ class StaticAttributesExtractor:
                     "precip",
                     "tp",
                 ]
-                if c in timeseries_df.columns
+                if c in ts_df.columns
             ),
             None,
         )
@@ -839,7 +854,7 @@ class StaticAttributesExtractor:
                     "temp",
                     "t2m",
                 ]
-                if c in timeseries_df.columns
+                if c in ts_df.columns
             ),
             None,
         )
@@ -854,7 +869,7 @@ class StaticAttributesExtractor:
                     "pet_era5",
                     "pev",
                 ]
-                if c in timeseries_df.columns
+                if c in ts_df.columns
             ),
             None,
         )
@@ -868,22 +883,26 @@ class StaticAttributesExtractor:
                     "pet_mean_FAO_PM",
                     "fao_pet",
                 ]
-                if c in timeseries_df.columns
+                if c in ts_df.columns
             ),
             None,
         )
 
         if not p_col or not t_col:
           raise ValueError(
-              f"timeseries_df is missing required precipitation/temperature columns (found {list(timeseries_df.columns)})."
+              f"timeseries_df is missing required precipitation/temperature columns (found {list(ts_df.columns)})."
           )
-        p_series = timeseries_df[p_col]
-        t_series = timeseries_df[t_col]
+        p_series = depth_to_mm(ts_df[p_col], None, p_col)
+        t_series = temp_to_celsius(ts_df[t_col], None, t_col)
         pet_era5_series = (
-            np.abs(timeseries_df[pet_era5_col]) if pet_era5_col else None
+            normalize_era5_pet_sign(
+                depth_to_mm(ts_df[pet_era5_col], None, pet_era5_col)
+            )
+            if pet_era5_col
+            else None
         )
-        if pet_fao_col:
-          pet_fao_series = np.abs(timeseries_df[pet_fao_col])
+        if pet_fao_col and not ts_df[pet_fao_col].isna().all():
+          pet_fao_series = depth_to_mm(ts_df[pet_fao_col], None, pet_fao_col)
         else:
           d2m_col = next(
               (
@@ -895,7 +914,7 @@ class StaticAttributesExtractor:
                       "2m_dewpoint_temperature",
                       "d2m",
                   ]
-                  if c in timeseries_df.columns
+                  if c in ts_df.columns
               ),
               None,
           )
@@ -908,7 +927,7 @@ class StaticAttributesExtractor:
                       "surface_pressure",
                       "sp",
                   ]
-                  if c in timeseries_df.columns
+                  if c in ts_df.columns
               ),
               None,
           )
@@ -921,7 +940,7 @@ class StaticAttributesExtractor:
                       "surface_net_solar_radiation",
                       "ssr",
                   ]
-                  if c in timeseries_df.columns
+                  if c in ts_df.columns
               ),
               None,
           )
@@ -934,7 +953,7 @@ class StaticAttributesExtractor:
                       "surface_net_thermal_radiation",
                       "str",
                   ]
-                  if c in timeseries_df.columns
+                  if c in ts_df.columns
               ),
               None,
           )
@@ -948,7 +967,7 @@ class StaticAttributesExtractor:
                       "10m_u_component_of_wind",
                       "u10",
                   ]
-                  if c in timeseries_df.columns
+                  if c in ts_df.columns
               ),
               None,
           )
@@ -962,19 +981,23 @@ class StaticAttributesExtractor:
                       "10m_v_component_of_wind",
                       "v10",
                   ]
-                  if c in timeseries_df.columns
+                  if c in ts_df.columns
               ),
               None,
           )
           if all((d2m_col, sp_col, ssr_col, str_col, u10_col, v10_col)):
             pet_fao_series = calculate_fao_pm_pet(
-                surface_pressure_kpa=timeseries_df[sp_col],
+                surface_pressure_kpa=pressure_to_kpa(
+                    ts_df[sp_col], None, sp_col
+                ),
                 temperature_2m_c=t_series,
-                dewpoint_temperature_2m_c=timeseries_df[d2m_col],
-                u_component_of_wind_10m=timeseries_df[u10_col],
-                v_component_of_wind_10m=timeseries_df[v10_col],
-                surface_net_solar_radiation_mean=timeseries_df[ssr_col],
-                surface_net_thermal_radiation_mean=timeseries_df[str_col],
+                dewpoint_temperature_2m_c=temp_to_celsius(
+                    ts_df[d2m_col], None, d2m_col
+                ),
+                u_component_of_wind_10m=ts_df[u10_col],
+                v_component_of_wind_10m=ts_df[v10_col],
+                surface_net_solar_radiation_mean=ts_df[ssr_col],
+                surface_net_thermal_radiation_mean=ts_df[str_col],
             )
           else:
             pet_fao_series = None
