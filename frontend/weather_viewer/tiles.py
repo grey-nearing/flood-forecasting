@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import collections
+import threading
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
@@ -53,6 +55,21 @@ FRAME_VARIABLES: Tuple[str, ...] = (
 _TRANSPARENT_TILE: Optional[bytes] = None
 _EMPTY_FRAME: Optional[bytes] = None
 _FRAME_COORDS: Optional[Tuple[np.ndarray, np.ndarray]] = None
+
+_FRAME_CACHE: "collections.OrderedDict[Tuple[Any, ...], bytes]" = (
+    collections.OrderedDict()
+)
+_FRAME_CACHE_LIMIT_BYTES: int = 384 << 20
+_FRAME_CACHE_BYTES: int = 0
+_FRAME_LOCK = threading.Lock()
+
+
+def clear_frame_cache() -> None:
+  """Clears the in-memory rendered animation frame cache."""
+  global _FRAME_CACHE_BYTES
+  with _FRAME_LOCK:
+    _FRAME_CACHE.clear()
+    _FRAME_CACHE_BYTES = 0
 
 
 def tile_coordinates(
@@ -100,15 +117,18 @@ def _frame_signature_from_streams(
     model_key: str,
     var_key: str,
     step: int,
+    strict: bool = True,
 ) -> Optional[Tuple[Tuple[Any, ...], float]]:
   """Returns `(signature_tuple, natural_lead_hours)` for a viewer step."""
   lead_h = step * STEP_HOURS
   if var_key == "accumulated_precip":
     info = stream_info.get(f"{model_key}_precip")
     if not info:
-      raise FileNotFoundError(
-          f"Precipitation stream '{model_key}_precip' not found in synced data."
-      )
+      if strict:
+        raise FileNotFoundError(
+            f"Precipitation stream '{model_key}_precip' not found in synced data."
+        )
+      return None
     leads = info["lead_hours"]
     if lead_h > leads[-1]:
       return None
@@ -121,9 +141,11 @@ def _frame_signature_from_streams(
   stream_id = f"{model_key}_{suffix}"
   info = stream_info.get(stream_id)
   if not info:
-    raise FileNotFoundError(
-        f"Weather stream '{stream_id}' not found in synced data."
-    )
+    if strict:
+      raise FileNotFoundError(
+          f"Weather stream '{stream_id}' not found in synced data."
+      )
+    return None
   if suffix == "precip":
     rate_steps = rate_file_steps(info, lead_h)
     if not rate_steps:
@@ -141,6 +163,7 @@ def compute_frame_index(
     stream_info: Mapping[str, Mapping[str, Any]],
     model_key: str,
     var_key: str,
+    strict: bool = True,
 ) -> Dict[str, Any]:
   """Computes the frame deduplication index for `/api/weather/frames/.../index.json`."""
   if model_key not in SUPPORTED_MODELS:
@@ -150,12 +173,32 @@ def compute_frame_index(
 
   data_info = get_model_data_info_from_streams(stream_info, model_key)
   if not data_info["real_variables"]:
-    raise FileNotFoundError(
-        f"No synced forecast run found for model '{model_key}'."
-    )
+    if strict:
+      raise FileNotFoundError(
+          f"No synced forecast run found for model '{model_key}'."
+      )
+    return {
+        "model": model_key,
+        "variable": var_key,
+        "init_time": None,
+        "data_source": "unavailable",
+        "frame_version": FRAME_VERSION,
+        "tile_version": TILE_VERSION,
+        "projection": "EPSG:3857",
+        "width": FRAME_SIZE,
+        "height": FRAME_SIZE,
+        "bounds": [[-MERCATOR_MAX_LAT, -180.0], [MERCATOR_MAX_LAT, 180.0]],
+        "step_hours": STEP_HOURS,
+        "max_step": 0,
+        "step_frames": [None] * NUM_STEPS,
+        "frame_steps": [],
+    }
+
   max_step = min(NUM_STEPS - 1, int(data_info["max_lead_hours"] // STEP_HOURS))
   sigs = [
-      _frame_signature_from_streams(stream_info, model_key, var_key, s)
+      _frame_signature_from_streams(
+          stream_info, model_key, var_key, s, strict=strict
+      )
       if s <= max_step
       else None
       for s in range(NUM_STEPS)
@@ -175,7 +218,11 @@ def compute_frame_index(
       "model": model_key,
       "variable": var_key,
       "init_time": data_info["init_time"],
-      "data_source": "archived_run",
+      "data_source": (
+          "archived_run"
+          if var_key in data_info["real_variables"]
+          else "unavailable"
+      ),
       "frame_version": FRAME_VERSION,
       "tile_version": TILE_VERSION,
       "projection": "EPSG:3857",
@@ -198,8 +245,17 @@ def evaluate_tile_field(
     lats: np.ndarray,
     lons: np.ndarray,
     bilinear: bool = False,
+    strict: bool = True,
 ) -> Optional[np.ndarray]:
   """Evaluates physical field values on `(lats, lons)` from synced streams."""
+  suffix = STREAM_SUFFIX.get(var_key)
+  if suffix is None:
+    if strict:
+      raise ValueError(f"Unsupported scalar forecast grid variable '{var_key}'.")
+    return None
+  stream_id = f"{model_key}_{suffix}"
+  if not strict and (stream_id not in stream_info or stream_id not in arrays):
+    return None
   return fetch_forecast_grid(
       arrays,
       stream_info,
@@ -222,6 +278,7 @@ def render_raster_tile(
     x: int,
     y: int,
     bilinear: bool = True,
+    strict: bool = True,
 ) -> bytes:
   """Renders a 256x256 Web Mercator PNG tile from synced model streams."""
   step_idx = max(0, int(step_idx))
@@ -235,6 +292,7 @@ def render_raster_tile(
       lats,
       lons,
       bilinear=bilinear,
+      strict=strict,
   )
   if values is None:
     return transparent_tile()
@@ -249,18 +307,53 @@ def render_weather_frame(
     model_key: str,
     var_key: str,
     step_idx: int,
+    strict: bool = True,
 ) -> bytes:
   """Renders a whole-world indexed PNG animation frame for one viewer step."""
-  index = compute_frame_index(stream_info, model_key, var_key)
+  global _FRAME_CACHE_BYTES
+  index = compute_frame_index(stream_info, model_key, var_key, strict=strict)
   step = max(0, min(NUM_STEPS - 1, int(step_idx)))
   rep = index["step_frames"][step]
   if rep is None:
     return empty_frame()
+
+  suffix = STREAM_SUFFIX.get(var_key, "")
+  stream_id = f"{model_key}_{suffix}"
+  stream_file = str((stream_info.get(stream_id) or {}).get("file") or "")
+  arr_id = id(arrays.get(stream_id)) if stream_id in arrays else 0
+  key = (arr_id, stream_file, model_key, var_key, rep, index["init_time"])
+
+  with _FRAME_LOCK:
+    cached = _FRAME_CACHE.get(key)
+    if cached is not None:
+      _FRAME_CACHE.move_to_end(key)
+      return cached
+
   lats, lons = frame_coordinates()
   values = evaluate_tile_field(
-      arrays, stream_info, model_key, var_key, rep, lats, lons, bilinear=False
+      arrays,
+      stream_info,
+      model_key,
+      var_key,
+      rep,
+      lats,
+      lons,
+      bilinear=False,
+      strict=strict,
   )
-  if values is None:
-    return empty_frame()
-  idx, palette = colorize_indexed(var_key, values)
-  return encode_indexed_png(idx, palette)
+  png = (
+      empty_frame()
+      if values is None
+      else encode_indexed_png(*colorize_indexed(var_key, values))
+  )
+  with _FRAME_LOCK:
+    if key not in _FRAME_CACHE:
+      _FRAME_CACHE[key] = png
+      _FRAME_CACHE_BYTES += len(png)
+      while (
+          _FRAME_CACHE_BYTES > _FRAME_CACHE_LIMIT_BYTES
+          and len(_FRAME_CACHE) > 1
+      ):
+        _, old = _FRAME_CACHE.popitem(last=False)
+        _FRAME_CACHE_BYTES -= len(old)
+  return png

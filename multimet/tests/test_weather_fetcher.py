@@ -106,7 +106,9 @@ def _write_native_synced_run(
   tmp_link = root / "current.tmp"
   if os.path.lexists(tmp_link):
     tmp_link.unlink()
-  os.symlink(Path("runs") / run_name, tmp_link)
+  os.symlink(Path("runs") / run_name, tmp_link, target_is_directory=True)
+  if os.name == "nt" and os.path.lexists(root / "current"):
+    (root / "current").unlink()
   os.replace(tmp_link, root / "current")
   return run_dir
 

@@ -29,6 +29,7 @@ from frontend.weather_viewer.colormaps import (
     TEMP_LEVELS,
 )
 from frontend.weather_viewer.tiles import (
+    clear_frame_cache,
     compute_frame_index,
     empty_frame,
     evaluate_tile_field,
@@ -67,6 +68,7 @@ __all__ = [
     "WeatherViewer",
     "WeatherViewerEngine",
     "classify_values",
+    "clear_frame_cache",
     "colorize_indexed",
     "colorize_rgba",
     "compute_frame_index",
