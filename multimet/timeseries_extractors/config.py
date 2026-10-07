@@ -109,6 +109,46 @@ def _build_ensemble_stat_bands(
   )
 
 
+def _build_ensemble_member_bands(
+    prefix: str, base_vars: Tuple[str, ...]
+) -> Tuple[str, ...]:
+  return tuple(f"{prefix}_{var}_ensemble" for var in base_vars)
+
+
+DYNAMICAL_PRODUCTS: frozenset[str] = frozenset({
+    "AIFS",
+    "AIFS_ENS",
+    "GFS",
+    "GEFS",
+    "IFS_ENS",
+    "DYNAMICAL_IMERG",
+})
+
+ENSEMBLE_MEMBER_COUNTS: Mapping[Product, int] = {
+    Product.AIFS_ENS: 51,
+    Product.GEFS: 31,
+    Product.IFS_ENS: 51,
+}
+
+ENSEMBLE_MEMBER_BANDS: Mapping[Product, Tuple[str, ...]] = {
+    Product.AIFS_ENS: _build_ensemble_member_bands(
+        "aifs_ens", _ECMWF_DYNAMICAL_BASE_VARS
+    ),
+    Product.GEFS: _build_ensemble_member_bands(
+        "gefs", _NOAA_DYNAMICAL_BASE_VARS
+    ),
+    Product.IFS_ENS: _build_ensemble_member_bands(
+        "ifs_ens", _ECMWF_DYNAMICAL_BASE_VARS
+    ),
+}
+
+ENSEMBLE_MISSING_FRACTION_VAR: Mapping[Product, str] = {
+    Product.AIFS_ENS: "aifs_ens_missing_fraction_ensemble",
+    Product.GEFS: "gefs_missing_fraction_ensemble",
+    Product.IFS_ENS: "ifs_ens_missing_fraction_ensemble",
+}
+
+
 # Target bands / data variable names per product in Caravan-MultiMet.
 # Aligned with canonical Caravan v1.5 specification.
 PRODUCT_BANDS: Mapping[Product, Tuple[str, ...]] = {
@@ -650,16 +690,16 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
         "Code_Repository": GITHUB_REPO_URL,
         "Code_Package": GITHUB_PACKAGE_URL,
         "Units": (
-            "dewpoint_temperature_2m: Dew point temperature [°C]\n"
-            "downward_long_wave_radiation: Downward long-wave radiation flux"
-            " [W/m2]\n"
-            "downward_short_wave_radiation: Downward short-wave radiation flux"
-            " [W/m2]\n"
-            "surface_pressure: Surface pressure [kPa]\n"
-            "temperature_2m: 2m air temperature [°C]\n"
-            "total_precipitation: Total precipitation [mm/day]\n"
-            "u_component_of_wind_10m: U-component of wind at 10m [m/s]\n"
-            "v_component_of_wind_10m: V-component of wind at 10m [m/s]"
+            "aifs_dewpoint_temperature_2m: Dew point temperature [°C]\n"
+            "aifs_downward_long_wave_radiation: Downward long-wave radiation"
+            " flux [W/m2]\n"
+            "aifs_downward_short_wave_radiation: Downward short-wave radiation"
+            " flux [W/m2]\n"
+            "aifs_surface_pressure: Surface pressure [kPa]\n"
+            "aifs_temperature_2m: 2m air temperature [°C]\n"
+            "aifs_total_precipitation: Total precipitation [mm/day]\n"
+            "aifs_u_component_of_wind_10m: U-component of wind at 10m [m/s]\n"
+            "aifs_v_component_of_wind_10m: V-component of wind at 10m [m/s]"
         ),
         "Version": "1.1",
     },
@@ -687,11 +727,14 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
         "Code_Package": GITHUB_PACKAGE_URL,
         "Units": (
             "Summary statistics (mean, std, min, max, p10, p50, p90) across 51"
-            " ensemble members for dewpoint_temperature_2m [°C],"
-            " downward_long_wave_radiation [W/m2],"
-            " downward_short_wave_radiation [W/m2], surface_pressure [kPa],"
-            " temperature_2m [°C], total_precipitation [mm/day],"
-            " u_component_of_wind_10m [m/s], v_component_of_wind_10m [m/s]"
+            " ensemble members for aifs_ens_dewpoint_temperature_2m [°C],"
+            " aifs_ens_downward_long_wave_radiation [W/m2],"
+            " aifs_ens_downward_short_wave_radiation [W/m2],"
+            " aifs_ens_surface_pressure [kPa],"
+            " aifs_ens_temperature_2m [°C],"
+            " aifs_ens_total_precipitation [mm/day],"
+            " aifs_ens_u_component_of_wind_10m [m/s],"
+            " aifs_ens_v_component_of_wind_10m [m/s]"
         ),
         "Version": "1.1",
     },
@@ -710,17 +753,17 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
         "Code_Repository": GITHUB_REPO_URL,
         "Code_Package": GITHUB_PACKAGE_URL,
         "Units": (
-            "downward_long_wave_radiation: Downward long-wave radiation flux"
-            " [W/m2]\n"
-            "downward_short_wave_radiation: Downward short-wave radiation flux"
-            " [W/m2]\n"
-            "surface_pressure: Surface pressure [kPa]\n"
-            "temperature_2m: Daily mean 2m air temperature [°C]\n"
-            "temperature_2m_max: Daily maximum 2m air temperature [°C]\n"
-            "temperature_2m_min: Daily minimum 2m air temperature [°C]\n"
-            "total_precipitation: Total precipitation [mm/day]\n"
-            "u_component_of_wind_10m: U-component of wind at 10m [m/s]\n"
-            "v_component_of_wind_10m: V-component of wind at 10m [m/s]"
+            "gfs_downward_long_wave_radiation: Downward long-wave radiation"
+            " flux [W/m2]\n"
+            "gfs_downward_short_wave_radiation: Downward short-wave radiation"
+            " flux [W/m2]\n"
+            "gfs_surface_pressure: Surface pressure [kPa]\n"
+            "gfs_temperature_2m: Daily mean 2m air temperature [°C]\n"
+            "gfs_temperature_2m_max: Daily maximum 2m air temperature [°C]\n"
+            "gfs_temperature_2m_min: Daily minimum 2m air temperature [°C]\n"
+            "gfs_total_precipitation: Total precipitation [mm/day]\n"
+            "gfs_u_component_of_wind_10m: U-component of wind at 10m [m/s]\n"
+            "gfs_v_component_of_wind_10m: V-component of wind at 10m [m/s]"
         ),
         "Version": "1.1",
     },
@@ -743,11 +786,13 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
         "Code_Package": GITHUB_PACKAGE_URL,
         "Units": (
             "Summary statistics (mean, std, min, max, p10, p50, p90) across 31"
-            " ensemble members for downward_long_wave_radiation [W/m2],"
-            " downward_short_wave_radiation [W/m2], surface_pressure [kPa],"
-            " temperature_2m [°C], temperature_2m_max [°C],"
-            " temperature_2m_min [°C], total_precipitation [mm/day],"
-            " u_component_of_wind_10m [m/s], v_component_of_wind_10m [m/s]"
+            " ensemble members for gefs_downward_long_wave_radiation [W/m2],"
+            " gefs_downward_short_wave_radiation [W/m2],"
+            " gefs_surface_pressure [kPa],"
+            " gefs_temperature_2m [°C], gefs_temperature_2m_max [°C],"
+            " gefs_temperature_2m_min [°C], gefs_total_precipitation [mm/day],"
+            " gefs_u_component_of_wind_10m [m/s],"
+            " gefs_v_component_of_wind_10m [m/s]"
         ),
         "Version": "1.1",
     },
@@ -772,11 +817,14 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
         "Code_Package": GITHUB_PACKAGE_URL,
         "Units": (
             "Summary statistics (mean, std, min, max, p10, p50, p90) across 51"
-            " ensemble members for dewpoint_temperature_2m [°C],"
-            " downward_long_wave_radiation [W/m2],"
-            " downward_short_wave_radiation [W/m2], surface_pressure [kPa],"
-            " temperature_2m [°C], total_precipitation [mm/day],"
-            " u_component_of_wind_10m [m/s], v_component_of_wind_10m [m/s]"
+            " ensemble members for ifs_ens_dewpoint_temperature_2m [°C],"
+            " ifs_ens_downward_long_wave_radiation [W/m2],"
+            " ifs_ens_downward_short_wave_radiation [W/m2],"
+            " ifs_ens_surface_pressure [kPa],"
+            " ifs_ens_temperature_2m [°C],"
+            " ifs_ens_total_precipitation [mm/day],"
+            " ifs_ens_u_component_of_wind_10m [m/s],"
+            " ifs_ens_v_component_of_wind_10m [m/s]"
         ),
         "Version": "1.1",
     },

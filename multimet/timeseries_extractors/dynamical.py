@@ -47,6 +47,7 @@ import xarray as xr
 
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import (
+    ENSEMBLE_MISSING_FRACTION_VAR,
     ENSEMBLE_STAT_SUFFIXES,
     FORECAST_LEAD_DAYS,
     MISSING_FRACTION_VAR,
@@ -55,7 +56,7 @@ from multimet.timeseries_extractors.config import (
     Product,
 )
 from multimet.utils.geometry import load_basin_geometries
-from multimet.utils.spatial import BoundingBox
+from multimet.utils.spatial import BoundingBox, slice_coordinates_by_bounds
 from multimet.utils.zonal import ZonalWeightMatrix
 
 if importlib.util.find_spec("dynamical_catalog") is not None:
@@ -93,7 +94,7 @@ class DynamicalBandSpec:
 
   base_name: str
   source_var: str
-  agg_mode: str  # "rate_sum" | "mean" | "min" | "max"
+  agg_mode: str  # "rate_sum" | "mean" | "mean_6h_reset" | "trapz" | "min" | "max"
   scale: float = 1.0
   clip_min: Optional[float] = None
 
@@ -102,7 +103,7 @@ ECMWF_DYNAMICAL_BAND_SPECS: Tuple[DynamicalBandSpec, ...] = (
     DynamicalBandSpec(
         base_name="dewpoint_temperature_2m",
         source_var="dew_point_temperature_2m",
-        agg_mode="mean",
+        agg_mode="trapz",
     ),
     DynamicalBandSpec(
         base_name="downward_long_wave_radiation",
@@ -119,14 +120,14 @@ ECMWF_DYNAMICAL_BAND_SPECS: Tuple[DynamicalBandSpec, ...] = (
     DynamicalBandSpec(
         base_name="surface_pressure",
         source_var="pressure_surface",
-        agg_mode="mean",
+        agg_mode="trapz",
         scale=1e-3,
         clip_min=0.0,
     ),
     DynamicalBandSpec(
         base_name="temperature_2m",
         source_var="temperature_2m",
-        agg_mode="mean",
+        agg_mode="trapz",
     ),
     DynamicalBandSpec(
         base_name="total_precipitation",
@@ -137,12 +138,12 @@ ECMWF_DYNAMICAL_BAND_SPECS: Tuple[DynamicalBandSpec, ...] = (
     DynamicalBandSpec(
         base_name="u_component_of_wind_10m",
         source_var="wind_u_10m",
-        agg_mode="mean",
+        agg_mode="trapz",
     ),
     DynamicalBandSpec(
         base_name="v_component_of_wind_10m",
         source_var="wind_v_10m",
-        agg_mode="mean",
+        agg_mode="trapz",
     ),
 )
 
@@ -150,26 +151,26 @@ NOAA_DYNAMICAL_BAND_SPECS: Tuple[DynamicalBandSpec, ...] = (
     DynamicalBandSpec(
         base_name="downward_long_wave_radiation",
         source_var="downward_long_wave_radiation_flux_surface",
-        agg_mode="mean",
+        agg_mode="mean_6h_reset",
         clip_min=0.0,
     ),
     DynamicalBandSpec(
         base_name="downward_short_wave_radiation",
         source_var="downward_short_wave_radiation_flux_surface",
-        agg_mode="mean",
+        agg_mode="mean_6h_reset",
         clip_min=0.0,
     ),
     DynamicalBandSpec(
         base_name="surface_pressure",
         source_var="pressure_surface",
-        agg_mode="mean",
+        agg_mode="trapz",
         scale=1e-3,
         clip_min=0.0,
     ),
     DynamicalBandSpec(
         base_name="temperature_2m",
         source_var="temperature_2m",
-        agg_mode="mean",
+        agg_mode="trapz",
     ),
     DynamicalBandSpec(
         base_name="temperature_2m_max",
@@ -190,12 +191,12 @@ NOAA_DYNAMICAL_BAND_SPECS: Tuple[DynamicalBandSpec, ...] = (
     DynamicalBandSpec(
         base_name="u_component_of_wind_10m",
         source_var="wind_u_10m",
-        agg_mode="mean",
+        agg_mode="trapz",
     ),
     DynamicalBandSpec(
         base_name="v_component_of_wind_10m",
         source_var="wind_v_10m",
-        agg_mode="mean",
+        agg_mode="trapz",
     ),
 )
 
@@ -294,50 +295,69 @@ def _align_or_build_weights_matrix(
   """Aligns ``sub_ds`` and ``weights_matrix`` on identical ``(lat, lon)`` coordinates."""
   sub_lats = np.asarray(sub_ds[lat_coord].values, dtype=np.float64)
   sub_lons = np.asarray(sub_ds[lon_coord].values, dtype=np.float64)
+  dlat = (
+      abs(float(sub_lats[1] - sub_lats[0]))
+      if len(sub_lats) > 1
+      else default_res
+  )
+  dlon = (
+      abs(float(sub_lons[1] - sub_lons[0]))
+      if len(sub_lons) > 1
+      else default_res
+  )
 
-  if weights_matrix is not None:
-    wm_lat_min = float(np.min(weights_matrix.lats)) - 1e-3
-    wm_lat_max = float(np.max(weights_matrix.lats)) + 1e-3
-    wm_lon_min = float(np.min(weights_matrix.lons)) - 1e-3
-    wm_lon_max = float(np.max(weights_matrix.lons)) + 1e-3
-    lat_mask = (sub_lats >= wm_lat_min) & (sub_lats <= wm_lat_max)
-    lon_mask = (sub_lons >= wm_lon_min) & (sub_lons <= wm_lon_max)
-    if not np.all(lat_mask) or not np.all(lon_mask):
-      sub_ds = sub_ds.isel(
-          {
-              lat_coord: np.where(lat_mask)[0],
-              lon_coord: np.where(lon_mask)[0],
-          }
-      )
-      sub_lats = np.asarray(sub_ds[lat_coord].values, dtype=np.float64)
-      sub_lons = np.asarray(sub_ds[lon_coord].values, dtype=np.float64)
-
-    if (
-        weights_matrix.grid_shape == (len(sub_lats), len(sub_lons))
-        and np.allclose(weights_matrix.lats, sub_lats, atol=1e-3)
-        and np.allclose(weights_matrix.lons, sub_lons, atol=1e-3)
+  if (
+      weights_matrix is not None
+      and len(weights_matrix.lats) > 0
+      and len(weights_matrix.lons) > 0
+  ):
+    wm_dlat = (
+        abs(float(weights_matrix.lats[1] - weights_matrix.lats[0]))
+        if len(weights_matrix.lats) > 1
+        else dlat
+    )
+    wm_dlon = (
+        abs(float(weights_matrix.lons[1] - weights_matrix.lons[0]))
+        if len(weights_matrix.lons) > 1
+        else dlon
+    )
+    if np.isclose(wm_dlat, dlat, atol=1e-3) and np.isclose(
+        wm_dlon, dlon, atol=1e-3
     ):
-      matrix = weights_matrix
-    else:
-      matrix = weights_matrix.crop_to_coords(sub_lats, sub_lons, atol=1e-3)
-  else:
-    dlat = (
-        abs(float(sub_lats[1] - sub_lats[0]))
-        if len(sub_lats) > 1
-        else default_res
-    )
-    dlon = (
-        abs(float(sub_lons[1] - sub_lons[0]))
-        if len(sub_lons) > 1
-        else default_res
-    )
-    matrix = ZonalWeightMatrix.from_geodataframe(
-        basins_gdf,
-        sub_lats,
-        sub_lons,
-        cell_res_lat=dlat,
-        cell_res_lon=dlon,
-    )
+      wm_lat_min = float(np.min(weights_matrix.lats)) - 1e-3
+      wm_lat_max = float(np.max(weights_matrix.lats)) + 1e-3
+      wm_lon_min = float(np.min(weights_matrix.lons)) - 1e-3
+      wm_lon_max = float(np.max(weights_matrix.lons)) + 1e-3
+      lat_mask = (sub_lats >= wm_lat_min) & (sub_lats <= wm_lat_max)
+      lon_mask = (sub_lons >= wm_lon_min) & (sub_lons <= wm_lon_max)
+      if np.any(lat_mask) and np.any(lon_mask):
+        if not np.all(lat_mask) or not np.all(lon_mask):
+          sub_ds = sub_ds.isel(
+              {
+                  lat_coord: np.where(lat_mask)[0],
+                  lon_coord: np.where(lon_mask)[0],
+              }
+          )
+          sub_lats = np.asarray(sub_ds[lat_coord].values, dtype=np.float64)
+          sub_lons = np.asarray(sub_ds[lon_coord].values, dtype=np.float64)
+
+        if (
+            weights_matrix.grid_shape == (len(sub_lats), len(sub_lons))
+            and np.allclose(weights_matrix.lats, sub_lats, atol=1e-3)
+            and np.allclose(weights_matrix.lons, sub_lons, atol=1e-3)
+        ):
+          return sub_ds, weights_matrix
+        return sub_ds, weights_matrix.crop_to_coords(
+            sub_lats, sub_lons, atol=1e-3
+        )
+
+  matrix = ZonalWeightMatrix.from_geodataframe(
+      basins_gdf,
+      sub_lats,
+      sub_lons,
+      cell_res_lat=dlat,
+      cell_res_lon=dlon,
+  )
   return sub_ds, matrix
 
 
@@ -563,23 +583,18 @@ class DynamicalDataLoader:
           Path,
       ],
       buffer: Optional[float] = None,
-  ) -> Dict[str, slice]:
+  ) -> Dict[str, Union[slice, np.ndarray]]:
     """Computes coordinate index slices bounding the requested watersheds."""
     ds = self.ds
     if isinstance(watersheds, (str, Path)):
       gdf = load_basin_geometries(str(watersheds))
-      bbox = BoundingBox.from_geodataframe(gdf)
+      bbox = BoundingBox.from_geodataframe(gdf, buffer_degrees=0.0)
     elif isinstance(watersheds, gpd.GeoDataFrame):
-      bbox = BoundingBox.from_geodataframe(watersheds)
+      bbox = BoundingBox.from_geodataframe(watersheds, buffer_degrees=0.0)
     elif isinstance(watersheds, shapely.geometry.base.BaseGeometry):
-      bbox = BoundingBox.from_geometry(watersheds)
+      bbox = BoundingBox.from_geometry(watersheds, buffer_degrees=0.0)
     elif isinstance(watersheds, Sequence) and len(watersheds) == 4:
-      bbox = BoundingBox(
-          float(watersheds[0]),
-          float(watersheds[1]),
-          float(watersheds[2]),
-          float(watersheds[3]),
-      )
+      bbox = BoundingBox.from_tuple(watersheds, buffer_degrees=0.0)
     else:
       raise TypeError(f"Unsupported watersheds type: {type(watersheds)}")
 
@@ -589,27 +604,23 @@ class DynamicalDataLoader:
     dlat = abs(float(lat_vals[1] - lat_vals[0])) if len(lat_vals) > 1 else 0.25
     dlon = abs(float(lon_vals[1] - lon_vals[0])) if len(lon_vals) > 1 else 0.25
     buf = buffer if buffer is not None else max(dlat, dlon) * 1.5
-    buffered = bbox.buffer(buf)
-
-    lat_mask = (lat_vals >= buffered.min_lat) & (lat_vals <= buffered.max_lat)
-    lon_mask = (lon_vals >= buffered.min_lon) & (lon_vals <= buffered.max_lon)
-
-    lat_idx = np.where(lat_mask)[0]
-    lon_idx = np.where(lon_mask)[0]
+    _, _, lat_idx, lon_idx = slice_coordinates_by_bounds(
+        lat_vals, lon_vals, bbox, buffer_degrees=buf
+    )
 
     if len(lat_idx) == 0:
-      mid_lat = (bbox.min_lat + bbox.max_lat) / 2.0
-      nearest_lat = int(np.argmin(np.abs(lat_vals - mid_lat)))
-      lat_slice = slice(nearest_lat, nearest_lat + 1)
-    else:
+      lat_slice: Union[slice, np.ndarray] = slice(0, 0)
+    elif len(lat_idx) == 1 or bool(np.all(np.diff(lat_idx) == 1)):
       lat_slice = slice(int(lat_idx[0]), int(lat_idx[-1]) + 1)
+    else:
+      lat_slice = lat_idx
 
     if len(lon_idx) == 0:
-      mid_lon = (bbox.min_lon + bbox.max_lon) / 2.0
-      nearest_lon = int(np.argmin(np.abs(lon_vals - mid_lon)))
-      lon_slice = slice(nearest_lon, nearest_lon + 1)
-    else:
+      lon_slice: Union[slice, np.ndarray] = slice(0, 0)
+    elif len(lon_idx) == 1 or bool(np.all(np.diff(lon_idx) == 1)):
       lon_slice = slice(int(lon_idx[0]), int(lon_idx[-1]) + 1)
+    else:
+      lon_slice = lon_idx
 
     return {
         self.lat_coord: lat_slice,
@@ -658,12 +669,20 @@ class DynamicalDataLoader:
     if start_date is not None or end_date is not None:
       s_dt = pd.to_datetime(start_date) if start_date is not None else None
       e_dt = pd.to_datetime(end_date) if end_date is not None else None
-      if (
-          e_dt is not None
-          and isinstance(end_date, str)
-          and len(end_date.strip()) <= 10
-      ):
-        e_dt = e_dt + pd.Timedelta(hours=23, minutes=59, seconds=59)
+      if e_dt is not None:
+        is_date_only_str = (
+            isinstance(end_date, str) and len(end_date.strip()) <= 10
+        )
+        is_midnight_ts = (
+            isinstance(end_date, pd.Timestamp)
+            and e_dt.hour == 0
+            and e_dt.minute == 0
+            and e_dt.second == 0
+            and e_dt.nanosecond == 0
+            and (s_dt is None or s_dt.floor("D") == s_dt)
+        )
+        if is_date_only_str or is_midnight_ts:
+          e_dt = e_dt + pd.Timedelta(hours=23, minutes=59, seconds=59)
       t_slice = slice(s_dt, e_dt)
       sub_ds = sub_ds.sel({self.time_dim: t_slice})
 
@@ -742,6 +761,12 @@ class DynamicalDataLoader:
     if self.has_ensemble and "ensemble_member" in sub_ds.coords:
       out_coords["ensemble_member"] = sub_ds["ensemble_member"].values
 
+    non_negative_vars = {
+        "precipitation_surface",
+        "downward_short_wave_radiation_flux_surface",
+        "downward_long_wave_radiation_flux_surface",
+        "pressure_surface",
+    }
     out_vars: Dict[str, Any] = {}
     k_active = len(active_cols)
     for var_name in target_vars:
@@ -758,6 +783,10 @@ class DynamicalDataLoader:
             arr.reshape(n_leading, k_active, 1)
         )
         red = red_flat.reshape(len(basin_ids), *leading_shape)
+        if var_name in non_negative_vars:
+          red = np.where(
+              np.isnan(red), np.nan, np.maximum(np.float32(0.0), red)
+          ).astype(np.float32)
 
       if red.ndim == 2:
         out_vars[var_name] = (["basin", "date"], red)
@@ -826,23 +855,33 @@ class DynamicalIMERGExtractor(BaseExtractor):
       self.lats = ds.latitude.values
       self.lons = ds.longitude.values
 
+  _ICECHUNK_EPOCH = pd.Timestamp("1998-01-01")
+
+  def _chunk_anchor(self) -> pd.Timestamp:
+    """Returns the 30-day Icechunk time-chunk epoch anchor date."""
+    ds = self.loader.ds
+    if "time" in ds.coords and len(ds.time) > 0:
+      return pd.to_datetime(ds.time.values[0]).floor("D")
+    return self._ICECHUNK_EPOCH
+
   def _iter_chunk_aligned_windows(
       self, start_dt: pd.Timestamp, end_dt: pd.Timestamp
   ) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
     """Splits ``[start_dt, end_dt]`` into windows aligned with 30-day Icechunk time chunks."""
     windows: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
-    ds = self.loader.ds
-    anchor = pd.Timestamp("1998-01-01")
-    if "time" in ds.coords and len(ds.time) > 0:
-      anchor = pd.to_datetime(ds.time.values[0]).floor("D")
+    anchor = self._chunk_anchor()
 
     cur = start_dt
     step_days = self.batch_days
     while cur <= end_dt:
       days_since_anchor = int((cur - anchor).days)
       if days_since_anchor >= 0 and step_days > 1:
-        rem = days_since_anchor % step_days
-        win_end = min(end_dt, cur + pd.Timedelta(days=step_days - 1 - rem))
+        rem_step = days_since_anchor % step_days
+        days_in_win = step_days - 1 - rem_step
+        if step_days < 30:
+          rem_chunk = days_since_anchor % 30
+          days_in_win = min(days_in_win, 29 - rem_chunk)
+        win_end = min(end_dt, cur + pd.Timedelta(days=days_in_win))
       else:
         win_end = min(end_dt, cur + pd.Timedelta(days=step_days - 1))
       windows.append((cur, win_end))
@@ -1027,14 +1066,6 @@ def find_latest_dynamical_forecast_date(
   ``require_full_10d=True``) to verify that the 00:00:00 UTC initialization has
   been ingested and contains valid (finite) values.
   """
-  if reference_date is None or str(reference_date).strip().lower() == "latest":
-    ref_dt = pd.Timestamp.now("UTC").tz_localize(None).floor("D")
-  else:
-    ts = pd.to_datetime(reference_date)
-    if ts.tzinfo is not None:
-      ts = ts.tz_convert("UTC").tz_localize(None)
-    ref_dt = ts.floor("D")
-
   active_loader = (
       loader if loader is not None else DynamicalDataLoader(dataset_id)
   )
@@ -1073,6 +1104,19 @@ def find_latest_dynamical_forecast_date(
   raw_times = pd.DatetimeIndex(
       pd.to_datetime(ds[time_dim].values).tz_localize(None)
   )
+  if len(raw_times) == 0:
+    raise FileNotFoundError(
+        f"No timestamps found in coordinate {time_dim!r} of dynamical dataset"
+        f" {dataset_id!r}."
+    )
+  if reference_date is None or str(reference_date).strip().lower() == "latest":
+    ref_dt = pd.Timestamp(raw_times[-1]).floor("D")
+  else:
+    ts = pd.to_datetime(reference_date)
+    if ts.tzinfo is not None:
+      ts = ts.tz_convert("UTC").tz_localize(None)
+    ref_dt = ts.floor("D")
+
   earliest_dt = ref_dt - pd.Timedelta(days=max(0, int(max_lookback_days)))
   is_00z = (raw_times.hour == 0) & (raw_times.minute == 0)
   in_window = (raw_times >= earliest_dt) & (
@@ -1110,21 +1154,17 @@ def find_latest_dynamical_forecast_date(
   sp_dim0, sp_dim1 = active_loader.spatial_dims
 
   for t_idx in candidate_indices:
+    isel_kwargs: Dict[str, Any] = {
+        time_dim: int(t_idx),
+        "lead_time": probe_lead_indices,
+        sp_dim0: 0,
+        sp_dim1: 0,
+    }
+    with dask.config.set(scheduler="threads"):
+      probed_ds = ds[probe_vars].isel(**isel_kwargs).compute()
     all_vars_valid = True
     for var_name in probe_vars:
-      isel_kwargs: Dict[str, Any] = {
-          time_dim: int(t_idx),
-          "lead_time": probe_lead_indices,
-          sp_dim0: 0,
-          sp_dim1: 0,
-      }
-      if active_loader.has_ensemble and "ensemble_member" in ds[var_name].dims:
-        isel_kwargs["ensemble_member"] = 0
-      with dask.config.set(scheduler="threads"):
-        vals = np.asarray(
-            ds[var_name].isel(**isel_kwargs).compute().values,
-            dtype=np.float32,
-        )
+      vals = np.asarray(probed_ds[var_name].values, dtype=np.float32)
       if vals.size == 0 or not bool(np.all(np.isfinite(vals))):
         all_vars_valid = False
         break
@@ -1143,15 +1183,16 @@ class DynamicalForecastExtractor(BaseExtractor):
 
   Extracts 10-day forecasts initialized at 00:00:00 UTC from dynamical.org
   Icechunk stores, aggregates sub-daily lead steps over each 24-hour window
-  ``((d - 1) * 24h, d * 24h]`` into daily lead steps ``1..D``, and applies exact
-  zonal weighting over catchment geometries.
+  into daily lead steps ``1..D``, and applies exact zonal weighting over
+  catchment geometries.
 
   For ensemble products (``IFS_ENS``, ``AIFS_ENS``, ``GEFS``), computes exact
   daily catchment trajectories per ensemble member first, then emits 7 ensemble
   summary statistics across members (``mean``, ``std``, ``min``, ``max``,
   ``p10``, ``p50``, ``p90``) as 3D ``(basin, date, lead_time)`` variables, and
   optionally emits the raw 4D ``(basin, date, ensemble_member, lead_time)``
-  member trajectories when ``include_ensemble_members=True``.
+  member trajectories and ``{prefix}_missing_fraction_ensemble`` when
+  ``include_ensemble_members=True``.
   """
 
   DEFAULT_PRODUCT: Product = Product.AIFS
@@ -1189,27 +1230,22 @@ class DynamicalForecastExtractor(BaseExtractor):
       )
     self.data_dir = str(data_dir) if data_dir is not None else None
 
-    default_meta = DYNAMICAL_FORECAST_DATASETS.get(prod_enum.value)
-    self.dataset_id = (
-        dataset_id
-        or (default_meta[1] if default_meta else None)
-        or self.DEFAULT_DATASET_ID
-    )
+    if prod_enum.value not in DYNAMICAL_FORECAST_DATASETS:
+      raise ValueError(
+          f"Unsupported dynamical forecast product: {prod_enum!r}. "
+          f"Expected one of {list(DYNAMICAL_FORECAST_DATASETS.keys())}."
+      )
+    default_meta = DYNAMICAL_FORECAST_DATASETS[prod_enum.value]
+    self.dataset_id = dataset_id if dataset_id is not None else default_meta[1]
     self.band_prefix = (
-        band_prefix
-        or (default_meta[2] if default_meta else None)
-        or self.DEFAULT_BAND_PREFIX
+        band_prefix if band_prefix is not None else default_meta[2]
     )
-    self.is_ensemble = (
-        default_meta[3] if default_meta is not None else self.DEFAULT_IS_ENSEMBLE
-    )
-    self.band_specs: Tuple[DynamicalBandSpec, ...] = (
-        default_meta[4] if default_meta is not None else self.DEFAULT_BAND_SPECS
-    )
+    self.is_ensemble = default_meta[3]
+    self.band_specs: Tuple[DynamicalBandSpec, ...] = default_meta[4]
     self.lead_days = int(
         lead_days
         if lead_days is not None
-        else FORECAST_LEAD_DAYS.get(prod_enum, 10)
+        else FORECAST_LEAD_DAYS[prod_enum]
     )
     self.include_ensemble_members = bool(include_ensemble_members)
     self.loader: DynamicalDataLoader = (
@@ -1249,17 +1285,29 @@ class DynamicalForecastExtractor(BaseExtractor):
       step_idx: np.ndarray,
       w_sec: np.ndarray,
       w_norm: np.ndarray,
+      trapz_idx: np.ndarray,
+      w_trapz: np.ndarray,
+      reset_idx: np.ndarray,
       spec: DynamicalBandSpec,
   ) -> np.ndarray:
     """Aggregates sub-daily basin values along the last axis (``lead_time``) for 1 lead day."""
-    sub = red_arr[..., step_idx]
     if spec.agg_mode == "rate_sum":
+      sub = red_arr[..., step_idx]
       day_val = np.sum(sub * w_sec, axis=-1) * np.float32(spec.scale)
     elif spec.agg_mode == "mean":
+      sub = red_arr[..., step_idx]
       day_val = np.sum(sub * w_norm, axis=-1) * np.float32(spec.scale)
+    elif spec.agg_mode == "mean_6h_reset":
+      sub = red_arr[..., reset_idx]
+      day_val = np.mean(sub, axis=-1) * np.float32(spec.scale)
+    elif spec.agg_mode == "trapz":
+      sub = red_arr[..., trapz_idx]
+      day_val = np.sum(sub * w_trapz, axis=-1) * np.float32(spec.scale)
     elif spec.agg_mode == "min":
+      sub = red_arr[..., step_idx]
       day_val = np.min(sub, axis=-1) * np.float32(spec.scale)
     elif spec.agg_mode == "max":
+      sub = red_arr[..., step_idx]
       day_val = np.max(sub, axis=-1) * np.float32(spec.scale)
     else:
       raise ValueError(f"Unsupported agg_mode {spec.agg_mode!r}")
@@ -1275,6 +1323,12 @@ class DynamicalForecastExtractor(BaseExtractor):
   ) -> Dict[str, np.ndarray]:
     """Computes the 7 summary statistics across the ensemble member axis (``axis=-1``).
 
+    Drops ``NaN`` ensemble members at each ``(basin, ..., lead_time)`` slice:
+    ``mean``, ``min``, ``max``, ``p10``, ``p50``, and ``p90`` are computed across
+    all valid members whenever at least 1 member is finite (``NaN`` if 0 valid),
+    and sample standard deviation (``std`` with ``ddof=1``) is computed whenever
+    at least 2 members are finite (``NaN`` if fewer than 2 valid).
+
     Args:
       member_vals: Array of shape ``(N_basins, ..., M)`` containing daily
         catchment values per ensemble member.
@@ -1283,15 +1337,45 @@ class DynamicalForecastExtractor(BaseExtractor):
       Dictionary mapping each suffix in ``ENSEMBLE_STAT_SUFFIXES`` to a float32
       array of shape ``(N_basins, ...)``.
     """
-    p10, p50, p90 = np.percentile(member_vals, [10.0, 50.0, 90.0], axis=-1)
+    leading_shape = member_vals.shape[:-1]
+    n_members = member_vals.shape[-1]
+    flat = member_vals.reshape(-1, n_members).astype(np.float64)
+    n_rows = flat.shape[0]
+
+    valid_counts = np.sum(np.isfinite(flat), axis=1)
+    has_one = valid_counts >= 1
+    has_two = valid_counts >= 2
+
+    out_mean = np.full(n_rows, np.nan, dtype=np.float32)
+    out_std = np.full(n_rows, np.nan, dtype=np.float32)
+    out_min = np.full(n_rows, np.nan, dtype=np.float32)
+    out_max = np.full(n_rows, np.nan, dtype=np.float32)
+    out_p10 = np.full(n_rows, np.nan, dtype=np.float32)
+    out_p50 = np.full(n_rows, np.nan, dtype=np.float32)
+    out_p90 = np.full(n_rows, np.nan, dtype=np.float32)
+
+    if np.any(has_one):
+      sub1 = flat[has_one]
+      out_mean[has_one] = np.nanmean(sub1, axis=1).astype(np.float32)
+      out_min[has_one] = np.nanmin(sub1, axis=1).astype(np.float32)
+      out_max[has_one] = np.nanmax(sub1, axis=1).astype(np.float32)
+      p10, p50, p90 = np.nanpercentile(sub1, [10.0, 50.0, 90.0], axis=1)
+      out_p10[has_one] = np.asarray(p10, dtype=np.float32)
+      out_p50[has_one] = np.asarray(p50, dtype=np.float32)
+      out_p90[has_one] = np.asarray(p90, dtype=np.float32)
+
+    if np.any(has_two):
+      sub2 = flat[has_two]
+      out_std[has_two] = np.nanstd(sub2, axis=1, ddof=1).astype(np.float32)
+
     return {
-        "mean": np.mean(member_vals, axis=-1).astype(np.float32),
-        "std": np.std(member_vals, axis=-1).astype(np.float32),
-        "min": np.min(member_vals, axis=-1).astype(np.float32),
-        "max": np.max(member_vals, axis=-1).astype(np.float32),
-        "p10": np.asarray(p10, dtype=np.float32),
-        "p50": np.asarray(p50, dtype=np.float32),
-        "p90": np.asarray(p90, dtype=np.float32),
+        "mean": out_mean.reshape(leading_shape),
+        "std": out_std.reshape(leading_shape),
+        "min": out_min.reshape(leading_shape),
+        "max": out_max.reshape(leading_shape),
+        "p10": out_p10.reshape(leading_shape),
+        "p50": out_p50.reshape(leading_shape),
+        "p90": out_p90.reshape(leading_shape),
     }
 
   def _extract_window(
@@ -1309,15 +1393,17 @@ class DynamicalForecastExtractor(BaseExtractor):
   ) -> Optional[ZonalWeightMatrix]:
     """Loads and reduces a single temporal/lead window into ``data_dict`` and ``missing_fraction``."""
     ds_full = self.loader.ds
-    present_specs = [
-        spec for spec in self.band_specs if spec.source_var in ds_full.data_vars
+    missing_vars = [
+        spec.source_var
+        for spec in self.band_specs
+        if spec.source_var not in ds_full.data_vars
     ]
-    if not present_specs:
-      expected_vars = [spec.source_var for spec in self.band_specs]
+    if missing_vars:
       raise KeyError(
-          f"None of the expected variables {expected_vars} found in "
-          f"{self.dataset_id}. Available: {list(ds_full.data_vars.keys())}"
+          f"Required variables {missing_vars} not found in {self.dataset_id}. "
+          f"Available: {list(ds_full.data_vars.keys())}"
       )
+    present_specs = list(self.band_specs)
     source_vars = [spec.source_var for spec in present_specs]
 
     lead_slice = self._lead_slice_for_days(max_lead_days)
@@ -1343,22 +1429,16 @@ class DynamicalForecastExtractor(BaseExtractor):
     if len(sub_ds.lead_time) < 2:
       return weights_matrix
 
-    full_lead_sec = _lead_times_to_seconds(sub_ds["lead_time"])
-    full_prev_sec = np.concatenate([[0.0], full_lead_sec[:-1]])
-    full_dt_sec = full_lead_sec - full_prev_sec
-
-    # Exclude lead_time == 0h from S3 chunk transfers and spatial reduction:
-    # step-interval variables (precipitation, min/max temp, radiation) are NaN
-    # at lead_time == 0h, and 24h windows ((d - 1)*24h, d*24h] only use steps > 0h.
-    pos_lead_mask = full_lead_sec > 0.0
+    lead_sec = _lead_times_to_seconds(sub_ds["lead_time"])
+    pos_lead_mask = lead_sec > 0.0
     if not np.any(pos_lead_mask):
       return weights_matrix
 
-    pos_lead_indices = np.where(pos_lead_mask)[0]
-    lead_sec = full_lead_sec[pos_lead_indices]
-    prev_sec = full_prev_sec[pos_lead_indices]
-    dt_sec = full_dt_sec[pos_lead_indices]
-    sub_ds = sub_ds.isel(lead_time=pos_lead_indices)
+    prev_sec = np.zeros_like(lead_sec)
+    prev_sec[pos_lead_mask] = np.concatenate(
+        [[0.0], lead_sec[pos_lead_mask][:-1]]
+    )
+    dt_sec = lead_sec - prev_sec
 
     sub_ds, matrix = _align_or_build_weights_matrix(
         sub_ds,
@@ -1389,7 +1469,7 @@ class DynamicalForecastExtractor(BaseExtractor):
     n_ens = int(sub_ds.sizes["ensemble_member"]) if has_ens_dim else 1
 
     reduced_vars: Dict[str, np.ndarray] = {}
-    step_miss_all: Optional[np.ndarray] = None
+    reduced_miss: Dict[str, np.ndarray] = {}
 
     for spec in present_specs:
       da = sub_ds[spec.source_var]
@@ -1402,9 +1482,7 @@ class DynamicalForecastExtractor(BaseExtractor):
         flat_3d = arr.reshape(n_time * n_ens * n_lead, k_active, 1)
         red_flat, miss_flat = comp_wm.reduce_3d_with_coverage(flat_3d)
         red = red_flat.reshape(n_basins, n_time, n_ens, n_lead)
-        miss = np.max(
-            miss_flat.reshape(n_basins, n_time, n_ens, n_lead), axis=2
-        )
+        miss = miss_flat.reshape(n_basins, n_time, n_ens, n_lead)
       else:
         flat_3d = arr.reshape(n_time * n_lead, k_active, 1)
         red_flat, miss_flat = comp_wm.reduce_3d_with_coverage(flat_3d)
@@ -1412,11 +1490,8 @@ class DynamicalForecastExtractor(BaseExtractor):
         miss = miss_flat.reshape(n_basins, n_time, n_lead)
 
       reduced_vars[spec.base_name] = red
-      step_miss_all = (
-          miss if step_miss_all is None else np.maximum(step_miss_all, miss)
-      )
+      reduced_miss[spec.base_name] = miss
 
-    assert step_miss_all is not None
     sub_init_times = pd.to_datetime(sub_ds.init_time.values).tz_localize(None)
 
     valid_t_indices: List[int] = []
@@ -1432,11 +1507,13 @@ class DynamicalForecastExtractor(BaseExtractor):
 
     t_sel = np.asarray(valid_t_indices, dtype=np.int64)
     d_sel = np.asarray(target_d_positions, dtype=np.int64)
+    needs_trapz = any(s.agg_mode == "trapz" for s in present_specs)
+    needs_6h_reset = any(s.agg_mode == "mean_6h_reset" for s in present_specs)
 
     for lt_day in range(1, max_lead_days + 1):
       t_start = float(lt_day - 1) * 86400.0
       t_end = float(lt_day) * 86400.0
-      step_idx = np.where((lead_sec > t_start) & (lead_sec <= t_end))[0]
+      step_idx = np.where((lead_sec > t_start + 1.0) & (lead_sec <= t_end + 1.0))[0]
       if len(step_idx) == 0:
         continue
       if not np.isclose(prev_sec[step_idx[0]], t_start, atol=1.0):
@@ -1450,20 +1527,68 @@ class DynamicalForecastExtractor(BaseExtractor):
       if not np.isclose(total_dt, 86400.0, atol=1.0):
         continue
       w_norm = (w_sec / total_dt).astype(np.float32)
-      lt_pos = lt_day - 1
 
-      day_miss = np.max(step_miss_all[:, t_sel, :][:, :, step_idx], axis=-1)
+      trapz_idx = np.where(
+          (lead_sec >= t_start - 1.0) & (lead_sec <= t_end + 1.0)
+      )[0]
+      if needs_trapz:
+        if (
+            len(trapz_idx) < 2
+            or not np.isclose(lead_sec[trapz_idx[0]], t_start, atol=1.0)
+            or not np.isclose(lead_sec[trapz_idx[-1]], t_end, atol=1.0)
+        ):
+          continue
+        t_sub = lead_sec[trapz_idx]
+        w_trapz_64 = np.empty(len(t_sub), dtype=np.float64)
+        w_trapz_64[0] = 0.5 * (t_sub[1] - t_sub[0]) / 86400.0
+        w_trapz_64[1:-1] = 0.5 * (t_sub[2:] - t_sub[:-2]) / 86400.0
+        w_trapz_64[-1] = 0.5 * (t_sub[-1] - t_sub[-2]) / 86400.0
+        w_trapz = w_trapz_64.astype(np.float32)
+      else:
+        w_trapz = np.array([], dtype=np.float32)
+
+      reset_idx = step_idx[
+          np.isclose(lead_sec[step_idx] % 21600.0, 0.0, atol=1.0)
+      ]
+      if needs_6h_reset and len(reset_idx) != 4:
+        continue
+
+      lt_pos = lt_day - 1
       any_nan = np.zeros((n_basins, len(t_sel)), dtype=bool)
+      day_miss_ens = np.zeros((n_basins, len(t_sel), n_ens), dtype=np.float32)
+      day_miss_det = np.zeros((n_basins, len(t_sel)), dtype=np.float32)
 
       for spec in present_specs:
         red = reduced_vars[spec.base_name][:, t_sel, ...]
+        miss_arr = reduced_miss[spec.base_name][:, t_sel, ...]
+        if spec.agg_mode == "trapz":
+          idx_used = trapz_idx
+        elif spec.agg_mode == "mean_6h_reset":
+          idx_used = reset_idx
+        else:
+          idx_used = step_idx
+
+        spec_miss = np.max(miss_arr[..., idx_used], axis=-1)
         day_val = self._aggregate_daily_step(
-            red, step_idx, w_sec, w_norm, spec
+            red,
+            step_idx,
+            w_sec,
+            w_norm,
+            trapz_idx,
+            w_trapz,
+            reset_idx,
+            spec,
         )
         if self.is_ensemble:
           if day_val.ndim == 2:
-            # Single-member dataset passed to ensemble extractor in testing
             day_val = day_val[:, :, np.newaxis]
+          if spec_miss.ndim == 2:
+            spec_miss = spec_miss[:, :, np.newaxis]
+          spec_miss = np.where(
+              np.isnan(day_val), np.float32(1.0), spec_miss
+          ).astype(np.float32)
+          day_miss_ens = np.maximum(day_miss_ens, spec_miss)
+
           stats = self._compute_ensemble_stats(day_val)
           for stat_name, stat_arr in stats.items():
             band_name = f"{self.band_prefix}_{spec.base_name}_{stat_name}"
@@ -1479,12 +1604,30 @@ class DynamicalForecastExtractor(BaseExtractor):
         else:
           if day_val.ndim == 3:
             day_val = np.mean(day_val, axis=-1).astype(np.float32)
+          if spec_miss.ndim == 3:
+            spec_miss = np.mean(spec_miss, axis=-1).astype(np.float32)
+          spec_miss = np.where(
+              np.isnan(day_val), np.float32(1.0), spec_miss
+          ).astype(np.float32)
+          day_miss_det = np.maximum(day_miss_det, spec_miss)
+
           band_name = f"{self.band_prefix}_{spec.base_name}"
           if band_name in data_dict:
             data_dict[band_name][:, d_sel, lt_pos] = day_val
           any_nan |= np.isnan(day_val)
 
-      day_miss = np.where(any_nan, 1.0, day_miss).astype(np.float32)
+      if self.is_ensemble:
+        if self.include_ensemble_members:
+          ens_missing_var = ENSEMBLE_MISSING_FRACTION_VAR[self.product]
+          if ens_missing_var in ensemble_dict:
+            ensemble_dict[ens_missing_var][
+                :, d_sel, :, lt_pos : lt_pos + 1
+            ] = day_miss_ens[..., np.newaxis]
+        day_miss = np.mean(day_miss_ens, axis=-1)
+        day_miss = np.where(any_nan, 1.0, day_miss).astype(np.float32)
+      else:
+        day_miss = np.where(any_nan, 1.0, day_miss_det).astype(np.float32)
+
       missing_fraction[:, d_sel, lt_pos] = day_miss
 
     return matrix
@@ -1544,6 +1687,8 @@ class DynamicalForecastExtractor(BaseExtractor):
       for spec in self.band_specs:
         ens_band = f"{self.band_prefix}_{spec.base_name}_ensemble"
         ensemble_dict[ens_band] = np.full(ens_shape, np.nan, dtype=np.float32)
+      ens_missing_var = ENSEMBLE_MISSING_FRACTION_VAR[self.product]
+      ensemble_dict[ens_missing_var] = np.ones(ens_shape, dtype=np.float32)
 
     windows: List[Tuple[pd.Timestamp, pd.Timestamp, int]] = []
     if spinup_only_before is not None:
@@ -1585,9 +1730,7 @@ class DynamicalForecastExtractor(BaseExtractor):
           ens_arr.astype(np.float32),
       )
 
-    missing_var = MISSING_FRACTION_VAR.get(
-        self.product, f"{self.band_prefix}_missing_fraction"
-    )
+    missing_var = MISSING_FRACTION_VAR[self.product]
     data_vars[missing_var] = (
         ["basin", "date", "lead_time"],
         missing_fraction.astype(np.float32),

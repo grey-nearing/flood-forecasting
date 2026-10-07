@@ -370,7 +370,7 @@ class RealtimeForcingFetcher:
       require_full_10d: bool = True,
       products: Optional[Sequence[Union[str, Product]]] = None,
   ) -> pd.Timestamp:
-    """Resolves the forecast issue date ``t0`` (auto-discovering latest HRES or dynamical run if omitted)."""
+    """Resolves the forecast issue date ``t0`` across all requested forecast products."""
     if reference_date is None or str(reference_date).strip().lower() == "latest":
       norm_prods = (
           [
@@ -383,35 +383,64 @@ class RealtimeForcingFetcher:
       dyn_forecast_prods = [
           p for p in norm_prods if p in DYNAMICAL_FORECAST_EXTRACTOR_CLASSES
       ]
-      if dyn_forecast_prods and "HRES" not in norm_prods:
-        discovered_dates: List[pd.Timestamp] = []
-        for prod_name in dyn_forecast_prods:
-          ext_cls = DYNAMICAL_FORECAST_EXTRACTOR_CLASSES[prod_name]
-          t_prod = find_latest_dynamical_forecast_date(
-              ext_cls.DEFAULT_DATASET_ID,
-              require_full_10d=require_full_10d,
-              loader=self.dynamical_loaders.get(prod_name),
-          )
-          discovered_dates.append(t_prod)
-        t0 = min(discovered_dates)
-        logger.info(
-            "Auto-discovered latest published dynamical.org initialization date"
-            " across %s: %s",
-            dyn_forecast_prods,
-            t0.strftime("%Y-%m-%d"),
+      discovered_dates: List[pd.Timestamp] = []
+
+      if "HRES" in norm_prods:
+        t_hres = find_latest_hres_open_data_date(
+            bucket=self.hres_bucket,
+            require_full_10d=require_full_10d,
+            fs=self.hres_fs,
         )
+        logger.info(
+            "Auto-discovered latest published ECMWF HRES initialization date: %s",
+            t_hres.strftime("%Y-%m-%d"),
+        )
+        discovered_dates.append(t_hres)
+
+      for prod_name in dyn_forecast_prods:
+        ext_cls = DYNAMICAL_FORECAST_EXTRACTOR_CLASSES[prod_name]
+        loader = self.dynamical_loaders.get(prod_name)
+        if loader is None:
+          loader = DynamicalDataLoader(ext_cls.DEFAULT_DATASET_ID)
+          self.dynamical_loaders[prod_name] = loader
+        t_prod = find_latest_dynamical_forecast_date(
+            ext_cls.DEFAULT_DATASET_ID,
+            require_full_10d=require_full_10d,
+            loader=loader,
+        )
+        discovered_dates.append(t_prod)
+
+      if discovered_dates:
+        t0 = min(discovered_dates)
+        if dyn_forecast_prods:
+          logger.info(
+              "Auto-discovered latest published forecast initialization date"
+              " across %s: %s",
+              norm_prods,
+              t0.strftime("%Y-%m-%d"),
+          )
         return t0
 
-      t0 = find_latest_hres_open_data_date(
-          bucket=self.hres_bucket,
-          require_full_10d=require_full_10d,
-          fs=self.hres_fs,
+      if "DYNAMICAL_IMERG" in norm_prods:
+        loader = self.dynamical_loaders.get("DYNAMICAL_IMERG")
+        if loader is None:
+          loader = DynamicalDataLoader(
+              DynamicalIMERGExtractor.DEFAULT_DATASET_ID
+          )
+          self.dynamical_loaders["DYNAMICAL_IMERG"] = loader
+        raw_times = pd.DatetimeIndex(
+            pd.to_datetime(loader.ds[loader.time_dim].values).tz_localize(None)
+        )
+        last_ts = raw_times[-1]
+        last_day = last_ts.floor("D")
+        if int(np.sum(raw_times.floor("D") == last_day)) >= 48:
+          return pd.Timestamp(last_day)
+        return pd.Timestamp(last_day - pd.Timedelta(days=1))
+
+      return (
+          pd.Timestamp.now("UTC").tz_localize(None).floor("D")
+          - pd.Timedelta(days=1)
       )
-      logger.info(
-          "Auto-discovered latest published ECMWF HRES initialization date: %s",
-          t0.strftime("%Y-%m-%d"),
-      )
-      return t0
     return pd.to_datetime(reference_date).floor("D")
 
   def plan_product_window(
@@ -540,6 +569,14 @@ class RealtimeForcingFetcher:
           source="open_data",
           fs=self.hres_fs,
       )
+      if (
+          weights_matrix is not None
+          and extractor.lats is not None
+          and extractor.lons is not None
+          and weights_matrix.grid_shape
+          != (len(extractor.lats), len(extractor.lons))
+      ):
+        weights_matrix = None
       return extractor.extract_for_basins_open_data(
           basins_gdf,
           start_date=start_dt,
@@ -559,6 +596,7 @@ class RealtimeForcingFetcher:
         )
       else:
         extractor = extractor_cls(loader=loader)
+      self.dynamical_loaders[prod_name] = extractor.loader
       return extractor.extract_for_basins(
           basins_gdf,
           start_date=start_dt,
@@ -572,6 +610,7 @@ class RealtimeForcingFetcher:
       extractor = DynamicalIMERGExtractor(
           loader=self.dynamical_loaders.get("DYNAMICAL_IMERG")
       )
+      self.dynamical_loaders["DYNAMICAL_IMERG"] = extractor.loader
       return extractor.extract_for_basins(
           basins_gdf,
           start_date=start_dt,
@@ -588,6 +627,14 @@ class RealtimeForcingFetcher:
           token=self.earthdata_token,
           netrc_path=self.netrc_path,
       )
+      if (
+          weights_matrix is not None
+          and extractor.lats is not None
+          and extractor.lons is not None
+          and weights_matrix.grid_shape
+          != (len(extractor.lats), len(extractor.lons))
+      ):
+        weights_matrix = None
       return extractor.extract_for_basins(
           basins_gdf,
           start_date=start_dt,
@@ -601,6 +648,14 @@ class RealtimeForcingFetcher:
           source="psl",
           cache_dir=self.cpc_cache_dir,
       )
+      if (
+          weights_matrix is not None
+          and extractor.lats is not None
+          and extractor.lons is not None
+          and weights_matrix.grid_shape
+          != (len(extractor.lats), len(extractor.lons))
+      ):
+        weights_matrix = None
       return extractor.extract_for_basins(
           basins_gdf,
           start_date=start_dt,

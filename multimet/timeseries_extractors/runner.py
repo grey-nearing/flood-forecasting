@@ -31,7 +31,11 @@ import geopandas as gpd
 import pandas as pd
 
 from multimet.timeseries_extractors.base import BaseExtractor
-from multimet.timeseries_extractors.config import Product
+from multimet.timeseries_extractors.config import (
+    DYNAMICAL_PRODUCTS,
+    ENSEMBLE_MEMBER_COUNTS,
+    Product,
+)
 from multimet.timeseries_extractors.cpc import CPCExtractor
 from multimet.timeseries_extractors.dynamical import (
     AIFSEnsExtractor,
@@ -57,15 +61,6 @@ DEFAULT_SERIAL_PRODUCTS: tuple[str, ...] = (
     "IMERG",
     "HRES",
 )
-
-DYNAMICAL_PRODUCTS: frozenset[str] = frozenset({
-    "AIFS",
-    "AIFS_ENS",
-    "GFS",
-    "GEFS",
-    "IFS_ENS",
-    "DYNAMICAL_IMERG",
-})
 
 PRODUCT_MAP: Dict[str, tuple[Product, type[BaseExtractor]]] = {
     "CPC": (Product.CPC, CPCExtractor),
@@ -124,6 +119,7 @@ def extract_multimet_serial(
     earthdata_token: Optional[str] = None,
     netrc_path: Optional[str] = None,
     gcp_project: Optional[str] = None,
+    include_ensemble_members: bool = False,
 ) -> Dict[str, str]:
   """Runs local serial extraction for requested meteorological forcing products.
 
@@ -148,6 +144,8 @@ def extract_multimet_serial(
     earthdata_token: Optional NASA Earthdata Bearer token.
     netrc_path: Optional path to custom .netrc file.
     gcp_project: Optional Google Cloud project ID for GCS quota/billing.
+    include_ensemble_members: Whether to emit 4D per-member variables alongside
+      3D ensemble summary statistics for ensemble products.
 
   Returns:
     Dictionary mapping product name to the output Zarr store path.
@@ -293,10 +291,13 @@ def extract_multimet_serial(
           data_dir=norm_data_dirs.get(prod_name), source=src
       )
     elif prod_name in DYNAMICAL_PRODUCTS:
-      extractor = extractor_cls(
-          data_dir=norm_data_dirs.get(prod_name),
-          source="dynamical",
-      )
+      dyn_kwargs: Dict[str, Any] = {
+          "data_dir": norm_data_dirs.get(prod_name),
+          "source": "dynamical",
+      }
+      if prod_enum in ENSEMBLE_MEMBER_COUNTS:
+        dyn_kwargs["include_ensemble_members"] = include_ensemble_members
+      extractor = extractor_cls(**dyn_kwargs)
     else:
       extractor = extractor_cls(data_dir=norm_data_dirs.get(prod_name))
 
@@ -438,6 +439,17 @@ def _build_parser() -> argparse.ArgumentParser:
       default=None,
       help="Optional Google Cloud project ID for GCS quota/billing. Auto-detected if omitted.",
   )
+  parser.add_argument(
+      "--include-ensemble-members",
+      "--include_ensemble_members",
+      dest="include_ensemble_members",
+      action="store_true",
+      default=False,
+      help=(
+          "Include 4D per-member variables alongside 3D ensemble summary "
+          "statistics for ensemble products (GEFS, IFS_ENS, AIFS_ENS)."
+      ),
+  )
   return parser
 
 
@@ -469,6 +481,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
       earthdata_token=args.earthdata_token,
       netrc_path=args.netrc_path,
       gcp_project=args.gcp_project,
+      include_ensemble_members=args.include_ensemble_members,
   )
   print(
       f"\n✓ Completed extraction of {len(stores)} products in"

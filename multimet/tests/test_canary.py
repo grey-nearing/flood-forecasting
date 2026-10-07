@@ -126,7 +126,9 @@ class TestDynamicalCatalog:
     import geopandas as gpd
     from shapely.geometry import box
     from multimet.timeseries_extractors.dynamical import (
+        AIFSExtractor,
         DynamicalIMERGExtractor,
+        GEFSExtractor,
         GFSExtractor,
     )
 
@@ -142,6 +144,21 @@ class TestDynamicalCatalog:
     assert np.all(np.isfinite(gfs_ds["gfs_total_precipitation"].values))
     assert np.all(np.isfinite(gfs_ds["gfs_temperature_2m_max"].values))
     assert np.all(np.isfinite(gfs_ds["gfs_temperature_2m_min"].values))
+
+    aifs = AIFSExtractor(lead_days=2)
+    aifs_ds = aifs.extract_for_basins(
+        gdf, start_date="2025-06-01", end_date="2025-06-01"
+    )
+    assert np.all(np.isfinite(aifs_ds["aifs_total_precipitation"].values))
+
+    gefs = GEFSExtractor(lead_days=2, include_ensemble_members=True)
+    gefs_ds = gefs.extract_for_basins(
+        gdf, start_date="2025-06-01", end_date="2025-06-01"
+    )
+    assert np.all(np.isfinite(gefs_ds["gefs_total_precipitation_mean"].values))
+    assert np.all(
+        np.isfinite(gefs_ds["gefs_total_precipitation_ensemble"].values)
+    )
 
     imerg = DynamicalIMERGExtractor(batch_days=1)
     imerg_ds = imerg.extract_for_basins(
