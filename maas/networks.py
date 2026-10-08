@@ -82,10 +82,10 @@ GEOGLOWS_LOD: list[tuple[int, float, float | None]] = [
     (5, 10000, 0.02),
     (6, 5000, 0.01),
     (7, 2500, 0.005),
-    (8, 1000, None),
-    (9, 500, None),
-    (10, 250, None),
-    (99, 100, None),
+    (8, 1000, 0.002),
+    (9, 500, 0.001),
+    (10, 250, 0.0),
+    (99, 100, 0.0),
 ]
 
 FLOODHUB_LOD: list[tuple[int, int]] = [
@@ -97,6 +97,18 @@ FLOODHUB_LOD: list[tuple[int, int]] = [
     (9, 3),
     (10, 2),
     (99, 1),
+]
+
+FLOODHUB_PYRAMID_LOD: list[tuple[int, float, float]] = [
+    (3, 25000, 0.08),
+    (4, 15000, 0.04),
+    (5, 10000, 0.02),
+    (6, 5000, 0.01),
+    (7, 2500, 0.005),
+    (8, 1000, 0.002),
+    (9, 500, 0.001),
+    (10, 250, 0.0),
+    (99, 100, 0.0),
 ]
 
 CACHE_VERSION = 1
@@ -303,6 +315,7 @@ def _pack_level(  # noqa: PLR0913, PLR0917
     amin: np.ndarray,
     amax: np.ndarray,
     tol: float,
+    **extra: np.ndarray,
 ) -> dict[str, np.ndarray]:
     """Build (optionally simplified) CSR polylines with bounding boxes and area ranges."""
     lines = shapely.linestrings(xy, indices=line_of_vertex)
@@ -321,13 +334,15 @@ def _pack_level(  # noqa: PLR0913, PLR0917
         bbox[ok, 2] = np.maximum.reduceat(coords[:, 0], s)
         bbox[ok, 3] = np.maximum.reduceat(coords[:, 1], s)
     bbox[~ok] = np.nan
-    return {
+    out: dict[str, np.ndarray] = {
         'coords': coords.astype(np.float32),
         'offsets': offsets,
         'bbox': bbox,
         'amin': amin.astype(np.float32),
         'amax': amax.astype(np.float32),
     }
+    out.update(extra)
+    return out
 
 
 def _point_levels(
@@ -380,6 +395,9 @@ def save_network_pyramid(
     tmp.replace(path)
 
 
+_PYRAMID_LOAD_CACHE: dict[tuple[str, str, int], dict[str, Any]] = {}
+
+
 def load_network_pyramid(
     path: Path,
     signature: str,
@@ -387,17 +405,31 @@ def load_network_pyramid(
     """Load a cached river network pyramid if `path` exists and matches `signature`."""
     if not path.exists():
         return None
+    try:
+        cache_key = (str(path.resolve()), signature, path.stat().st_mtime_ns)
+    except OSError:
+        return None
+    cached = _PYRAMID_LOAD_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     with np.load(path) as z:
         if 'signature' not in z.files or str(z['signature']) != signature:
             return None
         n = int(z['n_levels'])
-        keys = ('coords', 'offsets', 'bbox', 'amin', 'amax')
-        out: dict[str, Any] = {
-            'levels': [{k: z[f'L{i}_{k}'] for k in keys} for i in range(n)]
-        }
+        levels: list[dict[str, np.ndarray]] = [{} for _ in range(n)]
+        out: dict[str, Any] = {'levels': levels}
         for k in z.files:
-            if not k.startswith('L') and k not in ('signature', 'n_levels'):
-                out[k] = z[k]
+            if k in ('signature', 'n_levels'):
+                continue
+            if k.startswith('L') and '_' in k:
+                prefix, subkey = k.split('_', 1)
+                if prefix[1:].isdigit():
+                    idx = int(prefix[1:])
+                    if 0 <= idx < n:
+                        levels[idx][subkey] = z[k]
+                        continue
+            out[k] = z[k]
+    _PYRAMID_LOAD_CACHE[cache_key] = out
     return out
 
 
@@ -613,6 +645,11 @@ def build_geoglows_pyramid(geoglows_dir: Path) -> dict[str, Any]:
     for i in np.flatnonzero(reversed_).tolist():
         coords[voff[i] : voff[i + 1]] = coords[voff[i] : voff[i + 1]][::-1]
 
+    first = coords[voff[:-1]]
+    last = coords[np.maximum(voff[1:] - 1, 0)]
+    mid = coords[(voff[:-1] + np.maximum(voff[1:] - 1, 0)) // 2]
+    lat_order = np.argsort(mid[:, 1])
+
     levels = []
     for _, min_area, tol in table:
         nodes, offsets, _ = _split_chains(
@@ -626,14 +663,20 @@ def build_geoglows_pyramid(geoglows_dir: Path) -> dict[str, Any]:
             lengths,
         )
         a = area[nodes]
+        chain_river_id = (
+            linkno[nodes[offsets[1:] - 1]].astype(np.int32)
+            if n
+            else np.zeros(0, dtype=np.int32)
+        )
         levels.append(
             _pack_level(
                 coords[vertex],
                 line_of_vertex,
                 n,
-                np.minimum.reduceat(a, offsets[:-1]),
-                np.maximum.reduceat(a, offsets[:-1]),
+                np.minimum.reduceat(a, offsets[:-1]) if n else a[:0],
+                np.maximum.reduceat(a, offsets[:-1]) if n else a[:0],
                 float(tol or 0.0),
+                river_id=chain_river_id,
             )
         )
     logger.info(
@@ -642,7 +685,145 @@ def build_geoglows_pyramid(geoglows_dir: Path) -> dict[str, Any]:
         int(reversed_.sum()),
         time.time() - t0,
     )
-    return {'levels': levels}
+    return {
+        'levels': levels,
+        'reach_lat': mid[lat_order, 1].astype(np.float32),
+        'reach_lon': mid[lat_order, 0].astype(np.float32),
+        'reach_lon0': first[lat_order, 0].astype(np.float32),
+        'reach_lat0': first[lat_order, 1].astype(np.float32),
+        'reach_lon1': last[lat_order, 0].astype(np.float32),
+        'reach_lat1': last[lat_order, 1].astype(np.float32),
+        'reach_linkno': linkno[lat_order].astype(np.int32),
+        'reach_area': area[lat_order].astype(np.float32),
+    }
+
+
+def build_floodhub_pyramid(
+    shp_path: Path,
+    lut_path: Path | None = None,
+) -> dict[str, Any]:
+    """Build the zoom-stratified HydroRIVERS + FloodHub forecast pyramid."""
+    if not shp_path.exists():
+        raise FileNotFoundError(f'Missing HydroRIVERS shapefile: {shp_path}')
+
+    t0 = time.time()
+    df = pyogrio.read_dataframe(
+        str(shp_path),
+        columns=['HYRIV_ID', 'NEXT_DOWN', 'UPLAND_SKM', 'ORD_STRA'],
+        where='UPLAND_SKM >= 50',
+    )
+    hyriv = df['HYRIV_ID'].to_numpy(dtype=np.int32)
+    next_d = df['NEXT_DOWN'].to_numpy(dtype=np.int32)
+    area = df['UPLAND_SKM'].to_numpy(dtype=np.float32)
+    order = df['ORD_STRA'].to_numpy(dtype=np.int8)
+    geoms = df.geometry.to_numpy()
+
+    o = np.argsort(hyriv)
+    hyriv = hyriv[o]
+    next_d = next_d[o]
+    area = area[o]
+    order = order[o]
+    geoms = geoms[o]
+
+    if lut_path is not None and lut_path.exists():
+        with np.load(lut_path, allow_pickle=False) as z:
+            lut_ids = z['hyriv_id'].astype(np.int32)
+            lut_fc = z['has_forecast'].astype(np.bool_)
+            lut_hb = z['hybas_l12'].astype(np.int64)
+        pos_lut = _index_of(lut_ids, hyriv)
+        has_fc = np.where(pos_lut >= 0, lut_fc[np.maximum(pos_lut, 0)], False)
+        hybas = np.where(pos_lut >= 0, lut_hb[np.maximum(pos_lut, 0)], 0)
+    else:
+        has_fc = np.ones(len(hyriv), dtype=np.bool_)
+        hybas = np.zeros(len(hyriv), dtype=np.int64)
+
+    has_geom = np.array([g is not None and not g.is_empty for g in geoms])
+    keep_base = has_geom & ((area >= 100.0) | has_fc)
+    hyriv = hyriv[keep_base]
+    next_d = next_d[keep_base]
+    area = area[keep_base]
+    order = order[keep_base]
+    has_fc = has_fc[keep_base]
+    hybas = hybas[keep_base]
+    geoms = geoms[keep_base]
+
+    coords, vidx = shapely.get_coordinates(geoms, return_index=True)
+    vcount = np.bincount(vidx, minlength=len(geoms))
+    voff = np.concatenate([[0], np.cumsum(vcount)]).astype(np.int64)
+    down_raw = _index_of(hyriv, next_d)
+
+    first = coords[voff[:-1]]
+    last = coords[np.maximum(voff[1:] - 1, 0)]
+    has_down = down_raw >= 0
+    ds = down_raw[has_down]
+
+    def _gap(p: np.ndarray) -> np.ndarray:
+        return np.minimum(
+            np.hypot(*(p - first[ds]).T),
+            np.hypot(*(p - last[ds]).T),
+        )
+
+    reversed_ = np.zeros(len(geoms), dtype=bool)
+    reversed_[has_down] = _gap(first[has_down]) + 1e-9 < _gap(last[has_down])
+    for i in np.flatnonzero(reversed_).tolist():
+        coords[voff[i] : voff[i + 1]] = coords[voff[i] : voff[i + 1]][::-1]
+
+    mid = coords[(voff[:-1] + np.maximum(voff[1:] - 1, 0)) // 2]
+    fc_idx = np.flatnonzero(has_fc)
+    fc_order = fc_idx[np.argsort(mid[fc_idx, 1])]
+
+    same_fc = (down_raw >= 0) & (has_fc == has_fc[np.maximum(down_raw, 0)])
+    down_fc = np.where(same_fc, down_raw, -1)
+    same_hb = same_fc & ((~has_fc) | (hybas == hybas[np.maximum(down_raw, 0)]))
+    down_hb = np.where(same_hb, down_raw, -1)
+
+    levels = []
+    for _, min_area, tol in FLOODHUB_PYRAMID_LOD:
+        down_lvl = down_fc if min_area >= 5000 else down_hb
+        keep = (
+            (area >= min_area)
+            if min_area > 500
+            else ((area >= min_area) | has_fc)
+        )
+        nodes, offsets, _ = _split_chains(down_lvl, keep, include_end=False)
+        n = len(offsets) - 1
+        lengths = vcount[nodes]
+        vertex = _gather_ranges(voff[nodes], lengths)
+        line_of_vertex = np.repeat(
+            np.repeat(np.arange(n), np.diff(offsets)),
+            lengths,
+        )
+        a = area[nodes]
+        end_nodes = nodes[offsets[1:] - 1] if n else np.zeros(0, dtype=np.int64)
+        start_nodes = nodes[offsets[:-1]] if n else np.zeros(0, dtype=np.int64)
+        levels.append(
+            _pack_level(
+                coords[vertex],
+                line_of_vertex,
+                n,
+                np.minimum.reduceat(a, offsets[:-1]) if n else a[:0],
+                np.maximum.reduceat(a, offsets[:-1]) if n else a[:0],
+                float(tol or 0.0),
+                river_id=hyriv[end_nodes].astype(np.int32),
+                hybas_l12=hybas[end_nodes].astype(np.int64),
+                has_forecast=has_fc[start_nodes].astype(np.uint8),
+                stream_order=order[end_nodes].astype(np.int8),
+            )
+        )
+    logger.info(
+        'Built FloodHub HydroRIVERS pyramid (%d reaches, %d flipped) in %.1f s',
+        len(hyriv),
+        int(reversed_.sum()),
+        time.time() - t0,
+    )
+    return {
+        'levels': levels,
+        'reach_lat': mid[fc_order, 1].astype(np.float32),
+        'reach_lon': mid[fc_order, 0].astype(np.float32),
+        'reach_hyriv_id': hyriv[fc_order].astype(np.int32),
+        'reach_hybas_l12': hybas[fc_order].astype(np.int64),
+        'reach_area': area[fc_order].astype(np.float32),
+    }
 
 
 def query_geoglows_reaches(  # noqa: PLR0913, PLR0917
@@ -685,12 +866,14 @@ def query_geoglows_reaches(  # noqa: PLR0913, PLR0917
     return feats
 
 
-def extract_level_features(
+def extract_level_features(  # noqa: PLR0913
     level: Mapping[str, np.ndarray],
     min_lon: float,
     min_lat: float,
     max_lon: float,
     max_lat: float,
+    *,
+    hybas_to_sev: Mapping[int, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract GeoJSON LineString features intersecting a bounding box from a pyramid level."""
     b = level['bbox']
@@ -700,29 +883,102 @@ def extract_level_features(
         & (b[:, 3] >= min_lat)
         & (b[:, 1] <= max_lat)
     )
-    coords = level['coords']
+    if not idx.size:
+        return []
     offsets = level['offsets']
-    amin = level['amin']
-    amax = level['amax']
-    feats: list[dict[str, Any]] = []
-    for i in idx.tolist():
-        xy = coords[offsets[i] : offsets[i + 1]]
-        if len(xy) < 2:
-            continue
-        feats.append(
+    starts = offsets[idx]
+    lengths = offsets[idx + 1] - starts
+    keep = lengths >= 2
+    if not keep.all():
+        idx = idx[keep]
+        starts = starts[keep]
+        lengths = lengths[keep]
+        if not idx.size:
+            return []
+
+    v_idx = _gather_ranges(starts, lengths)
+    all_xy = np.round(level['coords'][v_idx].astype(np.float64), 4).tolist()
+    v_off = np.concatenate([[0], np.cumsum(lengths)]).tolist()
+    amax_list = np.round(level['amax'][idx].astype(np.float64), 1).tolist()
+    amin_list = np.round(level['amin'][idx].astype(np.float64), 1).tolist()
+
+    river_id = level.get('river_id')
+    has_fc_arr = level.get('has_forecast')
+    hybas_arr = level.get('hybas_l12')
+    order_arr = level.get('stream_order')
+    is_floodhub = has_fc_arr is not None
+
+    rids = river_id[idx].tolist() if river_id is not None else None
+    if is_floodhub:
+        fcs = has_fc_arr[idx].tolist()
+        hbs = (
+            hybas_arr[idx].tolist()
+            if hybas_arr is not None
+            else [0] * len(idx)
+        )
+        ords = order_arr[idx].tolist() if order_arr is not None else None
+        feats: list[dict[str, Any]] = []
+        for k in range(len(idx)):
+            rid = rids[k] if rids is not None else 0
+            has_fc = bool(fcs[k])
+            hb_id = hbs[k]
+            props: dict[str, Any] = {
+                'upstream_area_km2': amax_list[k],
+                'area_min_km2': amin_list[k],
+                'river_id': f'HYRIV_{rid}' if rid > 0 else None,
+                'has_forecast': has_fc,
+                'gauge_id': f'hybas_{hb_id}' if (has_fc and hb_id > 0) else None,
+                'severity_rank': (
+                    int(hybas_to_sev.get(hb_id, 0))
+                    if (has_fc and hybas_to_sev is not None)
+                    else 0
+                ),
+            }
+            if ords is not None:
+                props['stream_order'] = ords[k]
+            feats.append(
+                {
+                    'type': 'Feature',
+                    'geometry': {
+                        'type': 'LineString',
+                        'coordinates': all_xy[v_off[k] : v_off[k + 1]],
+                    },
+                    'properties': props,
+                }
+            )
+        return feats
+
+    if rids is not None:
+        return [
             {
                 'type': 'Feature',
                 'geometry': {
                     'type': 'LineString',
-                    'coordinates': np.round(xy.astype(np.float64), 4).tolist(),
+                    'coordinates': all_xy[v_off[k] : v_off[k + 1]],
                 },
                 'properties': {
-                    'upstream_area_km2': round(float(amax[i]), 1),
-                    'area_min_km2': round(float(amin[i]), 1),
+                    'upstream_area_km2': amax_list[k],
+                    'area_min_km2': amin_list[k],
+                    'river_id': rids[k],
                 },
             }
-        )
-    return feats
+            for k in range(len(idx))
+        ]
+
+    return [
+        {
+            'type': 'Feature',
+            'geometry': {
+                'type': 'LineString',
+                'coordinates': all_xy[v_off[k] : v_off[k + 1]],
+            },
+            'properties': {
+                'upstream_area_km2': amax_list[k],
+                'area_min_km2': amin_list[k],
+            },
+        }
+        for k in range(len(idx))
+    ]
 
 
 def _choose(
@@ -747,6 +1003,30 @@ def _choose(
             + DISTANCE_WEIGHT * dist / max(float(radius), 1e-6)
         )
     )
+
+
+def _point_to_seg_dist(  # noqa: PLR0913, PLR0917
+    px: float,
+    py: float,
+    x1: np.ndarray,
+    y1: np.ndarray,
+    x2: np.ndarray,
+    y2: np.ndarray,
+) -> np.ndarray:
+    """Euclidean distance from `(px, py)` to line segments `(x1, y1) -> (x2, y2)`."""
+    dx = x2 - x1
+    dy = y2 - y1
+    len2 = dx * dx + dy * dy
+    t = np.where(
+        len2 > 1e-18,
+        np.clip(
+            ((px - x1) * dx + (py - y1) * dy) / np.maximum(len2, 1e-18),
+            0.0,
+            1.0,
+        ),
+        0.0,
+    )
+    return np.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
 
 
 def snap_glofas_cell_from_network(  # noqa: PLR0913, PLR0917
@@ -792,6 +1072,61 @@ def snap_glofas_cell_from_network(  # noqa: PLR0913, PLR0917
         'query_lon': round(cell_lon - res, 3),
         'upstream_area_km2': round(float(areas[k]), 1),
         'offset_cells': round(float(dist[k]), 2),
+    }
+
+
+def snap_geoglows_reach_from_network(  # noqa: PLR0913, PLR0917
+    net: Mapping[str, Any] | None,
+    lat: float,
+    lon: float,
+    target_area_km2: float | None = None,
+    area_range: tuple[float, float] | None = None,
+    radius_deg: float = 0.15,
+) -> dict[str, Any] | None:
+    """Snap `(lat, lon)` to a GEOGLOWS TDX-Hydro reach in memory matching `target_area_km2`."""
+    if net is None:
+        return None
+    if 'reach_lat' not in net or 'reach_linkno' not in net:
+        return None
+    rlat = net['reach_lat']
+    pad = radius_deg + 0.05
+    i0 = int(np.searchsorted(rlat, lat - pad, side='left'))
+    i1 = int(np.searchsorted(rlat, lat + pad, side='right'))
+    if i0 >= i1:
+        return None
+    rlon = net['reach_lon'][i0:i1]
+    in_box = np.flatnonzero((rlon >= lon - pad) & (rlon <= lon + pad))
+    if not in_box.size:
+        return None
+    idx = i0 + in_box
+    kx = math.cos(math.radians(lat))
+    px = lon * kx
+    py = lat
+    xm = net['reach_lon'][idx].astype(np.float64) * kx
+    ym = net['reach_lat'][idx].astype(np.float64)
+    x0 = net['reach_lon0'][idx].astype(np.float64) * kx
+    y0 = net['reach_lat0'][idx].astype(np.float64)
+    x1 = net['reach_lon1'][idx].astype(np.float64) * kx
+    y1 = net['reach_lat1'][idx].astype(np.float64)
+    dist = np.minimum(
+        _point_to_seg_dist(px, py, x0, y0, xm, ym),
+        _point_to_seg_dist(px, py, xm, ym, x1, y1),
+    )
+    within = np.flatnonzero(dist <= radius_deg * 1.42)
+    if not within.size:
+        return None
+    idx = idx[within]
+    dist = dist[within]
+    a = net['reach_area'][idx].astype(np.float64)
+    links = net['reach_linkno'][idx]
+    if target_area_km2 is not None and target_area_km2 > 0:
+        k = _choose(a, dist, radius_deg, target_area_km2, area_range)
+    else:
+        k = int(np.argmin(dist))
+    return {
+        'river_id': int(links[k]),
+        'upstream_area_km2': round(float(a[k]), 1),
+        'offset_km': round(float(dist[k]) * 111.2, 2),
     }
 
 
@@ -866,14 +1201,22 @@ def resolve_cross_network_click(  # noqa: PLR0913, PLR0917
     }
     linkno = as_linkno(river_id)
     if network == 'geoglows':
-        if linkno is not None:
+        if linkno is not None and (rng is None or rng[0] >= rng[1]):
             out['geoglows'] = {
                 'river_id': linkno,
                 'upstream_area_km2': round(area, 1),
                 'offset_km': 0.0,
             }
         else:
-            out['geoglows'] = snap_geoglows_fn(lat, lon, area, area_range=rng)
+            snapped = snap_geoglows_fn(lat, lon, area, area_range=rng)
+            if snapped is not None:
+                out['geoglows'] = snapped
+            elif linkno is not None:
+                out['geoglows'] = {
+                    'river_id': linkno,
+                    'upstream_area_km2': round(area, 1),
+                    'offset_km': 0.0,
+                }
         if out['geoglows']:
             out['target_area_km2'] = out['geoglows']['upstream_area_km2']
         out['glofas'] = snap_glofas_fn(
@@ -1000,12 +1343,14 @@ def trace_main_stem_chain(
 __all__ = [
     'CACHE_VERSION',
     'FLOODHUB_LOD',
+    'FLOODHUB_PYRAMID_LOD',
     'GEOGLOWS_LOD',
     'GLOFAS_LOD',
     'MODELS',
     'NETWORK_LABELS',
     'TE_LOD',
     'as_linkno',
+    'build_floodhub_pyramid',
     'build_geoglows_pyramid',
     'build_glofas_and_te_pyramids',
     'cama_cell_area_km2',
@@ -1025,6 +1370,7 @@ __all__ = [
     'save_network_pyramid',
     'snap_cama_cell',
     'snap_geoglows_reach_from_gpkg',
+    'snap_geoglows_reach_from_network',
     'snap_glofas_cell_from_network',
     'trace_main_stem_chain',
 ]
