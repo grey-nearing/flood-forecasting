@@ -21,13 +21,16 @@ Installing this repository with `pip install -e .` provides the `sync-weather-fo
 
 ### Supported Weather Models
 
-| Model Key | Model Name | Upstream Dataset ID | Grid Resolution | Variables |
+| Model Key | Model Name | Upstream Source / Dataset ID | Grid Resolution | Variables |
 | :--- | :--- | :--- | :--- | :--- |
-| `ecmwf_ifs` | ECMWF IFS ENS (Control Member) | `ecmwf-ifs-ens-forecast-15-day-0-25-degree` | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature |
+| `ecmwf_hres` | ECMWF IFS HRES (Deterministic) | `gs://ecmwf-open-data` (`ifs/0p25/oper`) | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
+| `ecmwf_ifs` | ECMWF IFS ENS (Control Member) | `ecmwf-ifs-ens-forecast-15-day-0-25-degree` | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
 | `ecmwf_aifs` | ECMWF AIFS Single | `ecmwf-aifs-single-forecast` | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
 | `noaa_gfs` | NOAA GFS | `noaa-gfs-forecast` | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
 | `noaa_gefs` | NOAA GEFS (Control Member) | `noaa-gefs-forecast-35-day` | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
-| `noaa_hrrr` | NOAA HRRR CONUS | `noaa-hrrr-forecast-48-hour` | `3 km` CONUS | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
+| `noaa_hrrr` | NOAA HRRR CONUS | `noaa-hrrr-forecast-48-hour` | `3 km` CONUS (projected onto `0.25°` global grid) | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
+| `nasa_imerg` | NASA GPM IMERG Early Analysis | `nasa-imerg-analysis-early` | `0.10°` Global (resampled onto `0.25°` global grid) | Precipitation rate, accumulated precipitation |
+| `noaa_cpc` | NOAA CPC Unified Gauge Precip | NOAA PSL (`precip.{year}.nc`) | `0.50°` Global Land (resampled onto `0.25°` global grid) | Precipitation rate, accumulated precipitation |
 
 ### Supported Weather Variables
 

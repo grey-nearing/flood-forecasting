@@ -695,9 +695,7 @@ def fetch_point_timeseries(
     target_models = list(models)
   else:
     target_models = [
-        m
-        for m in SUPPORTED_MODELS
-        if f"{m}_precip" in stream_info and f"{m}_temp" in stream_info
+        m for m in SUPPORTED_MODELS if f"{m}_precip" in stream_info
     ]
 
   if not target_models:
@@ -723,9 +721,9 @@ def fetch_point_timeseries(
 
     has_precip = f"{m_key}_precip" in stream_info and f"{m_key}_precip" in arrays
     has_temp = f"{m_key}_temp" in stream_info and f"{m_key}_temp" in arrays
-    if strict and (not has_precip or not has_temp):
+    if strict and not has_precip:
       raise FileNotFoundError(
-          f"Precipitation/temperature streams for '{m_key}' not found in synced data directory."
+          f"Precipitation stream for '{m_key}' not found in synced data directory."
       )
 
     if has_precip:
@@ -847,12 +845,9 @@ def fetch_catchment_summary(
   """Calculates basin-averaged precipitation and temperature for a catchment."""
   if model_key not in SUPPORTED_MODELS:
     raise ValueError(f"Unknown weather model '{model_key}'")
-  if (
-      f"{model_key}_precip" not in stream_info
-      or f"{model_key}_temp" not in stream_info
-  ):
+  if f"{model_key}_precip" not in stream_info:
     raise FileNotFoundError(
-        f"Synced precipitation/temperature streams for '{model_key}' not found."
+        f"Synced precipitation stream for '{model_key}' not found."
     )
 
   step_idx_clamped = max(0, int(step_idx))
@@ -890,8 +885,12 @@ def fetch_catchment_summary(
       )
       if r is not None
   ]
-  temp_c = extract_point_value(
-      arrays, stream_info, model_key, "temperature", lead_h, c_lat, c_lon
+  temp_c = (
+      extract_point_value(
+          arrays, stream_info, model_key, "temperature", lead_h, c_lat, c_lon
+      )
+      if f"{model_key}_temp" in stream_info and f"{model_key}_temp" in arrays
+      else None
   )
 
   data_info = get_model_data_info_from_streams(stream_info, model_key)

@@ -303,3 +303,139 @@ def test_swap_current_symlink_windows_compatibility(
   assert link2.resolve() == (tmp_path / "runs" / "run2").resolve()
   assert calls == [True, True]
 
+
+@pytest.mark.unit
+def test_sync_nasa_imerg_and_noaa_hrrr_and_cpc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Verifies sync and extraction for NASA IMERG (analysis), NOAA HRRR (2D CONUS), and NOAA CPC."""
+  # 1. NASA IMERG (time coordinate, 0.1 deg -> resampled to 721 x 1440)
+  times = np.array(
+      [
+          np.datetime64("2026-09-29T00:00") + np.timedelta64(h, "h")
+          for h in range(0, 7)
+      ],
+      dtype="datetime64[ns]",
+  )
+  imerg_ds = xr.Dataset(
+      {
+          "precipitation_surface": (
+              ("time", "latitude", "longitude"),
+              np.full((len(times), 18, 36), 2.5 / 3600.0, dtype=np.float32),
+          )
+      },
+      coords={
+          "time": times,
+          "latitude": np.linspace(89.95, -89.95, 18, dtype=np.float32),
+          "longitude": np.linspace(-179.95, 179.95, 36, dtype=np.float32),
+      },
+  )
+
+  # 2. NOAA HRRR (2D y/x projected CONUS grid)
+  y_lats, x_lons = np.meshgrid(
+      np.linspace(30.0, 45.0, 16), np.linspace(-105.0, -80.0, 26), indexing="ij"
+  )
+  hrrr_shape = (1, 3, 16, 26)
+  hrrr_ds = xr.Dataset(
+      {
+          "precipitation_surface": (
+              ("init_time", "lead_time", "y", "x"),
+              np.full(hrrr_shape, 3.0 / 3600.0, dtype=np.float32),
+          ),
+          "temperature_2m": (
+              ("init_time", "lead_time", "y", "x"),
+              np.full(hrrr_shape, 21.0, dtype=np.float32),
+          ),
+          "pressure_reduced_to_mean_sea_level": (
+              ("init_time", "lead_time", "y", "x"),
+              np.full(hrrr_shape, 101500.0, dtype=np.float32),
+          ),
+          "wind_u_10m": (
+              ("init_time", "lead_time", "y", "x"),
+              np.full(hrrr_shape, 4.0, dtype=np.float32),
+          ),
+          "wind_v_10m": (
+              ("init_time", "lead_time", "y", "x"),
+              np.full(hrrr_shape, 3.0, dtype=np.float32),
+          ),
+      },
+      coords={
+          "init_time": np.array(
+              [np.datetime64("2026-09-29T00:00")], dtype="datetime64[ns]"
+          ),
+          "lead_time": np.array([0, 3, 6], dtype="timedelta64[h]").astype(
+              "timedelta64[ns]"
+          ),
+          "latitude": (("y", "x"), y_lats.astype(np.float32)),
+          "longitude": (("y", "x"), x_lons.astype(np.float32)),
+      },
+  )
+
+  # 3. NOAA CPC (mocked _open_cpc_window_dataset)
+  cpc_times = np.array(
+      [
+          np.datetime64("2026-09-20") + np.timedelta64(d, "D")
+          for d in range(3)
+      ],
+      dtype="datetime64[ns]",
+  )
+  cpc_ds = xr.Dataset(
+      {
+          "precip": (
+              ("time", "lat", "lon"),
+              np.full((3, 36, 72), 48.0, dtype=np.float32),  # 48 mm/day = 2 mm/h
+          )
+      },
+      coords={
+          "time": cpc_times,
+          "lat": np.linspace(89.75, -89.75, 36, dtype=np.float32),
+          "lon": np.linspace(0.25, 359.75, 72, dtype=np.float32),
+      },
+  )
+  monkeypatch.setattr(
+      "multimet.weather_fetcher.sync._open_cpc_window_dataset",
+      lambda _cache_dir: (cpc_ds.copy(), "2026-09-20T00:00:00"),
+  )
+
+  catalogs = {
+      "nasa-imerg-analysis-early": imerg_ds,
+      "noaa-hrrr-forecast-48-hour": hrrr_ds,
+  }
+  status = sync_all_models(
+      data_dir=tmp_path,
+      models=["nasa_imerg", "noaa_hrrr"],
+      catalog=object(),
+      open_dataset=lambda _c, ds_id: catalogs[ds_id],
+      log=lambda _: None,
+  )
+  assert status["last_result"] == "updated"
+
+  status_cpc = sync_all_models(
+      data_dir=tmp_path,
+      models=["noaa_cpc"],
+      log=lambda _: None,
+  )
+  assert status_cpc["last_result"] == "updated"
+
+  fetcher = WeatherDataFetcher(tmp_path)
+  imerg_info = fetcher.get_model_info("nasa_imerg")
+  assert imerg_info["data_source"] == "archived_run"
+  assert imerg_info["real_variables"] == ["precipitation", "accumulated_precip"]
+
+  cpc_info = fetcher.get_model_info("noaa_cpc")
+  assert cpc_info["data_source"] == "archived_run"
+  cpc_grid = fetcher.fetch_forecast_grid("noaa_cpc", "precipitation", step_idx=8)
+  assert cpc_grid is not None
+  assert pytest.approx(float(cpc_grid[200, 380]), abs=0.05) == 2.0
+
+  # HRRR is valid inside CONUS (38N, -90W) and NaN outside CONUS (50N, 10E)
+  hrrr_temp = fetcher.fetch_forecast_grid("noaa_hrrr", "temperature", step_idx=1)
+  assert hrrr_temp is not None
+  assert np.isnan(hrrr_temp[160, 760])  # Europe -> NaN
+  probe = fetcher.fetch_point_timeseries(38.0, -90.0)
+  assert "nasa_imerg" in probe["models"]
+  assert "noaa_cpc" in probe["models"]
+  assert probe["models"]["nasa_imerg"]["temp_c"][1] is None
+  assert pytest.approx(probe["models"]["nasa_imerg"]["precip_rate_mmh"][1], abs=0.1) == 2.5
+
+

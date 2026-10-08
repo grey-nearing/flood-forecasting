@@ -152,24 +152,20 @@ def test_zero_try_except_and_zero_ui_rendering_in_weather_fetcher_package() -> (
 @pytest.mark.unit
 def test_config_catalog_and_unit_conversions() -> None:
   """Tests model catalog, variable catalog, and physical unit conversions."""
-  for model_key in (
+  expected_models = (
+      "ecmwf_hres",
       "ecmwf_ifs",
       "ecmwf_aifs",
       "noaa_gfs",
       "noaa_gefs",
       "noaa_hrrr",
-      "graphcast",
-  ):
+      "nasa_imerg",
+      "noaa_cpc",
+  )
+  for model_key in expected_models:
     assert model_key in SUPPORTED_MODELS
-
-  for dyn_key in (
-      "ecmwf_ifs",
-      "ecmwf_aifs",
-      "noaa_gfs",
-      "noaa_gefs",
-      "noaa_hrrr",
-  ):
-    assert dyn_key in DYNAMICAL_MODELS
+    assert model_key in DYNAMICAL_MODELS
+  assert "graphcast" not in SUPPORTED_MODELS
 
   for var_key in (
       "precipitation",
