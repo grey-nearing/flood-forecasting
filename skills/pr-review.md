@@ -135,7 +135,7 @@ Evaluate how the PR fits into the broader codebase (see [`skills/repo-organizati
    - Consolidate shared domain utilities into `multimet/utils/` (even if a specific function in that utility module is currently called by only one subpackage) and remove thin re-export shims.
 3. **Package Layout, Root `benchmarks/` Submodule, Explicit CLI Paths, & Dead-Code Removal:**
    - Verify files live in their canonical package/subpackage locations (`model/`, `multimet/<subpackage>/`, `return_periods/`, `benchmarks/`), tests live in `<package>/tests/`, canonical benchmarks live in the root `benchmarks/` package (never scattered inside subpackages), and auxiliary scripts live in `<package>/tools/` (never in root `scripts/` or `tools/` folders, and never with subpackage `.github/workflows/`).
-   - Ensure all input and output paths are required explicitly via caller arguments or CLI flags—flag and remove any hardcoded `/cns/`, `/tmp/`, local user paths, or implicit default output paths.
+   - Ensure all input and output paths are required explicitly via caller arguments or CLI flags—flag and remove any hardcoded `/tmp/`, local user paths, internal network paths, or implicit default output paths.
    - Remove dead code, unused archival paths, vestigial multi-frequency code, out-of-scope product code (e.g., unfinished HRES/ERA5 code in a CPC/IMERG PR), and temporary working-note `.md` plan files in the repository root.
 4. **PR Scope Discipline & Zero Review-Induced Scope Creep:**
    - **Stay focused on the core purpose of the PR:** Reviews and review-driven fixes must be scoped strictly to the problem, feature, or refactor that the PR is designed to solve.

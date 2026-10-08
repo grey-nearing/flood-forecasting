@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dask
 import pytest
 import numpy as np
 import pandas as pd
@@ -21,8 +22,19 @@ import re
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from typing import Callable
+from collections.abc import Hashable, Mapping
+from dask.callbacks import Callback
 
-from model.datasetzoo.multimet import Multimet, MultimetDataLoader
+from model.datasetzoo.caravan import (
+    load_caravan_attributes,
+    load_caravan_timeseries,
+)
+from model.datasetzoo.multimet import (
+    Multimet,
+    MultimetDataLoader,
+    _open_zarr,
+    rechunk,
+)
 from model.utils.config import Config
 from model.utils.errors import NoTrainDataError, NoEvaluationDataError
 
@@ -907,19 +919,44 @@ def _day_offset_dataset(
 
 
 def _write_multimet_stores(
-    root: Path, cfg: Config, ds: xr.Dataset, basins: list[str]
+    root: Path,
+    cfg: Config,
+    ds: xr.Dataset,
+    basins: list[str],
+    basin_chunk: int | None = None,
 ) -> None:
-    """Writes real basin and Zarr stores under `root` and updates `cfg`."""
+    """Writes real basin and Zarr stores under `root` and updates `cfg`.
+
+    When `basin_chunk` is given, the targets and dynamics stores are chunked
+    on disk with `basin_chunk` basins per chunk (like `basin=128` in
+    Caravan-MultiMet) while the attributes store keeps all basins in one
+    chunk.
+    """
     statics_dir = root / 'statics'
     targets_dir = root / 'targets'
     dynamics_dir = root / 'dynamics'
+
+    def encoding(name: str) -> dict[str, dict[str, tuple[int, ...]]]:
+        if basin_chunk is None:
+            return {}
+        shape = ds[name].shape
+        return {name: {'chunks': (basin_chunk, *shape[1:])}}
+
     ds[['static_f1']].to_zarr(statics_dir / 'attributes.zarr', mode='w')
-    ds[['target_v1']].to_zarr(targets_dir / 'streamflow.zarr', mode='w')
+    ds[['target_v1']].to_zarr(
+        targets_dir / 'streamflow.zarr',
+        mode='w',
+        encoding=encoding('target_v1'),
+    )
     ds[['era5land_2d']].drop_vars('lead_time', errors='ignore').to_zarr(
-        dynamics_dir / 'ERA5_LAND' / 'timeseries.zarr', mode='w'
+        dynamics_dir / 'ERA5_LAND' / 'timeseries.zarr',
+        mode='w',
+        encoding=encoding('era5land_2d'),
     )
     ds[['hres_3d']].to_zarr(
-        dynamics_dir / 'HRES' / 'timeseries.zarr', mode='w'
+        dynamics_dir / 'HRES' / 'timeseries.zarr',
+        mode='w',
+        encoding=encoding('hres_3d'),
     )
     cfg.train_basin_file.write_text('\n'.join(basins) + '\n')
     cfg.update_config(
@@ -1362,3 +1399,169 @@ def test_multimet_basin_index_consistent_int64_across_128_boundary(
         idx for idx in range(num_basins) for _ in range(2)
     ]
     assert batches[0]['basin_index'].tolist() == expected_batch_indices
+
+
+def test_rechunk_keeps_finest_basin_chunks() -> None:
+    """`rechunk` never merges the `basin` chunks of a merged dataset.
+
+    Static attributes are stored with all basins in one chunk, while targets
+    and dynamics are chunked on disk along `basin` (`basin=128` in
+    Caravan-MultiMet). After `xr.merge(..., join='outer')`, `rechunk` must
+    split the single static chunk to the finest `basin` chunking present
+    (never widen the timeseries chunks to all basins), coerce numpy-backed
+    variables (legacy CSV loaders) to dask, and keep every value unchanged.
+    """
+    basins = [f'basin_{idx:02d}' for idx in range(1, 6)]
+    dates = pd.date_range('2000-01-01', periods=20, freq='D')
+    lead_times = [np.timedelta64(1, 'D'), np.timedelta64(2, 'D')]
+    ds = _day_offset_dataset(basins, dates, lead_times)
+    statics = ds[['static_f1']].chunk({'basin': -1})
+    dynamics = ds[['hres_3d']].chunk({'basin': 2})
+    # Targets cover fewer dates than the dynamics to exercise the outer join.
+    targets = ds[['target_v1']].isel(date=slice(5, None)).chunk({'basin': 2})
+    legacy_numpy = ds[['era5land_2d']]
+    assert legacy_numpy['era5land_2d'].chunks is None
+
+    merged = xr.merge([statics, dynamics, targets, legacy_numpy], join='outer')
+    rechunked = rechunk(merged)
+
+    assert dict(rechunked.chunksizes) == {
+        'basin': (2, 2, 1),
+        'date': (20,),
+        'lead_time': (2,),
+    }
+    for name in ['static_f1', 'hres_3d', 'target_v1', 'era5land_2d']:
+        assert rechunked[name].chunksizes['basin'] == (2, 2, 1), name
+    xr.testing.assert_identical(rechunked.compute(), merged.compute())
+
+
+class _CountZarrChunkReads(Callback):
+    """Dask callback counting executed on-disk Zarr chunk reads.
+
+    xarray names the dask tasks that read one backend (Zarr) chunk
+    `open_dataset-*`. Task fusion must be disabled so those names survive
+    graph optimization.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.num_reads = 0
+
+    def _pretask(
+        self, key: Hashable, _dsk: Mapping, _state: dict
+    ) -> None:
+        if isinstance(key, tuple) and str(key[0]).startswith('open_dataset-'):
+            self.num_reads += 1
+
+
+def _num_zarr_chunk_reads(sample: dict) -> int:
+    """Count the on-disk Zarr chunk reads executed to compute `sample`."""
+    counter = _CountZarrChunkReads()
+    with (
+        dask.config.set(
+            scheduler='sync', **{'optimization.fuse.active': False}
+        ),
+        counter,
+    ):
+        dask.compute(sample)
+    return counter.num_reads
+
+
+def test_multimet_lazy_load_keeps_on_disk_basin_chunks(
+    tmp_path: Path,
+    get_config,
+) -> None:
+    """Lazy samples only read the on-disk `basin` chunk of their own basin.
+
+    The Zarr loaders must expose the on-disk chunks (`basin=2` of 5 basins
+    here, `basin=128` in Caravan-MultiMet), and the dataset built with
+    `lazy_load: True` must keep that chunking so that computing one sample
+    reads a single Zarr chunk per variable instead of every basin. Lazy and
+    eager batches must be identical.
+    """
+    basins = [f'basin_{idx:02d}' for idx in range(1, 6)]
+    dates = pd.date_range('1999-12-25', '2000-01-10', freq='D')
+    lead_times = [np.timedelta64(1, 'D'), np.timedelta64(2, 'D')]
+    ds = _day_offset_dataset(basins, dates, lead_times)
+
+    cfg = get_config('default')
+    _write_multimet_stores(tmp_path / 'stores', cfg, ds, basins, basin_chunk=2)
+    cfg.update_config(
+        {
+            'seq_length': 3,
+            'lead_time': 2,
+            'forecast_overlap': 0,
+            'predict_last_n': 1,
+            'hindcast_inputs': ['era5land_2d', 'hres_3d'],
+            'forecast_inputs': ['hres_3d'],
+            'train_start_date': ['01/01/2000'],
+            'train_end_date': ['02/01/2000'],
+            'loss': 'NSE',
+            'lazy_load': True,
+        }
+    )
+
+    # The Zarr loaders expose the on-disk chunks.
+    dynamics = _open_zarr(cfg.dynamics_data_dir / 'HRES' / 'timeseries.zarr')
+    assert dynamics['hres_3d'].chunksizes['basin'] == (2, 2, 1)
+    targets = load_caravan_timeseries(
+        cfg.targets_data_dir, basins=basins, target_features=['target_v1']
+    )
+    assert targets['target_v1'].chunksizes['basin'] == (2, 2, 1)
+    statics = load_caravan_attributes(
+        cfg.statics_data_dir, basins=basins, features=['static_f1']
+    )
+    assert statics['static_f1'].chunksizes['basin'] == (5,)
+
+    num_issue_dates = 2
+    lazy = Multimet(cfg=cfg, is_train=True, period='train')
+    assert len(lazy) == len(basins) * num_issue_dates
+    assert lazy._dataset.chunksizes['basin'] == (2, 2, 1)
+    assert lazy._per_basin_target_stds is not None
+    assert lazy._per_basin_target_stds.chunks == {}
+    variables = ['static_f1', 'era5land_2d', 'hres_3d', 'target_v1']
+    for name in variables:
+        assert lazy._dataset[name].chunksizes['basin'] == (2, 2, 1), name
+
+    # Computing one sample of the last basin (its own 1-basin chunk) reads
+    # exactly one Zarr chunk per variable, not the chunks of the other basins.
+    sample = lazy[len(lazy) - 1]
+    assert int(sample['basin_index']) == len(basins) - 1
+    assert _num_zarr_chunk_reads(sample) == len(variables)
+
+    # Lazy and eager loading produce identical batches.
+    eager = Multimet(
+        cfg=Config({**cfg.as_dict(), 'lazy_load': False}),
+        is_train=True,
+        period='train',
+    )
+
+    def one_batch(dataset: Multimet, *, lazy_load: bool) -> dict:
+        loader = MultimetDataLoader(
+            dataset,
+            lazy_load=lazy_load,
+            logging_level=cfg.logging_level,
+            batch_size=len(dataset),
+            shuffle=False,
+            num_workers=0,
+            collate_fn=dataset.collate_fn,
+        )
+        (batch,) = list(loader)
+        return batch
+
+    lazy_batch = one_batch(lazy, lazy_load=True)
+    eager_batch = one_batch(eager, lazy_load=False)
+    assert lazy_batch.keys() == eager_batch.keys()
+    np.testing.assert_array_equal(lazy_batch['date'], eager_batch['date'])
+    assert torch.equal(lazy_batch['basin_index'], eager_batch['basin_index'])
+    assert torch.equal(lazy_batch['x_s'], eager_batch['x_s'])
+    assert torch.equal(lazy_batch['y'], eager_batch['y'])
+    assert torch.equal(
+        lazy_batch['per_basin_target_stds'],
+        eager_batch['per_basin_target_stds'],
+    )
+    for group in ['x_d_hindcast', 'x_d_forecast']:
+        assert lazy_batch[group].keys() == eager_batch[group].keys()
+        for name, values in lazy_batch[group].items():
+            assert torch.equal(values, eager_batch[group][name]), (group, name)
+    assert not torch.isnan(lazy_batch['y']).any()

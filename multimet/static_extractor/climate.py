@@ -24,14 +24,16 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+import threading
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import shapely.geometry
 import zarr
 
-from multimet.static_extractor.config import CONTINENT_MAP
+from multimet.static_extractor.config import CARAVAN_CLIMATE_COLUMNS, CONTINENT_MAP
 from multimet.utils.climate import (
     calculate_fao_pm_pet,
     calculate_knoben_moisture_and_seasonality,
@@ -56,6 +58,32 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+
+# Caravan (>= v1.5) convention: the unsuffixed PET-derived indices are computed
+# with FAO-56 Penman-Monteith PET, so the ``*_FAO_PM`` columns are exact aliases
+# of the unsuffixed columns. The ``*_ERA5_LAND`` columns (ERA5-Land native
+# potential evaporation) are distinct quantities and are never aliased. This
+# table is the single place where that relationship is defined.
+CARAVAN_CLIMATE_ALIASES: Mapping[str, str] = MappingProxyType({
+    "pet_mean_FAO_PM": "pet_mean",
+    "aridity_FAO_PM": "aridity",
+    "moisture_index_FAO_PM": "moisture_index",
+    "seasonality_FAO_PM": "seasonality",
+})
+
+# Keys physically stored in the Level 12 continental ``*_climate_indices.txt`` tables.
+CARAVAN_CLIMATE_STORED_KEYS: Tuple[str, ...] = tuple(
+    k for k in CARAVAN_CLIMATE_COLUMNS if k not in CARAVAN_CLIMATE_ALIASES
+)
+
+
+def expand_caravan_climate_aliases(values: Mapping[str, Any]) -> Dict[str, Any]:
+  """Returns all 18 Caravan climate columns from the stored keys, filling aliases and NaNs."""
+  out: Dict[str, Any] = {}
+  for key in CARAVAN_CLIMATE_COLUMNS:
+    source_key = CARAVAN_CLIMATE_ALIASES.get(key, key)
+    out[key] = values.get(source_key, np.nan)
+  return out
 
 
 class ERA5ClimateLoader:
@@ -90,6 +118,8 @@ class ERA5ClimateLoader:
 
     self.loaded_continents: Set[str] = set()
     self.records: Dict[int, Dict[str, Any]] = {}
+    # Guards ``loaded_continents``/``records`` when one loader is shared across threads.
+    self._load_lock = threading.RLock()
 
   def _download_from_gcs(self, continent_code: str, target_file: Path) -> None:
     """Downloads a continental climate indices file from GCS to target_file."""
@@ -158,29 +188,32 @@ class ERA5ClimateLoader:
     self._parse_climate_lines(raw_text.splitlines(), continent_code)
 
   def ensure_continent(self, continent_code: str) -> None:
-    """Ensures continental climate index records are loaded in memory."""
+    """Ensures continental climate index records are loaded in memory (thread-safe)."""
     if continent_code in self.loaded_continents:
       return
 
-    if self.no_download:
-      if self.cache_dir is not None:
-        local_txt = self.cache_dir / f"{continent_code}_climate_indices.txt"
-        if local_txt.exists() and local_txt.stat().st_size > 0:
-          with open(local_txt, "r", encoding="utf-8") as f:
-            self._parse_climate_lines(f, continent_code)
-          return
-      self._stream_continent_from_gcs(continent_code)
-      return
+    with self._load_lock:
+      if continent_code in self.loaded_continents:
+        return
 
-    txt_path = self._ensure_file_on_disk(continent_code)
-    with open(txt_path, "r", encoding="utf-8") as f:
-      self._parse_climate_lines(f, continent_code)
+      if self.no_download:
+        if self.cache_dir is not None:
+          local_txt = self.cache_dir / f"{continent_code}_climate_indices.txt"
+          if local_txt.exists() and local_txt.stat().st_size > 0:
+            with open(local_txt, "r", encoding="utf-8") as f:
+              self._parse_climate_lines(f, continent_code)
+            return
+        self._stream_continent_from_gcs(continent_code)
+        return
 
-  def get_indices_for_subbasins(
-      self, hybas_ids: List[int], weights: List[float]
-  ) -> Dict[str, float]:
-    """Calculates area-weighted average ERA5 climate indices for a set of Level 12 sub-basins."""
-    needed_continents = set()
+      txt_path = self._ensure_file_on_disk(continent_code)
+      with open(txt_path, "r", encoding="utf-8") as f:
+        self._parse_climate_lines(f, continent_code)
+
+  @staticmethod
+  def _continents_for(hybas_ids: Sequence[int]) -> Set[str]:
+    """Maps HYBAS_IDs to HydroBASINS continent codes via their leading digit."""
+    needed_continents: Set[str] = set()
     for hid in hybas_ids:
       first_digit = int(str(int(hid))[0])
       if first_digit not in CONTINENT_MAP:
@@ -188,26 +221,36 @@ class ERA5ClimateLoader:
             f"Unrecognized continent prefix {first_digit} in HYBAS_ID {hid}."
         )
       needed_continents.add(CONTINENT_MAP[first_digit])
+    return needed_continents
 
-    for c in sorted(needed_continents):
+  def get_indices_table(self, hybas_ids: Sequence[int]) -> pd.DataFrame:
+    """Returns the Level 12 Caravan climate indices of the given sub-basins as a table.
+
+    Args:
+      hybas_ids: HydroBASINS Level 12 identifiers.
+
+    Returns:
+      DataFrame indexed by ``HYBAS_ID`` (int64, in the requested order) with one
+      float column per entry of ``CARAVAN_CLIMATE_COLUMNS``. Alias columns
+      (``*_FAO_PM``) are filled from their canonical counterparts per
+      :data:`CARAVAN_CLIMATE_ALIASES`; sub-basins or columns absent from the
+      precomputed tables are NaN. No values are rescaled or rounded.
+    """
+    ids = [int(h) for h in hybas_ids]
+    for continent in sorted(self._continents_for(ids)):
+      self.ensure_continent(continent)
+
+    rows = [expand_caravan_climate_aliases(self.records.get(hid, {})) for hid in ids]
+    table = pd.DataFrame(rows, columns=list(CARAVAN_CLIMATE_COLUMNS), dtype=float)
+    table.index = pd.Index(ids, name="HYBAS_ID", dtype="int64")
+    return table
+
+  def get_indices_for_subbasins(
+      self, hybas_ids: List[int], weights: List[float]
+  ) -> Dict[str, float]:
+    """Calculates area-weighted average ERA5 climate indices for a set of Level 12 sub-basins."""
+    for c in sorted(self._continents_for(hybas_ids)):
       self.ensure_continent(c)
-
-    keys = [
-        "p_mean",
-        "pet_mean",
-        "aridity",
-        "frac_snow",
-        "moisture_index",
-        "seasonality",
-        "high_prec_freq",
-        "high_prec_dur",
-        "low_prec_freq",
-        "low_prec_dur",
-        "pet_mean_ERA5_LAND",
-        "aridity_ERA5_LAND",
-        "moisture_index_ERA5_LAND",
-        "seasonality_ERA5_LAND",
-    ]
 
     valid_weights = []
     valid_records = []
@@ -217,55 +260,17 @@ class ERA5ClimateLoader:
         valid_weights.append(float(w))
 
     if not valid_records or sum(valid_weights) == 0:
-      return {
-          "p_mean": np.nan,
-          "pet_mean": np.nan,
-          "pet_mean_FAO_PM": np.nan,
-          "pet_mean_ERA5_LAND": np.nan,
-          "aridity": np.nan,
-          "aridity_FAO_PM": np.nan,
-          "aridity_ERA5_LAND": np.nan,
-          "frac_snow": np.nan,
-          "moisture_index": np.nan,
-          "moisture_index_FAO_PM": np.nan,
-          "moisture_index_ERA5_LAND": np.nan,
-          "seasonality": np.nan,
-          "seasonality_FAO_PM": np.nan,
-          "seasonality_ERA5_LAND": np.nan,
-          "high_prec_freq": np.nan,
-          "high_prec_dur": np.nan,
-          "low_prec_freq": np.nan,
-          "low_prec_dur": np.nan,
-      }
+      return expand_caravan_climate_aliases({})
 
     tot_w = sum(valid_weights)
     norm_w = np.array(valid_weights) / tot_w
 
-    raw_res = {}
-    for k in keys:
+    raw_res: Dict[str, float] = {}
+    for k in CARAVAN_CLIMATE_STORED_KEYS:
       vals = np.array([r.get(k, np.nan) for r in valid_records], dtype=float)
       raw_res[k] = float(np.sum(vals * norm_w))
 
-    return {
-        "p_mean": raw_res["p_mean"],
-        "pet_mean": raw_res["pet_mean"],
-        "pet_mean_FAO_PM": raw_res["pet_mean"],
-        "pet_mean_ERA5_LAND": raw_res["pet_mean_ERA5_LAND"],
-        "aridity": raw_res["aridity"],
-        "aridity_FAO_PM": raw_res["aridity"],
-        "aridity_ERA5_LAND": raw_res["aridity_ERA5_LAND"],
-        "frac_snow": raw_res["frac_snow"],
-        "moisture_index": raw_res["moisture_index"],
-        "moisture_index_FAO_PM": raw_res["moisture_index"],
-        "moisture_index_ERA5_LAND": raw_res["moisture_index_ERA5_LAND"],
-        "seasonality": raw_res["seasonality"],
-        "seasonality_FAO_PM": raw_res["seasonality"],
-        "seasonality_ERA5_LAND": raw_res["seasonality_ERA5_LAND"],
-        "high_prec_freq": raw_res["high_prec_freq"],
-        "high_prec_dur": raw_res["high_prec_dur"],
-        "low_prec_freq": raw_res["low_prec_freq"],
-        "low_prec_dur": raw_res["low_prec_dur"],
-    }
+    return expand_caravan_climate_aliases(raw_res)
 
 
 class ERA5GriddedExtractor:
