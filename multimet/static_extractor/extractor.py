@@ -423,29 +423,11 @@ class StaticAttributesExtractor:
   def read_subbasin_climate_indices(self, hybas_ids: List[int]) -> pd.DataFrame:
     """Reads climate indices for a list of HYBAS_IDs."""
     if self.era5_loader is None:
-        raise ValueError("StaticAttributesExtractor was not configured with era5_source='hybas' and an era5_cache_dir.")
-    from multimet.static_extractor.config import CARAVAN_CLIMATE_COLUMNS
-    if not hybas_ids:
-        df = pd.DataFrame(columns=list(CARAVAN_CLIMATE_COLUMNS))
-        df.index.name = "HYBAS_ID"
-        return df
-    for c in sorted(self.era5_loader._continents_for(hybas_ids)):
-        self.era5_loader.ensure_continent(c)
-    rows = []
-    for hid in hybas_ids:
-        if hid in self.era5_loader.records:
-            from multimet.static_extractor.climate import expand_caravan_climate_aliases
-            r = expand_caravan_climate_aliases(self.era5_loader.records[hid])
-            r["HYBAS_ID"] = hid
-            rows.append(r)
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.set_index("HYBAS_ID")
-        df = df.reindex(hybas_ids)
-    else:
-        df = pd.DataFrame(columns=list(CARAVAN_CLIMATE_COLUMNS))
-        df.index.name = "HYBAS_ID"
-    return df
+      raise ValueError(
+          "StaticAttributesExtractor was not configured with era5_source='hybas' and an era5_cache_dir."
+      )
+    return self.era5_loader.get_indices_table(hybas_ids)
+
 
   def _init_hydroatlas_source(self, active_source: str) -> None:
     """Initializes HydroATLAS metadata from a local path or GCS URI."""

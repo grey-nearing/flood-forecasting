@@ -145,10 +145,9 @@ CARAVAN_CLIMATE_COLUMNS: List[str] = [
 ]
 CARAVAN_CLIMATE_INDICES = set(CARAVAN_CLIMATE_COLUMNS)
 
-DEFAULT_GCS_HYDROATLAS_URI = "gs://open-multimet/ancillary-data/hydroatlas"
-DEFAULT_GCS_ERA5_CLIMATE_URI = (
-    "gs://open-multimet/ancillary-data/hydroatlas/era5_climate"
+from utils.file_paths import (
+    DEFAULT_GCS_ERA5_CLIMATE_URI,
+    DEFAULT_GCS_GRIDDED_ERA5_URI,
+    DEFAULT_GCS_HYDROATLAS_URI,
 )
-DEFAULT_GCS_GRIDDED_ERA5_URI = (
-    "gs://open-multimet/data/era5_land/daily_surface.zarr"
-)
+
