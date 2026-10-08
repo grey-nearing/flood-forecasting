@@ -1,6 +1,6 @@
 """Email notification service for Earthkit Hydro Web.
 
-Dispatches job completion notifications via Google Mail Relay (smtp_mailer)
+Dispatches job completion notifications via SMTP.
 or fallback SMTP to user-supplied email addresses.
 """
 
@@ -15,26 +15,10 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Search paths for Google Mail Relay (smtp_mailer) binary
-_SENDGMR_CANDIDATES = [
-    "/usr/sbin/sendmail",
-    "/usr/sbin/sendmail",
-    "/usr/local/bin/smtp_mailer",
-    "smtp_mailer",
-]
 
 
-def find_smtp_mailer_binary() -> Optional[str]:
-  """Locates the smtp_mailer binary on the system."""
-  for candidate in _SENDGMR_CANDIDATES:
-    if "/" in candidate:
-      if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-        return candidate
-    else:
-      found = shutil.which(candidate)
-      if found:
-        return found
-  return None
+
+
 
 
 def format_extraction_email(
@@ -189,85 +173,34 @@ def send_email_notification(
     )
     return False
 
+  
   subject, text_body, html_body = format_extraction_email(job_info, result)
 
-  # 1. Try Google Mail Relay (smtp_mailer)
-  smtp_mailer_bin = find_smtp_mailer_binary()
-  if smtp_mailer_bin:
-    try:
-      with (
-          tempfile.NamedTemporaryFile(
-              mode="w+", encoding="utf-8", delete=False
-          ) as txt_f,
-          tempfile.NamedTemporaryFile(
-              mode="w+", encoding="utf-8", delete=False
-          ) as html_f,
-      ):
-        txt_f.write(text_body)
-        txt_f.flush()
-        html_f.write(html_body)
-        html_f.flush()
-
-        cmd = [
-            smtp_mailer_bin,
-            f"-to={recipient_email}",
-            f"-subject={subject}",
-            f"-body_file={txt_f.name}",
-            f"-html_file={html_f.name}",
-        ]
-        if sender_email:
-          cmd.append(f"-from={sender_email}")
-
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, check=False
-        )
-
-        try:
-          os.unlink(txt_f.name)
-          os.unlink(html_f.name)
-        except Exception:
-          pass
-
-        if proc.returncode == 0:
-          logger.info(
-              "Successfully sent job completion email via smtp_mailer to %s",
-              recipient_email,
-          )
-          return True
-        else:
-          logger.warning(
-              "smtp_mailer exited with code %s: %s", proc.returncode, proc.stderr
-          )
-    except Exception as e:
-      logger.warning("Error running smtp_mailer binary: %s", e)
-
-  # 2. Fallback: SMTP localhost or localhost
   try:
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     import smtplib
+    import os
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = sender_email or "earthkit-hydro-noreply@google.com"
+    msg["From"] = sender_email or "earthkit-hydro-noreply@example.com"
     msg["To"] = recipient_email
 
     msg.attach(MIMEText(text_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))
 
-    for host in ["localhost", "localhost"]:
-      try:
-        with smtplib.SMTP(host, 25, timeout=5) as s:
-          s.sendmail(msg["From"], [recipient_email], msg.as_string())
-        logger.info(
-            "Successfully sent job completion email via SMTP (%s) to %s",
-            host,
-            recipient_email,
-        )
-        return True
-      except Exception:
-        continue
+    host = os.environ.get("SMTP_HOST", "localhost")
+    with smtplib.SMTP(host, 25, timeout=5) as s:
+      s.sendmail(msg["From"], [recipient_email], msg.as_string())
+    logger.info(
+        "Successfully sent job completion email via SMTP (%s) to %s",
+        host,
+        recipient_email,
+    )
+    return True
   except Exception as e:
-    logger.warning("SMTP fallback failed: %s", e)
+    logger.warning("SMTP failed: %s", e)
 
   return False
+

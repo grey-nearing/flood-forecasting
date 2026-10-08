@@ -32,15 +32,15 @@ class ProfileManagerTest(absltest.TestCase):
     self.assertEqual(self.pm.load_watersheds(), [])
 
   def test_login_and_persistence(self):
-    # Login as hydro_user
+    # Login as test_user
     info = self.pm.login_profile(
-        username="hydro_user",
-        email="user@example.com",
+        username="test_user",
+        email="test_user@example.com",
         display_name="Grey Nearing",
     )
-    self.assertEqual(self.pm.active_username, "hydro_user")
-    self.assertEqual(info["username"], "hydro_user")
-    self.assertEqual(info["email"], "user@example.com")
+    self.assertEqual(self.pm.active_username, "test_user")
+    self.assertEqual(info["username"], "test_user")
+    self.assertEqual(info["email"], "test_user@example.com")
     self.assertEqual(info["display_name"], "Grey Nearing")
     self.assertFalse(info["is_guest"])
 
@@ -63,14 +63,14 @@ class ProfileManagerTest(absltest.TestCase):
     self.assertTrue(self.pm.save_watersheds(sample_features))
 
     # Verify loaded watersheds
-    loaded = self.pm.load_watersheds("hydro_user")
+    loaded = self.pm.load_watersheds("test_user")
     self.assertEqual(len(loaded), 1)
     self.assertEqual(loaded[0]["properties"]["catchment_id"], "us_03338780")
 
     # Check profile listing
     profiles = self.pm.list_profiles()
-    self.assertTrue(any(p["username"] == "hydro_user" for p in profiles))
-    gs_prof = next(p for p in profiles if p["username"] == "hydro_user")
+    self.assertTrue(any(p["username"] == "test_user" for p in profiles))
+    gs_prof = next(p for p in profiles if p["username"] == "test_user")
     self.assertEqual(gs_prof["watersheds_count"], 1)
 
   def test_logout_and_switch_profile(self):
@@ -94,11 +94,11 @@ class ProfileManagerTest(absltest.TestCase):
     self.assertEqual(self.pm.load_watersheds("guest"), [])
 
   def test_organized_directories(self):
-    self.pm.login_profile(username="hydro_user")
-    poly_dir = self.pm.get_polygons_dir("hydro_user")
-    attr_dir = self.pm.get_attributes_dir("hydro_user")
-    hist_dir = self.pm.get_historical_dir("hydro_user")
-    fc_dir = self.pm.get_forecast_dir("hydro_user")
+    self.pm.login_profile(username="test_user")
+    poly_dir = self.pm.get_polygons_dir("test_user")
+    attr_dir = self.pm.get_attributes_dir("test_user")
+    hist_dir = self.pm.get_historical_dir("test_user")
+    fc_dir = self.pm.get_forecast_dir("test_user")
 
     self.assertTrue(poly_dir.exists())
     self.assertTrue(attr_dir.exists())
@@ -120,7 +120,7 @@ class ProfileManagerTest(absltest.TestCase):
     self.assertEqual(len(self.pm.load_watersheds("guest")), 1)
 
     # Switching to an account and back keeps the guest's data for this session
-    self.pm.login_profile(username="hydro_user")
+    self.pm.login_profile(username="test_user")
     self.assertEqual(len(self.pm.load_watersheds("guest")), 1)
     self.pm.logout_profile()
     self.assertEqual(self.pm.active_username, "guest")
@@ -140,7 +140,7 @@ class ProfileManagerTest(absltest.TestCase):
     self.assertTrue(new_pm.get_polygons_dir("guest").exists())
 
     # Accounts are untouched by the guest reset
-    self.assertTrue(new_pm.account_exists("hydro_user"))
+    self.assertTrue(new_pm.account_exists("test_user"))
 
   def test_create_account(self):
     info = self.pm.create_account(

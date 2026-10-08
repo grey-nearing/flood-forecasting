@@ -105,7 +105,7 @@ BASE_DIR = Path(__file__).resolve().parent
 # Streams copied next to the frontend (used when no run has been synced).
 DATA_DIR = BASE_DIR / "data" / "forecasts"
 
-# Local-disk root written by frontend.weather_sync (`$EARTHKIT_WEATHER_DATA_DIR`
+# Local-disk root written by frontend.weather_sync (`$OPENHYDRONET_WEATHER_DATA_DIR`
 # or `~/.cache/openhydronet/weather`).
 WEATHER_DATA_ROOT: Path = Path(_weather_data_root())
 LOCAL_CURRENT_DIR = WEATHER_DATA_ROOT / "current"

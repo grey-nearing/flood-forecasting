@@ -37,7 +37,7 @@ from frontend.config import (
     HISTORICAL_DIR,
     WEATHER_CONFIG,
 )
-from frontend.weather_sources import get_weather_source, query_cns_zarr_extent
+from frontend.weather_sources import get_weather_source, query_zarr_extent
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +341,7 @@ class HistoricalZarrExtractor:
           }
           for v in target_vars:
             cns_var = var_map.get(v, v)
-            zpath = f"gs://open-multimet/data/era5_land/daily_surface.zarr{cns_var}.zarr"
+            zpath = "gs://open-multimet/data/era5_land/daily_surface.zarr"
             arr = self._query_single_zarr_polygon(
                 zpath, cns_var, geom, start_date, end_date
             )
@@ -601,17 +601,7 @@ class HistoricalZarrExtractor:
       except Exception:
         pass
     else:
-      try:
-        cmd = ["fsspec", "ls", pattern]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if res.returncode == 0:
-          for p in res.stdout.strip().splitlines():
-            if p.strip() and "No files matched" not in p:
-              fname = p.strip().split("/")[-1]
-              tc = int(fname.split(".")[0])
-              time_map[tc] = p.strip()
-      except Exception:
-        pass
+      pass
 
     self._chunk_index_cache[key] = time_map
     return time_map
@@ -625,13 +615,7 @@ class HistoricalZarrExtractor:
             return f.read()
         except Exception:
           pass
-      try:
-        cmd = ["fsspec", "cat", path]
-        res = subprocess.run(cmd, capture_output=True, timeout=60)
-        if res.returncode == 0:
-          return res.stdout
-      except Exception:
-        pass
+      
       if attempt < retries - 1:
         time.sleep(0.5 * (attempt + 1))
     return None
