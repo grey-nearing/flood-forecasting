@@ -57,6 +57,7 @@ from multimet.utils.zonal import (
     ZonalWeightCalculator,
 )
 from multimet.weather_fetcher.config import (
+    DYNAMICAL_MODELS,
     GRID_DEG,
     MAX_LEAD_HOURS,
     N_LAT,
@@ -360,11 +361,24 @@ def get_model_data_info_from_streams(
       "pressure",
       "wind",
   )
+  model_streams = DYNAMICAL_MODELS.get(model_key, {}).get(
+      "streams", ("precip", "temp", "mslp", "u10", "v10")
+  )
+  supported_variables: List[str] = []
+  if "precip" in model_streams:
+    supported_variables.extend(["precipitation", "accumulated_precip"])
+  if "temp" in model_streams:
+    supported_variables.append("temperature")
+  if "mslp" in model_streams:
+    supported_variables.append("pressure")
+  if "u10" in model_streams and "v10" in model_streams:
+    supported_variables.append("wind")
   return {
       "data_source": "archived_run" if real_variables else "unavailable",
       "init_time": init_time,
       "max_lead_hours": max_lead if real_variables else 0,
       "stored_lead_hours": stored_leads,
+      "supported_variables": supported_variables,
       "real_variables": real_variables,
       "missing_variables": [
           v for v in all_variables if v not in real_variables
