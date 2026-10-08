@@ -92,6 +92,17 @@ for p in (
     pass
 
 
+try:
+  import pyproj.datadir  # pylint: disable=g-import-not-at-top
+
+  _proj_dir = pyproj.datadir.get_data_dir()
+  if _proj_dir and os.path.isdir(_proj_dir):
+    os.environ.setdefault("PROJ_DATA", _proj_dir)
+    os.environ.setdefault("PROJ_LIB", _proj_dir)
+except Exception:
+  pass
+
+
 def ensure_flood_forecasting_on_sys_path(
     repo_dir: Optional[Path] = None,
 ) -> bool:
@@ -137,10 +148,11 @@ def extend_multimet_package_path(repo_dir: Optional[Path] = None) -> bool:
   if not existing_candidates:
     return False
 
-  for c in existing_candidates:
+  for c in reversed(existing_candidates):
     parent_str = str(c.parent)
-    if parent_str not in sys.path:
-      sys.path.insert(0, parent_str)
+    if parent_str in sys.path:
+      sys.path.remove(parent_str)
+    sys.path.insert(0, parent_str)
 
   try:
     import multimet  # pylint: disable=g-import-not-at-top
@@ -151,6 +163,18 @@ def extend_multimet_package_path(repo_dir: Optional[Path] = None) -> bool:
     c_str = str(c)
     if c_str not in multimet.__path__:
       multimet.__path__.append(c_str)
+
+  try:
+    import multimet.utils  # pylint: disable=g-import-not-at-top
+
+    for c in existing_candidates:
+      u_dir = c / "utils"
+      if u_dir.is_dir():
+        u_str = str(u_dir)
+        if u_str not in multimet.utils.__path__:
+          multimet.utils.__path__.append(u_str)
+  except ImportError:
+    pass
   return True
 
 
@@ -167,7 +191,7 @@ HYDRO_DATASETS: Dict[str, Dict[str, Any]] = {
         "dem_resolution": "3 arc-second (~90m)",
         "dem_tiles_dir": str(DEM_DIR / "hydrosheds_90m" / "tiles_5deg"),
         "river_network_id": "hydroatlas",
-        "river_network_name": "HydroRIVERS / HydroATLAS River Network",
+        "river_network_name": "HydroRIVERS",
         "description": "Global comprehensive hydro-environmental database linking river networks, sub-basins, and hydro-ecological attributes.",
         "default_snap_radius_km": 5.0,
         "citation": "Linke et al. (2019), Scientific Data",
@@ -181,7 +205,7 @@ HYDRO_DATASETS: Dict[str, Dict[str, Any]] = {
         "dem_resolution": "3 arc-second (~90m)",
         "dem_tiles_dir": str(DEM_DIR / "merit_hydro_90m" / "tiles_5deg"),
         "river_network_id": "merit-hydro",
-        "river_network_name": "MERIT-Basins River Network",
+        "river_network_name": "MERIT-Basins",
         "description": "Multi-Error-Removed Improved-Terrain Hydrography dataset with high-precision flow direction and river networks.",
         "default_snap_radius_km": 2.0,
         "citation": "Yamazaki et al. (2019), Water Resources Research",
@@ -209,6 +233,67 @@ def resolve_hydro_dataset_id(dataset_or_dem_id: Optional[str]) -> str:
   if key in HYDRO_DATASETS:
     return key
   return HYDRO_DATASET_ALIASES.get(key, key)
+
+
+DEFAULT_DEM_ID = "hydrosheds_90m"
+
+# Candidate local and cache directories for 5x5 degree DEM flow-direction tiles
+DEM_TILE_LOCATIONS: Dict[str, tuple[Path, ...]] = {
+    "hydrosheds_90m": (
+        DEM_DIR / "hydrosheds_90m" / "tiles_5deg",
+        CACHE_DIR / "hydrosheds_dem" / "tiles_5deg",
+        CACHE_DIR / "hydrosheds_dir" / "tiles_5deg",
+    ),
+    "merit_hydro_90m": (
+        DEM_DIR / "merit_hydro_90m" / "tiles_5deg",
+        CACHE_DIR / "merit_dem" / "tiles_5deg",
+        CACHE_DIR / "merit_hydro_dir" / "tiles_5deg",
+    ),
+}
+
+
+def resolve_dem_tiles_dir(dem_id: str = DEFAULT_DEM_ID) -> Path:
+  """Resolves the local directory containing 5x5 degree D8 `.npy` tiles for `dem_id`."""
+  extend_multimet_package_path()
+  from multimet.catchment_delineation.datasets import resolve_dem_dataset
+
+  dataset = resolve_dem_dataset(dem_id)
+  candidates = DEM_TILE_LOCATIONS.get(dataset.id, ())
+  for path in candidates:
+    if path.exists() and any(path.glob("*.npy")):
+      return path
+  for path in candidates:
+    if path.exists():
+      return path
+  return candidates[0] if candidates else (DEM_DIR / dataset.id / "tiles_5deg")
+
+
+def resolve_hydrography_paths() -> Dict[str, Path]:
+  """Resolves local/cache paths for HydroRIVERS, HydroBASINS, and MERIT-Basins."""
+  hydrorivers_shp = PERM_POLYGONS_DIR / "hydrorivers" / "HydroRIVERS_v10.shp"
+  if not hydrorivers_shp.exists():
+    hydrorivers_shp = RIVER_NETWORKS_DIR / "hydrorivers" / "HydroRIVERS_v10.shp"
+  if not hydrorivers_shp.exists():
+    hydrorivers_shp = CACHE_DIR / "HydroRIVERS_v10_shp" / "HydroRIVERS_v10.shp"
+
+  hydrobasins_dir = PERM_POLYGONS_DIR / "hydrobasins"
+  if not hydrobasins_dir.exists():
+    hydrobasins_dir = HYDRO_BASINS_DIR / "hydrobasins_units"
+  if not hydrobasins_dir.exists():
+    hydrobasins_dir = CACHE_DIR / "hydrobasins"
+
+  merit_dir = PERM_POLYGONS_DIR / "merit_basins"
+  if not merit_dir.exists():
+    merit_dir = RIVER_NETWORKS_DIR / "merit_rivers"
+  if not merit_dir.exists():
+    merit_dir = CACHE_DIR / "merit_basins"
+
+  return {
+      "hydrorivers_shp": hydrorivers_shp,
+      "hydrobasins_dir": hydrobasins_dir,
+      "merit_rivers_dir": merit_dir,
+      "merit_catchments_dir": merit_dir,
+  }
 
 
 # Weather Data Settings

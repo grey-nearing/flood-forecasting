@@ -11,19 +11,16 @@ from frontend.config import (
     HYDRO_DATASETS,
     STATIC_DIR,
     ensure_flood_forecasting_on_sys_path,
+    resolve_dem_tiles_dir,
     resolve_hydro_dataset_id,
 )
-from frontend.delineator import HydroDelineator
-from frontend.dem_delineator import (
-    DemDelineator,
-    FloodForecastingDemDelineator,
-    resolve_dem_tiles_dir,
-)
+from frontend.delineator import HydroDelineator, get_dem_delineator
 from frontend.profile_manager import get_profile_manager
 from frontend.server import (
     EarthkitHydroHandler,
     ThreadingHTTPServer,
 )
+from multimet.catchment_delineation import DemDelineator
 # Importing the tests package points profiles at a temp folder (never real accounts).
 from frontend import tests as _isolated_profiles  # pylint: disable=unused-import
 
@@ -225,12 +222,12 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
     self.assertEqual(
         values["merit-hydro"]["attrs"].get("data-dem-id"), "merit_hydro_90m"
     )
-    self.assertIn("HydroSHEDS 90m DEM", values["hydroatlas"]["text"])
-    self.assertIn("HydroRIVERS", values["hydroatlas"]["text"])
-    self.assertIn("MERIT-Hydro 90m DEM", values["merit-hydro"]["text"])
-    self.assertIn("MERIT-Basins", values["merit-hydro"]["text"])
+    self.assertEqual(values["hydroatlas"]["text"], "HydroRIVERS")
+    self.assertEqual(values["merit-hydro"]["text"], "MERIT-Basins")
     for opt in options:
       self.assertNotIn("(", opt["text"])
+      self.assertNotIn("—", opt["text"])
+      self.assertNotIn("DEM", opt["text"])
     for opt in self.dom.options_by_select_id.get("basemapSelect", []):
       self.assertNotIn("(", opt["text"])
 
@@ -247,7 +244,8 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
   def test_task4_dem_delineator_integration_and_profile_artifact_sync(self):
     """Verifies catchment_delineation.DemDelineator integration via /api/delineate and 13-folder sync."""
     self.assertTrue(ensure_flood_forecasting_on_sys_path())
-    self.assertIsNotNone(FloodForecastingDemDelineator)
+    self.assertIsNotNone(DemDelineator)
+    self.assertIsInstance(get_dem_delineator("hydrosheds_90m"), DemDelineator)
 
     # Verify config 1:1 DEM <-> River Network mapping and alias resolution
     self.assertEqual(resolve_hydro_dataset_id("hydrosheds_90m"), "hydroatlas")

@@ -732,4 +732,215 @@ def test_build_benchmark_dataset_cli_explicit_args(tmp_path: Path) -> None:
     assert len(df) == 2
     assert set(df['gauge_id']) == {'camels_001', 'camels_002'}
     assert 'geometry_wkt' in df.columns
+    assert 'geometry' not in df.columns
     assert 'reference_area_km2' in df.columns
+
+
+@pytest.mark.unit
+def test_dem_datasets_and_merit_high_latitude_delineation(tmp_path: Path) -> None:
+    """MERIT-Hydro supports 60°N–90°N while HydroSHEDS raises CatchmentCoverageError."""
+    from multimet.catchment_delineation import (
+        HYDROSHEDS_90M,
+        MERIT_HYDRO_90M,
+        is_coord_in_coverage,
+        is_tile_in_coverage,
+        resolve_dem_dataset,
+    )
+
+    assert resolve_dem_dataset('hydrosheds') == HYDROSHEDS_90M
+    assert resolve_dem_dataset('merit') == MERIT_HYDRO_90M
+    assert resolve_dem_dataset(MERIT_HYDRO_90M) == MERIT_HYDRO_90M
+    with pytest.raises(ValueError, match='Unknown DEM dataset'):
+        resolve_dem_dataset('nonexistent_dem')
+
+    # 63.5°N is outside HydroSHEDS (-56..60) but inside MERIT-Hydro (-60..90)
+    assert not is_coord_in_coverage(63.5, -145.2, dataset=HYDROSHEDS_90M)
+    assert is_coord_in_coverage(63.5, -145.2, dataset=MERIT_HYDRO_90M)
+    assert not is_tile_in_coverage(65, -150, dataset=HYDROSHEDS_90M)
+    assert is_tile_in_coverage(65, -150, dataset=MERIT_HYDRO_90M)
+
+    # Write a synthetic high-latitude tile n65w150.npy (covering 60..65°N, -150..-145°E)
+    tile_arr = np.zeros((TILE_CELLS, TILE_CELLS), dtype=np.uint8)
+    for r in range(200, 215):
+        tile_arr[r, 300] = _SOUTH_D8
+    np.save(tmp_path / 'n65w150.npy', tile_arr)
+
+    hs_delin = DemDelineator(tiles_dir=tmp_path, dataset='hydrosheds_90m')
+    with pytest.raises(
+        CatchmentCoverageError, match=r'outside the global DEM coverage domain \(-56\.0° to 60\.0°'
+    ):
+        hs_delin.delineate_point(lat=65.0 - 210 * RES_DEG, lon=-150.0 + 300 * RES_DEG)
+
+    merit_delin = DemDelineator(tiles_dir=tmp_path, dataset='merit_hydro_90m')
+    feat = merit_delin.delineate_point(
+        lat=65.0 - 210 * RES_DEG,
+        lon=-150.0 + 300 * RES_DEG,
+        snap_window_cells=5,
+    )
+    props = feat['properties']
+    assert props['dem_id'] == 'merit_hydro_90m'
+    assert props['dem_name'] == 'MERIT-Hydro 90m DEM (3 arc-sec)'
+    assert props['grid_resolution'] == '90m (3 arc-second)'
+    assert (
+        props['delineation_method']
+        == 'DEM Digital Elevation Flow-Routing (90m MERIT-Hydro Multi-Tile Seamless Grid)'
+    )
+    assert props['upstream_cells_count'] >= 10
+
+
+@pytest.mark.unit
+def test_elevation_tiles_and_global_grid(tmp_path: Path) -> None:
+    """ElevationTiles and GlobalElevationGrid sample elevation and convert nodata to NaN."""
+    from multimet.catchment_delineation import ElevationTiles, GlobalElevationGrid
+
+    elv_dir = tmp_path / 'elv_tiles'
+    elv_dir.mkdir()
+    arr = np.full((TILE_CELLS, TILE_CELLS), 250, dtype=np.int16)
+    arr[10, 20] = -9999
+    np.save(elv_dir / 'n40w090.npy', arr)
+
+    tiles = ElevationTiles(elv_dir)
+    assert tiles.has_tile(40, -90)
+    sampled = tiles.sample(np.array([39.5]), np.array([-89.5]))
+    assert sampled[0] == pytest.approx(250.0)
+    # Nodata cell returns NaN
+    nodata_lat = 40.0 - 10 * RES_DEG
+    nodata_lon = -90.0 + 20 * RES_DEG
+    nodata_sampled = tiles.sample(np.array([nodata_lat]), np.array([nodata_lon]))
+    assert np.isnan(nodata_sampled[0])
+
+    global_npy = tmp_path / 'global_dem.npy'
+    g_arr = np.full((140, 360), 120.0, dtype=np.float32)
+    np.save(global_npy, g_arr)
+    grid = GlobalElevationGrid(global_npy, res_deg=1.0)
+    g_sampled = grid.sample(np.array([10.0]), np.array([20.0]))
+    assert g_sampled[0] == pytest.approx(120.0)
+
+
+@pytest.mark.unit
+def test_backend_hydrography_vector_and_hybrid_delineation(tmp_path: Path) -> None:
+    """RiverNetwork, UnitCatchmentDelineator, and delineate_hybrid operate with explicit paths."""
+    from shapely.geometry import LineString
+    from multimet.catchment_delineation import (
+        HydroBasinsLayer,
+        RiverNetwork,
+        UnitCatchmentDelineator,
+        delineate_hybrid,
+    )
+
+    rivers_dir = tmp_path / 'rivers'
+    rivers_dir.mkdir()
+    basins_dir = tmp_path / 'basins'
+    basins_dir.mkdir()
+    dem_dir = tmp_path / 'dem'
+    dem_dir.mkdir()
+
+    # Two connected reaches: 101 (headwater) -> 102 (downstream)
+    rivers_shp = rivers_dir / 'HydroRIVERS_v10_na.shp'
+    rivers_gdf = gpd.GeoDataFrame(
+        {
+            'HYRIV_ID': [101, 102],
+            'NEXT_DOWN': [102, 0],
+            'MAIN_RIV': [102, 102],
+            'LENGTH_KM': [2.5, 3.0],
+            'DIST_DN_KM': [3.0, 0.0],
+            'DIST_UP_KM': [2.5, 5.5],
+            'CATCH_SKM': [1.2, 1.5],
+            'UPLAND_SKM': [1.2, 2.7],
+            'DIS_AV_CMS': [0.5, 1.2],
+            'ORD_STRA': [2, 3],
+            'ORD_CLAS': [1, 1],
+            'ORD_FLOW': [6, 5],
+            'HYBAS_L12': [1001, 1002],
+        },
+        geometry=[
+            LineString([(-88.78, 39.70), (-88.78, 39.68)]),
+            LineString([(-88.78, 39.68), (-88.78, 39.66)]),
+        ],
+        crs='EPSG:4326',
+    )
+    rivers_gdf.to_file(rivers_shp)
+
+    basins_gdf = gpd.GeoDataFrame(
+        {
+            'HYBAS_ID': [1001, 1002],
+            'NEXT_DOWN': [1002, 0],
+            'NEXT_SINK': [1002, 1002],
+            'MAIN_BAS': [1002, 1002],
+            'DIST_SINK': [3.0, 0.0],
+            'DIST_MAIN': [3.0, 0.0],
+            'SUB_AREA': [1.2, 1.5],
+            'UP_AREA': [1.2, 2.7],
+            'PFAF_ID': [71201, 71202],
+            'ENDO': [0, 0],
+            'COAST': [0, 0],
+            'ORDER': [2, 3],
+            'SORT': [1, 2],
+        },
+        geometry=[
+            box(-88.79, 39.68, -88.77, 39.70),
+            box(-88.79, 39.66, -88.77, 39.68),
+        ],
+        crs='EPSG:4326',
+    )
+    basins_gdf.to_file(basins_dir / 'hybas_na_lev12_v1c.shp')
+    _write_synthetic_tile(dem_dir)
+
+    network = RiverNetwork.from_hydrorivers(rivers_shp)
+    reaches = network.query_reaches((-88.80, 39.65, -88.75, 39.71), min_stream_order=1)
+    assert len(reaches) == 2
+
+    snap = network.snap_to_reach(39.67, -88.78)
+    assert snap.reach.reach_id == 102
+
+    unit_layer = HydroBasinsLayer(basins_dir)
+    vec_delin = UnitCatchmentDelineator(unit_layer)
+    vec_res = vec_delin.delineate_exact_pour_point(
+        1002, snap.lat, snap.lon, snap.reach.geometry
+    )
+    assert vec_res.outlet_unit_id == 1002
+    assert len(vec_res.unit_ids) == 2
+    assert vec_res.area_km2 > 0
+
+    dem_delin = DemDelineator(tiles_dir=dem_dir)
+    hyb_feat = delineate_hybrid(
+        dem_delin,
+        network,
+        39.6828,
+        -88.7729,
+    )
+    assert hyb_feat['type'] == 'Feature'
+    assert hyb_feat['properties']['area_km2'] > 0
+
+
+@pytest.mark.unit
+def test_merit_d8_tile_download_with_custom_fetcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """download_merit_d8_tile assembles top and bottom halves atomically."""
+    import multimet.catchment_delineation.merit as merit_mod
+    from multimet.catchment_delineation import download_merit_d8_tile
+
+    def fake_half_tile(
+        lat_top: float,
+        lon_left: float,
+        *,
+        ee_project: str,
+        credentials: object = None,
+        retries: int = 3,
+    ) -> np.ndarray:
+        assert ee_project == 'test-ee-proj'
+        val = 1 if lat_top == 45.0 else 4
+        return np.full((3000, 6000), val, dtype=np.uint8)
+
+    monkeypatch.setattr(merit_mod, 'fetch_merit_d8_half_tile', fake_half_tile)
+
+    out_path = download_merit_d8_tile(
+        45, -90, tmp_path, ee_project='test-ee-proj'
+    )
+    assert out_path == tmp_path / 'n45w090.npy'
+    loaded = np.load(out_path)
+    assert loaded.shape == (6000, 6000)
+    assert int(loaded[0, 0]) == 1
+    assert int(loaded[3000, 0]) == 4
+

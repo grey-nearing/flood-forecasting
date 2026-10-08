@@ -340,20 +340,20 @@
     <!-- Left Controls & Data Panel (Sidebar) -->
     <aside class="w-[490px] bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-5">
 
-      <!-- Step 1: Single 1:1 DEM & River Network Selection + Map Controls -->
+      <!-- Step 1: Single 1:1 River Network Selection + Map Controls -->
       <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
         <div class="flex items-center justify-between">
           <label class="text-xs font-bold text-[#1e8e3e] uppercase tracking-wider flex items-center gap-1.5">
-            <i data-lucide="layers" class="w-4 h-4"></i> 1. DEM &amp; River Network
+            <i data-lucide="layers" class="w-4 h-4"></i> 1. River Network
           </label>
           <span id="resBadge" class="hidden" aria-hidden="true"></span>
         </div>
 
         <div>
-          <label class="text-[11px] text-[#5f6368] block mb-1">Digital Elevation Model</label>
+          <label class="text-[11px] text-[#5f6368] block mb-1">River Network</label>
           <select id="datasetSelect" data-alias="demSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-3 py-2 text-[#202124] focus:outline-none focus:border-[#1e8e3e] transition">
-            <option value="hydroatlas" data-dem-id="hydrosheds_90m" selected>HydroSHEDS 90m DEM — HydroRIVERS Network</option>
-            <option value="merit-hydro" data-dem-id="merit_hydro_90m">MERIT-Hydro 90m DEM — MERIT-Basins Network</option>
+            <option value="hydroatlas" data-dem-id="hydrosheds_90m" selected>HydroRIVERS</option>
+            <option value="merit-hydro" data-dem-id="merit_hydro_90m">MERIT-Basins</option>
           </select>
           <select id="delineateModeSelect" class="hidden" aria-hidden="true"></select>
         </div>
@@ -3399,6 +3399,7 @@
         minZoom: 2,
         maxZoom: 18,
         preferCanvas: true, // Hardware-accelerated 2D canvas rendering for high vector performance
+        renderer: L.canvas({ tolerance: 6 }),
         worldCopyJump: true,
         zoomControl: true
       });
@@ -3484,7 +3485,8 @@
         await delineateBasin(lat, lon, dataset);
       });
 
-      // Initialize Legend, Weather Sources, Profile & River Fetch
+      // Initialize Legend, Delineation Mode, Weather Sources, Profile & River Fetch
+      setDelineationMode(true);
       updateLegend(document.getElementById('datasetSelect').value);
       initWeatherSources();
       initProfileEventListeners();
@@ -3725,10 +3727,13 @@
               probeMaaSPoint(e.latlng.lat, e.latlng.lng, null, props.reach_id || props.HYRIV_ID, props.river_name || props.NAME || (`Reach #${props.reach_id || props.HYRIV_ID || ''}`));
               return;
             }
-            if (isDelineationMode) {
+            if (currentActiveTabId === 'tab-delineation' || isDelineationMode) {
               L.DomEvent.stopPropagation(e);
               if (!isDelineating) {
-                delineateBasin(e.latlng.lat, e.latlng.lng, document.getElementById('datasetSelect').value);
+                const pt = (typeof maasSnapToFeature === 'function')
+                  ? maasSnapToFeature(feature, e.latlng)
+                  : { lat: e.latlng.lat, lon: e.latlng.lng };
+                delineateBasin(pt.lat, pt.lon, document.getElementById('datasetSelect').value);
               }
             }
           });
