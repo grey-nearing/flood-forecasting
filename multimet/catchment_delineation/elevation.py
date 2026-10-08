@@ -1,8 +1,23 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Elevation grid loading and vectorized coordinate sampling."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from multimet.catchment_delineation.config import (
@@ -12,30 +27,35 @@ from multimet.catchment_delineation.config import (
 )
 from multimet.catchment_delineation.delineator import CatchmentCoverageError
 from multimet.catchment_delineation.tiles import tile_key_to_filename
-_MAGIC_NEG_9000_0 = -9000.0
-_MAGIC_9000_0 = 9000.0
+
+if TYPE_CHECKING:
+    from pathlib import Path
+else:
+    from pathlib import Path
+
+_MIN_VALID_ELEVATION_M: float = -9000.0
+_MAX_VALID_ELEVATION_M: float = 9000.0
 
 
 class ElevationTiles:
-    """Loads and samples 5x5 degree 3-arc-second 
-        (6000x6000) DEM elevation tiles."""
+    """Loads and samples 5x5 degree 3-arc-second DEM elevation tiles."""
 
     def __init__(self, tiles_dir: str | Path) -> None:
-        """Docstring."""
+        """Initialize the tile loader with a directory of .npy tiles."""
         self.tiles_dir = Path(tiles_dir)
         self._cache: dict[tuple[int, int], np.ndarray] = {}
 
     def tile_path(self, lat_top: int, lon_left: int) -> Path:
-        """Docstring."""
+        """Return the filesystem path for the (lat_top, lon_left) tile."""
         return self.tiles_dir / tile_key_to_filename(lat_top, lon_left)
 
     def has_tile(self, lat_top: int, lon_left: int) -> bool:
-        """Docstring."""
+        """Return True if the requested tile is cached or exists on disk."""
         key = (int(lat_top), int(lon_left))
         return key in self._cache or self.tile_path(*key).exists()
 
     def get_tile(self, lat_top: int, lon_left: int) -> np.ndarray:
-        """Returns a memory-mapped (6000, 6000) elevation tile array.
+        """Return a memory-mapped (6000, 6000) elevation tile array.
 
         Raises:
             CatchmentCoverageError: If the tile file does not exist on disk.
@@ -68,19 +88,18 @@ class ElevationTiles:
         *,
         strict: bool = True,
     ) -> np.ndarray:
-        """Samples elevation in meters at arbitrary coordinate arrays.
+        """Sample elevation in meters at arbitrary coordinate arrays.
 
         Args:
             lats: Array of latitudes in decimal degrees.
             lons: Array of longitudes in decimal degrees.
-            strict: If True, raises `CatchmentCoverageError` when a requested 
-                tile
-              file is missing. If False, leaves missing tiles as `np.nan`.
+            strict: If True, raises `CatchmentCoverageError` when a requested
+                tile file is missing. If False, leaves missing tiles as
+                `np.nan`.
 
         Returns:
-            `float32` array of elevations 
-                (meters) with the same shape as `lats`,
-            with nodata pixels (`< -9000` or `> 9000`) set to `np.nan`.
+            `float32` array of elevations (meters) with the same shape as
+            `lats`, with nodata pixels (`< -9000` or `> 9000`) set to `np.nan`.
         """
         lats_arr = np.asarray(lats, dtype=np.float64)
         lons_arr = (
@@ -88,8 +107,8 @@ class ElevationTiles:
         ) - 180.0
         if lats_arr.shape != lons_arr.shape:
             raise ValueError(
-                f'lats shape {lats_arr.shape} must match lons shape 
-                    {lons_arr.shape}.'
+                f'lats shape {lats_arr.shape} must match lons shape '
+                f'{lons_arr.shape}.'
             )
 
         elev = np.full(lats_arr.shape, np.nan, dtype=np.float32)
@@ -103,6 +122,7 @@ class ElevationTiles:
             zip(
                 tile_lat_tops.flatten().tolist(),
                 tile_lon_lefts.flatten().tolist(),
+                strict=False,
             )
         )
 
@@ -122,33 +142,34 @@ class ElevationTiles:
             c_idx = np.clip(c_idx, 0, TILE_CELLS - 1)
 
             sampled = grid[r_idx, c_idx].astype(np.float32)
-            sampled[(sampled < _MAGIC_NEG_9000_0) | (sampled > _MAGIC_9000_0)] = np.nan
+            sampled[
+                (sampled < _MIN_VALID_ELEVATION_M)
+                | (sampled > _MAX_VALID_ELEVATION_M)
+            ] = np.nan
             elev[mask] = sampled
 
         return elev
 
 
 class GlobalElevationGrid:
-    """Samples elevation from a memory-mapped global overview DEM `.npy` 
-        grid."""
+    """Samples elevation from a memory-mapped global overview DEM `.npy`."""
 
     def __init__(
         self,
         path: str | Path,
         *,
         res_deg: float,
-        top_lat: float = 84.0,
-        bottom_lat: float = -56.0,
-        left_lon: float = -180.0,
-        right_lon: float = 180.0,
+        lat_bounds: tuple[float, float] = (-56.0, 84.0),
+        lon_bounds: tuple[float, float] = (-180.0, 180.0),
+        **kwargs: float,
     ) -> None:
-        """Docstring."""
+        """Initialize the global overview elevation grid."""
         self.path = Path(path)
         self.res_deg = float(res_deg)
-        self.top_lat = float(top_lat)
-        self.bottom_lat = float(bottom_lat)
-        self.left_lon = float(left_lon)
-        self.right_lon = float(right_lon)
+        self.top_lat = float(kwargs.get('top_lat', lat_bounds[1]))
+        self.bottom_lat = float(kwargs.get('bottom_lat', lat_bounds[0]))
+        self.left_lon = float(kwargs.get('left_lon', lon_bounds[0]))
+        self.right_lon = float(kwargs.get('right_lon', lon_bounds[1]))
         self._grid: np.ndarray | None = None
 
     def _load_grid(self) -> np.ndarray:
@@ -161,15 +182,15 @@ class GlobalElevationGrid:
         return self._grid
 
     def sample(self, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
-        """Samples elevation in meters from the global overview grid."""
+        """Sample elevation in meters from the global overview grid."""
         lats_arr = np.asarray(lats, dtype=np.float64)
         lons_arr = (
             (np.asarray(lons, dtype=np.float64) + 180.0) % 360.0
         ) - 180.0
         if lats_arr.shape != lons_arr.shape:
             raise ValueError(
-                f'lats shape {lats_arr.shape} must match lons shape 
-                    {lons_arr.shape}.'
+                f'lats shape {lats_arr.shape} must match lons shape '
+                f'{lons_arr.shape}.'
             )
 
         out = np.full(lats_arr.shape, np.nan, dtype=np.float32)
@@ -194,6 +215,9 @@ class GlobalElevationGrid:
         c_idx = np.clip(c_idx, 0, ncols - 1)
 
         sampled = grid[r_idx, c_idx].astype(np.float32)
-        sampled[(sampled < _MAGIC_NEG_9000_0) | (sampled > _MAGIC_9000_0)] = np.nan
+        sampled[
+            (sampled < _MIN_VALID_ELEVATION_M)
+            | (sampled > _MAX_VALID_ELEVATION_M)
+        ] = np.nan
         out[in_bounds] = sampled
         return out

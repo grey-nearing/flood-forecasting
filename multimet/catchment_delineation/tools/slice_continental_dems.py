@@ -29,7 +29,6 @@ from rasterio.windows import Window
 
 from multimet.catchment_delineation.config import RES_DEG, TILE_CELLS, TILE_DEG
 from multimet.catchment_delineation.tiles import tile_key_to_filename
-_MAGIC_128 = 128
 
 
 def _slice_single_tile(
@@ -47,7 +46,7 @@ def _slice_single_tile(
         win = Window(col_off, row_off, TILE_CELLS, TILE_CELLS)
         data = src.read(1, window=win)
 
-    valid_mask = (data > 0) & (data <= _MAGIC_128)
+    valid_mask = (data > 0) & (data <= 128)
     valid_count = int(np.count_nonzero(valid_mask))
     if valid_count == 0:
         return out_path.name, False, 0

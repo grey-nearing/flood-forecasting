@@ -1,10 +1,24 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Vector unit-catchment delineation (HydroBASINS Level 12 & MERIT-Basins)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from shapely.geometry import (
@@ -19,8 +33,16 @@ from shapely.geometry import (
 )
 from shapely.ops import unary_union
 
-from multimet.catchment_delineation.hydrography import UnitCatchmentLayer
 from multimet.utils.geometry import geodesic_area_km2
+
+if TYPE_CHECKING:
+    from multimet.catchment_delineation.hydrography import UnitCatchmentLayer
+
+_MIN_REACH_VERTICES: int = 2
+_SEGMENT_DISTANCE_EPSILON: float = 1e-6
+_NORM_EPSILON: float = 1e-9
+_MIN_HALF_PLANE_DIAG_DEG: float = 0.2
+_HALF_PLANE_DIAG_MULTIPLIER: float = 4.0
 
 
 def _extract_polygonal(geom: object) -> Polygon | MultiPolygon:
@@ -42,71 +64,80 @@ def _extract_polygonal(geom: object) -> Polygon | MultiPolygon:
 
 
 def _get_target_line(reach_line: object, snapped_pt: Point) -> LineString:
+    """Validate and resolve a reach geometry to a single target LineString."""
     if reach_line is None:
         raise ValueError(
             'reach_line is required for exact pour-point clipping.'
         )
     if isinstance(reach_line, dict):
         reach_line = shape(reach_line)
-    if reach_line.is_empty:
-        raise ValueError('reach_line must not be empty.')
     if isinstance(reach_line, MultiLineString):
-        _MIN_VERTS = 2
+        if reach_line.is_empty:
+            raise ValueError('reach_line must not be empty.')
         lines = [
             ln
             for ln in reach_line.geoms
-            if not ln.is_empty and len(ln.coords) >= _MIN_VERTS
+            if not ln.is_empty and len(ln.coords) >= _MIN_REACH_VERTICES
         ]
         if not lines:
             raise ValueError(
                 'MultiLineString reach_line contains no valid segments.'
             )
         return min(lines, key=lambda ln: ln.distance(snapped_pt))
-    elif isinstance(reach_line, LineString):
+    if isinstance(reach_line, LineString):
+        if reach_line.is_empty:
+            raise ValueError('reach_line must not be empty.')
         return reach_line
     raise ValueError(
-        f'Expected LineString or MultiLineString,
-            got {type(reach_line).__name__}.'
+        'Expected LineString or MultiLineString, '
+        f'got {type(reach_line).__name__}.'
     )
 
 
 def _get_segment_pts(
     target_line: LineString, snapped_pt: Point
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Return start and end 2D vertices of the segment nearest snapped_pt."""
     coords = list(target_line.coords)
-    _MIN_VERTS = 2
-    if len(coords) < _MIN_VERTS:
+    if len(coords) < _MIN_REACH_VERTICES:
         raise ValueError('reach_line must have at least 2 vertices.')
     proj_dist = target_line.project(snapped_pt)
     cum_len = 0.0
     seg_idx = 0
-    _EPSILON = 1e-6
     for i in range(len(coords) - 1):
         p1_pt = Point(coords[i])
         p2_pt = Point(coords[i + 1])
         seg_len = p1_pt.distance(p2_pt)
-        if cum_len + seg_len >= proj_dist - _EPSILON:
+        if cum_len + seg_len >= proj_dist - _SEGMENT_DISTANCE_EPSILON:
             seg_idx = i
             break
         cum_len += seg_len
-    return np.array(coords[seg_idx][:2], dtype=float), np.array(
-        coords[seg_idx + 1][:2], dtype=float
+    return (
+        np.array(coords[seg_idx][:2], dtype=float),
+        np.array(coords[seg_idx + 1][:2], dtype=float),
     )
 
 
 def _create_half_plane(
-    p1: np.ndarray, p2: np.ndarray, snapped_pt: Point, b: tuple
+    p1: np.ndarray,
+    p2: np.ndarray,
+    snapped_pt: Point,
+    bounds: tuple[float, float, float, float],
 ) -> Polygon:
+    """Construct the upstream orthogonal half-plane polygon at snapped_pt."""
     v = p2 - p1
     v_norm_len = float(np.linalg.norm(v))
-    _NORM_EPSILON = 1e-9
     if v_norm_len < _NORM_EPSILON:
         raise ValueError('Degenerate zero-length reach segment at pour point.')
     v_norm = v / v_norm_len
     perp = np.array([-v_norm[1], v_norm[0]])
-    _MIN_DIAG = 0.2
-    _DIAG_MULT = 4.0
-    diag = max(_MIN_DIAG, math.hypot(b[2] - b[0], b[3] - b[1])) * _DIAG_MULT
+    diag = (
+        max(
+            _MIN_HALF_PLANE_DIAG_DEG,
+            math.hypot(bounds[2] - bounds[0], bounds[3] - bounds[1]),
+        )
+        * _HALF_PLANE_DIAG_MULTIPLIER
+    )
     p0 = np.array([snapped_pt.x, snapped_pt.y], dtype=float)
     return Polygon(
         [
@@ -125,16 +156,14 @@ def clip_unit_catchment_to_pour_point(
     pour_lat: float,
     pour_lon: float,
 ) -> Polygon | MultiPolygon:
-    """Clip a unit catchment polygon to the upstream side of a pour point along a 
-        reach.
+    """Clip a unit catchment polygon to the upstream side of a pour point.
 
     Constructs an orthogonal cross-section plane at the projection of
     ``(pour_lon, pour_lat)`` onto ``reach_line`` and intersects ``unit_polygon``
     with the upstream half-plane.
 
     Args:
-        unit_polygon: Local unit catchment polygon 
-            (`Polygon` or `MultiPolygon`).
+        unit_polygon: Local unit catchment (`Polygon` or `MultiPolygon`).
         reach_line: River reach centerline (`LineString`, `MultiLineString`,
             or GeoJSON dict).
         pour_lat: Pour-point latitude in decimal degrees.
@@ -144,7 +173,7 @@ def clip_unit_catchment_to_pour_point(
         Clipped upstream `Polygon` or `MultiPolygon`.
 
     Raises:
-        ValueError: If `unit_polygon` or `reach_line` is empty/degenerate 
+        ValueError: If `unit_polygon` or `reach_line` is empty/degenerate
             or if the clipped intersection is empty.
     """
     if unit_polygon is None or unit_polygon.is_empty:
@@ -160,8 +189,8 @@ def clip_unit_catchment_to_pour_point(
     clipped = _extract_polygonal(unit_polygon.intersection(half_plane))
     if clipped.is_empty or clipped.area <= 0:
         raise ValueError(
-            f'Clipping unit catchment at ({pour_lat:.5f},
-                {pour_lon:.5f}) produced an empty geometry.'
+            f'Clipping unit catchment at ({pour_lat:.5f}, {pour_lon:.5f}) '
+            'produced an empty geometry.'
         )
     return clipped
 
@@ -179,7 +208,7 @@ class VectorCatchment:
 
     @property
     def bbox(self) -> dict[str, float]:
-        """Docstring."""
+        """Return bounding box coordinates rounded to 5 decimal places."""
         bounds = self.geometry.bounds
         return {
             'min_lon': round(float(bounds[0]), 5),
@@ -190,32 +219,29 @@ class VectorCatchment:
 
     @property
     def delineation_method(self) -> str:
-        """Docstring."""
+        """Return human-readable label for the vector delineation mode."""
         if self.dataset == 'merit-hydro':
             if self.mode == 'exact_pour_point':
                 return 'MERIT-Basins Exact Pour-Point Drainage Basin'
             if self.mode == 'unit_catchment':
                 return 'MERIT-Basins Official Unit Catchment Polygon'
             return 'MERIT-Basins Official Unit Ridgeline Watershed'
-        else:
-            if self.mode == 'exact_pour_point':
-                return (
-                    'Exact Pour-Point Drainage Basin (On-The-Fly Delineation)'
-                )
-            if self.mode == 'unit_catchment':
-                return 'HydroBASINS Level 12 Unit Catchment Polygon'
-            return 'HydroBASINS Level 12 Official Ridgeline Polygon'
+        if self.mode == 'exact_pour_point':
+            return 'Exact Pour-Point Drainage Basin (On-The-Fly Delineation)'
+        if self.mode == 'unit_catchment':
+            return 'HydroBASINS Level 12 Unit Catchment Polygon'
+        return 'HydroBASINS Level 12 Official Ridgeline Polygon'
 
     def to_feature(
         self,
         *,
         catchment_id: str | None = None,
-        outlet: dict[str, Any] | None = None,
-        extra_properties: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        outlet: dict[str, object] | None = None,
+        extra_properties: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         """Serialize the delineated vector catchment to a GeoJSON Feature."""
         cid = catchment_id or f'catchment_{self.dataset}_{self.outlet_unit_id}'
-        props: dict[str, Any] = {
+        props: dict[str, object] = {
             'catchment_id': cid,
             'dataset': self.dataset,
             'area_km2': self.area_km2,
@@ -240,7 +266,7 @@ class UnitCatchmentDelineator:
     """Delineates catchments from vector unit-catchment layers."""
 
     def __init__(self, layer: UnitCatchmentLayer) -> None:
-        """Docstring."""
+        """Initialize the delineator with a unit-catchment topological layer."""
         self.layer = layer
 
     def delineate_ridgeline(
@@ -282,12 +308,11 @@ class UnitCatchmentDelineator:
         unit_id: int,
         pour_lat: float,
         pour_lon: float,
-        reach_geometry: LineString | MultiLineString | dict[str, Any],
+        reach_geometry: LineString | MultiLineString | dict[str, object],
         *,
         max_units: int | None = None,
     ) -> VectorCatchment:
-        """Dissolve upstream tributaries and clips the outlet unit at the pour 
-            point."""
+        """Dissolve upstream tributaries and clip outlet unit at pour point."""
         units = self.layer.upstream_units(unit_id, max_units=max_units)
         if not units:
             raise ValueError(f'Unit catchment {unit_id} not found in layer.')

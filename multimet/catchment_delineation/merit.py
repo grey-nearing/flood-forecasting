@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-
+from typing import Any
 
 import google.auth
 import google.auth.transport.requests
@@ -55,11 +55,11 @@ _EE_SCOPES: list[str] = [
 ]
 
 _CRED_LOCK = threading.Lock()
-_CACHED_CREDENTIALS: object = None
+_CACHED_CREDENTIALS: Any = None
 
 
 def _get_access_token(
-    credentials: object = None, *, force_refresh: bool = False
+    credentials: Any = None, *, force_refresh: bool = False
 ) -> str:
     """Obtain a valid Google Cloud OAuth2 access token via google.auth."""
     global _CACHED_CREDENTIALS
@@ -85,7 +85,7 @@ def fetch_merit_d8_half_tile(
     lon_left: float,
     *,
     ee_project: str,
-    credentials: object = None,
+    credentials: Any = None,
     retries: int = 3,
 ) -> np.ndarray:
     """Fetch a (3000, 6000) half-tile of MERIT/Hydro/v1_0_1 'dir' band."""
@@ -97,24 +97,22 @@ def fetch_merit_d8_half_tile(
     if retries < 1:
         raise ValueError(f'retries must be >= 1; got {retries}')
 
-    payload = json.dumps(
-        {
-            'fileFormat': 'NPY',
-            'bandIds': ['dir'],
-            'grid': {
-                'dimensions': {'width': FULL_COLS, 'height': HALF_ROWS},
-                'affineTransform': {
-                    'scaleX': RES_DEG,
-                    'shearX': 0.0,
-                    'translateX': float(lon_left),
-                    'shearY': 0.0,
-                    'scaleY': -RES_DEG,
-                    'translateY': float(lat_top),
-                },
-                'crsCode': 'EPSG:4326',
+    payload = json.dumps({
+        'fileFormat': 'NPY',
+        'bandIds': ['dir'],
+        'grid': {
+            'dimensions': {'width': FULL_COLS, 'height': HALF_ROWS},
+            'affineTransform': {
+                'scaleX': RES_DEG,
+                'shearX': 0.0,
+                'translateX': float(lon_left),
+                'shearY': 0.0,
+                'scaleY': -RES_DEG,
+                'translateY': float(lat_top),
             },
-        }
-    ).encode('utf-8')
+            'crsCode': 'EPSG:4326',
+        },
+    }).encode('utf-8')
 
     last_err: Exception | None = None
     for attempt in range(retries):
@@ -157,11 +155,10 @@ def download_merit_d8_tile(
     target_dir: str | Path,
     *,
     ee_project: str,
-    credentials: object = None,
+    credentials: Any = None,
     created_files: set[Path] | None = None,
 ) -> Path:
-    """Download a single 5x5 degree (6000,
-        6000) uint8 MERIT-Hydro D8 tile atomically."""
+    """Download a single 5x5 degree (6000, 6000) uint8 MERIT-Hydro D8 tile atomically."""
     if not target_dir:
         raise ValueError('An explicit target_dir must be provided.')
     if not ee_project or not str(ee_project).strip():
