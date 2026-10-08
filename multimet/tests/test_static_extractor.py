@@ -714,23 +714,22 @@ def test_batch_runner_gcs_output_and_args(tmp_path, monkeypatch):
   monkeypatch.setattr("multimet.static_extractor.batch_runner.upload_to_gcs", mock_upload)
   monkeypatch.setattr("multimet.static_extractor.batch_runner.gcs_path_exists", lambda uri: False)
 
-  dummy_df = pd.DataFrame({"basin_id": ["b1"], "ele_mt_sav": [100.0]})
-  dummy_shp = tmp_path / "test.shp"
-  dummy_shp.write_text("dummy")
-
-  mock_extractor = MagicMock()
-  mock_extractor.extract_attributes_from_file.return_value = dummy_df
-  monkeypatch.setattr(
-      "multimet.static_extractor.batch_runner.StaticAttributesExtractor",
-      lambda **kwargs: mock_extractor,
+  shp_path, era5_cache, _ = _build_synthetic_hydroatlas_env(
+      tmp_path, include_native_pet=False
   )
+  dummy_shp = tmp_path / "test_query.shp"
+  gpd.GeoDataFrame(
+      {"gauge_id": ["b1"]},
+      geometry=[shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)],
+      crs="EPSG:4326",
+  ).to_file(dummy_shp)
 
   results = run_batch_extraction(
       dataset_map={"test_ds": dummy_shp},
       output_dir="gs://open-multimet/data/caravan_static_attributes/",
-      gdb_path=tmp_path / "BasinATLAS_v10.gdb",
+      gdb_path=shp_path,
       era5_source="hybas",
-      era5_cache_dir=tmp_path / "era5",
+      era5_cache_dir=era5_cache,
       workers=1,
       staging_cache_dir=tmp_path / "staged",
       combine=True,
@@ -818,7 +817,6 @@ def test_export_subdataset_partitioned_files(tmp_path):
 
 def test_batch_runner_partition_outputs(tmp_path, monkeypatch):
   """Verifies that partition_outputs=True partitions output per dataset and supports resume."""
-  from unittest.mock import MagicMock
   from multimet.static_extractor.batch_runner import run_batch_extraction
 
   uploaded_uris = []
@@ -828,30 +826,24 @@ def test_batch_runner_partition_outputs(tmp_path, monkeypatch):
   monkeypatch.setattr("multimet.static_extractor.batch_runner.upload_to_gcs", mock_upload)
   monkeypatch.setattr("multimet.static_extractor.batch_runner.gcs_path_exists", lambda uri: False)
 
+  shp_path, era5_cache, _ = _build_synthetic_hydroatlas_env(
+      tmp_path, include_native_pet=False
+  )
   ds_dir = tmp_path / "camels"
   ds_dir.mkdir()
   dummy_shp = ds_dir / "camels_basin_shapes.shp"
-  dummy_shp.write_text("dummy")
-
-  dummy_df = pd.DataFrame(
-      {"basin_area": [150.0], "ele_mt_sav": [300.0], "p_mean": [3.2]},
-      index=["camels_01"],
-  )
-  dummy_df.index.name = "gauge_id"
-
-  mock_extractor = MagicMock()
-  mock_extractor.extract_attributes_from_file.return_value = dummy_df
-  monkeypatch.setattr(
-      "multimet.static_extractor.batch_runner.StaticAttributesExtractor",
-      lambda **kwargs: mock_extractor,
-  )
+  gpd.GeoDataFrame(
+      {"gauge_id": ["camels_01"]},
+      geometry=[shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)],
+      crs="EPSG:4326",
+  ).to_file(dummy_shp)
 
   results = run_batch_extraction(
       dataset_map={"camels": dummy_shp},
       output_dir="gs://my-bucket/attributes/",
-      gdb_path=tmp_path / "BasinATLAS_v10.gdb",
+      gdb_path=shp_path,
       era5_source="hybas",
-      era5_cache_dir=tmp_path / "era5",
+      era5_cache_dir=era5_cache,
       workers=1,
       staging_cache_dir=tmp_path / "staged",
       partition_outputs=True,
@@ -871,9 +863,9 @@ def test_batch_runner_partition_outputs(tmp_path, monkeypatch):
   results_resume = run_batch_extraction(
       dataset_map={"camels": dummy_shp},
       output_dir="gs://my-bucket/attributes/",
-      gdb_path=tmp_path / "BasinATLAS_v10.gdb",
+      gdb_path=shp_path,
       era5_source="hybas",
-      era5_cache_dir=tmp_path / "era5",
+      era5_cache_dir=era5_cache,
       workers=1,
       staging_cache_dir=tmp_path / "staged",
       partition_outputs=True,
@@ -1436,7 +1428,17 @@ def test_catchment_attributes_container_round_trip():
   d = res.to_dict()
   assert d["catchment_id"] == "12345" and d["subbasin_ids"] == [712000001, 712000002]
   assert isinstance(d["attributes"], dict)
-  rebuilt = CatchmentAttributes.from_dict(json.loads(json.dumps({**d, "attributes": {k: (None if (isinstance(v, float) and np.isnan(v)) else v) for k, v in d["attributes"].items()}})))
+  payload = json.loads(
+      json.dumps({
+          **d,
+          "attributes": {
+              k: (None if (isinstance(v, float) and np.isnan(v)) else v)
+              for k, v in d["attributes"].items()
+          },
+      })
+  )
+  rebuilt = CatchmentAttributes.from_dict(payload)
+  assert payload["attributes"]["p_mean"] is None  # caller dict not mutated
   assert rebuilt.catchment_id == res.catchment_id
   assert rebuilt.subbasin_ids == res.subbasin_ids
   assert rebuilt.subbasin_weights_km2 == res.subbasin_weights_km2
