@@ -500,3 +500,20 @@ def get_bounding_box(
   return BoundingBox.from_geodataframe(
       gdf, buffer_degrees=buffer_degrees
   ).to_tuple()
+
+
+_WGS84_GEOD = None
+
+
+def geodesic_area_km2(geom: Any) -> float:
+  """Compute WGS84 geodesic area in km2 for a Polygon or MultiPolygon."""
+  global _WGS84_GEOD
+  if geom is None or geom.is_empty:
+    return 0.0
+  if _WGS84_GEOD is None:
+    import pyproj  # pylint: disable=g-import-not-at-top
+
+    _WGS84_GEOD = pyproj.Geod(ellps="WGS84")
+  area_m2, _ = _WGS84_GEOD.geometry_area_perimeter(geom)
+  return abs(float(area_m2)) / 1_000_000.0
+

@@ -120,6 +120,16 @@ setup(
         'dynamical': [
             'dynamical-catalog',
             'icechunk',
+            'pystac',
+            'eccodes',
+        ],
+        # Downloading forecast runs with `sync-weather-forecasts`
+        # (multimet.weather_fetcher): the dynamical.org catalog (pystac) and
+        # its Icechunk/Zarr stores, plus GRIB2 decoding for ECMWF Open Data.
+        'weather': [
+            'pystac',
+            'icechunk',
+            'eccodes',
         ],
     },
     classifiers=[
