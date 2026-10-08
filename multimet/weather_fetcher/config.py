@@ -178,6 +178,11 @@ STREAM_SUFFIX: Dict[str, str] = {
 
 # (stream id, file name, is precipitation)
 STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
+    ("ecmwf_hres_precip", "ecmwf_hres_precip.bin", True),
+    ("ecmwf_hres_temp", "ecmwf_hres_temp.bin", False),
+    ("ecmwf_hres_mslp", "ecmwf_hres_mslp.bin", False),
+    ("ecmwf_hres_u10", "ecmwf_hres_u10.bin", False),
+    ("ecmwf_hres_v10", "ecmwf_hres_v10.bin", False),
     ("ecmwf_ifs_precip", "ecmwf_ifs_precip.bin", True),
     ("ecmwf_ifs_temp", "ecmwf_ifs_temp.bin", False),
     ("ecmwf_ifs_mslp", "ecmwf_ifs_mslp.bin", False),
@@ -188,8 +193,6 @@ STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
     ("ecmwf_aifs_mslp", "ecmwf_aifs_mslp.bin", False),
     ("ecmwf_aifs_u10", "ecmwf_aifs_u10.bin", False),
     ("ecmwf_aifs_v10", "ecmwf_aifs_v10.bin", False),
-    ("graphcast_precip", "graphcast_precip.bin", True),
-    ("graphcast_temp", "graphcast_temp.bin", False),
     ("noaa_gfs_precip", "noaa_gfs_precip.bin", True),
     ("noaa_gfs_temp", "noaa_gfs_temp.bin", False),
     ("noaa_gfs_mslp", "noaa_gfs_mslp.bin", False),
@@ -205,23 +208,42 @@ STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
     ("noaa_hrrr_mslp", "noaa_hrrr_mslp.bin", False),
     ("noaa_hrrr_u10", "noaa_hrrr_u10.bin", False),
     ("noaa_hrrr_v10", "noaa_hrrr_v10.bin", False),
+    ("nasa_imerg_precip", "nasa_imerg_precip.bin", True),
+    ("noaa_cpc_precip", "noaa_cpc_precip.bin", True),
 )
 
 GLOBAL_VARS: List[str] = [
+    "ecmwf_hres_precip",
+    "ecmwf_hres_temp",
+    "ecmwf_hres_u10",
+    "ecmwf_hres_v10",
     "ecmwf_ifs_precip",
     "ecmwf_ifs_temp",
     "ecmwf_ifs_u10",
     "ecmwf_ifs_v10",
     "ecmwf_aifs_precip",
     "ecmwf_aifs_temp",
-    "graphcast_precip",
-    "graphcast_temp",
     "noaa_gfs_precip",
     "noaa_gfs_temp",
+    "noaa_gefs_precip",
+    "noaa_gefs_temp",
+    "noaa_hrrr_precip",
+    "noaa_hrrr_temp",
+    "nasa_imerg_precip",
+    "noaa_cpc_precip",
 ]
 
-# Default operational models synchronized from dynamical.org
-DEFAULT_SYNC_MODELS: Tuple[str, ...] = ("ecmwf_ifs", "ecmwf_aifs", "noaa_gfs", "noaa_gefs", "noaa_hrrr", "nasa_imerg", "noaa_cpc")
+# Default operational models synchronized by sync_all_models
+DEFAULT_SYNC_MODELS: Tuple[str, ...] = (
+    "ecmwf_hres",
+    "ecmwf_ifs",
+    "ecmwf_aifs",
+    "noaa_gfs",
+    "noaa_gefs",
+    "noaa_hrrr",
+    "nasa_imerg",
+    "noaa_cpc",
+)
 
 
 # Human-readable upstream source per ``DYNAMICAL_MODELS[...]["source"]``.
