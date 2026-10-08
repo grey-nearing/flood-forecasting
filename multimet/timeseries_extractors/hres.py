@@ -102,6 +102,27 @@ def deaccumulate(
   return daily
 
 
+
+def parse_ecmwf_index(idx_text: str, wanted_params: set) -> Dict[str, Tuple[int, int]]:
+    """Parses byte ranges from an ECMWF Open Data .index file text."""
+    byte_ranges = {}
+    for line in idx_text.splitlines():
+        line_s = line.strip()
+        if not line_s:
+            continue
+        entry = json.loads(line_s)
+        param = entry.get("param")
+        if param in wanted_params and entry.get("levtype") == "sfc":
+            offset = int(entry["_offset"])
+            length = int(entry["_length"])
+            byte_ranges[param] = (offset, offset + length)
+    return byte_ranges
+
+def fetch_byte_range(gcs: Any, path: str, start_b: int, end_b: int) -> bytes:
+    """Fetches a byte range from a GCS object."""
+    return gcs.cat_file(path, start=start_b, end=end_b)
+
+
 def decode_grib2_message(
     raw_bytes: bytes,
     expected_shape: tuple[int, int],
