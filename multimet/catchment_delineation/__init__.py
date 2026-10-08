@@ -14,9 +14,15 @@
 
 """Catchment Delineation Package.
 
-Pure DEM flow-direction watershed delineation module supporting high-resolution
-multi-tile D8 flow-direction rasters (HydroSHEDS 90m / MERIT) with seamless
-cross-tile boundary routing.
+Scientific watershed delineation and hydrography package supporting:
+- Multi-DEM 90m D8 flow-direction rasters (HydroSHEDS 90m and MERIT-Hydro 90m
+  up to 90°N) with seamless cross-tile boundary routing.
+- Vector river network querying and pour-point snapping (HydroRIVERS v1.0 and
+  MERIT-Basins).
+- Official unit-catchment ridgeline and exact pour-point delineation
+  (HydroBASINS Level 12 and MERIT-Basins).
+- Hybrid vector-guided + 90m D8 raster delineation.
+- 3-arc-second and global overview elevation sampling.
 """
 
 from multimet.catchment_delineation.config import (
@@ -29,6 +35,14 @@ from multimet.catchment_delineation.config import (
     TILE_CELLS,
     TILE_DEG,
 )
+from multimet.catchment_delineation.datasets import (
+    DEM_ALIASES,
+    DEM_DATASETS,
+    HYDROSHEDS_90M,
+    MERIT_HYDRO_90M,
+    DemDataset,
+    resolve_dem_dataset,
+)
 from multimet.catchment_delineation.delineator import (
     CatchmentAreaMismatchError,
     CatchmentCoverageError,
@@ -37,38 +51,86 @@ from multimet.catchment_delineation.delineator import (
     delineate_coordinates,
     delineate_dem,
 )
+from multimet.catchment_delineation.elevation import (
+    ElevationTiles,
+    GlobalElevationGrid,
+)
 from multimet.catchment_delineation.gcs import (
     download_tile_from_gcs,
     download_tiles_for_bbox,
 )
+from multimet.catchment_delineation.hybrid import delineate_hybrid
+from multimet.catchment_delineation.hydrography import (
+    HydroBasinsLayer,
+    MeritBasinsLayer,
+    ReachSnap,
+    RiverNetwork,
+    RiverSnapError,
+    UnitCatchmentLayer,
+)
+from multimet.catchment_delineation.merit import (
+    MERIT_HYDRO_EE_ASSET,
+    download_merit_d8_tile,
+    fetch_merit_d8_half_tile,
+)
 from multimet.catchment_delineation.tiles import (
+    filename_to_tile_key,
+    is_coord_in_coverage,
     is_tile_available,
+    is_tile_in_coverage,
     latlon_to_tile_key,
     list_available_tiles,
     tile_key_to_filename,
 )
-from multimet.utils.gcs import is_gcs_path
+from multimet.catchment_delineation.vector_delineator import (
+    UnitCatchmentDelineator,
+    VectorCatchment,
+    clip_unit_catchment_to_pour_point,
+)
 
 __all__ = [
+    'DEM_ALIASES',
+    'DEM_DATASETS',
     'DEM_MAX_LAT',
     'DEM_MAX_LON',
     'DEM_MIN_LAT',
     'DEM_MIN_LON',
+    'HYDROSHEDS_90M',
     'INFLOW_MAP',
+    'MERIT_HYDRO_90M',
+    'MERIT_HYDRO_EE_ASSET',
     'RES_DEG',
     'TILE_CELLS',
     'TILE_DEG',
     'CatchmentAreaMismatchError',
     'CatchmentCoverageError',
+    'DemDataset',
     'DemDelineator',
+    'ElevationTiles',
+    'GlobalElevationGrid',
+    'HydroBasinsLayer',
+    'MeritBasinsLayer',
+    'ReachSnap',
+    'RiverNetwork',
+    'RiverSnapError',
+    'UnitCatchmentDelineator',
+    'UnitCatchmentLayer',
+    'VectorCatchment',
+    'clip_unit_catchment_to_pour_point',
     'delineate_catchment',
     'delineate_coordinates',
     'delineate_dem',
+    'delineate_hybrid',
+    'download_merit_d8_tile',
     'download_tile_from_gcs',
     'download_tiles_for_bbox',
-    'is_gcs_path',
+    'fetch_merit_d8_half_tile',
+    'filename_to_tile_key',
+    'is_coord_in_coverage',
     'is_tile_available',
+    'is_tile_in_coverage',
     'latlon_to_tile_key',
     'list_available_tiles',
+    'resolve_dem_dataset',
     'tile_key_to_filename',
 ]
