@@ -168,12 +168,31 @@ class BaseTrainer(object):
             # if it was no list, it has to be a dictionary
             for module_group, module_parts in self.cfg.finetune_modules.items():
                 if module_group in self.model.module_parts:
-                    if isinstance(module_parts, str):
-                        module_parts = [module_parts]
-                    for module_part in module_parts:
-                        module = getattr(self.model, module_group)[module_part]
-                        for param in module.parameters():
-                            param.requires_grad = True
+                    group_obj = getattr(self.model, module_group)
+                    if (
+                        module_parts is None
+                        or isinstance(module_parts, bool)
+                        or not isinstance(group_obj, torch.nn.ModuleDict)
+                    ):
+                        if module_parts is not False:
+                            for param in group_obj.parameters():
+                                param.requires_grad = True
+                    else:
+                        parts_list = (
+                            [module_parts]
+                            if isinstance(module_parts, str)
+                            else module_parts
+                        )
+                        for module_part in parts_list:
+                            if module_part not in group_obj:
+                                raise KeyError(
+                                    f"Submodule '{module_part}' not found in "
+                                    f"'{module_group}'. Available keys: "
+                                    f'{list(group_obj.keys())}'
+                                )
+                            module = group_obj[module_part]
+                            for param in module.parameters():
+                                param.requires_grad = True
                 else:
                     unresolved_modules.append(module_group)
         if unresolved_modules:
@@ -401,7 +420,12 @@ class BaseTrainer(object):
 
     def _load_model_weights(self, checkpoint_path: Path | str) -> None:
         """Loads model state_dict while handling torch.compile prefixes."""
-        load_model_weights(self.model, checkpoint_path, self.device)
+        load_model_weights(
+            self.model,
+            checkpoint_path,
+            self.device,
+            allow_new_embeddings=self.cfg.is_finetuning,
+        )
 
     def _save_weights_and_optimizer(self, epoch: int):
         weight_path = self.cfg.run_dir / f'model_epoch{epoch:03d}.pt'

@@ -109,11 +109,11 @@ class Scaler:
         # Load or calculate scaling parameters.
         self.scaler = None
         self.scaler_dir = scaler_dir
+        self._custom_normalization = custom_normalization
         if not calculate_scaler:
             self.load()
             self.check_zero_scale()
         else:
-            self._custom_normalization = custom_normalization
             if dataset is not None:
                 self.calculate(dataset)
 

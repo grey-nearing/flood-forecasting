@@ -75,6 +75,14 @@ finetune_modules:
 # general knowledge they learned from the large base dataset.
 #
 # Input Embeddings: These layers learned how to interpret raw weather data.
+# When adding new local meteorological input products (QPE/QPF), you can use
+# a dictionary to unfreeze only specific product embeddings alongside the
+# static embedding and head:
+# finetune_modules:
+#   hindcast_embeddings_fc: [daymet]
+#   forecast_embeddings_fc: [gefs_reforecast]
+#   static_embedding_fc: true
+#   head: true
 #- hindcast_embeddings_fc
 #- forecast_embeddings_fc
 #- shared_embeddings_fc

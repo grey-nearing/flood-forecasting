@@ -32,7 +32,7 @@ def validate_samples(
     dataset: xr.Dataset,
     sample_dates: pd.DatetimeIndex,
     nan_handling_method: str | None,
-    feature_groups: list[list[str]],
+    feature_groups: list[list[str]] | list[list[list[str]]],
     lead_time: int = 0,
     seq_length: int | None = None,
     predict_last_n: int | None = None,
@@ -43,7 +43,7 @@ def validate_samples(
     target_features: list[str] | None = None,
     static_features: list[str] | None = None,
     allzero_samples_are_invalid: bool = False,
-) -> xr.DataArray:
+) -> tuple[xr.DataArray, list[xr.DataArray]]:
     """Validates samples based on the NaN-handling method.
 
     Parameters
@@ -56,8 +56,10 @@ def validate_samples(
         Sample dates.
     nan_handling_method : str | None
         Name of the NaN-handling method. This can be None, but we require that to be passed explicitly.
-    feature_groups : list[list[str]]
-        A list of feature groups where each group is a list of features. Used in certain types of NaN-handling.
+    feature_groups : list[list[str]] | list[list[list[str]]]
+        A list of feature groups where each group is a list of features, or a
+        two-element ``[hindcast_groups, forecast_groups]`` list of group lists.
+        Used in group-aware NaN-handling methods such as ``masked_mean``.
     lead_time : int
         Sequence length for validating a look-ahead sequence of target variables. Defaults to nowcasts.
     seq_length : int | None
@@ -84,8 +86,9 @@ def validate_samples(
 
     Returns
     -------
-    xarray.DataArray
-        Contains the indexes of all valid samples as tuples (basin, date).
+    tuple[xarray.DataArray, list[xarray.DataArray]]
+        Boolean valid sample mask over ``(basin, date)`` and the list of
+        individual component masks.
 
     Raises
     -------
@@ -117,6 +120,36 @@ def validate_samples(
             )
         )
 
+    is_split_groups = (
+        isinstance(feature_groups, list)
+        and bool(feature_groups)
+        and all(
+            isinstance(sub, list) and (not sub or isinstance(sub[0], list))
+            for sub in feature_groups
+        )
+    )
+    if is_split_groups:
+        hindcast_groups, forecast_groups = feature_groups
+    else:
+        hindcast_groups = (
+            [
+                g
+                for g in (feature_groups or [])
+                if hindcast_features and set(g) <= set(hindcast_features)
+            ]
+            if feature_groups
+            else None
+        ) or ([hindcast_features] if hindcast_features else [])
+        forecast_groups = (
+            [
+                g
+                for g in (feature_groups or [])
+                if forecast_features and set(g) <= set(forecast_features)
+            ]
+            if feature_groups
+            else None
+        ) or ([forecast_features] if forecast_features else [])
+
     # Hindcasts must pass a check that depends on the NaN-handling.
     if hindcast_features:
         LOGGER.debug('hindcast features')
@@ -128,7 +161,7 @@ def validate_samples(
         mask = validate_samples_for_nan_handling(
             dataset=dataset[hindcast_features],
             nan_handling_method=nan_handling_method,
-            feature_groups=[hindcast_features],
+            feature_groups=hindcast_groups,
         )
 
         masks.append(
@@ -146,7 +179,7 @@ def validate_samples(
             validate_samples_for_nan_handling(
                 dataset=dataset[forecast_features],
                 nan_handling_method=nan_handling_method,
-                feature_groups=[forecast_features],
+                feature_groups=forecast_groups,
             ).rename('forecasts')
         )
 
@@ -163,7 +196,7 @@ def validate_samples(
                 .squeeze()
                 .drop_vars('lead_time'),
                 nan_handling_method=nan_handling_method,
-                feature_groups=[forecast_features],
+                feature_groups=forecast_groups,
             )
 
             masks.append(

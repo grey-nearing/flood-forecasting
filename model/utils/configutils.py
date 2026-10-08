@@ -19,13 +19,21 @@ import more_itertools
 
 # Canonical aliases for multimet products with compound or inconsistent names.
 PRODUCT_ALIASES: dict[str, str] = {
+    'aorc': 'AORC',
     'chirps': 'CHIRPS',
     'chirpsgefs': 'CHIRPS_GEFS',
     'cpc': 'CPC',
+    'daymet': 'DAYMET',
     'era5land': 'ERA5_LAND',
+    'era5landfc': 'ERA5_LAND_FC',
+    'gefsreforecast': 'GEFS_REFORECAST',
     'graphcast': 'GRAPHCAST',
     'hres': 'HRES',
     'imerg': 'IMERG',
+    'localgauges': 'LOCAL_GAUGES',
+    'maurer': 'MAURER',
+    'nldas': 'NLDAS',
+    'stage4': 'STAGE4',
 }
 
 
