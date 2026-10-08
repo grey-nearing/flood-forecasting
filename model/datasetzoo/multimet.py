@@ -51,6 +51,7 @@ from model.utils.configutils import (
 )
 from model.utils.errors import NoEvaluationDataError, NoTrainDataError
 from model.utils.tqdm import AutoRefreshTqdm as tqdm
+from utils.file_paths import TIMESERIES_ZARR_NAME
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1024,18 +1025,18 @@ def _find_single_dynamics_zarr_path(dynamics_path: Path | str) -> Path | None:
         return p
     if not p.exists():
         raise FileNotFoundError(f'Dynamics data path not found: {p}')
-    if (p / 'timeseries.zarr').exists():
-        return p / 'timeseries.zarr'
+    if (p / TIMESERIES_ZARR_NAME).exists():
+        return p / TIMESERIES_ZARR_NAME
     return None
 
 
 def _find_product_zarr_path(dynamics_path: Path | str, product: str) -> Path:
     path_str = str(dynamics_path)
     if path_str.startswith('gs://') or path_str.startswith('gs:/'):
-        return Path(f"{path_str.rstrip('/')}/{product}/timeseries.zarr")
+        return Path(f"{path_str.rstrip('/')}/{product}/{TIMESERIES_ZARR_NAME}")
 
     p = Path(dynamics_path)
-    candidate = p / product / 'timeseries.zarr'
+    candidate = p / product / TIMESERIES_ZARR_NAME
     if candidate.exists():
         return candidate
     raise FileNotFoundError(

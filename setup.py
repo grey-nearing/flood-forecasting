@@ -44,6 +44,7 @@ setup(
         'multimet.gridded_archive_builders',
         'multimet.timeseries_extractors',
         'return_periods',
+        'utils',
         'benchmarks',
         'benchmarks.tools',
     ],
