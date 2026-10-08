@@ -32,6 +32,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="google.auth.*")
 import pandas as pd
 from tqdm.auto import tqdm
 
+from multimet.static_extractor.config import CARAVAN_CLIMATE_INDICES
 from multimet.static_extractor.extractor import StaticAttributesExtractor
 
 logger = logging.getLogger("static_extractor.batch_runner")
@@ -64,27 +65,6 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 SUPPORTED_EXTENSIONS = [".shp", ".geojson", ".gpkg", ".json", ".parquet", ".geoparquet"]
-
-CARAVAN_CLIMATE_INDICES = {
-    "p_mean",
-    "pet_mean",
-    "aridity",
-    "frac_snow",
-    "moisture_index",
-    "seasonality",
-    "high_prec_freq",
-    "high_prec_dur",
-    "low_prec_freq",
-    "low_prec_dur",
-    "aridity_ERA5_LAND",
-    "aridity_FAO_PM",
-    "pet_mean_ERA5_LAND",
-    "pet_mean_FAO_PM",
-    "moisture_index_ERA5_LAND",
-    "moisture_index_FAO_PM",
-    "seasonality_ERA5_LAND",
-    "seasonality_FAO_PM",
-}
 
 
 def export_subdataset_partitioned_files(
