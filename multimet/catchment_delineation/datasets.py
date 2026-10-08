@@ -21,7 +21,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class DemDataset:
-    """Scientific metadata and geographic coverage bounds for a D8 DEM dataset."""
+    """Scientific metadata and geographic coverage bounds for a D8 DEM 
+        dataset."""
 
     id: str
     name: str
@@ -78,7 +79,8 @@ DEM_ALIASES: dict[str, str] = {
 
 
 def resolve_dem_dataset(alias: str | DemDataset) -> DemDataset:
-    """Resolve a DEM dataset descriptor or string alias without default fallbacks."""
+    """Resolve a DEM dataset descriptor or string alias without default 
+        fallbacks."""
     if isinstance(alias, DemDataset):
         return alias
     if not isinstance(alias, str) or not alias.strip():

@@ -574,8 +574,10 @@ def test_area_hint_skips_candidates_exceeding_max_cells_without_try_except(
 
 
 @pytest.mark.unit
-def test_dem_datasets_and_merit_high_latitude_delineation(tmp_path: Path) -> None:
-    """MERIT-Hydro supports 60°N–90°N while HydroSHEDS raises CatchmentCoverageError."""
+def test_dem_datasets_and_merit_high_latitude_delineation(
+    tmp_path: Path,
+) -> None:
+    """MERIT-Hydro supports 60°N–90°N while HydroSHEDS raises\nCatchmentCoverageError."""
     from multimet.catchment_delineation import (
         HYDROSHEDS_90M,
         MERIT_HYDRO_90M,
@@ -596,7 +598,7 @@ def test_dem_datasets_and_merit_high_latitude_delineation(tmp_path: Path) -> Non
     assert not is_tile_in_coverage(65, -150, dataset=HYDROSHEDS_90M)
     assert is_tile_in_coverage(65, -150, dataset=MERIT_HYDRO_90M)
 
-    # Write a synthetic high-latitude tile n65w150.npy (covering 60..65°N, -150..-145°E)
+    # Write a synthetic high-latitude tile n65w150.npy\n    # (covering 60..65°N, -150..-145°E)
     tile_arr = np.zeros((TILE_CELLS, TILE_CELLS), dtype=np.uint8)
     for r in range(200, 215):
         tile_arr[r, 300] = _SOUTH_D8
@@ -621,17 +623,20 @@ def test_dem_datasets_and_merit_high_latitude_delineation(tmp_path: Path) -> Non
     assert props['dem_id'] == 'merit_hydro_90m'
     assert props['dem_name'] == 'MERIT-Hydro 90m DEM (3 arc-sec)'
     assert props['grid_resolution'] == '90m (3 arc-second)'
-    assert (
-        props['delineation_method']
-        == 'DEM Digital Elevation Flow-Routing (90m MERIT-Hydro Multi-Tile Seamless Grid)'
+    assert props['delineation_method'] == (
+        'DEM Digital Elevation Flow-Routing (90m MERIT-Hydro Multi-Tile '
+        'Seamless Grid)'
     )
     assert props['upstream_cells_count'] >= 10
 
 
 @pytest.mark.unit
 def test_elevation_tiles_and_global_grid(tmp_path: Path) -> None:
-    """ElevationTiles and GlobalElevationGrid sample elevation and convert nodata to NaN."""
-    from multimet.catchment_delineation import ElevationTiles, GlobalElevationGrid
+    """ElevationTiles and GlobalElevationGrid sample elevation and convert\nnodata to NaN."""
+    from multimet.catchment_delineation import (
+        ElevationTiles,
+        GlobalElevationGrid,
+    )
 
     elv_dir = tmp_path / 'elv_tiles'
     elv_dir.mkdir()
@@ -659,8 +664,10 @@ def test_elevation_tiles_and_global_grid(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_backend_hydrography_vector_and_hybrid_delineation(tmp_path: Path) -> None:
-    """RiverNetwork, UnitCatchmentDelineator, and delineate_hybrid operate with explicit paths."""
+def test_backend_hydrography_vector_and_hybrid_delineation(
+    tmp_path: Path,
+) -> None:
+    """RiverNetwork, UnitCatchmentDelineator, and delineate_hybrid operate\nwith explicit paths."""
     from shapely.geometry import LineString, box
     from multimet.catchment_delineation import (
         HydroBasinsLayer,
@@ -730,19 +737,23 @@ def test_backend_hydrography_vector_and_hybrid_delineation(tmp_path: Path) -> No
     reaches = network.query_reaches(
         (-88.80, 39.65, -88.75, 39.71), min_stream_order=1
     )
-    assert len(reaches) == 2
+    _MAGIC_2 = 2
+    assert len(reaches) == _MAGIC_2
 
     snap = network.snap_to_reach(39.67, -88.78)
-    assert snap.reach.reach_id == 102
+    _MAGIC_102 = 102
+    assert snap.reach.reach_id == _MAGIC_102
 
     unit_layer = HydroBasinsLayer(basins_dir)
     vec_delin = UnitCatchmentDelineator(unit_layer)
     vec_res = vec_delin.delineate_exact_pour_point(
         1002, snap.lat, snap.lon, snap.reach.geometry
     )
-    assert vec_res.outlet_unit_id == 1002
-    assert len(vec_res.unit_ids) == 2
-    assert vec_res.area_km2 > 0
+    _MAGIC_1002 = 1002
+    assert vec_res.outlet_unit_id == _MAGIC_1002
+    assert set(vec_res.unit_ids) == {1001, 1002}
+    assert vec_res.area_km2 == pytest.approx(5.7, rel=1e-3)
+    assert vec_res.geometry.bounds == (-88.79, 39.67, -88.77, 39.7)
 
     dem_delin = DemDelineator(tiles_dir=dem_dir)
     hyb_feat = delineate_hybrid(
@@ -751,8 +762,15 @@ def test_backend_hydrography_vector_and_hybrid_delineation(tmp_path: Path) -> No
         39.6828,
         -88.7729,
     )
+    from shapely.geometry import shape
+
     assert hyb_feat['type'] == 'Feature'
-    assert hyb_feat['properties']['area_km2'] > 0
+    assert hyb_feat['properties']['area_km2'] == pytest.approx(0.0329, abs=1e-4)
+    bounds = shape(hyb_feat['geometry']).bounds
+    assert bounds[0] == pytest.approx(-88.77333333333333, abs=1e-5)
+    assert bounds[1] == pytest.approx(39.681666666666665, abs=1e-5)
+    assert bounds[2] == pytest.approx(-88.77166666666666, abs=1e-5)
+    assert bounds[3] == pytest.approx(39.68416666666667, abs=1e-5)
 
 
 @pytest.mark.unit
@@ -763,19 +781,35 @@ def test_merit_d8_tile_download_with_custom_fetcher(
     import multimet.catchment_delineation.merit as merit_mod
     from multimet.catchment_delineation import download_merit_d8_tile
 
-    def fake_half_tile(
-        lat_top: float,
-        lon_left: float,
-        *,
-        ee_project: str,
-        credentials: object = None,
-        retries: int = 3,
-    ) -> np.ndarray:
-        assert ee_project == 'test-ee-proj'
-        val = 1 if lat_top == 45.0 else 4
-        return np.full((3000, 6000), val, dtype=np.uint8)
+    import io
+    import urllib.request
+    from unittest.mock import MagicMock
 
-    monkeypatch.setattr(merit_mod, 'fetch_merit_d8_half_tile', fake_half_tile)
+    def mock_urlopen(
+        req: urllib.request.Request, timeout: float | None = None
+    ) -> MagicMock:
+        import json
+
+        data = json.loads(req.data.decode('utf-8'))
+        lat = data['grid']['affineTransform']['translateY']
+        _MAGIC_45 = 45.0
+        _MAGIC_4 = 4
+        val = 1 if lat == _MAGIC_45 else _MAGIC_4
+        arr = np.full((3000, 6000), val, dtype=np.uint8)
+
+        f = io.BytesIO()
+        np.savez(f, dir=arr)
+        f.seek(0)
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = f.read()
+        mock_resp.__enter__.return_value = mock_resp
+        return mock_resp
+
+    monkeypatch.setattr('urllib.request.urlopen', mock_urlopen)
+    monkeypatch.setattr(
+        merit_mod, '_get_access_token', lambda **kwargs: 'fake_token'
+    )
 
     out_path = download_merit_d8_tile(
         45, -90, tmp_path, ee_project='test-ee-proj'
@@ -784,5 +818,83 @@ def test_merit_d8_tile_download_with_custom_fetcher(
     loaded = np.load(out_path)
     assert loaded.shape == (6000, 6000)
     assert int(loaded[0, 0]) == 1
-    assert int(loaded[3000, 0]) == 4
+    _MAGIC_4 = 4
+    assert int(loaded[3000, 0]) == _MAGIC_4
 
+
+@pytest.mark.unit
+def test_elevation_registration_consistency(tmp_path: Path) -> None:
+    """ElevationTiles and GlobalElevationGrid must map (lat, lon) to the same\ncell index."""
+    from multimet.catchment_delineation import (
+        ElevationTiles,
+        GlobalElevationGrid,
+    )
+
+    elv_dir = tmp_path / 'elv_tiles'
+    elv_dir.mkdir()
+    tile_arr = np.random.randint(100, 200, (6000, 6000)).astype(np.int16)
+    np.save(elv_dir / 'n40w090.npy', tile_arr)
+
+    global_npy = tmp_path / 'global.npy'
+    res_deg = 5.0 / 6000.0
+    np.save(global_npy, tile_arr.astype(np.float32))
+
+    tiles = ElevationTiles(elv_dir)
+    grid = GlobalElevationGrid(
+        global_npy,
+        res_deg=res_deg,
+        top_lat=40.0,
+        bottom_lat=35.0,
+        left_lon=-90.0,
+        right_lon=-85.0,
+    )
+
+    lats = np.array([39.999, 39.5, 38.001, 35.001])
+    lons = np.array([-89.999, -89.5, -86.001, -85.001])
+
+    tile_samp = tiles.sample(lats, lons)
+    grid_samp = grid.sample(lats, lons)
+
+    np.testing.assert_allclose(tile_samp, grid_samp, equal_nan=True)
+
+
+@pytest.mark.unit
+def test_antimeridian_query_reaches(tmp_path: Path) -> None:
+    """query_reaches must split bboxes crossing the 180 antimeridian."""
+    from multimet.catchment_delineation import RiverNetwork
+    from shapely.geometry import LineString
+    import geopandas as gpd
+
+    rivers_dir = tmp_path / 'rivers_anti'
+    rivers_dir.mkdir()
+    rivers_shp = rivers_dir / 'HydroRIVERS_v10_na.shp'
+    rivers_gdf = gpd.GeoDataFrame(
+        {
+            'HYRIV_ID': [1, 2],
+            'NEXT_DOWN': [0, 0],
+            'MAIN_RIV': [1, 2],
+            'LENGTH_KM': [1.0, 1.0],
+            'DIST_DN_KM': [0.0, 0.0],
+            'DIST_UP_KM': [1.0, 1.0],
+            'CATCH_SKM': [1.0, 1.0],
+            'UPLAND_SKM': [1.0, 1.0],
+            'DIS_AV_CMS': [1.0, 1.0],
+            'ORD_STRA': [1, 1],
+            'ORD_CLAS': [1, 1],
+            'ORD_FLOW': [1, 1],
+            'HYBAS_L12': [1, 2],
+        },
+        geometry=[
+            LineString([(179.9, 0.0), (179.95, 0.0)]),
+            LineString([(-179.9, 0.0), (-179.95, 0.0)]),
+        ],
+        crs='EPSG:4326',
+    )
+    rivers_gdf.to_file(rivers_shp)
+
+    network = RiverNetwork.from_hydrorivers(rivers_shp)
+    reaches = network.query_reaches((179.8, -1.0, -179.8, 1.0))
+    _MAGIC_2 = 2
+    assert len(reaches) == _MAGIC_2
+    ids = {r.reach_id for r in reaches}
+    assert ids == {1, 2}
