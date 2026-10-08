@@ -75,58 +75,27 @@ class TestMaaSDataFetcher:
         )
         fetcher = MaaSDataFetcher(config)
 
-        mock_glofas = {
-            'model': 'copernicus_glofas',
-            'available': True,
-            'status': 'live',
-            'data': [
-                {
-                    'time': '2026-04-01',
-                    'discharge_median': 2200.0,
-                    'discharge_mean': 2200.0,
-                    'discharge_min': 1800.0,
-                    'discharge_p25': 2000.0,
-                    'discharge_p75': 2500.0,
-                    'discharge_max': 2900.0,
-                },
-                {
-                    'time': '2026-04-02',
-                    'discharge_median': 2600.0,
-                    'discharge_mean': 2600.0,
-                    'discharge_min': 2100.0,
-                    'discharge_p25': 2350.0,
-                    'discharge_p75': 2900.0,
-                    'discharge_max': 3400.0,
-                },
-            ],
+        glofas_fc_payload = {
+            'daily': {
+                'time': ['2026-04-01', '2026-04-02'],
+                'river_discharge_median': [2200.0, 2600.0],
+                'river_discharge_mean': [2200.0, 2600.0],
+                'river_discharge_min': [1800.0, 2100.0],
+                'river_discharge_p25': [2000.0, 2350.0],
+                'river_discharge_p75': [2500.0, 2900.0],
+                'river_discharge_max': [2900.0, 3400.0],
+            }
         }
-        mock_geoglows = {
-            'model': 'geoglows',
-            'available': True,
-            'status': 'live',
-            'river_id': 720010511,
-            'data': [
-                {
-                    'time': '2026-04-01T00:00:00Z',
-                    'flow_med': 2100.0,
-                    'flow_avg': 2100.0,
-                    'flow_min': 1750.0,
-                    'flow_25p': 1950.0,
-                    'flow_75p': 2400.0,
-                    'flow_max': 2750.0,
-                },
-                {
-                    'time': '2026-04-02T00:00:00Z',
-                    'flow_med': 2500.0,
-                    'flow_avg': 2500.0,
-                    'flow_min': 2050.0,
-                    'flow_25p': 2250.0,
-                    'flow_75p': 2800.0,
-                    'flow_max': 3200.0,
-                },
-            ],
+        geoglows_fc_payload = {
+            'datetime': ['2026-04-01T00:00:00Z', '2026-04-02T00:00:00Z'],
+            'flow_med': [2100.0, 2500.0],
+            'flow_avg': [2100.0, 2500.0],
+            'flow_min': [1750.0, 2050.0],
+            'flow_25p': [1950.0, 2250.0],
+            'flow_75p': [2400.0, 2800.0],
+            'flow_max': [2750.0, 3200.0],
         }
-        mock_rp = {
+        cached_rp = {
             'return_period_2': 1800.0,
             'return_period_5': 2400.0,
             'return_period_10': 2900.0,
@@ -137,20 +106,19 @@ class TestMaaSDataFetcher:
             'status': 'live',
         }
 
-        with (
-            mock.patch.object(
-                fetcher.glofas, 'fetch_forecast', return_value=mock_glofas
-            ),
-            mock.patch.object(
-                fetcher.glofas,
-                'fetch_reanalysis_return_periods',
-                return_value=mock_rp,
-            ),
-            mock.patch.object(
-                fetcher.geoglows, 'fetch_forecast', return_value=mock_geoglows
-            ),
-        ):
-            fetcher.flood_cache.put('geoglows_rp_720010511', mock_rp)
+        def fake_session_get(url: str, **kwargs: object) -> mock.MagicMock:
+            resp = mock.MagicMock()
+            resp.status_code = 200
+            resp.raise_for_status.return_value = None
+            if 'forecaststats' in str(url):
+                resp.json.return_value = geoglows_fc_payload
+            else:
+                resp.json.return_value = glofas_fc_payload
+            return resp
+
+        fetcher.flood_cache.put('glofas_rp_38.625_-90.175', cached_rp)
+        fetcher.flood_cache.put('geoglows_rp_720010511', cached_rp)
+        with mock.patch('requests.Session.get', side_effect=fake_session_get):
             bundle = fetcher.fetch_forecasts(
                 38.6270,
                 -90.1994,
@@ -190,18 +158,36 @@ class TestMaaSDataFetcher:
         gauges = fetch_gauges(config, (38.0, -91.0, 39.0, -90.0))
         assert gauges == []
 
-        with mock.patch(
-            'maas.fetcher.GloFASClient.fetch_reanalysis_return_periods',
-            return_value={'return_period_2': 1500.0, 'status': 'live'},
-        ):
+        reanalysis_dates = [
+            f'{yr}-{m:02d}-{d:02d}'
+            for yr in range(2000, 2015)
+            for m in range(1, 12)
+            for d in range(1, 29)
+        ]
+        reanalysis_flows = [
+            1000.0 + (idx % 308) * 2.0 + (idx // 308) * 50.0
+            for idx in range(len(reanalysis_dates))
+        ]
+        mock_rp_resp = mock.MagicMock()
+        mock_rp_resp.status_code = 200
+        mock_rp_resp.raise_for_status.return_value = None
+        mock_rp_resp.json.return_value = {
+            'daily': {
+                'time': reanalysis_dates,
+                'river_discharge': reanalysis_flows,
+            }
+        }
+        with mock.patch('requests.Session.get', return_value=mock_rp_resp):
             rps = fetch_return_periods(
-                config, 'glofas', lat=38.6270, lon=-90.1994
+                config, 'glofas', lat=38.6270, lon=-90.1994, method='gumbel'
             )
             assert rps is not None
-            assert rps['return_period_2'] == pytest.approx(1500.0)
+            assert rps['return_period_2'] > 1000.0
 
-        mock_resp = mock.MagicMock()
-        mock_resp.json.return_value = {
+        mock_hist_resp = mock.MagicMock()
+        mock_hist_resp.status_code = 200
+        mock_hist_resp.raise_for_status.return_value = None
+        mock_hist_resp.json.return_value = {
             'daily': {
                 'time': ['2020-01-01', '2020-01-02'],
                 'river_discharge': [1100.0, 1250.0],
@@ -209,21 +195,30 @@ class TestMaaSDataFetcher:
         }
         with mock.patch(
             'requests.Session.get',
-            return_value=mock_resp,
+            return_value=mock_hist_resp,
         ):
             hist = fetch_historical(
                 config, 'glofas', lat=38.6270, lon=-90.1994
             )
             assert len(hist) == 2
 
+        mock_fc_resp = mock.MagicMock()
+        mock_fc_resp.status_code = 200
+        mock_fc_resp.raise_for_status.return_value = None
+        mock_fc_resp.json.return_value = {
+            'daily': {
+                'time': ['2026-04-01'],
+                'river_discharge_median': [1500.0],
+                'river_discharge_mean': [1500.0],
+                'river_discharge_min': [1200.0],
+                'river_discharge_p25': [1350.0],
+                'river_discharge_p75': [1650.0],
+                'river_discharge_max': [1800.0],
+            }
+        }
         with mock.patch(
-            'maas.fetcher.GloFASClient.fetch_forecast',
-            return_value={
-                'model': 'copernicus_glofas',
-                'available': True,
-                'status': 'live',
-                'data': [],
-            },
+            'requests.Session.get',
+            return_value=mock_fc_resp,
         ):
             fc = fetch_forecasts(
                 config,
@@ -232,3 +227,4 @@ class TestMaaSDataFetcher:
                 requested_models=['glofas'],
             )
             assert fc['models']['glofas']['status'] == 'live'
+

@@ -64,7 +64,7 @@ class TestReturnPeriodIntegration:
         assert set(rp_keys).issubset(rp.keys())
         levels = [rp[key] for key in rp_keys]
         assert all(val is not None and val > 0.0 for val in levels)
-        for earlier, later in zip(levels, levels[1:]):
+        for earlier, later in zip(levels, levels[1:], strict=False):
             assert float(later) >= float(earlier)
         assert rp['years_of_record'] >= 30
         assert 'USGS Bulletin 17C EMA' in str(rp.get('method', ''))
@@ -92,7 +92,7 @@ class TestReturnPeriodIntegration:
         rp_keys = [f'return_period_{t}' for t in CANONICAL_RETURN_PERIODS]
         levels = [rp[key] for key in rp_keys]
         assert all(val is not None and val > 0.0 for val in levels)
-        for earlier, later in zip(levels, levels[1:]):
+        for earlier, later in zip(levels, levels[1:], strict=False):
             assert float(later) >= float(earlier)
         assert rp['years_of_record'] >= 35
         assert len(rp['empirical_sorted_flows']) == rp['years_of_record']
@@ -132,7 +132,7 @@ class TestGumbelAndExceedanceMath:
         rp = compute_gumbel_return_periods(maxima)
         assert rp is not None
         levels = [rp[f'return_period_{t}'] for t in RETURN_PERIOD_YEARS]
-        for earlier, later in zip(levels, levels[1:]):
+        for earlier, later in zip(levels, levels[1:], strict=False):
             assert float(later) > float(earlier)
 
         fit = ev1_fit_line(rp)

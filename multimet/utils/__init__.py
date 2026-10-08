@@ -55,11 +55,12 @@ from multimet.utils.http import (
     query_cmr_granules,
 )
 from multimet.utils.climate import (
-    calculate_fao56_penman_monteith_pet,
     calculate_fao_pm_pet,
     calculate_knoben_moisture_and_seasonality,
     compute_caravan_climate_metrics,
     depth_to_mm,
+    normalize_era5_pet_sign,
+    pressure_to_kpa,
     temp_to_celsius,
 )
 from multimet.utils.spatial import (
@@ -115,7 +116,6 @@ __all__ = [
     "ZonalWeightMatrix",
     "auto_detect_gcp_project",
     "build_gesdisc_daily_url",
-    "calculate_fao56_penman_monteith_pet",
     "calculate_fao_pm_pet",
     "calculate_knoben_moisture_and_seasonality",
     "check_http_url_exists",
@@ -143,10 +143,12 @@ __all__ = [
     "is_remote_target",
     "load_basin_geometries",
     "managed_cache_dir",
+    "normalize_era5_pet_sign",
     "normalize_gcs_path",
     "parse_cf_time_coordinate",
     "parse_imerg_netcdf_to_grid",
     "plan_archive_resume",
+    "pressure_to_kpa",
     "process_cpc_netcdf_to_dataset",
     "query_cmr_granules",
     "read_bytes_from_gcs",

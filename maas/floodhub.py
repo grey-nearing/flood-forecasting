@@ -326,49 +326,48 @@ def load_or_build_floodhub_catalog(
         if not cat_path.exists():
             return None
 
-    try:
-        with np.load(cat_path, allow_pickle=False) as z:
-            gids = z['gauge_id']
-            lats = z['lat'].astype(np.float32)
-            lons = z['lon'].astype(np.float32)
-            hybas = z['hybas_id'].astype(np.int64)
-            has_fc = z['has_forecast'].astype(np.bool_)
-            q_ver = z['quality_verified'].astype(np.bool_)
-            sev_rank = z['severity_rank'].astype(np.int8)
-            area_km2 = (
-                z['upstream_area_km2'].astype(np.float32)
-                if 'upstream_area_km2' in z.files
-                else np.zeros(len(gids), dtype=np.float32)
-            )
-            fetched_at = (
-                int(z['fetched_at'][0])
-                if 'fetched_at' in z.files and len(z['fetched_at']) > 0
-                else 0
-            )
-        active_mask = has_fc
-        hybas_pos_idx = np.flatnonzero(hybas > 0)
-        hybas_order = np.argsort(hybas[hybas_pos_idx])
-        hybas_sorted_idx = hybas_pos_idx[hybas_order]
-        hybas_sorted_ids = hybas[hybas_sorted_idx]
-        cat = {
-            'path': str(cat_path),
-            'gauge_id': gids,
-            'lat': lats,
-            'lon': lons,
-            'hybas_id': hybas,
-            'has_forecast': has_fc,
-            'quality_verified': q_ver,
-            'severity_rank': sev_rank,
-            'upstream_area_km2': area_km2,
-            'active_idx': np.flatnonzero(active_mask),
-            'hybas_sorted_idx': hybas_sorted_idx,
-            'hybas_sorted_ids': hybas_sorted_ids,
-            'fetched_at': fetched_at,
-        }
-        _CATALOG_MEM_CACHE[key_str] = cat
-        return cat
-    except Exception:  # noqa: BLE001
+    if not cat_path.exists() or cat_path.stat().st_size == 0:
         return None
+    with np.load(cat_path, allow_pickle=False) as z:
+        gids = z['gauge_id']
+        lats = z['lat'].astype(np.float32)
+        lons = z['lon'].astype(np.float32)
+        hybas = z['hybas_id'].astype(np.int64)
+        has_fc = z['has_forecast'].astype(np.bool_)
+        q_ver = z['quality_verified'].astype(np.bool_)
+        sev_rank = z['severity_rank'].astype(np.int8)
+        area_km2 = (
+            z['upstream_area_km2'].astype(np.float32)
+            if 'upstream_area_km2' in z.files
+            else np.zeros(len(gids), dtype=np.float32)
+        )
+        fetched_at = (
+            int(z['fetched_at'][0])
+            if 'fetched_at' in z.files and len(z['fetched_at']) > 0
+            else 0
+        )
+    active_mask = has_fc
+    hybas_pos_idx = np.flatnonzero(hybas > 0)
+    hybas_order = np.argsort(hybas[hybas_pos_idx])
+    hybas_sorted_idx = hybas_pos_idx[hybas_order]
+    hybas_sorted_ids = hybas[hybas_sorted_idx]
+    cat = {
+        'path': str(cat_path),
+        'gauge_id': gids,
+        'lat': lats,
+        'lon': lons,
+        'hybas_id': hybas,
+        'has_forecast': has_fc,
+        'quality_verified': q_ver,
+        'severity_rank': sev_rank,
+        'upstream_area_km2': area_km2,
+        'active_idx': np.flatnonzero(active_mask),
+        'hybas_sorted_idx': hybas_sorted_idx,
+        'hybas_sorted_ids': hybas_sorted_ids,
+        'fetched_at': fetched_at,
+    }
+    _CATALOG_MEM_CACHE[key_str] = cat
+    return cat
 
 
 def _download_and_save_global_catalog(
@@ -480,14 +479,14 @@ class FloodHubClient:
         self.session = session if session is not None else requests.Session()
         self.cache_dir = cache_dir
 
-    def search_gauges_bbox(  # noqa: PLR0913, PLR0917
+    def search_gauges_bbox(
         self,
         min_lat: float,
         min_lon: float,
         max_lat: float,
         max_lon: float,
         page_size: int = 100,
-        include_non_verified: bool = True,  # noqa: FBT001, FBT002
+        include_non_verified: bool = True,
     ) -> list[dict[str, Any]]:
         """Query FloodHub gauges and latest flood status inside a bounding box."""
         url = (
@@ -600,7 +599,7 @@ class FloodHubClient:
             'upstream_area_km2': round(area, 1) if area > 0 else None,
         }
 
-    def query_cached_gauges_bbox(  # noqa: PLR0913
+    def query_cached_gauges_bbox(
         self,
         min_lat: float,
         min_lon: float,
@@ -762,7 +761,7 @@ class FloodHubClient:
             round(dist_km, 2),
         )
 
-    def enrich_forecast_status(  # noqa: PLR0913
+    def enrich_forecast_status(
         self,
         gauge_id: str,
         forecast: Mapping[str, Any],
@@ -799,11 +798,7 @@ class FloodHubClient:
             trend = normalize_floodhub_trend(meta.get('forecast_trend'))
             sev_source = 'floodhub_catalog'
         else:
-            status_obj: dict[str, Any] | None = None
-            try:
-                status_obj = self.fetch_flood_status(gauge_id)
-            except requests.RequestException:
-                status_obj = None
+            status_obj = self.fetch_flood_status(gauge_id)
             severity = normalize_floodhub_severity(
                 (status_obj or {}).get('severity')
                 if isinstance(status_obj, Mapping)

@@ -193,7 +193,7 @@ def as_linkno(value: Any) -> int | None:
 def _split_chains(
     down: np.ndarray,
     keep: np.ndarray,
-    include_end: bool,  # noqa: FBT001
+    include_end: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Split the kept part of a river tree into chains running downstream."""
     d = np.where(keep, down, -1)
@@ -245,7 +245,7 @@ def _gather_ranges(starts: np.ndarray, lengths: np.ndarray) -> np.ndarray:
     return shift + np.arange(total, dtype=np.int64)
 
 
-def _pack_level(  # noqa: PLR0913, PLR0917
+def _pack_level(
     xy: np.ndarray,
     line_of_vertex: np.ndarray,
     n_lines: int,
@@ -342,10 +342,7 @@ def load_network_pyramid(
     """Load a cached river network pyramid if `path` exists and matches `signature`."""
     if not path.exists():
         return None
-    try:
-        cache_key = (str(path.resolve()), signature, path.stat().st_mtime_ns)
-    except OSError:
-        return None
+    cache_key = (str(path.resolve()), signature, path.stat().st_mtime_ns)
     cached = _PYRAMID_LOAD_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -729,7 +726,7 @@ def build_floodhub_pyramid(
     }
 
 
-def query_geoglows_reaches(  # noqa: PLR0913, PLR0917
+def query_geoglows_reaches(
     gpkg_path: Path,
     lookup: tuple[np.ndarray, np.ndarray],
     min_lon: float,
@@ -769,7 +766,7 @@ def query_geoglows_reaches(  # noqa: PLR0913, PLR0917
     return feats
 
 
-def extract_level_features(  # noqa: PLR0913
+def extract_level_features(
     level: Mapping[str, np.ndarray],
     min_lon: float,
     min_lat: float,
@@ -908,7 +905,7 @@ def _choose(
     )
 
 
-def _point_to_seg_dist(  # noqa: PLR0913, PLR0917
+def _point_to_seg_dist(
     px: float,
     py: float,
     x1: np.ndarray,
@@ -932,7 +929,7 @@ def _point_to_seg_dist(  # noqa: PLR0913, PLR0917
     return np.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
 
 
-def snap_glofas_cell_from_network(  # noqa: PLR0913, PLR0917
+def snap_glofas_cell_from_network(
     net: Mapping[str, Any] | None,
     lat: float,
     lon: float,
@@ -978,7 +975,7 @@ def snap_glofas_cell_from_network(  # noqa: PLR0913, PLR0917
     }
 
 
-def snap_geoglows_reach_from_network(  # noqa: PLR0913, PLR0917
+def snap_geoglows_reach_from_network(
     net: Mapping[str, Any] | None,
     lat: float,
     lon: float,
@@ -1033,7 +1030,7 @@ def snap_geoglows_reach_from_network(  # noqa: PLR0913, PLR0917
     }
 
 
-def snap_geoglows_reach_from_gpkg(  # noqa: PLR0913, PLR0917
+def snap_geoglows_reach_from_gpkg(
     gpkg_path: Path,
     lookup: tuple[np.ndarray, np.ndarray],
     lat: float,
@@ -1076,7 +1073,7 @@ def snap_geoglows_reach_from_gpkg(  # noqa: PLR0913, PLR0917
     }
 
 
-def resolve_cross_network_click(  # noqa: PLR0913, PLR0917
+def resolve_cross_network_click(
     lat: float,
     lon: float,
     upstream_area_km2: Any,
