@@ -21,7 +21,9 @@ import dask.array
 import pandas as pd
 import xarray as xr
 
-SCALER_FILE_NAME = 'scaler.zarr'
+from utils.file_paths import SCALER_ZARR_NAME
+
+SCALER_FILE_NAME = SCALER_ZARR_NAME
 
 
 def _calc_stats(dataset: xr.Dataset, needed: set[str]):
