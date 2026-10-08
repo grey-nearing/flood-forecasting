@@ -18,8 +18,8 @@ Delegates all backend provider HTTP queries, Zarr extraction, reach snapping,
 and return-period calculations to `maas` (`MaaSConfig`, `MaaSDataFetcher`,
 `maas.floodhub`, `maas.glofas`, `maas.geoglows`, `maas.todays_earth`,
 `maas.networks`, `maas.thresholds`), and all UI presentation, multi-model
-consensus rows, aligned chart timelines, inundation corridors, and watershed
-polygons to `frontend.maas_viewer` (`MaaSViewer`).
+consensus rows, aligned chart timelines, and watershed polygons to
+`frontend.maas_viewer` (`MaaSViewer`).
 """
 
 from __future__ import annotations
@@ -109,9 +109,22 @@ from maas.thresholds import (
 from maas.todays_earth import format_todays_earth_forecast
 
 
+def _load_default_floodhub_key() -> str:
+    env_key = os.environ.get('FLOODHUB_API_KEY', '').strip()
+    if env_key:
+        return env_key
+    key_file = Path.home() / '.config' / 'earthkit' / 'floodhub_api_key'
+    if key_file.is_file():
+        return key_file.read_text(encoding='utf-8').strip()
+    return ''
+
+
+DEFAULT_FLOODHUB_KEY = _load_default_floodhub_key()
+
+
 def get_maas_config() -> MaaSConfig:
     """Build an explicit `MaaSConfig` from `frontend.config` and environment overrides."""
-    fh_key = os.environ.get('FLOODHUB_API_KEY', '').strip()
+    fh_key = os.environ.get('FLOODHUB_API_KEY', DEFAULT_FLOODHUB_KEY).strip()
     te_url = os.environ.get('TODAYS_EARTH_API_URL', '').strip()
     return MaaSConfig(
         river_networks_dir=Path(_DEFAULT_RIVER_DIR),
@@ -163,21 +176,6 @@ def fetch_floodhub_forecast(gauge_id: str) -> dict[str, Any]:
             'data': [],
         }
     return fetcher.floodhub.fetch_forecast(gauge_id)
-
-
-def fetch_floodhub_inundation(
-    gauge_id: str | None = None,
-    lat: float | None = None,
-    lon: float | None = None,
-    include_polygons: bool = True,
-) -> dict[str, Any]:
-    """Fetch FloodHub severity, trend, thresholds, and inundation polygons via `maas`."""
-    return get_maas_fetcher().floodhub.fetch_inundation(
-        gauge_id=gauge_id,
-        lat=lat,
-        lon=lon,
-        include_polygons=include_polygons,
-    )
 
 
 def fetch_glofas_forecast(
@@ -305,23 +303,6 @@ def get_unified_maas_forecast(  # noqa: PLR0913
     )
 
 
-def get_maas_flood_inundation(
-    lat: float,
-    lon: float,
-    gauge_id: str | None = None,
-    reach_id: str | None = None,
-    river_id: Any = None,
-) -> dict[str, Any]:
-    """Render 3-layer spatial flood-inundation GeoJSON FeatureCollection via `MaaSViewer`."""
-    return get_maas_viewer().render_inundation_view(
-        float(lat),
-        float(lon),
-        gauge_id=gauge_id,
-        reach_id=reach_id,
-        river_id=river_id,
-    )
-
-
 def get_maas_watershed_polygon(  # noqa: PLR0913
     lat: float,
     lon: float,
@@ -375,7 +356,6 @@ __all__ = [
     'extract_annual_maxima',
     'fetch_floodhub_forecast',
     'fetch_floodhub_gauges_bbox',
-    'fetch_floodhub_inundation',
     'fetch_forecasts',
     'fetch_gauges',
     'fetch_geoglows_forecast',
@@ -388,7 +368,6 @@ __all__ = [
     'fetch_todays_earth_forecast',
     'get_maas_config',
     'get_maas_fetcher',
-    'get_maas_flood_inundation',
     'get_maas_viewer',
     'get_maas_watershed_polygon',
     'get_unified_maas_forecast',

@@ -4,14 +4,19 @@ Delegates all backend forecast stream loading, grid slicing, wind vector
 extraction, point meteograms, and catchment weather summaries to
 `multimet.weather_fetcher`, and all Web Mercator tile rendering, indexed PNG
 animation frame encoding, and colormaps to `frontend.weather_viewer`.
+
+The loaded forecast run is an immutable `_LoadedRun`. `reload_if_changed()`
+builds the new run first and then swaps it in atomically, so HTTP handler
+threads that started on the previous run keep a consistent set of arrays and
+metadata until they finish; the previous run's memory maps are closed once no
+request references them any more.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
-import json
 import logging
-import mmap
 import os
 from pathlib import Path
 import sys
@@ -24,146 +29,181 @@ _ws_root = str(Path(__file__).resolve().parents[1])
 if _ws_root not in sys.path:
   sys.path.insert(0, _ws_root)
 
-from frontend.weather_viewer.colormaps import (
-    classify_values as _classify,
-    colorize_indexed as _colorize_indexed,
-    colorize_rgba as _colorize,
-    encode_indexed_png as _encode_indexed_png,
-    encode_rgba_png as _encode_rgba_png,
-    make_png_bytes,
-    PRESSURE_LEVELS as _PRESSURE_LEVELS,
-    RAIN_ACCUM_CLASSES,
-    RAIN_RATE_CLASSES,
-    SUPPORTED_VARIABLES,
-    TEMP_LEVELS as _TEMP_LEVELS,
+from frontend.weather_sync import (
+    CHECK_INTERVAL_MINUTES,
+    weather_data_root as _weather_data_root,
 )
 from frontend.weather_viewer.tiles import (
     clear_frame_cache as _clear_frame_cache,
     compute_frame_index,
-    empty_frame as _empty_frame,
-    evaluate_tile_field,
-    frame_coordinates as _frame_coordinates,
     FRAME_SIZE,
-    FRAME_VARIABLES,
     FRAME_VERSION,
-    MERCATOR_MAX_LAT,
     render_raster_tile,
     render_weather_frame,
-    tile_coordinates as _tile_coordinates,
     TILE_VERSION,
-    transparent_tile as _transparent_tile,
 )
 from frontend.weather_viewer.wind import extract_wind_vectors
-from multimet.weather_fetcher.cli import resolve_default_weather_data_dir
 from multimet.weather_fetcher.config import (
-    DEFAULT_MSLP_OFFSET_HPA,
-    GRID_DEG,
-    MAX_LEAD_HOURS,
     N_LAT,
     N_LON,
-    NUM_STEPS,
-    RUN_DATASET_TO_MODEL as _RUN_DATASET_TO_MODEL,
-    run_lead_hours as _run_lead_hours,
     RUN_METADATA_FILE,
-    STEP_HOURS,
-    STREAM_FILES as _STREAM_FILES,
-    STREAM_SUFFIX as _STREAM_SUFFIX,
     SUPPORTED_MODELS,
-    SYNC_STATUS_FILE,
+    SUPPORTED_VARIABLES,
 )
 from multimet.weather_fetcher.fetcher import (
     clear_accum_grid_cache as _clear_accum_grid_cache,
-    extract_accumulation_series,
+    close_unreferenced_mmaps as _close_unreferenced_mmaps,
     extract_point_value,
     fetch_catchment_summary,
     fetch_point_timeseries,
     file_step_for_lead as _file_step_for_lead,
-    geometry_points as _geometry_points,
     get_model_data_info_from_streams,
-    grid_indices as _grid_indices,
-    rate_file_steps as _rate_file_steps,
-    round_or_none as _round_or_none,
+    rate_file_steps as _rate_file_steps,  # noqa: F401  (frontend tests)
     scan_streams as _scan_streams,
+    StreamHandle,
 )
-from multimet.weather_fetcher.sync import load_run_metadata as _load_run_metadata
+
+VIEWER_STEP_HOURS = 3
+NUM_HOURS = 81
+
+MODEL_BADGES: Dict[str, str] = {
+    "ecmwf_hres": "HRES",
+    "ecmwf_ifs": "ENS Control",
+    "ecmwf_aifs": "AI 15-Day",
+    "noaa_gfs": "GFS Physics",
+    "noaa_gefs": "GEFS Control",
+    "noaa_hrrr": "3km Physics 48-Hour",
+    "nasa_imerg": "Satellite Obs",
+    "noaa_cpc": "Gauge Obs",
+}
+from multimet.weather_fetcher.sync import read_sync_status as _read_sync_status
+
+__all__ = [
+    "CANDIDATE_DATA_DIRS",
+    "FRAME_SIZE",
+    "N_LAT",
+    "N_LON",
+    "RUN_METADATA_FILE",
+    "SUPPORTED_MODELS",
+    "SUPPORTED_VARIABLES",
+    "generate_raster_tile",
+    "generate_weather_frame",
+    "get_catchment_weather_summary",
+    "get_frame_index",
+    "get_model_data_info",
+    "get_sync_status",
+    "get_weather_models_info",
+    "get_weather_probe",
+    "get_wind_vectors",
+    "init_weather_streams",
+    "reload_if_changed",
+]
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
+# Streams copied next to the frontend (used when no run has been synced).
 DATA_DIR = BASE_DIR / "data" / "forecasts"
 
-
-def _weather_data_root() -> Path:
-  """Local-disk root written by weather_sync.sync_latest."""
-  return resolve_default_weather_data_dir()
-
-
-WEATHER_DATA_ROOT = _weather_data_root()
+# Local-disk root written by frontend.weather_sync (`$EARTHKIT_WEATHER_DATA_DIR`
+# or `~/.cache/earthkit_hydro_web/weather`).
+WEATHER_DATA_ROOT: Path = Path(_weather_data_root())
 LOCAL_CURRENT_DIR = WEATHER_DATA_ROOT / "current"
 
-CANDIDATE_DATA_DIRS = [
-    LOCAL_CURRENT_DIR,
-    DATA_DIR,
-    Path(
-        "/google/src/cloud/gsnearing/develop_alertnexus_web_frontend/google3/"
-        "experimental/users/gsnearing/alertnexus_frontend/data/forecasts"
-    ),
-]
+# Searched in order; the first directory holding `.bin` streams is loaded.
+CANDIDATE_DATA_DIRS: List[Path] = [LOCAL_CURRENT_DIR, DATA_DIR]
 
-MMAP_HANDLES: Dict[str, Tuple[mmap.mmap, int, int, int, bool]] = {}
-STREAM_INFO: Dict[str, Dict[str, Any]] = {}
-_ARRAYS: Dict[str, np.ndarray] = {}
+
+@dataclasses.dataclass(frozen=True)
+class _LoadedRun:
+  """One loaded forecast run. Replaced as a whole on reload, never mutated."""
+
+  handles: Dict[str, StreamHandle]
+  stream_info: Dict[str, Dict[str, Any]]
+  arrays: Dict[str, np.ndarray]
+  signature: Optional[Tuple[str, int]]
+  directory: Optional[Path]
+
+
+_EMPTY_RUN = _LoadedRun({}, {}, {}, None, None)
+_RUN: _LoadedRun = _EMPTY_RUN
+# Aliases of the loaded run's members; rebound together with `_RUN`.
+MMAP_HANDLES: Dict[str, StreamHandle] = _RUN.handles
+STREAM_INFO: Dict[str, Dict[str, Any]] = _RUN.stream_info
+_ARRAYS: Dict[str, np.ndarray] = _RUN.arrays
 _INITIALIZED = False
 _INIT_LOCK = threading.Lock()
-_LOADED_SIGNATURE: Optional[Tuple[str, int]] = None
-_LOADED_DIR: Optional[Path] = None
 
 
 def _find_data_dir() -> Optional[Path]:
   """First candidate directory that holds .bin streams."""
   for c_dir in CANDIDATE_DATA_DIRS:
-    try:
-      if c_dir.exists() and any(c_dir.glob("*.bin")):
-        return c_dir
-    except OSError:
-      continue
+    if c_dir.is_dir() and any(c_dir.glob("*.bin")):
+      return c_dir
   return None
 
 
-def _dir_signature(target_dir: Optional[Path]) -> Optional[Tuple[str, int]]:
-  if target_dir is None:
-    return None
+def _dir_signature(target_dir: Path) -> Tuple[str, int]:
+  """Identity of a run directory: resolved path plus metadata mtime."""
   resolved = target_dir.resolve()
-  try:
-    mtime = (resolved / RUN_METADATA_FILE).stat().st_mtime_ns
-  except OSError:
-    mtime = 0
-  return (str(resolved), mtime)
+  meta = resolved / RUN_METADATA_FILE
+  return (str(resolved), meta.stat().st_mtime_ns if meta.is_file() else 0)
 
 
-def _close_handles() -> None:
-  """Closes open memory-mapped stream handles before reloading."""
-  _ARRAYS.clear()
-  for mm, _, _, _, _ in MMAP_HANDLES.values():
-    if not mm.closed:
-      mm.close()
-  MMAP_HANDLES.clear()
+def _swap_run(new_run: _LoadedRun) -> _LoadedRun:
+  """Installs `new_run` and returns the run it replaced (caller holds lock)."""
+  global _RUN, MMAP_HANDLES, STREAM_INFO, _ARRAYS
+  old = _RUN
+  _RUN = new_run
+  MMAP_HANDLES, STREAM_INFO, _ARRAYS = (
+      new_run.handles,
+      new_run.stream_info,
+      new_run.arrays,
+  )
+  return old
 
 
-def _install_streams(target_dir: Path) -> None:
-  """Swaps in the streams of target_dir via multimet.weather_fetcher (caller holds _INIT_LOCK)."""
-  global MMAP_HANDLES, STREAM_INFO, _ARRAYS, _LOADED_SIGNATURE, _LOADED_DIR
-  _close_handles()
-  handles, infos, arrays = _scan_streams(target_dir)
-  MMAP_HANDLES, STREAM_INFO, _ARRAYS = handles, infos, arrays
-  _LOADED_SIGNATURE = _dir_signature(target_dir)
-  _LOADED_DIR = target_dir.resolve()
+def _retire_run(run: _LoadedRun) -> int:
+  """Drops caches built from a replaced run and closes its idle memory maps.
+
+  `run` must be the only remaining reference to the replaced run (callers pass
+  the result of `_swap_run` directly). Maps that in-flight requests still read
+  are left open and unmapped by the garbage collector when they finish.
+
+  Returns:
+    Number of memory maps closed now.
+  """
+  handles = run.handles
+  del run
   _clear_accum_grid_cache()
   _clear_frame_cache()
-  if infos and os.environ.get("EARTHKIT_WEATHER_WARM_CACHE", "1") == "1":
+  return _close_unreferenced_mmaps(handles)
+
+
+def _install_streams(target_dir: Optional[Path]) -> None:
+  """Loads the streams of `target_dir` (None: no run); caller holds the lock."""
+  if target_dir is None:
+    new_run = _EMPTY_RUN
+  else:
+    handles, infos, arrays = _scan_streams(target_dir)
+    new_run = _LoadedRun(
+        handles=handles,
+        stream_info=infos,
+        arrays=arrays,
+        signature=_dir_signature(target_dir),
+        directory=target_dir.resolve(),
+    )
+    del handles, infos, arrays
+  closed = _retire_run(_swap_run(new_run))
+  if closed:
+    logger.info("[WeatherEngine] Closed %d retired stream maps", closed)
+  if (
+      new_run.stream_info
+      and os.environ.get("EARTHKIT_WEATHER_WARM_CACHE", "1") == "1"
+  ):
     threading.Thread(
         target=_warm_caches,
-        args=([info["file"] for info in infos.values()],),
+        args=(new_run,),
         name="weather-cache-warmup",
         daemon=True,
     ).start()
@@ -178,11 +218,19 @@ def init_weather_streams() -> None:
     if _INITIALIZED:
       return
     target_dir = _find_data_dir()
-    if not target_dir:
-      target_dir = DATA_DIR
-      target_dir.mkdir(parents=True, exist_ok=True)
+    if target_dir is None:
+      logger.info(
+          "[WeatherEngine] No synced forecast streams in %s",
+          [str(d) for d in CANDIDATE_DATA_DIRS],
+      )
     _install_streams(target_dir)
     _INITIALIZED = True
+
+
+def _current_run() -> _LoadedRun:
+  """Returns the loaded run, initialising the engine on first use."""
+  init_weather_streams()
+  return _RUN
 
 
 def reload_if_changed() -> bool:
@@ -191,10 +239,10 @@ def reload_if_changed() -> bool:
     init_weather_streams()
     return True
   target_dir = _find_data_dir()
-  if target_dir is None or _dir_signature(target_dir) == _LOADED_SIGNATURE:
+  if target_dir is None or _dir_signature(target_dir) == _RUN.signature:
     return False
   with _INIT_LOCK:
-    if _dir_signature(target_dir) == _LOADED_SIGNATURE:
+    if _dir_signature(target_dir) == _RUN.signature:
       return False
     logger.info(
         "[WeatherEngine] Loading new forecast run from %s", target_dir.resolve()
@@ -204,33 +252,34 @@ def reload_if_changed() -> bool:
 
 
 def get_sync_status() -> Dict[str, Any]:
-  """Last automatic check for new runs (written by weather_sync), plus what is loaded."""
-  status: Dict[str, Any] = {}
-  try:
-    status = json.loads(
-        (WEATHER_DATA_ROOT / SYNC_STATUS_FILE).read_text(encoding="utf-8")
-    )
-  except (OSError, ValueError):
-    status = {
-        "last_result": "never",
-        "message": "No automatic update has run yet.",
-    }
-  loaded = _LOADED_DIR.resolve() if _LOADED_DIR else None
+  """Last automatic check for new runs (by weather_sync) and what is loaded.
+
+  `sync_status_found` is False when no synchronizer has written
+  `sync_status.json` yet; `last_result` is then "never" and the other status
+  fields are None.
+  """
+  status = _read_sync_status(WEATHER_DATA_ROOT)
+  found = bool(status)
+  loaded = _RUN.directory
   return {
       "last_check_utc": status.get("last_check_utc"),
       "last_success_utc": status.get("last_success_utc"),
-      "last_result": status.get("last_result"),
-      "message": status.get("message"),
-      "check_interval_minutes": status.get("check_interval_minutes", 60),
-      "auto_update": loaded is not None
-      and str(loaded).startswith(str(WEATHER_DATA_ROOT.resolve())),
+      "last_result": status.get("last_result") if found else "never",
+      "message": (
+          status.get("message")
+          if found
+          else "No automatic update has run yet."
+      ),
+      "check_interval_minutes": status.get("check_interval_minutes") or CHECK_INTERVAL_MINUTES,
+      "sync_status_found": found,
+      "auto_update": False,
       "data_dir": str(loaded) if loaded else None,
   }
 
 
-def _warm_caches(paths: Sequence[str]) -> None:
-  _warm_page_cache(paths)
-  _prewarm_frames()
+def _warm_caches(run: _LoadedRun) -> None:
+  _warm_page_cache([info["file"] for info in run.stream_info.values()])
+  _prewarm_frames(run)
 
 
 def _warm_page_cache(paths: Sequence[str]) -> None:
@@ -241,77 +290,109 @@ def _warm_page_cache(paths: Sequence[str]) -> None:
         while f_handle.read(8 << 20):
           pass
     except OSError as e:
-      logger.debug("Page-cache warm-up skipped %s: %s", path, e)
+      logger.warning(
+          "[WeatherEngine] Page-cache warm-up skipped %s: %s", path, e
+      )
 
 
-def get_model_data_info(model_key: str) -> Dict[str, Any]:
-  """Returns metadata and availability status for `model_key` via multimet.weather_fetcher."""
-  init_weather_streams()
-  info = get_model_data_info_from_streams(STREAM_INFO, model_key)
+def _prewarm_frames(run: _LoadedRun) -> None:
+  """Renders the rain frames of every model in `run`, so Play starts fast.
+
+  Stops as soon as `run` is no longer the loaded run.
+  """
+  if os.environ.get("EARTHKIT_WEATHER_PREWARM_FRAMES", "1") != "1":
+    return
+  for model_key in SUPPORTED_MODELS:
+    if f"{model_key}_precip" not in run.stream_info:
+      continue
+    try:
+      index = compute_frame_index(
+          run.stream_info,
+          model_key=model_key,
+          var_key="precipitation",
+          strict=False,
+      )
+      for step in index["frame_steps"]:
+        if _RUN is not run or STREAM_INFO is not run.stream_info:
+          return
+        render_weather_frame(
+            run.arrays,
+            run.stream_info,
+            model_key=model_key,
+            var_key="precipitation",
+            step_idx=step,
+            strict=False,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+      logger.warning(
+          "[WeatherEngine] Frame pre-render failed for %s: %s", model_key, e
+      )
+
+
+def _lead_hours_for_step(step_idx: int) -> int:
+  """Lead hours of a 3-hourly viewer step; ValueError if not a valid step."""
+  if isinstance(step_idx, bool) or int(step_idx) != step_idx or step_idx < 0:
+    raise ValueError(
+        f"step must be a non-negative integer, got {step_idx!r}."
+    )
+  return int(step_idx) * VIEWER_STEP_HOURS
+
+
+def _valid_time_iso(
+    run: _LoadedRun, model_key: str, lead_h: int
+) -> Optional[str]:
+  """Valid time of `lead_h` for the model's loaded run, None if no run."""
+  init_time = get_model_data_info_from_streams(run.stream_info, model_key)[
+      "init_time"
+  ]
+  if not init_time:
+    return None
+  base = datetime.datetime.fromisoformat(init_time.replace("Z", "+00:00"))
+  valid = base + datetime.timedelta(hours=lead_h)
+  return valid.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _model_info(run: _LoadedRun, model_key: str) -> Dict[str, Any]:
+  info = get_model_data_info_from_streams(run.stream_info, model_key)
   return {
-      "data_source": info["data_source"],
-      "init_time": info["init_time"],
-      "max_lead_hours": (
-          info["max_lead_hours"] if info["real_variables"] else MAX_LEAD_HOURS
-      ),
-      "real_variables": info["real_variables"],
-      "missing_variables": info["missing_variables"],
-      "synthetic_variables": info["missing_variables"],
+      **info,
       "tile_version": TILE_VERSION,
-      "downloaded_utc": info["downloaded_utc"],
-      "dataset_title": info["dataset_title"],
       "frame_version": FRAME_VERSION,
   }
 
 
+def get_model_data_info(model_key: str) -> Dict[str, Any]:
+  """Returns metadata and availability status for `model_key`.
+
+  `data_source` is "archived_run" when the model has synced streams and
+  "unavailable" otherwise (then `init_time` is None and `max_lead_hours` 0).
+
+  Raises:
+    ValueError: If `model_key` is not a supported model.
+  """
+  return _model_info(_current_run(), model_key)
+
+
 def get_weather_models_info() -> List[Dict[str, Any]]:
   """SUPPORTED_MODELS entries plus where each model's data comes from."""
-  return [
-      {**info, **get_model_data_info(key)}
-      for key, info in SUPPORTED_MODELS.items()
-  ]
-
-
-def _base_time(model_key: str) -> datetime.datetime:
-  """Time of lead 0: the archived run's init time, else the current hour."""
-  init_time = get_model_data_info(model_key)["init_time"]
-  if init_time:
-    return datetime.datetime.fromisoformat(init_time.replace("Z", "+00:00"))
-  return datetime.datetime.now(datetime.timezone.utc).replace(
-      minute=0, second=0, microsecond=0
-  )
-
-
-def _tile_field(
-    model_key: str,
-    var_key: str,
-    step_idx: int,
-    lats: np.ndarray,
-    lons: np.ndarray,
-) -> Optional[np.ndarray]:
-  """Evaluates physical field values on `(lats, lons)` via frontend.weather_viewer."""
-  init_weather_streams()
-  return evaluate_tile_field(
-      _ARRAYS,
-      STREAM_INFO,
-      model_key=model_key,
-      var_key=var_key,
-      step_idx=step_idx,
-      lats=lats,
-      lons=lons,
-      bilinear=False,
-      strict=False,
-  )
+  reload_if_changed()
+  run = _current_run()
+  models_info = []
+  for key, spec in SUPPORTED_MODELS.items():
+      info = {**spec, **_model_info(run, key)}
+      info["badge"] = MODEL_BADGES.get(key, "")
+      models_info.append(info)
+  return models_info
 
 
 def generate_raster_tile(
     model_key: str, var_key: str, step_idx: int, z: int, x: int, y: int
 ) -> bytes:
-  """Renders a 256x256 Web Mercator PNG tile via frontend.weather_viewer."""
-  init_weather_streams()
+  """Renders a 256x256 Web Mercator PNG tile (transparent when unsynced)."""
+  run = _current_run()
   return render_raster_tile(
-      _ARRAYS,
-      STREAM_INFO,
+      run.arrays,
+      run.stream_info,
       model_key=model_key,
       var_key=var_key,
       step_idx=step_idx,
@@ -324,21 +405,24 @@ def generate_raster_tile(
 
 
 def get_frame_index(model_key: str, var_key: str) -> Dict[str, Any]:
-  """Which frame each 3-hourly viewer step shows, for /api/weather/frames/.../index.json."""
-  init_weather_streams()
+  """Which frame each 3-hourly viewer step shows.
+
+  Serves `/api/weather/frames/{model}/{variable}/index.json`.
+  """
+  run = _current_run()
   return compute_frame_index(
-      STREAM_INFO, model_key=model_key, var_key=var_key, strict=False
+      run.stream_info, model_key=model_key, var_key=var_key, strict=False
   )
 
 
 def generate_weather_frame(
     model_key: str, var_key: str, step_idx: int
 ) -> bytes:
-  """Whole-world PNG frame for one viewer step via frontend.weather_viewer."""
-  init_weather_streams()
+  """Whole-world PNG frame for one viewer step (empty frame when unsynced)."""
+  run = _current_run()
   return render_weather_frame(
-      _ARRAYS,
-      STREAM_INFO,
+      run.arrays,
+      run.stream_info,
       model_key=model_key,
       var_key=var_key,
       step_idx=step_idx,
@@ -346,122 +430,111 @@ def generate_weather_frame(
   )
 
 
-def _prewarm_frames() -> None:
-  """Renders the rain frames of every model with real data, so Play starts fast."""
-  if os.environ.get("EARTHKIT_WEATHER_PREWARM_FRAMES", "1") != "1":
-    return
-  streams = STREAM_INFO
-  for model_key in SUPPORTED_MODELS:
-    info = streams.get(f"{model_key}_precip")
-    if not info or not info["archived_run"]:
-      continue
-    try:
-      for step in get_frame_index(model_key, "precipitation")["frame_steps"]:
-        if STREAM_INFO is not streams:
-          return
-        generate_weather_frame(model_key, "precipitation", step)
-    except Exception as e:  # pylint: disable=broad-except
-      logger.warning(
-          "[WeatherEngine] Frame pre-render failed for %s: %s", model_key, e
-      )
-
-
-def get_wind_vectors(
-    model_key: str = "ecmwf_ifs", step_idx: int = 0, subsample: int = 2
+def _unavailable_wind(
+    run: _LoadedRun, model_key: str, lead_h: int, reason: str
 ) -> Dict[str, Any]:
-  """Returns downsampled global U/V vector matrices via multimet.weather_fetcher."""
-  init_weather_streams()
-  u_stream = f"{model_key}_u10"
-  v_stream = f"{model_key}_v10"
-  if (
-      u_stream in STREAM_INFO
-      and v_stream in STREAM_INFO
-      and u_stream in _ARRAYS
-      and v_stream in _ARRAYS
-  ):
-    lead_h = max(0, int(step_idx)) * STEP_HOURS
-    fu = _file_step_for_lead(STREAM_INFO[u_stream], lead_h, is_rate=False)
-    fv = _file_step_for_lead(STREAM_INFO[v_stream], lead_h, is_rate=False)
-    if fu is not None and fv is not None:
-      return extract_wind_vectors(
-          _ARRAYS,
-          STREAM_INFO,
-          model_key=model_key,
-          step_idx=step_idx,
-          subsample=subsample,
-      )
-
-  subsample = max(1, min(4, int(subsample)))
-  step_idx = max(0, int(step_idx))
-  step_deg = 1.0 * subsample
-  nx = int(360 / step_deg)
-  ny = int(180 / step_deg) + 1
-  lead_h = step_idx * STEP_HOURS
-  valid_dt = _base_time(model_key) + datetime.timedelta(hours=lead_h)
+  """Empty wind payload: no vectors, `nx = ny = 0`, and why."""
   return {
       "header": {
           "model": model_key,
           "step_hours": lead_h,
-          "valid_time": valid_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-          "nx": nx,
-          "ny": ny,
-          "lo1": -180.0,
-          "la1": 90.0,
-          "dx": step_deg,
-          "dy": step_deg,
+          "valid_time": _valid_time_iso(run, model_key, lead_h),
+          "nx": 0,
+          "ny": 0,
+          "lo1": None,
+          "la1": None,
+          "dx": None,
+          "dy": None,
           "data_source": "unavailable",
+          "missing_count": 0,
+          "reason": reason,
       },
-      "u": [0.0] * (nx * ny),
-      "v": [0.0] * (nx * ny),
+      "u": [],
+      "v": [],
   }
+
+
+def get_wind_vectors(
+    model_key: str, step_idx: int = 0, subsample: int = 2
+) -> Dict[str, Any]:
+  """Returns downsampled global 10 m U/V wind matrices for the streamline layer.
+
+  When the model has no synced wind streams, or did not store the requested
+  lead, the payload carries no vectors (`u` and `v` are empty, `nx` and `ny`
+  are 0, `header.data_source` is "unavailable" and `header.reason` says why)
+  so the viewer stops drawing particles for that step. Masked cells of a real
+  grid are None.
+
+  Raises:
+    ValueError: If `model_key`, `step_idx`, or `subsample` is invalid.
+  """
+  run = _current_run()
+  if model_key not in SUPPORTED_MODELS:
+    raise ValueError(f"Unknown weather model '{model_key}'")
+  lead_h = _lead_hours_for_step(step_idx)
+  u_stream = f"{model_key}_u10"
+  v_stream = f"{model_key}_v10"
+  if u_stream not in run.arrays or v_stream not in run.arrays:
+    return _unavailable_wind(
+        run, model_key, lead_h, f"No synced wind streams for '{model_key}'."
+    )
+  fu = _file_step_for_lead(run.stream_info[u_stream], lead_h, is_rate=False)
+  fv = _file_step_for_lead(run.stream_info[v_stream], lead_h, is_rate=False)
+  if fu is None or fv is None:
+    return _unavailable_wind(
+        run,
+        model_key,
+        lead_h,
+        f"'{model_key}' did not store wind at lead {lead_h} h (stored leads:"
+        f" {run.stream_info[u_stream]['lead_hours']}).",
+    )
+  return extract_wind_vectors(
+      run.arrays,
+      run.stream_info,
+      model_key=model_key,
+      step_idx=step_idx,
+      subsample=subsample,
+  )
 
 
 def _point_value(
     model_key: str, var_key: str, lead_h: float, lat: float, lon: float
 ) -> Optional[float]:
-  """Extracts one scalar value at `(lat, lon)` from synced streams, or None."""
-  init_weather_streams()
-  suffix = _STREAM_SUFFIX.get(var_key)
-  if var_key == "wind_u":
-    suffix = "u10"
-  elif var_key == "wind_v":
-    suffix = "v10"
-  stream_id = f"{model_key}_{suffix}" if suffix else None
-  if stream_id and stream_id in STREAM_INFO and stream_id in _ARRAYS:
-    return extract_point_value(
-        _ARRAYS, STREAM_INFO, model_key, var_key, lead_h, lat, lon
-    )
-  return None
+  """Nearest-cell value of one variable at `(lat, lon)`; None where unstored.
 
-
-def _accumulation_series(
-    model_key: str, lat: float, lon: float, lead_hours: Sequence[float]
-) -> List[Optional[float]]:
-  """Rain accumulated since the forecast start at each lead (None if unsynced)."""
-  init_weather_streams()
-  stream_id = f"{model_key}_precip"
-  if stream_id in STREAM_INFO and stream_id in _ARRAYS:
-    return extract_accumulation_series(
-        _ARRAYS, STREAM_INFO, model_key, lat, lon, lead_hours
-    )
-  return [None] * len(lead_hours)
+  Raises:
+    FileNotFoundError: If the model's stream for `var_key` is not synced.
+  """
+  run = _current_run()
+  return extract_point_value(
+      run.arrays, run.stream_info, model_key, var_key, lead_h, lat, lon
+  )
 
 
 def get_weather_probe(lat: float, lon: float) -> Dict[str, Any]:
-  """Returns comparative 10-day multi-model meteorological soundings via multimet.weather_fetcher."""
-  init_weather_streams()
+  """Comparative multi-model meteograms at `(lat, lon)` on 3-hourly leads.
+
+  Every supported model is listed; models without synced data report
+  `data_source="unavailable"` and None curves.
+
+  Raises:
+    FileNotFoundError: If no model is synced at all.
+    ValueError: If the coordinates are invalid.
+  """
+  run = _current_run()
   probe = fetch_point_timeseries(
-      _ARRAYS,
-      STREAM_INFO,
+      run.arrays,
+      run.stream_info,
       lat=lat,
       lon=lon,
       models=list(SUPPORTED_MODELS.keys()),
       strict=False,
   )
-  for m_data in probe["models"].values():
+  for m_key, m_data in probe["models"].items():
     m_data["tile_version"] = TILE_VERSION
     m_data["frame_version"] = FRAME_VERSION
-    m_data["synthetic_variables"] = m_data.get("missing_variables", [])
+    if "badge" not in m_data:
+        m_data["badge"] = MODEL_BADGES.get(m_key, "")
   return probe
 
 
@@ -470,48 +543,24 @@ def get_catchment_weather_summary(
     step_idx: int = 0,
     model_key: str = "ecmwf_ifs",
 ) -> Dict[str, Any]:
-  """Calculates basin-averaged precipitation and temperature via multimet.weather_fetcher."""
-  init_weather_streams()
-  if model_key not in SUPPORTED_MODELS:
-    model_key = "ecmwf_ifs"
-  if (
-      f"{model_key}_precip" in STREAM_INFO
-      and f"{model_key}_temp" in STREAM_INFO
-  ):
-    return fetch_catchment_summary(
-        _ARRAYS,
-        STREAM_INFO,
-        geojson_feature=geojson_feature,
-        step_idx=step_idx,
-        model_key=model_key,
-    )
+  """Area-weighted basin precipitation and temperature for one viewer step.
 
-  step_idx_clamped = max(0, int(step_idx))
-  lead_h = step_idx_clamped * STEP_HOURS
-  props = geojson_feature.get("properties") or {}
-  catchment_id = (
-      props.get("catchment_id") or geojson_feature.get("id") or "basin"
+  Args:
+    geojson_feature: GeoJSON Feature with a Polygon/MultiPolygon geometry and
+      an `id` or `properties.catchment_id`.
+    step_idx: 3-hourly viewer step.
+    model_key: Supported model key.
+
+  Raises:
+    FileNotFoundError: If the model's precipitation stream is not synced.
+    KeyError: If the feature has no identifier.
+    ValueError: If `model_key`, `step_idx`, or the geometry is invalid.
+  """
+  run = _current_run()
+  return fetch_catchment_summary(
+      run.arrays,
+      run.stream_info,
+      geojson_feature=geojson_feature,
+      step_idx=step_idx,
+      model_key=model_key,
   )
-  area_km2 = float(props.get("area_km2", 1250.0))
-  lats, lons = _geometry_points(geojson_feature.get("geometry") or {})
-  if lats and lons:
-    c_lat = sum(lats) / len(lats)
-    c_lon = sum(lons) / len(lons)
-  else:
-    c_lat = float(props.get("outlet_latitude", 40.0))
-    c_lon = float(props.get("outlet_longitude", -86.0))
-  valid_dt = _base_time(model_key) + datetime.timedelta(hours=lead_h)
-  return {
-      "catchment_id": catchment_id,
-      "area_km2": round(area_km2, 1),
-      "step_hours": lead_h,
-      "valid_time_utc": valid_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-      "basin_mean_precip_mmh": None,
-      "basin_max_precip_mmh": None,
-      "basin_accumulated_10d_mm": None,
-      "basin_mean_temp_c": None,
-      "centroid": {"latitude": round(c_lat, 4), "longitude": round(c_lon, 4)},
-      "model": model_key,
-      "data_source": "unavailable",
-      "accumulation_hours": 0,
-  }

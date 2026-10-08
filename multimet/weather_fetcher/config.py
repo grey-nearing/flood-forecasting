@@ -32,32 +32,47 @@ NUM_HOURS: int = 81
 STEP_HOURS: int = 3
 VIEWER_STEP_HOURS: int = 3
 MAX_LEAD_HOURS: int = (NUM_STEPS - 1) * STEP_HOURS
-SYNC_INTERVAL_HOURS: int = 6
 
 # Metadata and synchronization constants
 STAC_CATALOG_URL: str = "https://stac.dynamical.org/catalog.json"
 RUN_METADATA_FILE: str = "latest_dynamical_meta.json"
 SYNC_STATUS_FILE: str = "sync_status.json"
-SYNC_LOG_FILE: str = "sync.log"
-CHECK_INTERVAL_MINUTES: int = 60
 KEEP_PREVIOUS_RUNS: int = 1
 DEFAULT_MSLP_OFFSET_HPA: float = 1000.0
+
+MIN_VALID_RESAMPLE_FRACTION: float = 0.8
 MSLP_OFFSET_HPA: float = 1000.0
-SUBPROCESS_TIMEOUT_S: int = 45 * 60
+
+MIN_VALID_RESAMPLE_FRACTION: float = 0.8
+
+
+# Oldest acceptable last-valid day of a cached NOAA PSL CPC annual NetCDF file
+# before it must be downloaded again, and the maximum age of the cached file.
+CPC_MAX_PUBLICATION_LAG_DAYS: int = 7
+CPC_CACHE_REFRESH_HOURS: float = 6.0
 
 RUN_DATASET_TO_MODEL: Dict[str, str] = {
     "ecmwf_aifs_single_forecast": "ecmwf_aifs",
     "noaa_gfs_forecast": "noaa_gfs",
     "ecmwf_ifs_ens_forecast_15_day_0_25_degree": "ecmwf_ifs",
+    "ecmwf_ifs_hres_0_25_degree": "ecmwf_hres",
     "noaa_gefs_forecast_35_day": "noaa_gefs",
     "noaa_hrrr_forecast_48_hour": "noaa_hrrr",
+    "nasa_imerg_analysis_early": "nasa_imerg",
+    "noaa_cpc_unified_gauge_precip": "noaa_cpc",
 }
 
 SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
+    "ecmwf_hres": {
+        "id": "ecmwf_hres",
+        "name": "ECMWF IFS HRES Operational",
+        "type": "physics",
+        "resolution": "0.25° Global (9km native)",
+        "organization": "ECMWF",
+    },
     "ecmwf_ifs": {
         "id": "ecmwf_ifs",
         "name": "ECMWF IFS (ensemble control run)",
-        "badge": "0.25° Physics 10-Day",
         "type": "physics",
         "resolution": "0.25° Global (9km native)",
         "organization": "ECMWF",
@@ -65,23 +80,13 @@ SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
     "ecmwf_aifs": {
         "id": "ecmwf_aifs",
         "name": "ECMWF AIFS",
-        "badge": "0.25° Global AI 10-Day",
         "type": "ai",
         "resolution": "0.25° Global",
         "organization": "ECMWF",
     },
-    "graphcast": {
-        "id": "graphcast",
-        "name": "Google DeepMind GraphCast",
-        "badge": "0.25° AI 10-Day",
-        "type": "ai",
-        "resolution": "0.25° Global",
-        "organization": "Google DeepMind",
-    },
     "noaa_gfs": {
         "id": "noaa_gfs",
         "name": "NOAA GFS",
-        "badge": "0.25° Physics 10-Day",
         "type": "physics",
         "resolution": "0.25° Global",
         "organization": "NOAA / NWS",
@@ -89,7 +94,6 @@ SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
     "noaa_gefs": {
         "id": "noaa_gefs",
         "name": "NOAA GEFS (ensemble control run)",
-        "badge": "0.25° Ensemble 10-Day",
         "type": "physics",
         "resolution": "0.25° Global",
         "organization": "NOAA / NWS",
@@ -97,10 +101,23 @@ SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
     "noaa_hrrr": {
         "id": "noaa_hrrr",
         "name": "NOAA HRRR (CONUS 3km)",
-        "badge": "3km Physics 48-Hour",
         "type": "physics",
         "resolution": "3 km CONUS",
         "organization": "NOAA / NWS",
+    },
+    "nasa_imerg": {
+        "id": "nasa_imerg",
+        "name": "NASA IMERG Early",
+        "type": "observation",
+        "resolution": "0.1° Global",
+        "organization": "NASA",
+    },
+    "noaa_cpc": {
+        "id": "noaa_cpc",
+        "name": "NOAA CPC Global Unified Gauge",
+        "type": "observation",
+        "resolution": "0.5° Global",
+        "organization": "NOAA",
     },
 }
 
@@ -161,6 +178,11 @@ STREAM_SUFFIX: Dict[str, str] = {
 
 # (stream id, file name, is precipitation)
 STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
+    ("ecmwf_hres_precip", "ecmwf_hres_precip.bin", True),
+    ("ecmwf_hres_temp", "ecmwf_hres_temp.bin", False),
+    ("ecmwf_hres_mslp", "ecmwf_hres_mslp.bin", False),
+    ("ecmwf_hres_u10", "ecmwf_hres_u10.bin", False),
+    ("ecmwf_hres_v10", "ecmwf_hres_v10.bin", False),
     ("ecmwf_ifs_precip", "ecmwf_ifs_precip.bin", True),
     ("ecmwf_ifs_temp", "ecmwf_ifs_temp.bin", False),
     ("ecmwf_ifs_mslp", "ecmwf_ifs_mslp.bin", False),
@@ -171,8 +193,6 @@ STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
     ("ecmwf_aifs_mslp", "ecmwf_aifs_mslp.bin", False),
     ("ecmwf_aifs_u10", "ecmwf_aifs_u10.bin", False),
     ("ecmwf_aifs_v10", "ecmwf_aifs_v10.bin", False),
-    ("graphcast_precip", "graphcast_precip.bin", True),
-    ("graphcast_temp", "graphcast_temp.bin", False),
     ("noaa_gfs_precip", "noaa_gfs_precip.bin", True),
     ("noaa_gfs_temp", "noaa_gfs_temp.bin", False),
     ("noaa_gfs_mslp", "noaa_gfs_mslp.bin", False),
@@ -188,97 +208,254 @@ STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
     ("noaa_hrrr_mslp", "noaa_hrrr_mslp.bin", False),
     ("noaa_hrrr_u10", "noaa_hrrr_u10.bin", False),
     ("noaa_hrrr_v10", "noaa_hrrr_v10.bin", False),
+    ("nasa_imerg_precip", "nasa_imerg_precip.bin", True),
+    ("noaa_cpc_precip", "noaa_cpc_precip.bin", True),
 )
 
 GLOBAL_VARS: List[str] = [
+    "ecmwf_hres_precip",
+    "ecmwf_hres_temp",
+    "ecmwf_hres_u10",
+    "ecmwf_hres_v10",
     "ecmwf_ifs_precip",
     "ecmwf_ifs_temp",
     "ecmwf_ifs_u10",
     "ecmwf_ifs_v10",
     "ecmwf_aifs_precip",
     "ecmwf_aifs_temp",
-    "graphcast_precip",
-    "graphcast_temp",
     "noaa_gfs_precip",
     "noaa_gfs_temp",
+    "noaa_gefs_precip",
+    "noaa_gefs_temp",
+    "noaa_hrrr_precip",
+    "noaa_hrrr_temp",
+    "nasa_imerg_precip",
+    "noaa_cpc_precip",
 ]
 
-# Default operational models synchronized from dynamical.org
-DEFAULT_SYNC_MODELS: Tuple[str, ...] = ("ecmwf_ifs", "ecmwf_aifs", "noaa_gfs")
+# Default operational models synchronized by sync_all_models
+DEFAULT_SYNC_MODELS: Tuple[str, ...] = (
+    "ecmwf_hres",
+    "ecmwf_ifs",
+    "ecmwf_aifs",
+    "noaa_gfs",
+    "noaa_gefs",
+    "noaa_hrrr",
+    "nasa_imerg",
+    "noaa_cpc",
+)
+
+
+# Human-readable upstream source per ``DYNAMICAL_MODELS[...]["source"]``.
+SOURCE_LABELS: Dict[str, str] = {
+    "dynamical": "dynamical.org",
+    "dynamical_analysis": "dynamical.org",
+    "ecmwf_open_data": "gs://ecmwf-open-data",
+    "noaa_psl_cpc": "NOAA PSL (downloads.psl.noaa.gov)",
+}
 
 DYNAMICAL_MODELS: Dict[str, Dict[str, Any]] = {
+    "ecmwf_hres": {
+        "dataset": "ecmwf-ifs-hres-0-25-degree",
+        "title": "ECMWF IFS HRES Operational (0.25°)",
+        "source": "ecmwf_open_data",
+        "streams": ("precip", "temp", "mslp", "u10", "v10"),
+    },
     "ecmwf_ifs": {
         "dataset": "ecmwf-ifs-ens-forecast-15-day-0-25-degree",
         "title": "ECMWF IFS ENS control member (0.25°)",
+        "source": "dynamical",
         "ensemble_member": 0,
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
     "ecmwf_aifs": {
         "dataset": "ecmwf-aifs-single-forecast",
         "title": "ECMWF AIFS Single (0.25°)",
+        "source": "dynamical",
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
     "noaa_gfs": {
         "dataset": "noaa-gfs-forecast",
         "title": "NOAA GFS (0.25°)",
+        "source": "dynamical",
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
     "noaa_gefs": {
         "dataset": "noaa-gefs-forecast-35-day",
         "title": "NOAA GEFS ENS control member (0.25°)",
+        "source": "dynamical",
         "ensemble_member": 0,
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
     "noaa_hrrr": {
         "dataset": "noaa-hrrr-forecast-48-hour",
         "title": "NOAA HRRR CONUS (3 km)",
+        "source": "dynamical",
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
+    "nasa_imerg": {
+        "dataset": "nasa-imerg-analysis-early",
+        "title": "NASA GPM IMERG Early Analysis (0.10°)",
+        "source": "dynamical_analysis",
+        "streams": ("precip",),
+    },
+    "noaa_cpc": {
+        "dataset": "noaa-cpc-unified-gauge-precip",
+        "title": "NOAA CPC Unified Global Gauge Precip (0.50°)",
+        "source": "noaa_psl_cpc",
+        "streams": ("precip",),
+    },
+}
+
+MODEL_NATIVE_LEAD_HOURS: Dict[str, Tuple[int, ...]] = {
+    "ecmwf_hres": tuple(list(range(0, 145, 3)) + list(range(150, 241, 6))),
+    "ecmwf_ifs": tuple(list(range(0, 145, 3)) + list(range(150, 241, 6))),
+    "ecmwf_aifs": tuple(range(0, 241, 6)),
+    "noaa_gfs": tuple(list(range(0, 121)) + list(range(123, 241, 3))),
+    "noaa_gefs": tuple(range(0, 241, 3)),
+    "noaa_hrrr": tuple(range(0, 49)),
+    "nasa_imerg": tuple(range(0, 241, 3)),
+    "noaa_cpc": tuple(range(0, 241, 24)),
 }
 
 
 def output_lead_hours(
     in_leads: Sequence[int],
     max_lead: int = MAX_LEAD_HOURS,
-    step: int = VIEWER_STEP_HOURS,
+    step: int = STEP_HOURS,
 ) -> List[int]:
-  """Returns stored lead hours: model leads that fall on 3-hourly steps."""
-  return [
+  """Returns stored lead hours: unique model leads on 3-hourly steps."""
+  return sorted({
       int(h) for h in in_leads if 0 <= int(h) <= max_lead and int(h) % step == 0
-  ]
+  })
 
 
 def run_lead_hours(model_key: str, n_steps: int) -> List[int]:
-  """Returns default lead hours of each plane in an archived run file."""
-  if model_key == "ecmwf_aifs":
-    return [6 * i for i in range(n_steps)]
-  if model_key == "noaa_gfs":
-    hourly = list(range(min(n_steps, 121)))
-    return hourly + [120 + 3 * (i + 1) for i in range(n_steps - len(hourly))]
-  return [STEP_HOURS * i for i in range(n_steps)]
+  """Returns the lead hours of the first ``n_steps`` stored planes of a model.
+
+  Args:
+    model_key: Supported model key (see ``SUPPORTED_MODELS``).
+    n_steps: Number of planes stored in the archived binary stream.
+
+  Returns:
+    Lead hours (one per plane) derived from the model's native step list.
+
+  Raises:
+    KeyError: If ``model_key`` is not a supported model.
+    ValueError: If ``n_steps`` exceeds the number of storable planes.
+  """
+  if model_key not in MODEL_NATIVE_LEAD_HOURS:
+    raise KeyError(
+        f"Unknown weather model {model_key!r}. Supported:"
+        f" {list(MODEL_NATIVE_LEAD_HOURS)}"
+    )
+  leads = output_lead_hours(MODEL_NATIVE_LEAD_HOURS[model_key])
+  if n_steps < 1 or n_steps > len(leads):
+    raise ValueError(
+        f"{model_key}: cannot label {n_steps} stored planes; the model stores"
+        f" between 1 and {len(leads)} planes ({leads[0]}..{leads[-1]} h)."
+    )
+  return leads[:n_steps]
 
 
-def to_stored_units(stream: str, values: Any) -> np.ndarray:
-  """Converts dynamical.org physical units to stored float16 planes.
+_PRECIP_UNIT_TO_MM_PER_H: Dict[str, float] = {
+    "kg m-2 s-1": 3600.0,
+    "kg m**-2 s**-1": 3600.0,
+    "mm/s": 3600.0,
+    "mm s-1": 3600.0,
+    "mm/h": 1.0,
+    "mm/hr": 1.0,
+    "mm h-1": 1.0,
+    "mm/day": 1.0 / 24.0,
+    "mm/d": 1.0 / 24.0,
+    "mm day-1": 1.0 / 24.0,
+}
+_KELVIN_UNITS: Tuple[str, ...] = ("K", "kelvin", "degK", "deg_K")
+_CELSIUS_UNITS: Tuple[str, ...] = (
+    "degC",
+    "deg_C",
+    "C",
+    "celsius",
+    "degree_Celsius",
+    "degrees_Celsius",
+)
+_PASCAL_UNITS: Tuple[str, ...] = ("Pa", "pa", "pascal")
+_HECTOPASCAL_UNITS: Tuple[str, ...] = ("hPa", "hpa", "mbar", "millibar")
+_WIND_UNITS: Tuple[str, ...] = ("m/s", "m s-1", "m s**-1", "m/sec")
+
+
+def to_stored_units(
+    stream: str,
+    values: Any,
+    source_units: Optional[str] = None,
+) -> np.ndarray:
+  """Converts upstream physical units to stored float16 planes.
+
+  Missing values (``NaN``) are preserved for every stream; negative
+  precipitation rates (GRIB packing noise) are clamped to ``0.0``.
 
   Args:
     stream: Stream suffix ('precip', 'temp', 'mslp', 'u10', 'v10').
-    values: Input array-like in native dynamical.org units (precip in kg/m2/s
-      or mm/s, temperature in degC or K, MSLP in Pa, wind in m/s).
+    values: Input array-like in ``source_units``.
+    source_units: Units of ``values``. Precipitation accepts ``kg m-2 s-1`` /
+      ``mm/s`` (default when omitted), ``mm/h`` and ``mm/day``; temperature
+      accepts ``K`` and ``degC``; pressure accepts ``Pa`` (default) and
+      ``hPa``; wind accepts ``m/s``. When omitted for temperature, Kelvin is
+      assumed if the finite mean exceeds 150 (no physical 2 m temperature in
+      degC can reach that value).
 
   Returns:
     Float16 NumPy array in stored units (precip in mm/h, temp in degC,
-    MSLP in hPa - 1000.0, wind in m/s).
+    MSLP in hPa - ``MSLP_OFFSET_HPA``, wind in m/s).
+
+  Raises:
+    ValueError: If ``stream`` or ``source_units`` is not recognised.
   """
   arr = np.asarray(values, dtype=np.float32)
   if stream == "precip":
-    arr = np.clip(np.nan_to_num(arr, nan=0.0), 0.0, None) * 3600.0
+    units = source_units if source_units is not None else "kg m-2 s-1"
+    if units not in _PRECIP_UNIT_TO_MM_PER_H:
+      raise ValueError(
+          f"Unsupported precipitation units {units!r}; expected one of"
+          f" {sorted(_PRECIP_UNIT_TO_MM_PER_H)}"
+      )
+    arr = np.where(np.isnan(arr), np.nan, np.maximum(arr, 0.0)).astype(
+        np.float32
+    ) * np.float32(_PRECIP_UNIT_TO_MM_PER_H[units])
   elif stream == "mslp":
-    arr = arr / 100.0 - MSLP_OFFSET_HPA
+    units = source_units if source_units is not None else "Pa"
+    if units in _PASCAL_UNITS:
+      arr = arr / 100.0 - MSLP_OFFSET_HPA
+    elif units in _HECTOPASCAL_UNITS:
+      arr = arr - MSLP_OFFSET_HPA
+    else:
+      raise ValueError(
+          f"Unsupported pressure units {units!r}; expected Pa or hPa."
+      )
   elif stream == "temp":
-    finite = arr[np.isfinite(arr)]
-    if finite.size > 0 and float(np.mean(finite)) > 150.0:
+    if source_units is None:
+      finite = arr[np.isfinite(arr)]
+      is_kelvin = finite.size > 0 and float(np.mean(finite)) > 150.0
+    elif source_units in _KELVIN_UNITS:
+      is_kelvin = True
+    elif source_units in _CELSIUS_UNITS:
+      is_kelvin = False
+    else:
+      raise ValueError(
+          f"Unsupported temperature units {source_units!r}; expected K or"
+          " degC."
+      )
+    if is_kelvin:
       arr = arr - 273.15
+  elif stream in ("u10", "v10"):
+    if source_units is not None and source_units not in _WIND_UNITS:
+      raise ValueError(
+          f"Unsupported wind units {source_units!r}; expected m/s."
+      )
+  else:
+    raise ValueError(
+        f"Unknown stream {stream!r}; expected one of {list(STREAM_VARIABLES)}"
+    )
   return arr.astype(np.float16)
 
 
@@ -292,79 +469,6 @@ def from_stored_units(
   if stream == "mslp":
     return arr + float(mslp_offset_hpa)
   return arr
-
-
-@dataclasses.dataclass
-class WeatherSource:
-  """Metadata and dynamic temporal coverage for a gridded weather dataset."""
-
-  id: str
-  name: str
-  provider: str
-  description: str
-  resolution: str
-  temporal_resolution: str
-  available_start: str
-  latency_days: int = 5
-  fixed_end: Optional[str] = None
-  cns_zarr_path: Optional[str] = None
-  default_variables: List[str] = dataclasses.field(
-      default_factory=lambda: ["total_precipitation", "2m_temperature"]
-  )
-  citation: str = ""
-
-  def get_time_range(
-      self, cns_extent: Optional[Dict[str, Any]] = None
-  ) -> Dict[str, Any]:
-    """Computes the available temporal range for this dataset."""
-    if cns_extent is not None:
-      return {
-          "start_date": cns_extent["start_date"],
-          "end_date": cns_extent["end_date"],
-          "latency_days": 0,
-          "total_years": cns_extent["total_years"],
-          "is_dynamic": True,
-      }
-
-    if self.fixed_end:
-      end_date = self.fixed_end
-    else:
-      now_utc = datetime.now(timezone.utc)
-      latest_dt = now_utc - timedelta(days=self.latency_days)
-      end_date = latest_dt.strftime("%Y-%m-%d")
-
-    start_dt = datetime.strptime(self.available_start, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-    total_years = round((end_dt - start_dt).days / 365.25, 1)
-
-    return {
-        "start_date": self.available_start,
-        "end_date": end_date,
-        "latency_days": self.latency_days,
-        "total_years": total_years,
-        "is_dynamic": self.fixed_end is None,
-    }
-
-  def to_dict(
-      self, cns_extent: Optional[Dict[str, Any]] = None
-  ) -> Dict[str, Any]:
-    """Serializes source metadata with dynamic time range."""
-    time_range = self.get_time_range(cns_extent=cns_extent)
-    return {
-        "id": self.id,
-        "name": self.name,
-        "provider": self.provider,
-        "description": self.description,
-        "resolution": self.resolution,
-        "temporal_resolution": self.temporal_resolution,
-        "start_date": time_range["start_date"],
-        "end_date": time_range["end_date"],
-        "latency_days": time_range["latency_days"],
-        "total_years": time_range["total_years"],
-        "cns_zarr_path": self.cns_zarr_path or "",
-        "default_variables": self.default_variables,
-        "citation": self.citation,
-    }
 
 
 def parse_zarr_metadata_time_extent(
@@ -396,159 +500,3 @@ def parse_zarr_metadata_time_extent(
       "total_years": total_years,
       "is_dynamic": True,
   }
-
-
-WEATHER_SOURCES: Dict[str, WeatherSource] = {
-    "cpc": WeatherSource(
-        id="cpc",
-        name="NOAA CPC Global Precipitation",
-        provider="NOAA Climate Prediction Center",
-        description=(
-            "Global daily gauge-based precipitation analysis spanning 1979 to"
-            " present at 0.5° resolution."
-        ),
-        resolution="0.50° (~55 km)",
-        temporal_resolution="Daily (1D)",
-        available_start="1979-01-01",
-        cns_zarr_path="/cns/jn-d/home/floods/lsm/loaded/lsm_loader_2024_07_03/cpc/precip.zarr",
-        default_variables=["cpc_precipitation"],
-        citation="Xie et al. (2007), J. Hydrometeorology",
-    ),
-    "imerg": WeatherSource(
-        id="imerg",
-        name="NASA GPM IMERG Final Run",
-        provider="NASA Goddard Space Flight Center",
-        description=(
-            "Integrated Multi-satellitE Retrievals for GPM precipitation"
-            " spanning 2000 to present at 0.1° resolution."
-        ),
-        resolution="0.10° (~10 km)",
-        temporal_resolution="Daily (1D) / Half-Hourly",
-        available_start="2000-06-01",
-        cns_zarr_path="/cns/jn-d/home/floods/lsm/loaded/lsm_loader_2024_07_03/imerg/precip.zarr",
-        default_variables=["imerg_precipitation"],
-        citation="Huffman et al. (2020), NASA GSFC",
-    ),
-    "era5": WeatherSource(
-        id="era5",
-        name="ECMWF ERA5 Reanalysis",
-        provider="ECMWF / Copernicus Climate Change Service (C3S)",
-        description=(
-            "Fifth generation ECMWF global atmospheric reanalysis spanning 1950"
-            " to present."
-        ),
-        resolution="0.25° (~31 km)",
-        temporal_resolution="Daily (1D) / Hourly",
-        available_start="1950-01-01",
-        cns_zarr_path="/cns/jn-d/home/floods/lsm/loaded/lsm_loader_2024_07_03/era5/tp.zarr",
-        default_variables=[
-            "total_precipitation",
-            "2m_temperature",
-            "surface_pressure",
-            "surface_net_solar_radiation",
-            "surface_net_thermal_radiation",
-            "dewpoint_temperature",
-        ],
-        citation="Hersbach et al. (2020), QJRMS",
-    ),
-    "ifs": WeatherSource(
-        id="ifs",
-        name="ECMWF IFS HRES (High Resolution)",
-        provider="ECMWF Operational Meteorological Archive",
-        description=(
-            "High-resolution operational deterministic model providing"
-            " surface radiation, temperature, pressure, and precipitation."
-        ),
-        resolution="0.10° (~9 km)",
-        temporal_resolution="Daily (1D) / 6-Hourly",
-        available_start="2016-01-01",
-        latency_days=2,
-        default_variables=[
-            "hres_total_precipitation",
-            "hres_temperature_2m",
-            "hres_surface_pressure",
-            "hres_surface_net_solar_radiation",
-            "hres_surface_net_thermal_radiation",
-        ],
-        citation="ECMWF IFS Documentation (2024)",
-    ),
-    "graphcast": WeatherSource(
-        id="graphcast",
-        name="GraphCast (DeepMind AI Weather Model)",
-        provider="Google DeepMind / ECMWF",
-        description=(
-            "State-of-the-art AI weather forecast model generating fast,"
-            " high-accuracy temperature and precipitation forecasts."
-        ),
-        resolution="0.25° (~28 km)",
-        temporal_resolution="Daily (1D) / 6-Hourly",
-        available_start="2019-01-01",
-        latency_days=2,
-        default_variables=[
-            "graphcast_total_precipitation",
-            "graphcast_temperature_2m",
-        ],
-        citation="Lam et al. (2023), Science",
-    ),
-    "era5-land": WeatherSource(
-        id="era5-land",
-        name="ECMWF ERA5-Land",
-        provider="ECMWF / Copernicus Climate Change Service (C3S)",
-        description=(
-            "Enhanced land-surface reanalysis dataset at 0.1° (~9 km)"
-            " resolution spanning 1950 to present."
-        ),
-        resolution="0.10° (~9 km)",
-        temporal_resolution="Daily (1D) / Hourly",
-        available_start="1950-01-01",
-        latency_days=5,
-        default_variables=[
-            "total_precipitation",
-            "2m_temperature",
-            "surface_solar_radiation",
-            "dewpoint_temperature",
-        ],
-        citation="Muñoz-Sabater et al. (2021), Earth System Science Data",
-    ),
-    "chirps": WeatherSource(
-        id="chirps",
-        name="CHIRPS v2.0 Global Precipitation",
-        provider="UC Santa Barbara / Climate Hazards Center",
-        description=(
-            "Quasi-global high-resolution precipitation combining satellite"
-            " imagery and station data (1981 to present)."
-        ),
-        resolution="0.05° (~5 km)",
-        temporal_resolution="Daily (1D)",
-        available_start="1981-01-01",
-        latency_days=2,
-        default_variables=["total_precipitation"],
-        citation="Funk et al. (2015), Scientific Data",
-    ),
-    "cerra": WeatherSource(
-        id="cerra",
-        name="Copernicus CERRA Regional",
-        provider="Copernicus Climate Change Service (C3S)",
-        description=(
-            "High-resolution regional reanalysis for the European domain at 5.5"
-            " km resolution (1984 to 2021)."
-        ),
-        resolution="5.5 km",
-        temporal_resolution="Daily (1D) / 3-hourly",
-        available_start="1984-01-01",
-        fixed_end="2021-06-30",
-        latency_days=0,
-        default_variables=["total_precipitation", "2m_temperature"],
-        citation="Schimanke et al. (2024), QJRMS",
-    ),
-}
-
-
-def get_weather_source(source_id: str = "era5") -> WeatherSource:
-  """Retrieves a weather source by ID, defaulting to ERA5."""
-  return WEATHER_SOURCES.get(source_id, WEATHER_SOURCES["era5"])
-
-
-def list_weather_sources() -> List[Dict[str, Any]]:
-  """Returns serialized list of all weather sources."""
-  return [source.to_dict() for source in WEATHER_SOURCES.values()]

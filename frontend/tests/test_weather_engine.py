@@ -30,10 +30,18 @@ class WeatherEngineUnitTest(unittest.TestCase):
   """Tests core computational weather engine functions."""
 
   def test_supported_models_and_variables(self):
-    self.assertIn("ecmwf_ifs", SUPPORTED_MODELS)
-    self.assertIn("ecmwf_aifs", SUPPORTED_MODELS)
-    self.assertIn("graphcast", SUPPORTED_MODELS)
-    self.assertIn("noaa_gfs", SUPPORTED_MODELS)
+    for model_key in (
+        "ecmwf_hres",
+        "ecmwf_ifs",
+        "ecmwf_aifs",
+        "noaa_gfs",
+        "noaa_gefs",
+        "noaa_hrrr",
+        "nasa_imerg",
+        "noaa_cpc",
+    ):
+      self.assertIn(model_key, SUPPORTED_MODELS)
+    self.assertNotIn("graphcast", SUPPORTED_MODELS)
 
     self.assertIn("precipitation", SUPPORTED_VARIABLES)
     self.assertIn("temperature", SUPPORTED_VARIABLES)
@@ -75,9 +83,12 @@ class WeatherEngineUnitTest(unittest.TestCase):
     self.assertEqual(probe["longitude"], -86.92)
     self.assertEqual(len(probe["lead_hours"]), 81)
     self.assertIn("models", probe)
+    self.assertIn("ecmwf_hres", probe["models"])
     self.assertIn("ecmwf_ifs", probe["models"])
     self.assertIn("ecmwf_aifs", probe["models"])
-    self.assertIn("graphcast", probe["models"])
+    self.assertIn("nasa_imerg", probe["models"])
+    self.assertIn("noaa_cpc", probe["models"])
+    self.assertNotIn("graphcast", probe["models"])
 
     ifs = probe["models"]["ecmwf_ifs"]
     self.assertEqual(len(ifs["precip_rate_mmh"]), 81)
@@ -139,6 +150,29 @@ class WeatherServerIntegrationTest(unittest.TestCase):
     cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
     cls.thread.start()
     time.sleep(0.1)
+
+    # Save a valid polygon watershed so the server doesn't fallback to a Point
+    from frontend.profile_manager import get_profile_manager
+    sample_basin = {
+        "id": "global_default",
+        "properties": {
+            "catchment_id": "global_default",
+            "area_km2": 4500.0,
+            "outlet_latitude": 40.5,
+            "outlet_longitude": -86.5,
+        },
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [-87.0, 40.0],
+                [-86.0, 40.0],
+                [-86.0, 41.0],
+                [-87.0, 41.0],
+                [-87.0, 40.0],
+            ]],
+        },
+    }
+    get_profile_manager().save_watersheds([sample_basin], "guest")
 
   @classmethod
   def tearDownClass(cls):

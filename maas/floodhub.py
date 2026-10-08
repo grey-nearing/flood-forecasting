@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Google FloodHub REST client and gauge/forecast/inundation normalizer."""
+"""Google FloodHub REST client and gauge/forecast normalizer."""
 
+import concurrent.futures
 import math
-import urllib.parse
-import xml.etree.ElementTree as ET
+import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import requests
-from shapely.geometry import MultiPolygon, Polygon, mapping
-from shapely.ops import unary_union
 
 from maas.config import FLOODHUB_BASE_URL, parse_finite_float
 
@@ -81,17 +81,6 @@ FH_SEVERITY_TO_RISK: dict[str, str] = {
     'EXTREME_DANGER': 'EXTREME',
 }
 
-FH_LEVEL_ORDER: dict[str, int] = {'LOW': 0, 'MEDIUM': 1, 'HIGH': 2}
-FH_LEVEL_LABELS: dict[str, str] = {
-    'HIGH': 'High likelihood',
-    'MEDIUM': 'Medium likelihood',
-    'LOW': 'Low likelihood',
-}
-FH_LEVEL_COLORS: dict[str, str] = {
-    'HIGH': '#174ea6',
-    'MEDIUM': '#1a73e8',
-    'LOW': '#8ab4f8',
-}
 FLOODHUB_GAUGE_SEARCH_RADIUS_KM = 30.0
 
 
@@ -294,92 +283,184 @@ def derive_floodhub_severity_from_forecast(
     return severity, trend
 
 
-def round_geojson_coords(obj: Any, ndigits: int = 5) -> Any:
-    """Recursively round nested GeoJSON coordinate sequences."""
-    if isinstance(obj, (list, tuple)):
-        if obj and isinstance(obj[0], (int, float)):
-            return [round(float(v), ndigits) for v in obj]
-        return [round_geojson_coords(o, ndigits) for o in obj]
-    return obj
+_CATALOG_MEM_CACHE: dict[str, dict[str, Any]] = {}
+_RANK_TO_SEVERITY: tuple[str, ...] = (
+    'NO_FLOODING',
+    'WARNING',
+    'DANGER',
+    'EXTREME_DANGER',
+)
 
 
-def kml_rings(elem: Any) -> list[list[tuple[float, float]]]:
-    """Extract all coordinate rings under a KML element (namespace-agnostic)."""
-    rings: list[list[tuple[float, float]]] = []
-    for node in elem.iter():
-        if node.tag.split('}')[-1] != 'coordinates' or not node.text:
-            continue
-        ring: list[tuple[float, float]] = []
-        for tok in node.text.split():
-            parts = tok.split(',')
-            if len(parts) >= 2:
-                lon = parse_finite_float(parts[0])
-                lat = parse_finite_float(parts[1])
-                if lon is not None and lat is not None:
-                    ring.append((lon, lat))
-        if len(ring) >= 4:
-            rings.append(ring)
-    return rings
+def _resolve_catalog_path(cache_dir: Path | None) -> Path | None:
+    candidates: list[Path] = []
+    if cache_dir is not None:
+        candidates.append(cache_dir / 'floodhub_gauges_v1.npz')
+        candidates.append(cache_dir.parent / 'floodhub_gauges_v1.npz')
+    for p in candidates:
+        if p.exists():
+            return p
+    return candidates[0] if candidates else None
 
 
-def kml_to_geometry(
-    kml_text: str,
-    tolerance_deg: float = 0.0005,
-) -> Any | None:
-    """Parse FloodHub KML polygons into a simplified shapely `(Multi)Polygon`."""
-    if not kml_text or not kml_text.strip():
+def load_or_build_floodhub_catalog(
+    cache_dir: Path | None,
+    *,
+    api_key: str = '',
+    base_url: str = FLOODHUB_BASE_URL,
+    build_if_missing: bool = False,
+) -> dict[str, Any] | None:
+    """Load (or optionally download and cache) the global FloodHub gauge catalog."""
+    cat_path = _resolve_catalog_path(cache_dir)
+    if cat_path is None:
         return None
-    root = ET.fromstring(kml_text)  # noqa: S314
-    polys = []
-    for el in root.iter():
-        if el.tag.split('}')[-1] != 'Polygon':
-            continue
-        outer: list[tuple[float, float]] = []
-        inners: list[list[tuple[float, float]]] = []
-        for child in el:
-            tag = child.tag.split('}')[-1]
-            if tag == 'outerBoundaryIs':
-                rings = kml_rings(child)
-                outer = rings[0] if rings else []
-            elif tag == 'innerBoundaryIs':
-                inners.extend(kml_rings(child))
-        if len(outer) < 4:
-            continue
-        poly = Polygon(outer, inners)
-        if not poly.is_valid:
-            poly = poly.buffer(0)
-        if not poly.is_empty:
-            polys.append(poly)
-    if not polys:
+    key_str = str(cat_path.resolve())
+    cached = _CATALOG_MEM_CACHE.get(key_str)
+    if cached is not None:
+        return cached
+
+    if not cat_path.exists():
+        if not build_if_missing or not api_key.strip():
+            return None
+        _download_and_save_global_catalog(cat_path, api_key=api_key, base_url=base_url)
+        if not cat_path.exists():
+            return None
+
+    try:
+        with np.load(cat_path, allow_pickle=False) as z:
+            gids = z['gauge_id']
+            lats = z['lat'].astype(np.float32)
+            lons = z['lon'].astype(np.float32)
+            hybas = z['hybas_id'].astype(np.int64)
+            has_fc = z['has_forecast'].astype(np.bool_)
+            q_ver = z['quality_verified'].astype(np.bool_)
+            sev_rank = z['severity_rank'].astype(np.int8)
+            area_km2 = (
+                z['upstream_area_km2'].astype(np.float32)
+                if 'upstream_area_km2' in z.files
+                else np.zeros(len(gids), dtype=np.float32)
+            )
+            fetched_at = (
+                int(z['fetched_at'][0])
+                if 'fetched_at' in z.files and len(z['fetched_at']) > 0
+                else 0
+            )
+        active_mask = has_fc
+        hybas_pos_idx = np.flatnonzero(hybas > 0)
+        hybas_order = np.argsort(hybas[hybas_pos_idx])
+        hybas_sorted_idx = hybas_pos_idx[hybas_order]
+        hybas_sorted_ids = hybas[hybas_sorted_idx]
+        cat = {
+            'path': str(cat_path),
+            'gauge_id': gids,
+            'lat': lats,
+            'lon': lons,
+            'hybas_id': hybas,
+            'has_forecast': has_fc,
+            'quality_verified': q_ver,
+            'severity_rank': sev_rank,
+            'upstream_area_km2': area_km2,
+            'active_idx': np.flatnonzero(active_mask),
+            'hybas_sorted_idx': hybas_sorted_idx,
+            'hybas_sorted_ids': hybas_sorted_ids,
+            'fetched_at': fetched_at,
+        }
+        _CATALOG_MEM_CACHE[key_str] = cat
+        return cat
+    except Exception:  # noqa: BLE001
         return None
-    geom = unary_union(polys)
-    geom = geom.simplify(tolerance_deg, preserve_topology=True)
-    if geom.geom_type == 'GeometryCollection':
-        parts = [
-            g for g in geom.geoms if g.geom_type in ('Polygon', 'MultiPolygon')
-        ]
-        geom = unary_union(parts) if parts else None
-    if (
-        geom is None
-        or geom.is_empty
-        or geom.geom_type not in ('Polygon', 'MultiPolygon')
-    ):
-        return None
-    return geom
 
 
-def geom_area_km2(geom: Any) -> float:
-    """Approximate area (km²) of a lon/lat geometry via local equirectangular scaling."""
-    if geom is None or geom.is_empty:
-        return 0.0
-    lat0 = float(geom.centroid.y)
-    return round(
-        float(geom.area)
-        * 111.32
-        * 111.32
-        * max(math.cos(math.radians(lat0)), 0.01),
-        2,
+def _download_and_save_global_catalog(
+    target_path: Path,
+    *,
+    api_key: str,
+    base_url: str = FLOODHUB_BASE_URL,
+) -> None:
+    """Download all global FloodHub status tiles in parallel and save as compressed `.npz`."""
+    tiles: list[tuple[float, float, float, float]] = []
+    for lon0 in range(-180, 180, 60):
+        lon1 = lon0 + 60 - 0.0001
+        for lat0, lat1 in ((-60.0, 0.0), (0.0, 75.0)):
+            tiles.append((lat0, lat1, float(lon0), float(lon1)))
+
+    url = f"{base_url.rstrip('/')}/floodStatus:searchLatestFloodStatusByArea?key={api_key}"
+
+    def _fetch_tile(tile: tuple[float, float, float, float]) -> list[dict[str, Any]]:
+        lat0, lat1, lon0, lon1 = tile
+        sess = requests.Session()
+        out: list[dict[str, Any]] = []
+        page_token: str | None = None
+        while True:
+            body: dict[str, Any] = {
+                'loop': {
+                    'vertices': [
+                        {'latitude': lat0, 'longitude': lon0},
+                        {'latitude': lat1, 'longitude': lon0},
+                        {'latitude': lat1, 'longitude': lon1},
+                        {'latitude': lat0, 'longitude': lon1},
+                    ]
+                },
+                'pageSize': 50000,
+                'includeNonQualityVerified': True,
+            }
+            if page_token:
+                body['pageToken'] = page_token
+            resp = sess.post(url, json=body, timeout=25.0)
+            resp.raise_for_status()
+            payload = resp.json()
+            out.extend(payload.get('floodStatuses') or [])
+            page_token = payload.get('nextPageToken')
+            if not page_token:
+                break
+        return out
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+        results = list(ex.map(_fetch_tile, tiles))
+
+    by_id: dict[str, Mapping[str, Any]] = {}
+    for sub in results:
+        for st in sub:
+            gid = st.get('gaugeId')
+            loc = st.get('gaugeLocation') or {}
+            if gid and loc.get('latitude') is not None and loc.get('longitude') is not None:
+                by_id[str(gid)] = st
+
+    gids = sorted(by_id.keys())
+    n = len(gids)
+    lats = np.empty(n, dtype=np.float32)
+    lons = np.empty(n, dtype=np.float32)
+    hybas = np.zeros(n, dtype=np.int64)
+    has_fc = np.zeros(n, dtype=np.bool_)
+    q_ver = np.zeros(n, dtype=np.bool_)
+    sev_rank = np.zeros(n, dtype=np.int8)
+
+    for i, gid in enumerate(gids):
+        st = by_id[gid]
+        loc = st['gaugeLocation']
+        lats[i] = float(loc['latitude'])
+        lons[i] = float(loc['longitude'])
+        if gid.startswith('hybas_') and gid[6:].isdigit():
+            hybas[i] = int(gid[6:])
+        has_fc[i] = ('forecastTimeRange' in st) or ('forecastTrend' in st)
+        q_ver[i] = bool(st.get('qualityVerified', False))
+        sev_norm = normalize_floodhub_severity(st.get('severity'))
+        sev_rank[i] = FH_SEVERITY_RANK.get(sev_norm, 0)
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_suffix('.tmp.npz')
+    np.savez_compressed(
+        tmp_path,
+        gauge_id=np.array(gids, dtype='U32'),
+        lat=lats,
+        lon=lons,
+        hybas_id=hybas,
+        has_forecast=has_fc,
+        quality_verified=q_ver,
+        severity_rank=sev_rank,
+        fetched_at=np.array([int(time.time())], dtype=np.int64),
     )
+    tmp_path.replace(target_path)
 
 
 class FloodHubClient:
@@ -391,11 +472,13 @@ class FloodHubClient:
         base_url: str = FLOODHUB_BASE_URL,
         timeout_s: float = 12.0,
         session: requests.Session | None = None,
+        cache_dir: Path | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip('/')
         self.timeout_s = timeout_s
         self.session = session if session is not None else requests.Session()
+        self.cache_dir = cache_dir
 
     def search_gauges_bbox(  # noqa: PLR0913, PLR0917
         self,
@@ -489,51 +572,161 @@ class FloodHubClient:
                 return dict(st)
         return None
 
-    def fetch_polygon_geometry(
-        self,
-        polygon_id: str,
-    ) -> dict[str, Any] | None:
-        """Fetch and simplify a FloodHub serialized KML inundation polygon."""
-        if not polygon_id or not polygon_id.strip():
-            raise ValueError('`polygon_id` must be a non-empty string.')
-        encoded_id = urllib.parse.quote(str(polygon_id), safe='')
-        url = f'{self.base_url}/serializedPolygons/{encoded_id}'
-        resp = self.session.get(
-            url,
-            params={'key': self.api_key},
-            timeout=self.timeout_s,
+    def lookup_cached_gauge(self, gauge_id: str) -> dict[str, Any] | None:
+        r"""Look up a single FloodHub gauge by `gauge_id` in the local catalog in $O(\log N)$."""
+        if not gauge_id:
+            return None
+        cat = load_or_build_floodhub_catalog(
+            self.cache_dir, api_key=self.api_key, base_url=self.base_url, build_if_missing=False
         )
-        if resp.status_code == 404:
+        if cat is None:
             return None
-        resp.raise_for_status()
-        payload = resp.json()
-        kml = payload.get('kml') if isinstance(payload, Mapping) else None
-        if not isinstance(kml, str) or not kml.strip():
+        gids = cat['gauge_id']
+        pos = int(np.searchsorted(gids, gauge_id))
+        if pos >= len(gids) or str(gids[pos]) != gauge_id:
             return None
-        geom = kml_to_geometry(kml)
-        if geom is None:
-            return None
+        s_rank = int(cat['severity_rank'][pos])
+        sev = _RANK_TO_SEVERITY[min(max(s_rank, 0), 3)]
+        area = float(cat['upstream_area_km2'][pos])
         return {
-            'geometry': {
-                'type': geom.geom_type,
-                'coordinates': round_geojson_coords(
-                    mapping(geom)['coordinates']
-                ),
-            },
-            'area_km2': geom_area_km2(geom),
+            'gauge_id': gauge_id,
+            'lat': round(float(cat['lat'][pos]), 5),
+            'lon': round(float(cat['lon'][pos]), 5),
+            'source': 'HYBAS' if gauge_id.startswith('hybas_') else gauge_id.split('_')[0],
+            'quality_verified': bool(cat['quality_verified'][pos]),
+            'severity': sev,
+            'severity_rank': s_rank,
+            'has_forecast': bool(cat['has_forecast'][pos]),
+            'upstream_area_km2': round(area, 1) if area > 0 else None,
         }
+
+    def query_cached_gauges_bbox(  # noqa: PLR0913
+        self,
+        min_lat: float,
+        min_lon: float,
+        max_lat: float,
+        max_lon: float,
+        *,
+        only_with_forecast: bool = True,
+        min_area_km2: float = 0.0,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]] | None:
+        """Return pre-cached FloodHub gauges inside a bounding box if the local catalog exists."""
+        cat = load_or_build_floodhub_catalog(
+            self.cache_dir, api_key=self.api_key, base_url=self.base_url, build_if_missing=False
+        )
+        if cat is None:
+            return None
+        lats = cat['lat']
+        lons = cat['lon']
+        mask = (lats >= min_lat) & (lats <= max_lat) & (lons >= min_lon) & (lons <= max_lon)
+        if only_with_forecast:
+            mask &= cat['has_forecast']
+        if min_area_km2 > 0:
+            mask &= (cat['upstream_area_km2'] >= min_area_km2) | (cat['hybas_id'] == 0)
+        idxs = np.flatnonzero(mask)
+        if len(idxs) > limit:
+            areas = cat['upstream_area_km2'][idxs]
+            top = np.argsort(-areas)[:limit]
+            idxs = idxs[top]
+        gids = cat['gauge_id']
+        sevs = cat['severity_rank']
+        qvers = cat['quality_verified']
+        areas = cat['upstream_area_km2']
+        has_fcs = cat['has_forecast']
+        out: list[dict[str, Any]] = []
+        for idx in idxs:
+            s_rank = int(sevs[idx])
+            sev = _RANK_TO_SEVERITY[min(max(s_rank, 0), 3)]
+            gid = str(gids[idx])
+            out.append(
+                {
+                    'gauge_id': gid,
+                    'lat': round(float(lats[idx]), 5),
+                    'lon': round(float(lons[idx]), 5),
+                    'source': 'HYBAS' if gid.startswith('hybas_') else gid.split('_')[0],
+                    'quality_verified': bool(qvers[idx]),
+                    'severity': sev,
+                    'severity_rank': s_rank,
+                    'has_forecast': bool(has_fcs[idx]),
+                    'upstream_area_km2': round(float(areas[idx]), 1) if areas[idx] > 0 else None,
+                }
+            )
+        return out
 
     def find_nearest_gauge(
         self,
         lat: float,
         lon: float,
         radius_km: float = FLOODHUB_GAUGE_SEARCH_RADIUS_KM,
+        *,
+        target_area_km2: float | None = None,
     ) -> tuple[str | None, dict[str, Any] | None, float | None]:
-        """Find the closest FloodHub gauge within `radius_km` of `(lat, lon)`."""
-        if not self.api_key.strip():
-            return None, None, None
+        """Find the closest FloodHub gauge with an active forecast within `radius_km` of `(lat, lon)`."""
         dlat = radius_km / 111.0
         dlon = radius_km / max(111.0 * math.cos(math.radians(lat)), 1.0)
+
+        cat = load_or_build_floodhub_catalog(
+            self.cache_dir, api_key=self.api_key, base_url=self.base_url, build_if_missing=False
+        )
+        if cat is not None:
+            lats = cat['lat']
+            lons = cat['lon']
+            mask = (
+                cat['has_forecast']
+                & (lats >= lat - dlat)
+                & (lats <= lat + dlat)
+                & (lons >= lon - dlon)
+                & (lons <= lon + dlon)
+            )
+            cand_idx = np.flatnonzero(mask)
+            if len(cand_idx) > 0:
+                best_idx: int | None = None
+                best_score = float('inf')
+                best_dist = float('inf')
+                t_area = (
+                    float(target_area_km2)
+                    if target_area_km2 is not None and float(target_area_km2) > 0
+                    else None
+                )
+                log_target = math.log10(max(t_area, 10.0)) if t_area else 0.0
+                areas = cat['upstream_area_km2']
+                for idx in cand_idx:
+                    d_km = haversine_km(lat, lon, float(lats[idx]), float(lons[idx]))
+                    if d_km > radius_km:
+                        continue
+                    g_area = float(areas[idx])
+                    if t_area is not None and g_area > 0:
+                        log_err = abs(math.log10(max(g_area, 10.0)) - log_target)
+                        score = log_err + 0.04 * d_km
+                    else:
+                        score = d_km
+                    if score < best_score:
+                        best_score = score
+                        best_dist = d_km
+                        best_idx = int(idx)
+                if best_idx is not None:
+                    gid = str(cat['gauge_id'][best_idx])
+                    s_rank = int(cat['severity_rank'][best_idx])
+                    sev = _RANK_TO_SEVERITY[min(max(s_rank, 0), 3)]
+                    return (
+                        gid,
+                        {
+                            'lat': round(float(lats[best_idx]), 5),
+                            'lon': round(float(lons[best_idx]), 5),
+                            'source': 'HYBAS' if gid.startswith('hybas_') else gid.split('_')[0],
+                            'quality_verified': bool(cat['quality_verified'][best_idx]),
+                            'severity': sev,
+                            'upstream_area_km2': round(float(areas[best_idx]), 1)
+                            if areas[best_idx] > 0
+                            else None,
+                        },
+                        round(best_dist, 2),
+                    )
+            return None, None, None
+
+        if not self.api_key.strip():
+            return None, None, None
         gauges = self.search_gauges_bbox(
             min_lat=lat - dlat,
             min_lon=lon - dlon,
@@ -569,227 +762,88 @@ class FloodHubClient:
             round(dist_km, 2),
         )
 
-    def fetch_inundation(  # noqa: PLR0913
+    def enrich_forecast_status(  # noqa: PLR0913
         self,
-        gauge_id: str | None = None,
+        gauge_id: str,
+        forecast: Mapping[str, Any],
+        *,
         lat: float | None = None,
         lon: float | None = None,
-        *,
-        include_polygons: bool = True,
-        forecast: Mapping[str, Any] | None = None,
+        gauge_meta: dict[str, Any] | None = None,
+        dist_km: float | None = None,
     ) -> dict[str, Any]:
-        """Fetch FloodHub severity, trend, thresholds, and optional inundation polygons."""
-        gid = gauge_id.strip() if gauge_id else None
-        dist_km: float | None = None
-        gauge_meta: dict[str, Any] | None = None
-        if (
-            not gid
-            and lat is not None
-            and lon is not None
-            and self.api_key.strip()
-        ):
-            try:
-                gid, gauge_meta, dist_km = self.find_nearest_gauge(
-                    float(lat), float(lon)
-                )
-            except requests.RequestException:
-                gid = None
-
-        if not gid or not self.api_key.strip():
-            return {
-                'provider': 'floodhub',
-                'status': 'unavailable',
-                'gauge_id': gid,
-                'gauge_location': gauge_meta,
-                'distance_km': dist_km,
-                'severity': 'UNKNOWN',
-                'severity_rank': 0,
-                'trend': 'UNKNOWN',
-                'severity_source': 'unavailable',
-                'issued_time': None,
-                'quality_verified': None,
-                'source': None,
-                'thresholds': {
-                    'warning_level': None,
-                    'danger_level': None,
-                    'extreme_danger_level': None,
-                    'unit': 'm³/s',
-                },
-                'inundation_maps_available': False,
-                'inundation_map_levels': [],
-                'inundation_maps_time_range': None,
-                'inundation_polygons': [],
-            }
-
-        status_obj: dict[str, Any] | None = None
-        try:
-            status_obj = self.fetch_flood_status(gid)
-        except requests.RequestException:
-            status_obj = None
-
-        fc: Mapping[str, Any]
-        if forecast is not None:
-            fc = forecast
-        else:
-            try:
-                fc = self.fetch_forecast(gid)
-            except requests.RequestException:
-                fc = {'available': False, 'status': 'unavailable', 'data': []}
-
-        th = fc.get('thresholds') or {}
-        loc = (
-            (status_obj or {}).get('gaugeLocation')
-            if isinstance(status_obj, Mapping)
-            else None
-        ) or {}
+        """Enrich a FloodHub forecast payload with severity, trend, and gauge location metadata."""
+        meta = gauge_meta or self.lookup_cached_gauge(gauge_id) or {}
         if (
             dist_km is None
             and lat is not None
             and lon is not None
-            and 'latitude' in loc
-            and 'longitude' in loc
+            and meta.get('lat') is not None
+            and meta.get('lon') is not None
         ):
             dist_km = round(
                 haversine_km(
                     float(lat),
                     float(lon),
-                    float(loc['latitude']),
-                    float(loc['longitude']),
+                    float(meta['lat']),
+                    float(meta['lon']),
                 ),
                 2,
             )
 
-        severity = normalize_floodhub_severity(
-            (status_obj or {}).get('severity')
-            if isinstance(status_obj, Mapping)
-            else None
-        )
-        trend = normalize_floodhub_trend(
-            (status_obj or {}).get('forecastTrend')
-            if isinstance(status_obj, Mapping)
-            else None
-        )
+        severity, trend = derive_floodhub_severity_from_forecast(forecast)
         if severity != 'UNKNOWN':
-            sev_source = 'floodhub_flood_status'
-            out_status = 'live'
-        elif fc.get('available'):
-            severity, trend = derive_floodhub_severity_from_forecast(fc)
-            sev_source = (
-                'derived_from_forecast_and_thresholds'
-                if severity != 'UNKNOWN'
-                else 'unavailable'
-            )
-            out_status = str(fc.get('status') or 'live')
+            sev_source = 'derived_from_forecast_and_thresholds'
+        elif meta.get('severity') and normalize_floodhub_severity(meta.get('severity')) != 'UNKNOWN':
+            severity = normalize_floodhub_severity(meta.get('severity'))
+            trend = normalize_floodhub_trend(meta.get('forecast_trend'))
+            sev_source = 'floodhub_catalog'
         else:
-            sev_source = 'unavailable'
-            out_status = 'unavailable'
-
-        raw_maps = (
-            ((status_obj or {}).get('mapInference') or {}).get('inundationMaps')
-            if isinstance(status_obj, Mapping)
-            else None
-        ) or []
-        time_range = (
-            ((status_obj or {}).get('mapInference') or {}).get('timeRange')
-            if isinstance(status_obj, Mapping)
-            else None
-        )
-        levels = [
-            str(m.get('level') or '').replace('INUNDATION_MAP_LEVEL_', '')
-            for m in raw_maps
-            if isinstance(m, Mapping) and m.get('serializedPolygonId')
-        ]
-
-        polygons: list[dict[str, Any]] = []
-        if include_polygons and raw_maps:
-            ordered = sorted(
-                raw_maps,
-                key=lambda m: FH_LEVEL_ORDER.get(
-                    str(m.get('level') or '').replace(
-                        'INUNDATION_MAP_LEVEL_', ''
-                    ),
-                    -1,
-                ),
+            status_obj: dict[str, Any] | None = None
+            try:
+                status_obj = self.fetch_flood_status(gauge_id)
+            except requests.RequestException:
+                status_obj = None
+            severity = normalize_floodhub_severity(
+                (status_obj or {}).get('severity')
+                if isinstance(status_obj, Mapping)
+                else None
             )
-            for item in ordered:
-                if not isinstance(item, Mapping):
-                    continue
-                pid = item.get('serializedPolygonId')
-                level = str(item.get('level') or '').replace(
-                    'INUNDATION_MAP_LEVEL_', ''
-                )
-                if not pid:
-                    continue
-                try:
-                    parsed = self.fetch_polygon_geometry(str(pid))
-                except requests.RequestException:
-                    parsed = None
-                if parsed is None:
-                    continue
-                polygons.append(
-                    {
-                        'type': 'Feature',
-                        'geometry': parsed['geometry'],
-                        'properties': {
-                            'layer': 'floodhub_extent',
-                            'provider': 'Google FloodHub',
-                            'source': 'FloodHub floodStatus.mapInference (serializedPolygons)',
-                            'derived': False,
-                            'gauge_id': gid,
-                            'probability_level': level,
-                            'label': f"FloodHub {FH_LEVEL_LABELS.get(level, level.title() + ' likelihood')} extent",
-                            'severity': severity,
-                            'trend': trend,
-                            'issued_time': (status_obj or {}).get('issuedTime'),
-                            'time_range': time_range,
-                            'serialized_polygon_id': pid,
-                            'area_km2': parsed['area_km2'],
-                            'color': FH_LEVEL_COLORS.get(level, '#1a73e8'),
-                        },
-                    }
-                )
+            trend = normalize_floodhub_trend(
+                (status_obj or {}).get('forecastTrend')
+                if isinstance(status_obj, Mapping)
+                else None
+            )
+            sev_source = 'floodhub_flood_status' if severity != 'UNKNOWN' else 'unavailable'
+            loc = (
+                (status_obj or {}).get('gaugeLocation')
+                if isinstance(status_obj, Mapping)
+                else None
+            ) or {}
+            if not meta and 'latitude' in loc and 'longitude' in loc:
+                meta = {
+                    'lat': loc.get('latitude'),
+                    'lon': loc.get('longitude'),
+                    'quality_verified': (status_obj or {}).get('qualityVerified'),
+                }
 
-        unit_raw = str(fc.get('unit') or 'CUBIC_METERS_PER_SECOND').upper()
-        unit_label = (
-            'm³/s'
-            if unit_raw == 'CUBIC_METERS_PER_SECOND'
-            else ('m' if unit_raw == 'METERS' else unit_raw)
-        )
         return {
-            'provider': 'floodhub',
-            'status': out_status,
-            'gauge_id': gid,
-            'gauge_location': (
-                {'lat': loc.get('latitude'), 'lon': loc.get('longitude')}
-                if loc
-                else gauge_meta
-            ),
-            'distance_km': dist_km,
+            **forecast,
             'severity': severity,
             'severity_rank': FH_SEVERITY_RANK.get(severity, 0),
             'trend': trend,
             'severity_source': sev_source,
-            'issued_time': (status_obj or {}).get('issuedTime')
-            or fc.get('issued_time'),
-            'quality_verified': (status_obj or {}).get('qualityVerified'),
-            'source': (status_obj or {}).get('source'),
-            'thresholds': {
-                'warning_level': th.get('warning_2yr'),
-                'danger_level': th.get('danger_5yr'),
-                'extreme_danger_level': th.get('extreme_20yr'),
-                'unit': unit_label,
-            },
-            'inundation_maps_available': bool(levels),
-            'inundation_map_levels': levels,
-            'inundation_maps_time_range': time_range,
-            'inundation_polygons': polygons,
+            'gauge_location': (
+                {'lat': meta.get('lat'), 'lon': meta.get('lon')}
+                if meta.get('lat') is not None and meta.get('lon') is not None
+                else None
+            ),
+            'distance_km': dist_km,
+            'quality_verified': meta.get('quality_verified'),
         }
 
 
 __all__ = [
-    'FH_LEVEL_COLORS',
-    'FH_LEVEL_LABELS',
-    'FH_LEVEL_ORDER',
     'FH_SEVERITY_LABELS',
     'FH_SEVERITY_MAP',
     'FH_SEVERITY_RANK',
@@ -797,14 +851,10 @@ __all__ = [
     'FH_TREND_MAP',
     'FLOODHUB_GAUGE_SEARCH_RADIUS_KM',
     'FloodHubClient',
-    'MultiPolygon',
     'derive_floodhub_severity_from_forecast',
-    'geom_area_km2',
-    'kml_rings',
-    'kml_to_geometry',
+    'load_or_build_floodhub_catalog',
     'normalize_floodhub_severity',
     'normalize_floodhub_trend',
     'parse_floodhub_forecast_response',
     'parse_floodhub_gauges_response',
-    'round_geojson_coords',
 ]
