@@ -487,7 +487,9 @@ class Config(object):
             return self._cfg['experiment_name']
 
     @property
-    def finetune_modules(self) -> list[str] | dict[str, str]:
+    def finetune_modules(
+        self,
+    ) -> list[str] | dict[str, str | list[str] | bool | None]:
         finetune_modules = self._cfg.get('finetune_modules', [])
         if finetune_modules is None:
             return []
@@ -515,7 +517,7 @@ class Config(object):
         return self._cfg.get('forecast_overlap', None)
 
     @property
-    def dynamics_data_dir(self) -> Path:
+    def dynamics_data_dir(self) -> Path | list[Path]:
         return self._get_value_verbose('dynamics_data_dir')
 
     @property

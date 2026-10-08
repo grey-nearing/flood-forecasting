@@ -123,7 +123,7 @@ Data settings
 
 -  ``dataset``: Dataset class to use (currently ``multimet`` is built-in, and custom classes can be registered via :py:func:`model.datasetzoo.register_dataset`).
 -  ``data_dir``: Root directory of the dataset.
--  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir``: Directory overrides for static attributes (containing ``attributes.zarr``), dynamic forcings, and target streamflow data (containing ``streamflow.zarr``).
+-  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir``: Directory overrides for static attributes (containing ``attributes.zarr``), dynamic forcings, and target streamflow data (containing ``streamflow.zarr``). ``dynamics_data_dir`` can also be a list of directories or cloud paths (for example, ``[gs://caravan-multimet/v1.1, /path/to/local_weather_zarrs]``); the loader checks local directories first for each ``<PRODUCT>/timeseries.zarr`` store before falling back to cloud paths.
 -  ``hindcast_inputs``: Nested dictionary mapping meteorological product names to lists of dynamic input variables used during the historical hindcast period.
 -  ``forecast_inputs``: Nested dictionary mapping meteorological forecast product names to lists of dynamic input variables used during the forecast rollout period.
 -  ``union_mapping``: Optional dictionary mapping primary dynamic features (keys) to fallback features (values) used to fill missing (``NaN``) timestamps, for example ``{cpc_precipitation: era5land_total_precipitation}``.
@@ -207,12 +207,23 @@ Finetune settings
 Ignored if ``mode != finetune``
 
 -  ``base_run_dir``: Path to the pre-trained model run directory containing ``config.yml``, ``scaler.zarr``, and ``model_epochXXX.pt``.
--  ``finetune_modules``: List (or dictionary) of model submodule attribute names (``module_parts``) that will be trained
-   during fine-tuning. Only parts listed here will be
-   updated during fine-tuning; all other weights are frozen.
+-  ``finetune_modules``: List or dictionary of model submodule names (``module_parts``) to train during fine-tuning. Only parts listed here are updated; all other weights remain frozen.
 
    -  For ``mean_embedding_forecast_lstm``: ``static_embedding_fc``, ``hindcast_embeddings_fc``, ``forecast_embeddings_fc``, ``shared_embeddings_fc``, ``hindcast_lstm``, ``forecast_lstm``, ``head``.
    -  For ``handoff_forecast_lstm``: ``statics_embedding_net``, ``hindcast_embedding_net``, ``forecast_embedding_net``, ``hindcast_lstm``, ``forecast_lstm``, ``handoff_net``, ``hindcast_head``, ``forecast_head``.
+   -  **Fine-tuning specific product embeddings (dictionary syntax):** For ``mean_embedding_forecast_lstm``, you can pass a dictionary to train only specific product keys inside ``hindcast_embeddings_fc``, ``forecast_embeddings_fc``, or ``shared_embeddings_fc`` while also training whole modules (set to ``true``):
+
+      .. code-block:: yaml
+
+         finetune_modules:
+           hindcast_embeddings_fc:
+             - daymet
+           forecast_embeddings_fc:
+             - gefs_reforecast
+           static_embedding_fc: true
+           head: true
+
+   -  **Adding new local weather products during fine-tuning:** You can add new local hindcast or forecast products to ``hindcast_inputs`` and ``forecast_inputs`` in your fine-tuning config. During fine-tuning, ``model`` keeps all pre-trained normalization statistics from ``base_run_dir/scaler.zarr`` unchanged, calculates ``center`` and ``scale`` statistics for the new variables over the fine-tuning training split, and saves the combined scaler to ``<run_dir>/scaler.zarr``.
 
 Logger settings
 ---------------
