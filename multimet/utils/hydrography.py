@@ -12,20 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Vector hydrography I/O readers for HydroRIVERS, HydroBASINS, and MERIT-Basins."""
+"""Vector hydrography I/O for HydroRIVERS, HydroBASINS, and MERIT-Basins."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pyogrio
 import pyogrio.raw
 import shapely
-from shapely.geometry.base import BaseGeometry
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+    from shapely.geometry.base import BaseGeometry
+
+_MIN_PFAF_STEM_PARTS: int = 3
+_BBOX_COORDS_LEN: int = 4
+_MIN_COMID_LEN: int = 2
 
 
 @dataclass(frozen=True)
@@ -66,7 +74,7 @@ class UnitCatchment:
 def _extract_pfaf_code(stem: str) -> str | None:
     """Extract Pfafstetter code from a MERIT-Basins filename stem if present."""
     parts = stem.split('_')
-    if len(parts) >= 3 and parts[1].lower() == 'pfaf':
+    if len(parts) >= _MIN_PFAF_STEM_PARTS and parts[1].lower() == 'pfaf':
         code = parts[2].replace('MERIT', '').replace('.', '').strip()
         if code.isdigit():
             return code
@@ -85,7 +93,7 @@ def discover_partitions(
     directory: str | Path,
     glob_pattern: str = '*.shp',
 ) -> tuple[Partition, ...]:
-    """Discover shapefile partitions and their total_bounds via pyogrio.read_info."""
+    """Discover shapefile partitions and their bounds via pyogrio.read_info."""
     base_dir = Path(directory).expanduser().resolve()
     if not base_dir.is_dir():
         raise FileNotFoundError(
@@ -105,13 +113,13 @@ def discover_partitions(
             l2_matches = [
                 p for p in all_matches if 'pfaf_level_02' in p.parts
             ]
-            shp_paths = l2_matches if l2_matches else all_matches
+            shp_paths = l2_matches or all_matches
 
     partitions: list[Partition] = []
     for shp_path in shp_paths:
         info = pyogrio.read_info(str(shp_path))
         raw_bounds = info.get('total_bounds')
-        if raw_bounds is None or len(raw_bounds) != 4:
+        if raw_bounds is None or len(raw_bounds) != _BBOX_COORDS_LEN:
             continue
         b0, b1, b2, b3 = (
             float(raw_bounds[0]),
@@ -141,7 +149,7 @@ def merit_partitions_for_level1(
     partitions: Sequence[Partition],
     pfaf1: int | str,
 ) -> tuple[Partition, ...]:
-    """Return all MERIT-Basins partitions sharing a level-1 Pfafstetter digit."""
+    """Return MERIT-Basins partitions sharing a level-1 Pfafstetter digit."""
     prefix = str(pfaf1).strip()[:1]
     if not prefix or not prefix.isdigit():
         raise ValueError(f'Invalid level-1 Pfafstetter digit: {pfaf1!r}')
@@ -163,7 +171,7 @@ def merit_partition_for_comid(
 ) -> Partition:
     """Locate the MERIT-Basins partition containing a given COMID."""
     comid_str = str(int(comid))
-    if len(comid_str) < 2:
+    if len(comid_str) < _MIN_COMID_LEN:
         raise LookupError(f'Invalid MERIT COMID: {comid}')
     pfaf2 = comid_str[:2]
     pfaf1 = comid_str[:1]
@@ -209,7 +217,7 @@ def read_hydrorivers(
         return []
 
     geoms = shapely.from_wkb(wkb)
-    cols = dict(zip(meta['fields'], field_arrays))
+    cols = dict(zip(meta['fields'], field_arrays, strict=False))
     n_rows = len(geoms)
 
     hyriv_ids = cols['HYRIV_ID']
@@ -321,7 +329,7 @@ def read_merit_basins_rivers(
         if wkb is None or len(wkb) == 0:
             continue
         geoms = shapely.from_wkb(wkb)
-        cols = dict(zip(meta['fields'], field_arrays))
+        cols = dict(zip(meta['fields'], field_arrays, strict=False))
         n_rows = len(geoms)
 
         comids = cols['COMID']

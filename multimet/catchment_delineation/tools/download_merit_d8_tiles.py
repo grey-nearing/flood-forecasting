@@ -137,26 +137,17 @@ def main(argv: list[str] | None = None) -> int:
             for (lat, lon) in missing
         }
         for fut in as_completed(fut_map):
-            lat, lon = fut_map[fut]
-            try:
-                fut.result()
-                completed += 1
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                sys.stderr.write(
-                    f'FAILED {tile_key_to_filename(lat, lon)}: {exc}\n'
-                )
-            if (completed + failed) % 25 == 0 or (completed + failed) == len(
-                missing
-            ):
+            fut.result()
+            completed += 1
+            if completed % 25 == 0 or completed == len(missing):
                 elapsed = time.time() - t0
-                rate = (completed + failed) / max(elapsed, 1e-3)
+                rate = completed / max(elapsed, 1e-3)
                 sys.stdout.write(
-                    f'[{completed + failed}/{len(missing)}] '
-                    f'ok={completed} failed={failed} '
+                    f'[{completed}/{len(missing)}] '
+                    f'ok={completed} '
                     f'({rate:.2f} tiles/s, elapsed={elapsed:.1f}s)\n'
                 )
-    return 1 if failed > 0 else 0
+    return 0
 
 
 if __name__ == '__main__':

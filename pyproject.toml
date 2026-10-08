@@ -4,7 +4,7 @@ target-version = "py312"
 
 
 [tool.ruff.lint]
-select = ["ANN401", "PLR2004", "D102", "D107", "E501", "C901", "PLR0912"]
+select = ["ALL"]
 
 ignore = [
   "D203",  # A blank line before class (conflicts: no-blank-line-before-class)
@@ -51,6 +51,3 @@ filterwarnings = [
     "ignore:'A' is deprecated and will be removed in a future version:FutureWarning",
     "ignore:The return type of `Dataset.dims` will be changed:FutureWarning",
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"multimet/tests/test_catchment_delineation.py" = ["PLR2004", "E501"]

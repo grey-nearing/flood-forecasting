@@ -65,7 +65,6 @@ from multimet.catchment_delineation.vector_delineator import (
     UnitCatchmentDelineator,
 )
 from multimet.utils.gcs import (
-_MAGIC_3 = 3
     is_gcs_path,
     normalize_gcs_path,
     upload_file_to_gcs,
@@ -159,7 +158,9 @@ def _delineate_worker(
             lon,
             reason,
         )
-        feature = build_missing_feature(lat, lon, cid, reason, dataset=dataset)
+        feature = build_missing_feature(
+            lat, lon, cid, reason, dataset=dataset
+        )
     else:
         feature = feat
     created = [str(p) for p in delineator.created_cache_files]
@@ -400,7 +401,7 @@ def _extract_caravan_subdataset(gauge_id: str) -> str:
             "'<subdataset>_<id>' naming convention required by "
             '--preserve-caravan-dirs.'
         )
-    if parts[0].upper() == 'CARAVAN' and len(parts) >= _MAGIC_3 and parts[1]:
+    if parts[0].upper() == 'CARAVAN' and len(parts) >= 3 and parts[1]:
         return parts[1].lower()
     return parts[0].lower()
 
@@ -705,8 +706,8 @@ def _build_hydrography_for_cli(
         if need_river or (need_vector and args.merit_rivers_dir):
             if not args.merit_rivers_dir:
                 raise ValueError(
-                    f'--merit-rivers-dir is required for --mode {args.mode} '
-                    'with MERIT-Hydro.'
+                    f"--merit-rivers-dir is required for --mode {args.mode} "
+                    "with MERIT-Hydro."
                 )
             network = RiverNetwork.from_merit_basins(args.merit_rivers_dir)
         if need_vector:
@@ -722,15 +723,15 @@ def _build_hydrography_for_cli(
         if need_river or (need_vector and args.hydrorivers_shp):
             if not args.hydrorivers_shp:
                 raise ValueError(
-                    f'--hydrorivers-shp is required for --mode {args.mode} '
-                    'with HydroSHEDS.'
+                    f"--hydrorivers-shp is required for --mode {args.mode} "
+                    "with HydroSHEDS."
                 )
             network = RiverNetwork.from_hydrorivers(args.hydrorivers_shp)
         if need_vector:
             if not args.hydrobasins_dir:
                 raise ValueError(
-                    f'--hydrobasins-dir is required for --mode {args.mode} '
-                    'with HydroSHEDS.'
+                    f"--hydrobasins-dir is required for --mode {args.mode} "
+                    "with HydroSHEDS."
                 )
             layer = HydroBasinsLayer(args.hydrobasins_dir)
             vec_delin = UnitCatchmentDelineator(layer)
@@ -763,23 +764,20 @@ def _delineate_non_dem_single(
     snap = None
     unit_id: int | None = None
     if network is not None:
-        try:
-            snap = network.snap_to_reach(lat, lon)
+        snap = network.try_snap_to_reach(lat, lon)
+        if snap is not None:
             if snap.reach.dataset == 'merit-hydro':
                 unit_id = snap.reach.reach_id
             else:
                 unit_id = (
                     int(snap.reach.extra.get('hydrobasins_unit', 0)) or None
                 )
-        except RiverSnapError:
-            snap = None
     if unit_id is None:
-        try:
-            unit_id = vec_delin.layer.locate_unit(lat, lon)
-        except LookupError as exc:
+        unit_id = vec_delin.layer.try_locate_unit(lat, lon)
+        if unit_id is None:
             raise CatchmentCoverageError(
                 f'No unit catchment found at ({lat:.4f}, {lon:.4f}).'
-            ) from exc
+            )
 
     snapped_lat = snap.lat if snap is not None else lat
     snapped_lon = snap.lon if snap is not None else lon
@@ -819,11 +817,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    try:
-        dataset = resolve_dem_dataset(args.dem)
-    except ValueError as exc:
-        sys.stderr.write(f'Error: {exc}\n')
-        return 1
+    dataset = resolve_dem_dataset(args.dem)
 
     if args.list_tiles:
         if not args.tiles_dir:
@@ -929,38 +923,17 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.mode != 'dem':
-        try:
-            network, vec_delin = _build_hydrography_for_cli(
-                args, is_merit=(dataset.id == 'merit_hydro_90m')
+        network, vec_delin = _build_hydrography_for_cli(
+            args, is_merit=(dataset.id == 'merit_hydro_90m')
+        )
+        features: list[dict[str, Any]] = [
+            _delineate_non_dem_single(
+                args, lat, lon, cid, delineator, network, vec_delin
             )
-        except Exception as exc:
-            sys.stderr.write(f'Error: {exc}\n')
-            return 1
-
-        features: list[dict[str, Any]] = []
-        for (lat, lon), cid in zip(
-            coords_to_process, ids_to_process, strict=True
-        ):
-            try:
-                feat = _delineate_non_dem_single(
-                    args, lat, lon, cid, delineator, network, vec_delin
-                )
-                features.append(feat)
-            except Exception as exc:
-                if (
-                    len(coords_to_process) == 1
-                    and not args.coords
-                    and not args.csv
-                ):
-                    sys.stderr.write(
-                        f'\nCatchment Delineation Aborted: {exc}\n'
-                    )
-                    return 1
-                features.append(
-                    build_missing_feature(
-                        lat, lon, cid, str(exc), dataset=dataset
-                    )
-                )
+            for (lat, lon), cid in zip(
+                coords_to_process, ids_to_process, strict=True
+            )
+        ]
         result = (
             features[0]
             if len(coords_to_process) == 1 and not args.coords and not args.csv

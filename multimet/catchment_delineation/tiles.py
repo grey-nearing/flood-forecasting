@@ -25,7 +25,6 @@ from multimet.catchment_delineation.config import (
     TILE_DEG,
 )
 from multimet.catchment_delineation.datasets import DemDataset
-_MAGIC_7 = 7
 
 MIN_TILE_LAT_TOP: int = -55
 
@@ -88,11 +87,10 @@ def tile_key_to_filename(lat_top: int, lon_left: int) -> str:
 
 
 def filename_to_tile_key(name: str | Path) -> tuple[int, int]:
-    """Parse a tile filename or stem (e.g. 'n40w090.npy' or 'n40w090') into (lat_top,
-        lon_left)."""
+    """Parse a tile filename or stem (e.g. 'n40w090.npy' or 'n40w090') into (lat_top, lon_left)."""
     stem = Path(str(name).strip()).stem.lower()
     if (
-        len(stem) != _MAGIC_7
+        len(stem) != 7
         or stem[0] not in ('n', 's')
         or stem[3] not in ('e', 'w')
         or not stem[1:3].isdigit()
