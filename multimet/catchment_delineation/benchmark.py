@@ -41,8 +41,15 @@ import shapely.wkt
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
+from multimet.catchment_delineation.datasets import (
+    HYDROSHEDS_90M,
+    DemDataset,
+    resolve_dem_dataset,
+)
 from multimet.catchment_delineation.delineator import DemDelineator
 from multimet.catchment_delineation.gcs import download_tile_from_gcs
+from multimet.catchment_delineation.hybrid import delineate_hybrid
+from multimet.catchment_delineation.hydrography import RiverNetwork
 from multimet.catchment_delineation.tiles import (
     is_coord_in_coverage,
     is_tile_in_coverage,
@@ -106,6 +113,9 @@ def _evaluate_single_basin(
     snap_window_cells: int = 12,
     use_area_hint: bool = True,
     area_tolerance: float = 0.50,
+    dataset_id: str = 'hydrosheds_90m',
+    mode: str = 'dem',
+    river_network_path: str | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Evaluate a single reference basin in a worker process."""
     gauge_id = str(row_dict['gauge_id'])
@@ -117,21 +127,42 @@ def _evaluate_single_basin(
     hemisphere = row_dict['hemisphere']
     size_tier = row_dict['size_tier']
 
+    dataset = resolve_dem_dataset(dataset_id)
     delineator = DemDelineator(
         tiles_dir=tiles_dir,
         gcs_uri=gcs_uri,
         cache_dir=cache_dir,
         cache_tiles=True,
+        dataset=dataset,
     )
     t0 = time.time()
-    res, err_msg = delineator._delineate_safe(
-        lat=lat,
-        lon=lon,
-        catchment_id=gauge_id,
-        snap_window_cells=snap_window_cells,
-        expected_area_km2=ref_area_km2 if use_area_hint else None,
-        area_tolerance=area_tolerance,
-    )
+    if mode == 'hybrid' and river_network_path:
+        try:
+            network = (
+                RiverNetwork.from_merit_basins(river_network_path)
+                if dataset.id == 'merit_hydro_90m'
+                else RiverNetwork.from_hydrorivers(river_network_path)
+            )
+            res = delineate_hybrid(
+                dem=delineator,
+                network=network,
+                lat=lat,
+                lon=lon,
+                catchment_id=gauge_id,
+            )
+            err_msg = None
+        except Exception as exc:
+            res = None
+            err_msg = str(exc)
+    else:
+        res, err_msg = delineator._delineate_safe(
+            lat=lat,
+            lon=lon,
+            catchment_id=gauge_id,
+            snap_window_cells=snap_window_cells,
+            expected_area_km2=ref_area_km2 if use_area_hint else None,
+            area_tolerance=area_tolerance,
+        )
     elapsed = time.time() - t0
     if res is not None:
         props = res['properties']
@@ -251,10 +282,17 @@ def run_benchmark(
     clean_cache: bool = False,
     use_area_hint: bool = True,
     area_tolerance: float = 0.50,
+    dataset: DemDataset | str = HYDROSHEDS_90M,
+    mode: str = 'dem',
+    river_network_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """Execute catchment delineation benchmark on an explicit dataset."""
+    resolved_ds = resolve_dem_dataset(dataset)
     delineator = DemDelineator(
-        tiles_dir=tiles_dir, gcs_uri=gcs_uri, cache_dir=cache_dir
+        tiles_dir=tiles_dir,
+        gcs_uri=gcs_uri,
+        cache_dir=cache_dir,
+        dataset=resolved_ds,
     )
     df = _load_benchmark_dataset(dataset_path)
 
@@ -282,9 +320,9 @@ def run_benchmark(
         for row in df.itertuples():
             lat = float(row.latitude)
             lon = float(row.longitude)
-            if is_coord_in_coverage(lat, lon):
+            if is_coord_in_coverage(lat, lon, dataset=resolved_ds):
                 tk = latlon_to_tile_key(lat, lon)
-                if is_tile_in_coverage(tk[0], tk[1]):
+                if is_tile_in_coverage(tk[0], tk[1], dataset=resolved_ds):
                     needed_tile_keys.add(tk)
 
         missing_tiles = [
@@ -315,6 +353,7 @@ def run_benchmark(
     indexed_results: list[tuple[int, dict[str, Any]]] = []
     t_start = time.time()
     mp_ctx = multiprocessing.get_context('spawn')
+    net_path_str = str(river_network_path) if river_network_path else None
 
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=mp_ctx
@@ -333,6 +372,9 @@ def run_benchmark(
                 snap_window_cells=snap_window_cells,
                 use_area_hint=use_area_hint,
                 area_tolerance=area_tolerance,
+                dataset_id=resolved_ds.id,
+                mode=mode,
+                river_network_path=net_path_str,
             ): idx
             for idx, row in enumerate(rows)
         }
@@ -430,6 +472,27 @@ def main(argv: list[str] | None = None) -> int:
         help='Explicit path to benchmark reference dataset (.parquet or gs://).',
     )
     parser.add_argument(
+        '--dem',
+        type=str,
+        default='hydrosheds_90m',
+        help='DEM dataset identifier or alias (default: hydrosheds_90m).',
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['dem', 'hybrid'],
+        default='dem',
+        help='Delineation mode: dem or hybrid (default: dem).',
+    )
+    parser.add_argument(
+        '--river-network-path',
+        type=str,
+        default=None,
+        help=(
+            'Explicit path to HydroRIVERS shapefile or MERIT-Basins river '
+            'directory (required when --mode hybrid is used).'
+        ),
+    )
+    parser.add_argument(
         '--tiles-dir',
         type=str,
         default=None,
@@ -514,6 +577,9 @@ def main(argv: list[str] | None = None) -> int:
         clean_cache=args.clean_cache,
         use_area_hint=not args.no_area_hint,
         area_tolerance=args.area_tolerance,
+        dataset=args.dem,
+        mode=args.mode,
+        river_network_path=args.river_network_path,
     )
     return 0
 

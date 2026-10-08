@@ -198,8 +198,9 @@ class HydroDelineatorTest(unittest.TestCase):
     self.assertIn('<section id="tab-account"', html)
     self.assertIn('id="loginTabUsernameInput"', html)
     self.assertIn('id="loginTabSubmitBtn"', html)
-    # 3. Single 1:1 DEM & River Network selector in #tab-delineation
-    self.assertIn("1. DEM &amp; River Network", html)
+    # 3. Single 1:1 River Network selector in #tab-delineation
+    self.assertIn("1. River Network", html)
+    self.assertIn(">River Network</label>", html)
     self.assertIn('data-alias="demSelect"', html)
     self.assertIn('data-dem-id="hydrosheds_90m"', html)
     self.assertIn('data-dem-id="merit_hydro_90m"', html)
