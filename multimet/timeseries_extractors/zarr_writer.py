@@ -281,7 +281,7 @@ class MultiMetZarrWriter:
       include_ensemble_members: bool = False,
       ensemble_members: Optional[Sequence[Any]] = None,
   ) -> str:
-    """Initializes the skeleton of a Zarr store on CNS or local disk.
+    """Initializes the skeleton of a Zarr store on GCS or local disk.
 
     Creates .zgroup, .zattrs, coordinate chunks (basin, date, [lead_time]),
     and .zarray descriptors with chunk layout chunks=(num_basins, 1) or
