@@ -12,11 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Configuration and schema definitions for the Caravan static attributes extractor."""
+"""Property classifications and data-source constants for the Caravan static attributes extractor.
+
+This module lists which HydroATLAS fields are aggregated by majority vote, which
+are pour-point (outlet) sums, which are ignored, the HydroBASINS continent
+prefixes and bounding boxes, the Caravan ERA5 climate column names, and the
+canonical GCS locations of the library's input data.
+
+Per-attribute metadata (names, units, scale factors, categories) lives in
+:mod:`multimet.static_extractor.schema`. Local file-system paths are never
+assumed here: callers (CLI, applications) pass them explicitly.
+"""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import List, Mapping, Tuple
 
 # -------------------------------------------------------------------------
 # Caravan HydroATLAS Property Definitions & Classifications
@@ -113,77 +123,31 @@ CONTINENT_BBOXES: Mapping[str, Tuple[float, float, float, float]] = {
     "si": (58.9, 45.5, 180.0, 81.3),
 }
 
-# Curated Attribute Definitions with Metadata
-ATTRIBUTE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
-    # Topography & Physiography
-    "basin_area": {"name": "Basin Area", "category": "Topography", "unit": "km²", "scale": 1.0, "desc": "Total catchment drainage area in square kilometers"},
-    "ele_mt_sav": {"name": "Mean Elevation", "category": "Topography", "unit": "m", "scale": 1.0, "desc": "Spatial mean catchment elevation"},
-    "ele_mt_smn": {"name": "Min Elevation", "category": "Topography", "unit": "m", "scale": 1.0, "desc": "Minimum catchment elevation"},
-    "ele_mt_smx": {"name": "Max Elevation", "category": "Topography", "unit": "m", "scale": 1.0, "desc": "Maximum catchment elevation"},
-    "slp_dg_sav": {"name": "Mean Slope", "category": "Topography", "unit": "deg", "scale": 0.1, "desc": "Spatial mean terrain slope in degrees"},
-    "sgr_dk_sav": {"name": "Stream Gradient", "category": "Topography", "unit": "dm/km", "scale": 1.0, "desc": "Stream gradient of river reaches"},
+CARAVAN_CLIMATE_COLUMNS: List[str] = [
+    "p_mean",
+    "pet_mean",
+    "pet_mean_FAO_PM",
+    "pet_mean_ERA5_LAND",
+    "aridity",
+    "aridity_FAO_PM",
+    "aridity_ERA5_LAND",
+    "frac_snow",
+    "moisture_index",
+    "moisture_index_FAO_PM",
+    "moisture_index_ERA5_LAND",
+    "seasonality",
+    "seasonality_FAO_PM",
+    "seasonality_ERA5_LAND",
+    "high_prec_freq",
+    "high_prec_dur",
+    "low_prec_freq",
+    "low_prec_dur",
+]
+CARAVAN_CLIMATE_INDICES = set(CARAVAN_CLIMATE_COLUMNS)
 
-    # Climate & Seasonality
-    "tmp_dc_syr": {"name": "Mean Annual Temperature", "category": "Climate", "unit": "°C", "scale": 0.1, "desc": "Spatial mean annual air temperature (HydroATLAS)"},
-    "pre_mm_syr": {"name": "Mean Annual Precipitation", "category": "Climate", "unit": "mm/yr", "scale": 1.0, "desc": "Spatial mean annual precipitation total (HydroATLAS)"},
-    "pet_mm_syr": {"name": "Potential Evapotranspiration", "category": "Climate", "unit": "mm/yr", "scale": 1.0, "desc": "Spatial mean annual potential evapotranspiration (HydroATLAS)"},
-    "aet_mm_syr": {"name": "Actual Evapotranspiration", "category": "Climate", "unit": "mm/yr", "scale": 1.0, "desc": "Spatial mean annual actual evapotranspiration (AET)"},
-    "ari_ix_sav": {"name": "Global Aridity Index", "category": "Climate", "unit": "index", "scale": 0.01, "desc": "Ratio of mean annual precipitation to PET (HydroATLAS)"},
-    "cmi_ix_syr": {"name": "Climate Moisture Index", "category": "Climate", "unit": "index", "scale": 1.0, "desc": "Indicator of water availability vs evaporative demand"},
-    "snw_pc_syr": {"name": "Snow Cover Extent", "category": "Climate", "unit": "%", "scale": 1.0, "desc": "Average annual snow cover extent percentage"},
-    "run_mm_syr": {"name": "Annual Runoff", "category": "Climate", "unit": "mm/yr", "scale": 1.0, "desc": "Spatial mean annual natural surface runoff"},
+from utils.file_paths import (
+    DEFAULT_GCS_ERA5_CLIMATE_URI,
+    DEFAULT_GCS_GRIDDED_ERA5_URI,
+    DEFAULT_GCS_HYDROATLAS_URI,
+)
 
-    # ERA5-Land Caravan Climate Indices (1981-2020)
-    "p_mean": {"name": "Mean Daily Precip (ERA5)", "category": "Climate", "unit": "mm/day", "scale": 1.0, "desc": "Long-term daily mean precipitation from ERA5-Land (1981-2020)"},
-    "pet_mean": {"name": "Potential Evapotranspiration (FAO PM)", "category": "Climate", "unit": "mm/day", "scale": 1.0, "desc": "FAO-56 Penman-Monteith potential evapotranspiration (1981-2020)"},
-    "pet_mean_FAO_PM": {"name": "Potential Evapotranspiration (FAO PM)", "category": "Climate", "unit": "mm/day", "scale": 1.0, "desc": "FAO-56 Penman-Monteith potential evapotranspiration (1981-2020)"},
-    "pet_mean_ERA5_LAND": {"name": "Potential Evaporation (ERA5-Land Native)", "category": "Climate", "unit": "mm/day", "scale": 1.0, "desc": "Long-term daily mean potential evaporation from ERA5-Land (1981-2020)"},
-    "aridity": {"name": "Aridity Index (FAO PM)", "category": "Climate", "unit": "ratio", "scale": 1.0, "desc": "Ratio of FAO Penman-Monteith PET to precipitation (1981-2020)"},
-    "aridity_FAO_PM": {"name": "Aridity Index (FAO PM)", "category": "Climate", "unit": "ratio", "scale": 1.0, "desc": "Ratio of FAO Penman-Monteith PET to precipitation (1981-2020)"},
-    "aridity_ERA5_LAND": {"name": "Aridity Index (ERA5-Land Native)", "category": "Climate", "unit": "ratio", "scale": 1.0, "desc": "Ratio of ERA5-Land native potential evaporation to precipitation (1981-2020)"},
-    "frac_snow": {"name": "Snow Fraction (ERA5)", "category": "Climate", "unit": "%", "scale": 100.0, "desc": "Fraction of precipitation falling when mean temperature < 0°C (1981-2020)"},
-    "moisture_index": {"name": "Moisture Index (FAO PM)", "category": "Climate", "unit": "index", "scale": 1.0, "desc": "Annual moisture index following Knoben et al. 2018 with FAO PM PET (1981-2020)"},
-    "moisture_index_FAO_PM": {"name": "Moisture Index (FAO PM)", "category": "Climate", "unit": "index", "scale": 1.0, "desc": "Annual moisture index following Knoben et al. 2018 with FAO PM PET (1981-2020)"},
-    "moisture_index_ERA5_LAND": {"name": "Moisture Index (ERA5-Land Native)", "category": "Climate", "unit": "index", "scale": 1.0, "desc": "Annual moisture index following Knoben et al. 2018 with ERA5-Land native PEV (1981-2020)"},
-    "seasonality": {"name": "Seasonality Index (FAO PM)", "category": "Climate", "unit": "index", "scale": 1.0, "desc": "Precipitation and FAO PM PET seasonality following Knoben et al. 2018 (1981-2020)"},
-    "seasonality_FAO_PM": {"name": "Seasonality Index (FAO PM)", "category": "Climate", "unit": "index", "scale": 1.0, "desc": "Precipitation and FAO PM PET seasonality following Knoben et al. 2018 (1981-2020)"},
-    "seasonality_ERA5_LAND": {"name": "Seasonality Index (ERA5-Land Native)", "category": "Climate", "unit": "index", "scale": 1.0, "desc": "Precipitation and ERA5-Land native PEV seasonality following Knoben et al. 2018 (1981-2020)"},
-    "high_prec_freq": {"name": "High Precip Frequency", "category": "Climate", "unit": "days/yr", "scale": 365.25, "desc": "Annual frequency of extreme precipitation days (>= 5x mean daily precip)"},
-    "high_prec_dur": {"name": "High Precip Duration", "category": "Climate", "unit": "days", "scale": 1.0, "desc": "Mean duration of consecutive extreme precipitation days (1981-2020)"},
-    "low_prec_freq": {"name": "Low Precip Frequency", "category": "Climate", "unit": "days/yr", "scale": 365.25, "desc": "Annual frequency of dry days (< 1 mm/day) (1981-2020)"},
-    "low_prec_dur": {"name": "Low Precip Duration", "category": "Climate", "unit": "days", "scale": 1.0, "desc": "Mean duration of consecutive dry spells (< 1 mm/day) (1981-2020)"},
-
-    # Soils & Geology
-    "cly_pc_sav": {"name": "Clay Content", "category": "Soils", "unit": "%", "scale": 1.0, "desc": "Volumetric fraction of clay in topsoil"},
-    "slt_pc_sav": {"name": "Silt Content", "category": "Soils", "unit": "%", "scale": 1.0, "desc": "Volumetric fraction of silt in topsoil"},
-    "snd_pc_sav": {"name": "Sand Content", "category": "Soils", "unit": "%", "scale": 1.0, "desc": "Volumetric fraction of sand in topsoil"},
-    "soc_th_sav": {"name": "Soil Organic Carbon", "category": "Soils", "unit": "t/ha", "scale": 1.0, "desc": "Mass density of organic carbon in soil column"},
-    "swc_pc_syr": {"name": "Soil Water Content", "category": "Soils", "unit": "%", "scale": 1.0, "desc": "Annual average volumetric soil water content"},
-    "gwt_cm_sav": {"name": "Water Table Depth", "category": "Soils", "unit": "cm", "scale": 1.0, "desc": "Mean depth from land surface to groundwater table"},
-    "kar_pc_sse": {"name": "Karst Area Fraction", "category": "Soils", "unit": "%", "scale": 1.0, "desc": "Percentage of catchment underlain by karst formations"},
-    "ero_kh_sav": {"name": "Soil Erodibility", "category": "Soils", "unit": "K-factor", "scale": 0.01, "desc": "USLE soil erodibility factor"},
-
-    # Land Cover & Vegetation
-    "for_pc_sse": {"name": "Forest Fraction", "category": "Land Cover", "unit": "%", "scale": 1.0, "desc": "Total forest canopy cover percentage"},
-    "crp_pc_sse": {"name": "Cropland Fraction", "category": "Land Cover", "unit": "%", "scale": 1.0, "desc": "Agricultural cropland percentage"},
-    "pst_pc_sse": {"name": "Pasture Fraction", "category": "Land Cover", "unit": "%", "scale": 1.0, "desc": "Managed grazing / pasture land percentage"},
-    "ire_pc_sse": {"name": "Irrigated Land", "category": "Land Cover", "unit": "%", "scale": 1.0, "desc": "Equipped for irrigation agricultural land"},
-    "urb_pc_sse": {"name": "Urban Extent", "category": "Land Cover", "unit": "%", "scale": 1.0, "desc": "Artificial impervious urban land percentage"},
-    "gla_pc_sse": {"name": "Glacier Fraction", "category": "Land Cover", "unit": "%", "scale": 1.0, "desc": "Perennial glacier and ice sheet coverage"},
-    "prm_pc_sse": {"name": "Permafrost Extent", "category": "Land Cover", "unit": "%", "scale": 1.0, "desc": "Catchment area under continuous or discontinuous permafrost"},
-    "pac_pc_sse": {"name": "Protected Natural Areas", "category": "Land Cover", "unit": "%", "scale": 1.0, "desc": "Catchment area inside designated nature reserves"},
-
-    # Hydrology & Inundation
-    "lka_pc_sse": {"name": "Lake Area Fraction", "category": "Hydrology", "unit": "%", "scale": 1.0, "desc": "Catchment surface area covered by natural lakes"},
-    "inu_pc_smn": {"name": "Min Inundation Extent", "category": "Hydrology", "unit": "%", "scale": 1.0, "desc": "Minimum monthly surface water inundation extent"},
-    "inu_pc_smx": {"name": "Max Inundation Extent", "category": "Hydrology", "unit": "%", "scale": 1.0, "desc": "Maximum monthly surface water inundation extent"},
-    "inu_pc_slt": {"name": "Long-Term Inundation", "category": "Hydrology", "unit": "%", "scale": 1.0, "desc": "Long-term maximum surface water inundation extent"},
-
-    # Anthropogenic & Human Modification
-    "ppd_pk_sav": {"name": "Population Density", "category": "Anthropogenic", "unit": "people/km²", "scale": 1.0, "desc": "Spatial mean human population density"},
-    "nli_ix_sav": {"name": "Nighttime Lights Index", "category": "Anthropogenic", "unit": "index", "scale": 0.1, "desc": "Satellite-derived nighttime luminosity"},
-    "rdd_mk_sav": {"name": "Road Network Density", "category": "Anthropogenic", "unit": "m/km²", "scale": 1.0, "desc": "Total road length per unit catchment area"},
-    "hft_ix_s09": {"name": "Human Footprint Index", "category": "Anthropogenic", "unit": "index (0-100)", "scale": 0.1, "desc": "Cumulative terrestrial human footprint score"},
-    "gdp_ud_sav": {"name": "Gross Domestic Product (GDP)", "category": "Anthropogenic", "unit": "USD/capita", "scale": 1.0, "desc": "Economic output per capita in the basin"},
-    "hdi_ix_sav": {"name": "Human Development Index (HDI)", "category": "Anthropogenic", "unit": "index (0-1)", "scale": 0.001, "desc": "Socioeconomic human development index"},
-}

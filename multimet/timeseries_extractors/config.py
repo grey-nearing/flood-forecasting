@@ -19,6 +19,21 @@ from __future__ import annotations
 import enum
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from utils.file_paths import (
+    DEFAULT_CHIRPS_GEFS_V2_URL,
+    DEFAULT_CHIRPS_GEFS_V3_URL,
+    DEFAULT_CHIRPS_NETCDF_URL,
+    DEFAULT_CHIRPS_TIFS_URL,
+    DEFAULT_CMR_GRANULES_URL,
+    DEFAULT_CPC_PSL_BASE_URL,
+    DEFAULT_CPC_PSL_URL_TEMPLATE,
+    DEFAULT_ECMWF_FORECASTS_URL,
+    DEFAULT_GESDISC_SLASH_URL,
+    GITHUB_MULTIMET_PACKAGE_URL,
+    GITHUB_REPO_URL,
+    WEATHERBENCH2_HRES_ZARR_URI,
+)
+
 
 class ProductType(enum.Enum):
   NOWCAST = "nowcast"
@@ -220,8 +235,7 @@ PRODUCT_BANDS: Mapping[Product, Tuple[str, ...]] = {
 }
 
 # Companion audit variable recording the area-weighted fraction [0.0, 1.0] of
-# missing (NaN) pixels within each catchment polygon at each timestep, matching
-# Google's internal flood-forecasting CookieCutterResult.missing_values field.
+# missing (NaN) pixels within each catchment polygon at each timestep.
 MISSING_FRACTION_VAR: Mapping[Product, str] = {
     Product.ERA5_LAND: "era5land_missing_fraction",
     Product.CPC: "cpc_missing_fraction",
@@ -237,10 +251,7 @@ MISSING_FRACTION_VAR: Mapping[Product, str] = {
     Product.DYNAMICAL_IMERG: "dynamical_imerg_missing_fraction",
 }
 
-GITHUB_REPO_URL = "https://github.com/google-research/flood-forecasting"
-GITHUB_PACKAGE_URL = (
-    "https://github.com/google-research/flood-forecasting/tree/main/multimet"
-)
+GITHUB_PACKAGE_URL = GITHUB_MULTIMET_PACKAGE_URL
 
 # Canonical dataset global attributes matching Caravan MultiMet v1.1
 PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
@@ -289,9 +300,7 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
                     "CPC Global Unified Gauge-Based Analysis of Daily"
                     " Precipitation"
                 ),
-                "ingested_from": (
-                    "https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/precip.{year}.nc"
-                ),
+                "ingested_from": DEFAULT_CPC_PSL_URL_TEMPLATE,
                 "variables": ["cpc_precipitation"],
                 "spatial_resolution": "0.50 degree x 0.50 degree (360 x 720)",
             },
@@ -341,9 +350,8 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
             " DOI: 10.5067/GPM/IMERGDE/DAY/07) and Level 3 Half-Hourly 0.1"
             " degree x 0.1 degree (GPM_3IMERGHHE.07, DOI:"
             " 10.5067/GPM/IMERG/3B-HH-E/07). Ingested from NASA GES DISC"
-            " GPM_3IMERGDE.07 daily NetCDF-4 files and Google's internal"
-            " mirror of the 48 daily GPM_3IMERGHHE.07 half-hourly HDF5"
-            " granules (/cns/jn-d/home/floods/hydro_model/datasets/external/IMERG/V07_Early/)."
+            " GPM_3IMERGDE.07 daily NetCDF-4 files and 48 daily"
+            " GPM_3IMERGHHE.07 half-hourly HDF5 granules."
         ),
         "Upstream_Sources_By_Date_Range": [
             {
@@ -363,12 +371,12 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
                     "10.5067/GPM/IMERG/3B-HH-E/07",
                 ],
                 "canonical_urls": [
-                    "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGDE.07/",
-                    "https://cmr.earthdata.nasa.gov/search/granules.json",
+                    DEFAULT_GESDISC_SLASH_URL,
+                    DEFAULT_CMR_GRANULES_URL,
                 ],
                 "ingested_from": [
-                    "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGDE.07/",
-                    "/cns/jn-d/home/floods/hydro_model/datasets/external/IMERG/V07_Early/",
+                    DEFAULT_GESDISC_SLASH_URL,
+                    DEFAULT_CMR_GRANULES_URL,
                 ],
                 "variables": ["imerg_precipitation"],
                 "spatial_resolution": "0.10 degree x 0.10 degree (1800 x 3600)",
@@ -413,13 +421,8 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
             " ERA5-Land Hourly 0.1 degree x 0.1 degree Global Reanalysis"
             " (reanalysis-era5-land,"
             " https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land,"
-            " DOI: 10.24381/cds.e2161bac). In reality, raw hourly GRIB files"
-            " (ERA5_Land_Hourly_{YYYYMMDD}_default_{HH}.grib) were read"
-            " directly (bypassing the Earth Engine API) from Google's internal"
-            " Earth Engine (gestalt-ingest) backend storage archive"
-            " (/namespace/gestalt-ingest/data/ECMWF/ERA5_LAND/HOURLY/,"
-            " backing the Earth Engine ECMWF/ERA5_LAND/HOURLY catalog) and"
-            " aggregated to daily UTC means, minimums, maximums, and daily"
+            " DOI: 10.24381/cds.e2161bac), aggregated from native hourly"
+            " GRIB fields to daily UTC means, minimums, maximums, and daily"
             " accumulations."
         ),
         "Upstream_Sources_By_Date_Range": [
@@ -440,12 +443,9 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
                     "https://doi.org/10.24381/cds.e2161bac",
                 ],
                 "ingested_from": (
-                    "Google Earth Engine (gestalt-ingest) raw hourly GRIB"
-                    " backend storage archive"
-                    " (/namespace/gestalt-ingest/data/ECMWF/ERA5_LAND/HOURLY/{YYYY}/{MM}/{DD}/ERA5_Land_Hourly_{YYYYMMDD}_default_{HH}.grib,"
-                    " backing Earth Engine catalog collection"
-                    " ECMWF/ERA5_LAND/HOURLY, read directly from storage"
-                    " without Earth Engine API processing)"
+                    "ECMWF / Copernicus Climate Data Store (CDS) ERA5-Land"
+                    " hourly 0.1-degree reanalysis (reanalysis-era5-land,"
+                    " Earth Engine catalog collection ECMWF/ERA5_LAND/HOURLY)"
                 ),
                 "spatial_resolution": "0.10 degree x 0.10 degree (1801 x 3600)",
             },
@@ -526,10 +526,9 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
             " total_precipitation; surface_net_solar_radiation and"
             " surface_net_thermal_radiation are not included in WeatherBench 2"
             " and are NaN only during 2016-01-01 to 2023-01-10).\n"
-            "2. 2023-01-11 to 2023-07-11: Google Flood Forecasting internal"
-            " ECMWF IFS HRES 00Z daily surface NetCDF archive"
-            " (gs://ecmwf-downloads/flood-forecasting/single-levels/daily-surface-regridded/{YYYY-MM-DD}-tp-2t-sp-ssr-str-sf.nc;"
-            " provides all 5 variables: temperature_2m, surface_pressure,"
+            "2. 2023-01-11 to 2023-07-11: Archived ECMWF IFS HRES 00Z"
+            " daily surface 0.25-degree NetCDF archive"
+            " (provides all 5 variables: temperature_2m, surface_pressure,"
             " total_precipitation, surface_net_solar_radiation, and"
             " surface_net_thermal_radiation).\n"
             "3. 2023-07-12 to present: ECMWF Open Data Operational IFS HRES"
@@ -550,9 +549,7 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
                     "WeatherBench 2 ECMWF IFS HRES 0.25-degree Archive (00Z"
                     " initialization, lead days 1..10)"
                 ),
-                "ingested_from": (
-                    "gs://weatherbench2/datasets/hres/2016-2022-0012-1440x721.zarr"
-                ),
+                "ingested_from": WEATHERBENCH2_HRES_ZARR_URI,
                 "variables_present": [
                     "temperature_2m",
                     "surface_pressure",
@@ -568,13 +565,13 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
                 "start_date": "2023-01-11",
                 "end_date": "2023-07-11",
                 "canonical_provider": "European Centre for Medium-Range Weather Forecasts (ECMWF)",
-                "archive_provider": "Google Flood Forecasting Internal ECMWF HRES Archive",
+                "archive_provider": "Archived ECMWF IFS HRES 00Z Daily Surface NetCDF Archive",
                 "dataset_name": (
                     "ECMWF IFS HRES 00Z Daily Surface Regridded NetCDF Archive"
                     " (lead days 1..10)"
                 ),
                 "ingested_from": (
-                    "gs://ecmwf-downloads/flood-forecasting/single-levels/daily-surface-regridded/{YYYY-MM-DD}-tp-2t-sp-ssr-str-sf.nc"
+                    "ECMWF IFS HRES 00Z daily surface 0.25-degree archive"
                 ),
                 "variables_present": [
                     "temperature_2m",
@@ -860,34 +857,22 @@ PRODUCT_METADATA_ATTRS: Mapping[Product, Mapping[str, Any]] = {
 DEFAULT_STORAGE_PATHS: Mapping[Product, Mapping[str, str]] = {
     Product.ERA5_LAND: {},
     Product.CPC: {
-        "psl_netcdf": (
-            "https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/"
-        ),
+        "psl_netcdf": DEFAULT_CPC_PSL_BASE_URL,
     },
     Product.IMERG: {
-        "gesdisc_url": (
-            "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGDE.07/"
-        ),
+        "gesdisc_url": DEFAULT_GESDISC_SLASH_URL,
     },
     Product.CHIRPS: {
-        "chc_netcdf": (
-            "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_daily/netcdf/p05/"
-        ),
-        "chc_tifs": (
-            "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_daily/tifs/p05/"
-        ),
+        "chc_netcdf": DEFAULT_CHIRPS_NETCDF_URL,
+        "chc_tifs": DEFAULT_CHIRPS_TIFS_URL,
     },
     Product.CHIRPS_GEFS: {
-        "chc_forecast_v2": (
-            "https://data.chc.ucsb.edu/products/CHIRPS-GEFS/v2/daily/global/"
-        ),
-        "chc_forecast_v3": (
-            "https://data.chc.ucsb.edu/products/CHIRPS-GEFS/v3/daily/global/"
-        ),
+        "chc_forecast_v2": DEFAULT_CHIRPS_GEFS_V2_URL,
+        "chc_forecast_v3": DEFAULT_CHIRPS_GEFS_V3_URL,
     },
     Product.HRES: {
         # ECMWF Open Data public HTTP archive
-        "ecmwf_open_data": "https://data.ecmwf.int/forecasts/",
+        "ecmwf_open_data": DEFAULT_ECMWF_FORECASTS_URL,
     },
     Product.AIFS: {
         "dynamical_dataset_id": "ecmwf-aifs-single-forecast",
