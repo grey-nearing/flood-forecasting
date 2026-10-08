@@ -44,6 +44,8 @@ setup(
         'multimet.gridded_archive_builders',
         'multimet.timeseries_extractors',
         'multimet.weather_fetcher',
+        'maas',
+        'maas.tools',
         'return_periods',
         'utils',
         'benchmarks',
@@ -78,12 +80,18 @@ setup(
             'extract-static-attributes=multimet.static_extractor.cli:main',
             'extract-caravan-static-batch=multimet.static_extractor.batch_runner:main',
             'extract-static-attributes-batch=multimet.static_extractor.batch_runner:main',
+<<<<<<< HEAD
+            'benchmark-static-extractor=multimet.static_extractor.benchmark:main',
+            'fetch-maas-forecast=maas.cli:main',
+            'benchmark-return-periods=return_periods.tools.run_caravan_usgs_benchmark:main',
+=======
             'benchmark-catchment=benchmarks.catchment_delineation:main',
             'benchmark-static-extractor=benchmarks.static_extractor:main',
             'benchmark-gridded-archive=benchmarks.gridded_archive_builders:main',
             'benchmark-timeseries-extractor=benchmarks.timeseries_extractors:main',
             'benchmark-return-periods=benchmarks.return_periods:main',
             'benchmark-model=benchmarks.model:main',
+>>>>>>> fork/main
         ]
     },
     python_requires='>=3.12',
