@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from utils.file_paths import DEFAULT_GCS_DEM_TILES_URI
+
 
 @dataclass(frozen=True)
 class DemDataset:
-    """Scientific metadata and geographic coverage bounds for a D8 DEM dataset."""
+    """Scientific metadata and geographic bounds for a D8 DEM dataset."""
 
     id: str
     name: str
@@ -45,7 +47,7 @@ HYDROSHEDS_90M = DemDataset(
     min_lon=-180.0,
     max_lon=180.0,
     source='hydrosheds:v1',
-    public_tiles_uri='gs://open-multimet/ancillary-data/dems/tiles_5deg',
+    public_tiles_uri=DEFAULT_GCS_DEM_TILES_URI,
 )
 
 MERIT_HYDRO_90M = DemDataset(
@@ -78,7 +80,7 @@ DEM_ALIASES: dict[str, str] = {
 
 
 def resolve_dem_dataset(alias: str | DemDataset) -> DemDataset:
-    """Resolve a DEM dataset descriptor or string alias without default fallbacks."""
+    """Resolve a DEM dataset descriptor or string alias explicitly."""
     if isinstance(alias, DemDataset):
         return alias
     if not isinstance(alias, str) or not alias.strip():
