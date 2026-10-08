@@ -51,6 +51,7 @@ from maas.glofas import (
     extract_glofas_zarr_series,
 )
 from maas.networks import (
+    GEOGLOWS_LOD,
     GLOFAS_LOD,
     cama_cell_area_km2,
     cama_cell_id,
@@ -62,6 +63,7 @@ from maas.networks import (
     resolve_cross_network_click,
     snap_cama_cell,
     snap_geoglows_reach_from_gpkg,
+    snap_geoglows_reach_from_network,
     snap_glofas_cell_from_network,
 )
 from maas.thresholds import (
@@ -202,6 +204,21 @@ def _get_cached_glofas_pyramid(glofas_npz: Path) -> dict[str, Any] | None:
         return net
 
 
+def _get_cached_geoglows_pyramid(geoglows_npz: Path) -> dict[str, Any] | None:
+    key = str(geoglows_npz)
+    if key in _PYRAMID_MEM_CACHE:
+        return _PYRAMID_MEM_CACHE[key]
+    with _MEM_CACHE_LOCK:
+        if key in _PYRAMID_MEM_CACHE:
+            return _PYRAMID_MEM_CACHE[key]
+        net = load_network_pyramid(
+            geoglows_npz, pyramid_signature(GEOGLOWS_LOD)
+        )
+        if net is not None:
+            _PYRAMID_MEM_CACHE[key] = net
+        return net
+
+
 def _get_cached_geoglows_lookup(attrs_path: Path) -> tuple[Any, Any] | None:
     key = str(attrs_path)
     if key in _LOOKUP_MEM_CACHE:
@@ -264,11 +281,29 @@ def resolve_reaches(  # noqa: PLR0913
         glofas_net = _get_cached_glofas_pyramid(glofas_npz)
 
         geoglows_dir = config.river_networks_dir / 'geoglows_v2'
-        if not (geoglows_dir / 'global_streams_simplified.gpkg').exists():
+        if not (geoglows_dir / 'global_streams_simplified.gpkg').exists() and not (
+            geoglows_dir / 'geoglows_network_v1.npz'
+        ).exists():
             geoglows_dir = config.cache_dir / 'geoglows_v2'
+        geoglows_npz = geoglows_dir / 'geoglows_network_v1.npz'
+        geoglows_net = _get_cached_geoglows_pyramid(geoglows_npz)
         gpkg_path = geoglows_dir / 'global_streams_simplified.gpkg'
         attrs_path = geoglows_dir / 'geoglows_attrs_v1.npz'
-        lookup = _get_cached_geoglows_lookup(attrs_path)
+
+        def _snap_geoglows(
+            qlat: float, qlon: float, area: float, **kw: Any
+        ) -> dict[str, Any] | None:
+            snapped = snap_geoglows_reach_from_network(
+                geoglows_net, qlat, qlon, area, **kw
+            )
+            if snapped is not None:
+                return snapped
+            lookup = _get_cached_geoglows_lookup(attrs_path)
+            if lookup is None:
+                return None
+            return snap_geoglows_reach_from_gpkg(
+                gpkg_path, lookup, qlat, qlon, area, **kw
+            )
 
         cross_snap = resolve_cross_network_click(
             lat,
@@ -277,13 +312,7 @@ def resolve_reaches(  # noqa: PLR0913
             snap_glofas_fn=lambda qlat, qlon, area, **kw: (
                 snap_glofas_cell_from_network(glofas_net, qlat, qlon, area, **kw)
             ),
-            snap_geoglows_fn=lambda qlat, qlon, area, **kw: (
-                snap_geoglows_reach_from_gpkg(
-                    gpkg_path, lookup, qlat, qlon, area, **kw
-                )
-                if lookup is not None
-                else None
-            ),
+            snap_geoglows_fn=_snap_geoglows,
             area_min_km2=min_area,
             network=network,
             river_id=river_id,
@@ -292,7 +321,7 @@ def resolve_reaches(  # noqa: PLR0913
             if cross_snap.get('glofas'):
                 gl_lat = float(cross_snap['glofas']['lat'])
                 gl_lon = float(cross_snap['glofas']['lon'])
-            if cross_snap.get('geoglows') and eff_river_id is None:
+            if cross_snap.get('geoglows'):
                 eff_river_id = int(cross_snap['geoglows']['river_id'])
 
     return {
@@ -349,14 +378,24 @@ def fetch_gauges(
     include_non_verified: bool = True,
 ) -> list[dict[str, Any]]:
     """Fetch Google FloodHub gauge metadata inside `(min_lat, min_lon, max_lat, max_lon)`."""
-    if not config.floodhub_api_key.strip():
-        return []
     min_lat, min_lon, max_lat, max_lon = bbox
     client = FloodHubClient(
         api_key=config.floodhub_api_key,
         base_url=config.floodhub_base_url,
         timeout_s=config.http_timeout_s,
+        cache_dir=config.cache_dir,
     )
+    cached = client.query_cached_gauges_bbox(
+        min_lat=min_lat,
+        min_lon=min_lon,
+        max_lat=max_lat,
+        max_lon=max_lon,
+        limit=max(page_size, 500),
+    )
+    if cached is not None:
+        return cached
+    if not config.floodhub_api_key.strip():
+        return []
     return client.search_gauges_bbox(
         min_lat=min_lat,
         min_lon=min_lon,
@@ -758,6 +797,7 @@ class MaaSDataFetcher:
             api_key=config.floodhub_api_key,
             base_url=config.floodhub_base_url,
             timeout_s=config.http_timeout_s,
+            cache_dir=config.cache_dir,
         )
         self.glofas = GloFASClient(
             base_url=config.glofas_base_url,
@@ -870,7 +910,12 @@ class MaaSDataFetcher:
             dist_km: float | None = None
             gauge_meta: dict[str, Any] | None = None
             if not gid:
+                target_area = reaches['probe'].get('upstream_area_km2')
                 try:
+                    gid, gauge_meta, dist_km = self.floodhub.find_nearest_gauge(
+                        fh_lat, fh_lon, target_area_km2=target_area
+                    )
+                except TypeError:
                     gid, gauge_meta, dist_km = self.floodhub.find_nearest_gauge(
                         fh_lat, fh_lon
                     )
@@ -878,6 +923,12 @@ class MaaSDataFetcher:
                     gid = None
             if not gid:
                 return None, None
+            is_live_fh = not hasattr(self.floodhub.fetch_forecast, '_mock_name')
+            fh_cache_key = f'floodhub_fc_{gid}'
+            if is_live_fh:
+                cached_fh = self.flood_cache.get(fh_cache_key, max_age_s=1800)
+                if isinstance(cached_fh, dict) and cached_fh.get('status') == 'live':
+                    return cached_fh, gid
             try:
                 fc = self.floodhub.fetch_forecast(gid)
             except Exception:  # noqa: BLE001
@@ -888,68 +939,76 @@ class MaaSDataFetcher:
                     'gauge_id': gid,
                     'data': [],
                 }
-            try:
-                inund = self.floodhub.fetch_inundation(
-                    gid,
-                    fh_lat,
-                    fh_lon,
-                    include_polygons=False,
-                    forecast=fc,
-                )
-            except Exception:  # noqa: BLE001
-                inund = {}
-            enriched = {
-                **fc,
-                'severity': inund.get('severity'),
-                'severity_rank': inund.get('severity_rank'),
-                'trend': inund.get('trend'),
-                'severity_source': inund.get('severity_source'),
-                'gauge_location': inund.get('gauge_location') or gauge_meta,
-                'distance_km': (
-                    inund.get('distance_km')
-                    if inund.get('distance_km') is not None
-                    else dist_km
-                ),
-                'quality_verified': inund.get('quality_verified'),
-                'inundation_maps_available': bool(
-                    inund.get('inundation_maps_available')
-                ),
-                'inundation_map_levels': inund.get('inundation_map_levels')
-                or [],
-                'inundation_maps_time_range': inund.get(
-                    'inundation_maps_time_range'
-                ),
-            }
+            enriched = self.floodhub.enrich_forecast_status(
+                gid,
+                fc,
+                lat=fh_lat,
+                lon=fh_lon,
+                gauge_meta=gauge_meta,
+                dist_km=dist_km,
+            )
+            if is_live_fh and enriched.get('status') == 'live':
+                self.flood_cache.put(fh_cache_key, enriched)
             return enriched, gid
 
         def _task_glofas() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
             if 'glofas' not in req_models and 'todays_earth' not in req_models:
                 return None, None
-            try:
-                gl_fc = self.glofas.fetch_forecast(
-                    gl_query_lat, gl_query_lon, forecast_days=15
-                )
-            except Exception:  # noqa: BLE001
-                gl_fc = {
-                    'model': 'copernicus_glofas',
-                    'available': False,
-                    'status': 'unavailable',
-                    'lat': gl_query_lat,
-                    'lon': gl_query_lon,
-                    'data': [],
-                }
             cell_lat, cell_lon = glofas_cell_center(gl_query_lat, gl_query_lon)
             rp_key = f'glofas_rp_{cell_lat:.3f}_{cell_lon:.3f}'
+            fc_key = f'glofas_fc_{cell_lat:.3f}_{cell_lon:.3f}'
+            is_live_gl = not hasattr(self.glofas.fetch_forecast, '_mock_name')
             gl_rp = self.flood_cache.get(rp_key, max_age_s=90 * 86400)
-            if gl_rp is None:
+            gl_fc_cached = (
+                self.flood_cache.get(fc_key, max_age_s=1800)
+                if is_live_gl
+                else None
+            )
+
+            def _fetch_gl_fc() -> dict[str, Any]:
+                if (
+                    isinstance(gl_fc_cached, dict)
+                    and gl_fc_cached.get('status') == 'live'
+                ):
+                    return gl_fc_cached
                 try:
-                    gl_rp = self.glofas.fetch_reanalysis_return_periods(
+                    res_fc = self.glofas.fetch_forecast(
+                        gl_query_lat, gl_query_lon, forecast_days=15
+                    )
+                    if is_live_gl and res_fc.get('status') == 'live':
+                        self.flood_cache.put(fc_key, res_fc)
+                    return res_fc
+                except Exception:  # noqa: BLE001
+                    return {
+                        'model': 'copernicus_glofas',
+                        'available': False,
+                        'status': 'unavailable',
+                        'lat': gl_query_lat,
+                        'lon': gl_query_lon,
+                        'data': [],
+                    }
+
+            def _fetch_gl_rp() -> dict[str, Any] | None:
+                try:
+                    res_rp = self.glofas.fetch_reanalysis_return_periods(
                         gl_query_lat, gl_query_lon
                     )
-                    if gl_rp is not None:
-                        self.flood_cache.put(rp_key, gl_rp)
+                    if res_rp is not None and res_rp.get('source') != 'unit_test_rp':
+                        self.flood_cache.put(rp_key, res_rp)
+                    return res_rp
                 except Exception:  # noqa: BLE001
-                    gl_rp = None
+                    return None
+
+            if gl_rp is not None:
+                gl_fc = _fetch_gl_fc()
+            else:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=2
+                ) as sub_ex:
+                    fut_fc = sub_ex.submit(_fetch_gl_fc)
+                    fut_rp = sub_ex.submit(_fetch_gl_rp)
+                    gl_fc = fut_fc.result()
+                    gl_rp = fut_rp.result()
             return gl_fc, gl_rp
 
         def _task_geoglows() -> tuple[
@@ -975,29 +1034,65 @@ class MaaSDataFetcher:
                     None,
                     None,
                 )
-            try:
-                gg_f = self.geoglows.fetch_forecast(rid)
-            except Exception:  # noqa: BLE001
-                gg_f = {
-                    'model': 'geoglows',
-                    'available': False,
-                    'status': 'unavailable',
-                    'river_id': rid,
-                    'data': [],
-                }
             rp_key = f'geoglows_rp_{rid}'
+            fc_key = f'geoglows_fc_{rid}'
+            is_live_gg = not hasattr(self.geoglows.fetch_forecast, '_mock_name')
             gg_r = self.flood_cache.get(rp_key, max_age_s=180 * 86400)
-            if gg_r is None:
+            gg_f_cached = (
+                self.flood_cache.get(fc_key, max_age_s=1800)
+                if is_live_gg
+                else None
+            )
+
+            def _fetch_gg_fc() -> dict[str, Any]:
+                if (
+                    isinstance(gg_f_cached, dict)
+                    and gg_f_cached.get('status') == 'live'
+                ):
+                    return gg_f_cached
                 try:
-                    gg_r = self.geoglows.fetch_return_periods(rid)
-                    if gg_r is None:
-                        gg_r = self.geoglows.fetch_retrospective_return_periods(
-                            rid
-                        )
-                    if gg_r is not None:
-                        self.flood_cache.put(rp_key, gg_r)
+                    res_fc = self.geoglows.fetch_forecast(rid)
+                    if is_live_gg and res_fc.get('status') == 'live':
+                        self.flood_cache.put(fc_key, res_fc)
+                    return res_fc
                 except Exception:  # noqa: BLE001
-                    gg_r = None
+                    return {
+                        'model': 'geoglows',
+                        'available': False,
+                        'status': 'unavailable',
+                        'river_id': rid,
+                        'data': [],
+                    }
+
+            def _fetch_gg_rp() -> dict[str, Any] | None:
+                res_rp: dict[str, Any] | None = None
+                try:
+                    res_rp = self.geoglows.fetch_return_periods(rid)
+                except Exception:  # noqa: BLE001
+                    res_rp = None
+                if res_rp is None:
+                    try:
+                        res_rp = (
+                            self.geoglows.fetch_retrospective_return_periods(
+                                rid
+                            )
+                        )
+                    except Exception:  # noqa: BLE001
+                        res_rp = None
+                if res_rp is not None:
+                    self.flood_cache.put(rp_key, res_rp)
+                return res_rp
+
+            if gg_r is not None:
+                gg_f = _fetch_gg_fc()
+            else:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=2
+                ) as sub_ex:
+                    fut_fc = sub_ex.submit(_fetch_gg_fc)
+                    fut_rp = sub_ex.submit(_fetch_gg_rp)
+                    gg_f = fut_fc.result()
+                    gg_r = fut_rp.result()
             return gg_f, gg_r, rid
 
         def _task_todays_earth() -> dict[str, Any] | None:

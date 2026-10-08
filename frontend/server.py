@@ -8,6 +8,7 @@ import mimetypes
 import os
 from pathlib import Path
 import time
+import threading
 from typing import Any, Dict, List, Optional
 import urllib.parse
 import urllib.request
@@ -38,7 +39,13 @@ from frontend.historical_zarr import HistoricalZarrExtractor
 from frontend.jobs import get_job_manager
 from frontend.profile_manager import get_profile_manager
 from frontend.river_indexer import HydroRiverNetwork
-from frontend.static_attributes import ATTRIBUTE_DEFINITIONS, StaticAttributesExtractor
+from frontend.static_attributes import (
+    get_attributes_extractor,
+    build_attribute_card_payload,
+    build_map_layer_geojson,
+    build_schema_payload,
+    sanitize_for_json,
+)
 from frontend.weather_sources import get_weather_source, list_weather_sources
 
 try:
@@ -82,17 +89,10 @@ _delineators: Dict[str, HydroDelineator] = {
     "hydroatlas": HydroDelineator("hydroatlas"),
 }
 
-# Lazy-loaded Static Attributes Extractor & DEM Tile Server
-_attributes_extractor: Optional[StaticAttributesExtractor] = None
 _dem_tile_server: Optional[Any] = None
 
 
-def get_attributes_extractor() -> StaticAttributesExtractor:
-  """Returns singleton instance of StaticAttributesExtractor."""
-  global _attributes_extractor
-  if _attributes_extractor is None:
-    _attributes_extractor = StaticAttributesExtractor()
-  return _attributes_extractor
+_dem_tile_server: Optional[Any] = None
 
 
 def get_dem_tile_server():
@@ -131,7 +131,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
 
   def _send_json(self, data: Any, status: int = 200):
     try:
-      body = json.dumps(data).encode("utf-8")
+      body = json.dumps(sanitize_for_json(data)).encode("utf-8")
       accept_enc = self.headers.get("Accept-Encoding", "")
 
       if "gzip" in accept_enc and len(body) > 1024:
@@ -208,10 +208,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
 
     # 1c. API: Static Catchment Attributes Schema (HydroATLAS / Caravan)
     if path == "/api/attributes/schema":
-      self._send_json({
-          "attributes": ATTRIBUTE_DEFINITIONS,
-          "extractor_source": "googlehydrology/static_extractor",
-      })
+      self._send_json(build_schema_payload())
       return
 
     # 1d. API: Raw HydroATLAS Attribute Map Layer (/api/attributes/map-layer)
@@ -233,13 +230,17 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
 
       try:
         extractor = get_attributes_extractor()
-        layer_geojson = extractor.get_raw_hydroatlas_map_layer(
+        layer_geojson = build_map_layer_geojson(
+            extractor,
             bbox=bbox,
             zoom=zoom,
             attribute=attribute,
             level=level,
         )
         self._send_json(layer_geojson)
+      except ValueError as e:
+        # e.g. "zoom in to view sub-basins" or UnsupportedHydroATLASLevelError which inherits from ValueError
+        self._send_error(str(e), status=400)
       except Exception as e:
         self._send_error(
             f"Failed to load raw HydroATLAS map layer: {str(e)}", status=500
@@ -253,11 +254,15 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
       attr_dir = pm.get_attributes_dir(user)
       json_cache_path = attr_dir / "extracted_attributes.json"
       results_by_id = {}
+
       if json_cache_path.exists():
         try:
           cached = json.loads(json_cache_path.read_text(encoding="utf-8"))
           if isinstance(cached, dict):
-            results_by_id = cached.get("results_by_id", cached)
+            raw_by_id = cached.get("results_by_id", cached)
+            from frontend.static_attributes import card_payload_from_cache_entry
+            for cid, payload in raw_by_id.items():
+              results_by_id[cid] = card_payload_from_cache_entry(cid, payload)
         except Exception:
           results_by_id = {}
 
@@ -538,7 +543,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
               {"id": "floodhub", "name": "Google FloodHub", "type": "AI / Physics", "horizon_days": 7, "units": "m³/s", "status": "operational"},
               {"id": "glofas", "name": "Copernicus GloFAS", "type": "30-Day Ensemble (CEMS)", "horizon_days": 15, "units": "m³/s", "status": "operational"},
               {"id": "geoglows", "name": "GEOGLOWS ECMWF", "type": "15-Day 51-Member Ensemble", "horizon_days": 15, "units": "m³/s", "status": "operational"},
-              {"id": "todays_earth", "name": "JAXA Today's Earth (CaMa-Flood)", "type": "MATSIRO + CaMa-Flood (streamflow + inundation)", "horizon_days": 15, "units": "m³/s", "status": todays_earth_service_status()},
+              {"id": "todays_earth", "name": "JAXA Today's Earth (CaMa-Flood)", "type": "MATSIRO + CaMa-Flood", "horizon_days": 15, "units": "m³/s", "status": todays_earth_service_status()},
           ]
       }
       self._send_json(models_info)
@@ -584,12 +589,13 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
           max_lon = float(query.get("max_lon", [180.0])[0])
           max_lat = float(query.get("max_lat", [75.0])[0])
 
+        refresh = (query.get("refresh", ["0"])[0] or "0").strip().lower() in ("1", "true", "yes")
         try:
           from frontend.maas_networks import get_model_network
         except ImportError:
           from maas_networks import get_model_network
 
-        self._send_json(get_model_network(model, min_lon, min_lat, max_lon, max_lat, zoom))
+        self._send_json(get_model_network(model, min_lon, min_lat, max_lon, max_lat, zoom, refresh=refresh))
         return
       except Exception as e:
         self._send_error(f"Failed to query MaaS river network: {e}", status=400)
@@ -625,30 +631,6 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         return
       except Exception as e:
         self._send_error(f"Failed to aggregate MaaS forecast: {e}", status=400)
-        return
-
-    # API: Spatial Flood Inundation Layers (/api/maas/flood-inundation)
-    if path == "/api/maas/flood-inundation":
-      try:
-        lat = float(query.get("lat", [32.756])[0])
-        lon = float(query.get("lon", [-117.252])[0])
-        gauge_id = query.get("gauge_id", [None])[0] or None
-        reach_id = query.get("reach_id", [None])[0] or None
-        river_id_str = query.get("river_id", [None])[0]
-        river_id = int(river_id_str) if river_id_str and river_id_str.isdigit() else None
-        if not reach_id and river_id_str and river_id_str.upper().startswith("HYRIV_"):
-          reach_id = river_id_str
-
-        try:
-          from frontend.maas_engine import get_maas_flood_inundation
-        except ImportError:
-          from maas_engine import get_maas_flood_inundation
-
-        data = get_maas_flood_inundation(lat, lon, gauge_id=gauge_id, reach_id=reach_id, river_id=river_id)
-        self._send_json(data)
-        return
-      except Exception as e:
-        self._send_error(f"Failed to query MaaS flood inundation: {e}", status=400)
         return
 
     # API: Multi-Model Watershed Polygon Probe (/api/maas/watershed)
@@ -738,9 +720,19 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
       user = self._get_request_username()
       pm = get_profile_manager()
       catchment_id = query.get("catchment_id", [None])[0] or query.get("basin_id", [None])[0]
+      raw_cids = query.get("catchment_ids", []) + query.get("basin_ids", [])
+      catchment_ids = [
+          part.strip()
+          for item in raw_cids
+          if item
+          for part in str(item).split(",")
+          if part.strip()
+      ]
       lookback_days = int(query.get("nowcast_lookback_days", [14])[0])
       query_upstream = query.get("query_upstream", ["1"])[0] not in ("0", "false", "False")
 
+      if not catchment_id and catchment_ids:
+        catchment_id = catchment_ids[0]
       if not catchment_id:
         ws = pm.load_watersheds(user)
         if ws:
@@ -754,16 +746,20 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
             "status": "no_catchment",
             "username": user,
             "basin_id": None,
+            "selected_catchment_ids": [],
+            "catchments_status": {},
             "issue_date": None,
             "expected_state_date": None,
             "saved_state": {"exists": False, "state_date": None},
             "is_state_from_previous_day": False,
+            "can_fetch_hotstart": False,
             "can_run_coldstart": False,
             "can_run_hotstart": False,
             "coldstart_status_message": "Select or delineate a catchment first.",
             "hotstart_status_message": "Select or delineate a catchment first.",
             "nowcast_products": {},
             "forecast_products": {},
+            "input_products": {},
         })
         return
 
@@ -778,6 +774,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
             basin_id=str(catchment_id),
             nowcast_lookback_days=lookback_days,
             query_upstream_if_empty=query_upstream,
+            basin_ids=catchment_ids or None,
         )
         self._send_json(payload)
         return
@@ -1096,6 +1093,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         self._send_json(geojson)
         return
       except Exception as e:
+        import traceback; traceback.print_exc()
         self._send_error(str(e), status=400)
         return
 
@@ -1114,15 +1112,24 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
       ]
       pm.save_watersheds(new_feats, username=user)
       try:
-        json_cache_path = pm.get_attributes_dir(user) / "extracted_attributes.json"
+        attr_dir = pm.get_attributes_dir(user)
+        json_cache_path = attr_dir / "extracted_attributes.json"
+        csv_path = attr_dir / "caravan_hydroatlas_attributes.csv"
         if json_cache_path.exists():
           cached = json.loads(json_cache_path.read_text(encoding="utf-8"))
           r_map = dict(cached.get("results_by_id", cached)) if isinstance(cached, dict) else {}
           if str(catchment_id) in r_map:
             del r_map[str(catchment_id)]
             json_cache_path.write_text(
-                json.dumps({"results_by_id": r_map}, indent=2), encoding="utf-8"
+                json.dumps(sanitize_for_json({"results_by_id": r_map}), indent=2),
+                encoding="utf-8",
             )
+            if r_map:
+              get_attributes_extractor().export_caravan_csv(
+                  list(r_map.values()), csv_path
+              )
+            elif csv_path.exists():
+              csv_path.unlink(missing_ok=True)
       except Exception:
         pass
       self._send_json({
@@ -1138,9 +1145,11 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
       pm = get_profile_manager()
       pm.save_watersheds([], username=user)
       try:
-        json_cache_path = pm.get_attributes_dir(user) / "extracted_attributes.json"
-        if json_cache_path.exists():
-          json_cache_path.unlink(missing_ok=True)
+        attr_dir = pm.get_attributes_dir(user)
+        for fname in ("extracted_attributes.json", "caravan_hydroatlas_attributes.csv"):
+          fpath = attr_dir / fname
+          if fpath.exists():
+            fpath.unlink(missing_ok=True)
       except Exception:
         pass
       self._send_json({"status": "cleared", "remaining_count": 0})
@@ -1877,18 +1886,20 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         except Exception:
           existing_by_id = {}
 
-      def _persist_extracted_results(new_results: List[Dict[str, Any]]) -> Path:
+      def _persist_extracted_results(new_results: List[Any]) -> Path:
         for r in new_results:
-          cid = str(r.get("catchment_id") or "basin")
-          existing_by_id[cid] = dict(r)
-        try:
-          json_cache_path.parent.mkdir(parents=True, exist_ok=True)
-          json_cache_path.write_text(
-              json.dumps({"results_by_id": existing_by_id}, indent=2),
-              encoding="utf-8",
-          )
-        except Exception:
-          pass
+          cid = str(r.catchment_id if hasattr(r, "catchment_id") else r.get("catchment_id", "basin"))
+          if hasattr(r, "to_dict"):
+            existing_by_id[cid] = r.to_dict()
+          else:
+            import dataclasses
+            existing_by_id[cid] = dataclasses.asdict(r)
+        
+        json_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        json_cache_path.write_text(
+            json.dumps(sanitize_for_json({"results_by_id": existing_by_id}), indent=2),
+            encoding="utf-8",
+        )
 
         csv_path = attr_dir / "caravan_hydroatlas_attributes.csv"
         all_results = list(existing_by_id.values()) or new_results
@@ -1897,9 +1908,13 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         master_zarr = pm.get_historical_dir(user) / "historical_training_master.zarr"
         if master_zarr.exists():
           for r in new_results:
-            extractor.append_attributes_to_zarr(
-                master_zarr, r["catchment_id"], r
-            )
+            cid = str(r.catchment_id if hasattr(r, "catchment_id") else r.get("catchment_id", "basin"))
+            try:
+              extractor.append_attributes_to_zarr(
+                  master_zarr, cid, r
+              )
+            except KeyError:
+              pass
         return csv_path
 
       # Multi-Catchment Mode ("all" or "some" via catchment_ids / features)
@@ -1931,31 +1946,50 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
           )
           return
 
+        normalized_batch = []
+        for idx, feat in enumerate(target_features):
+          if isinstance(feat, dict):
+            f_copy = dict(feat)
+            props = dict(f_copy.get("properties") or {})
+            if not (props.get("gauge_id") or props.get("catchment_id")):
+              props["catchment_id"] = str(f_copy.get("id") or f"basin_{idx + 1}")
+            f_copy["properties"] = props
+            normalized_batch.append(f_copy)
+          else:
+            normalized_batch.append(feat)
+
         try:
           results = extractor.extract_attributes_batch(
-              target_features, era5_source=era5_source
+              normalized_batch, era5_source=era5_source
           )
           csv_path = _persist_extracted_results(results)
-          first = results[0] if results else {}
+          
+          from frontend.static_attributes import build_attribute_card_payload, card_payload_from_cache_entry
+          ui_results = [build_attribute_card_payload(r) for r in results]
+          ui_existing_by_id = {cid: card_payload_from_cache_entry(cid, p) for cid, p in existing_by_id.items()}
+          
+          first = ui_results[0] if ui_results else {}
 
           self._send_json({
               "status": "success",
               "batch": True,
-              "count": len(results),
+              "count": len(ui_results),
               "csv_path": str(csv_path),
-              "results": results,
-              "results_by_id": existing_by_id,
+              "results": ui_results,
+              "results_by_id": ui_existing_by_id,
               "catchment_id": first.get("catchment_id"),
               "summary": first.get("summary", {}),
               "categories": first.get("categories", {}),
-              "caravan_attributes": first.get("caravan_attributes", {}),
+              "attributes": first.get("attributes", {}),
               "processed_attributes": first.get("processed_attributes", {}),
+              "flat_attributes": first.get("flat_attributes", {}),
               "intersected_subbasins_count": sum(
-                  int(r.get("intersected_subbasins_count", 0)) for r in results
+                  int(r.get("intersected_subbasins_count", 0)) for r in ui_results
               ),
           })
           return
         except Exception as e:
+          import traceback; traceback.print_exc()
           self._send_error(
               f"Failed to extract static attributes batch: {str(e)}", status=500
           )
@@ -1986,20 +2020,25 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
             catchment_id=catchment_id,
             era5_source=era5_source,
         )
-        single_copy = dict(result)
-        csv_path = _persist_extracted_results([single_copy])
+        csv_path = _persist_extracted_results([result])
+        
+        from frontend.static_attributes import build_attribute_card_payload, card_payload_from_cache_entry
+        ui_payload = build_attribute_card_payload(result)
+        ui_existing_by_id = {cid: card_payload_from_cache_entry(cid, p) for cid, p in existing_by_id.items()}
+
         resp_payload = {
-            **single_copy,
+            **ui_payload,
             "status": "success",
             "batch": False,
             "count": 1,
             "csv_path": str(csv_path),
-            "results": [single_copy],
-            "results_by_id": existing_by_id,
+            "results": [ui_payload],
+            "results_by_id": ui_existing_by_id,
         }
         self._send_json(resp_payload)
         return
       except Exception as e:
+        import traceback; traceback.print_exc()
         self._send_error(
             f"Failed to extract static attributes: {str(e)}", status=500
         )
@@ -2009,6 +2048,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
     if path == "/api/forecast/fetch-realtime":
       user = self._get_request_username(data)
       catchment_id = data.get("catchment_id") or data.get("basin_id")
+      catchment_ids = data.get("catchment_ids") or data.get("basin_ids")
       mode = data.get("mode", "coldstart")
       reference_date = data.get("reference_date", "latest")
       products = data.get("products")
@@ -2027,6 +2067,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         payload = _rfs.fetch_realtime_for_basin(
             username=user,
             basin_id=catchment_id,
+            basin_ids=catchment_ids,
             mode=mode,
             reference_date=reference_date,
             products=products,
@@ -2046,8 +2087,11 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
     if path == "/api/forecast/run-model":
       user = self._get_request_username(data)
       catchment_id = data.get("catchment_id") or data.get("basin_id")
+      catchment_ids = data.get("catchment_ids") or data.get("basin_ids")
       mode = data.get("mode", "coldstart")
       model_run_dir = data.get("model_run_dir")
+      requested_issue_date = data.get("requested_issue_date") or data.get("issue_date")
+      precip_overrides = data.get("precip_overrides")
 
       try:
         import importlib
@@ -2061,8 +2105,11 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         payload = _rfs.run_hydrological_model_for_basin(
             username=user,
             basin_id=catchment_id,
+            basin_ids=catchment_ids,
             mode=mode,
             model_run_dir=model_run_dir,
+            requested_issue_date=requested_issue_date,
+            precip_overrides=precip_overrides,
         )
         self._send_json(payload)
         return
@@ -2073,6 +2120,67 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         self._send_error(f"Failed to run hydrological model: {e}", status=500)
         return
 
+    # 8. API: Weather Refresh (/api/weather/refresh or /api/weather/sync)
+    if path in ("/api/weather/refresh", "/api/weather/sync"):
+      req_model = data.get("model")
+      req_models = data.get("models")
+      force = bool(data.get("force", False))
+      async_mode = bool(data.get("async", True))
+
+      try:
+        from frontend.weather_engine import SUPPORTED_MODELS, get_sync_status, get_weather_models_info
+        reload_weather_if_changed = sys.modules["__main__"].reload_weather_if_changed if "__main__" in sys.modules and hasattr(sys.modules["__main__"], "reload_weather_if_changed") else None
+        if not reload_weather_if_changed:
+            from frontend.weather_engine import reload_if_changed as reload_weather_if_changed
+      except ImportError:
+        try:
+          from weather_engine import SUPPORTED_MODELS, get_sync_status, get_weather_models_info, reload_if_changed as reload_weather_if_changed
+        except ImportError:
+          pass
+
+      target_models = None
+      if req_models:
+        target_models = list(req_models)
+      elif req_model and req_model != "all":
+        target_models = [req_model]
+      else:
+        target_models = list(SUPPORTED_MODELS.keys())
+
+      for m in target_models:
+        if m not in SUPPORTED_MODELS:
+          self._send_error(f"Unsupported model '{m}'", status=400)
+          return
+
+      def _sync_task():
+        try:
+          from frontend.weather_sync import run_sync_subprocess
+        except ImportError:
+          from weather_sync import run_sync_subprocess
+        status = run_sync_subprocess(models=target_models, force=force)
+        reload_weather_if_changed()
+        return {
+            "sync": get_sync_status(),
+            "models": get_weather_models_info(),
+            "requested_models": target_models,
+            "result": status
+        }
+
+      if async_mode:
+        job_id = get_job_manager().submit_job(
+            job_type="weather_viewer_refresh",
+            task_fn=_sync_task,
+            metadata={"models": target_models, "force": force},
+        )
+        self._send_json({
+            "status": "queued",
+            "job_id": job_id,
+            "requested_models": target_models,
+            "message": "Weather sync queued in background",
+        })
+      else:
+        self._send_json(_sync_task())
+      return
+
     self._send_error("Not Found", status=404)
 
   def log_message(self, format, *args):
@@ -2080,23 +2188,26 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
     print(f"[{self.log_date_time_string()}] {format % args}")
 
 
-def _start_weather_sync():
-  """Checks dynamical.org for newer forecast runs once an hour (weather_sync.py).
 
-  After each check the weather engine switches to a newly downloaded run, so the
-  Weather Viewer stays current without restarting the server.
-  """
-  try:
+def _start_maas_warmup() -> None:
+  """Preloads MaaS network pyramids, return-period tables, and Level 0 live forecast statuses in a background thread."""
+  import threading  # pylint: disable=g-import-not-at-top
+
+  def _warmup() -> None:
     try:
-      from frontend import weather_sync
-    except ImportError:
-      import weather_sync  # pylint: disable=g-import-not-at-top
-    if weather_sync.start_background_sync(on_finished=reload_weather_if_changed):
-      print("  🌦️  Weather forecasts: checking dynamical.org for new runs every "
-            f"{weather_sync.CHECK_INTERVAL_MINUTES} min "
-            f"(data in {weather_sync.weather_data_root()})")
-  except Exception as e:  # pylint: disable=broad-except
-    print(f"[WeatherSync] Automatic forecast updates are off: {e}")
+      try:
+        from frontend import maas_networks
+      except ImportError:
+        import maas_networks  # pylint: disable=g-import-not-at-top
+      from maas.geoglows import lookup_cached_geoglows_return_periods  # pylint: disable=g-import-not-at-top
+      for m in ("glofas", "todays_earth", "geoglows", "floodhub"):
+        maas_networks._network(m)
+        maas_networks.get_model_network(m, -180.0, -85.0, 180.0, 85.0, 3)
+      lookup_cached_geoglows_return_periods(760069805)
+    except Exception:  # pylint: disable=broad-except
+      pass
+
+  threading.Thread(target=_warmup, name="MaaSPyramidWarmup", daemon=True).start()
 
 
 def run_server(port: int = 8000, host: str = "0.0.0.0"):
@@ -2104,7 +2215,7 @@ def run_server(port: int = 8000, host: str = "0.0.0.0"):
   # Every server run starts with an empty guest session: all guest data (basins,
   # stores, caches, jobs) is erased here and then kept until the next restart.
   get_profile_manager().clear_guest_data()
-  _start_weather_sync()
+  _start_maas_warmup()
 
   ThreadingHTTPServer.allow_reuse_address = True
   server_address = (host, port)

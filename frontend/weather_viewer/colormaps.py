@@ -180,13 +180,20 @@ def colorize_indexed(
     palette[1:, 3] = 180
   elif var_key == "pressure":
     n = PRESSURE_LEVELS
-    smooth = _box_smooth(v)
+    v_press = np.where(finite, values, 1013.25).astype(np.float32)
+    smooth = _box_smooth(v_press)
     norm = np.clip((smooth - 980.0) / 50.0, 0.0, 1.0)
     idx = (1 + np.rint(norm * (n - 1))).astype(np.uint8)
     band = np.floor(smooth / 4.0)
     edge = np.zeros(band.shape, dtype=bool)
     edge[:-1, :] |= band[:-1, :] != band[1:, :]
     edge[:, :-1] |= band[:, :-1] != band[:, 1:]
+    eroded_finite = finite.copy()
+    eroded_finite[:-1, :] &= finite[1:, :]
+    eroded_finite[1:, :] &= finite[:-1, :]
+    eroded_finite[:, :-1] &= finite[:, 1:]
+    eroded_finite[:, 1:] &= finite[:, :-1]
+    edge &= eroded_finite
     idx[edge] = n + 1
     levels = np.linspace(0.0, 1.0, n)
     palette = np.zeros((n + 2, 4), dtype=np.uint8)

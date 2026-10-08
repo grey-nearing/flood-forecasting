@@ -30,8 +30,6 @@ from maas.config import (
 )
 from maas.floodhub import (
     derive_floodhub_severity_from_forecast,
-    geom_area_km2,
-    kml_to_geometry,
     normalize_floodhub_severity,
     normalize_floodhub_trend,
     parse_floodhub_forecast_response,
@@ -82,7 +80,7 @@ class TestConfigAndParsers:
 
 
 class TestFloodHubProvider:
-    """Tests Google FloodHub payload parsers, severity derivation, and KML geometry conversion."""
+    """Tests Google FloodHub payload parsers and severity derivation."""
 
     def test_parse_floodhub_gauges_and_forecast(self) -> None:
         raw_gauges = {
@@ -150,21 +148,11 @@ class TestFloodHubProvider:
         assert sev == 'DANGER'
         assert trend == 'RISING'
 
-    def test_normalize_severity_trend_and_kml(self) -> None:
+    def test_normalize_severity_and_trend(self) -> None:
         assert normalize_floodhub_severity('EXTREME') == 'EXTREME_DANGER'
         assert normalize_floodhub_severity('SEVERE') == 'DANGER'
         assert normalize_floodhub_severity('ABOVE_NORMAL') == 'WARNING'
         assert normalize_floodhub_trend('RISE') == 'RISING'
-
-        kml = (
-            '<kml><Polygon><outerBoundaryIs><LinearRing><coordinates>'
-            '-90.20,38.60,0 -90.15,38.60,0 -90.15,38.65,0 -90.20,38.65,0 -90.20,38.60,0'
-            '</coordinates></LinearRing></outerBoundaryIs></Polygon></kml>'
-        )
-        geom = kml_to_geometry(kml)
-        assert geom is not None
-        assert geom.geom_type == 'Polygon'
-        assert geom_area_km2(geom) > 10.0
 
     def test_empty_floodhub_forecast_returns_unavailable_without_mock_data(
         self,

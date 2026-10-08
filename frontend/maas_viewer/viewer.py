@@ -14,41 +14,26 @@
 
 """High-level frontend viewer combining `maas.MaaSDataFetcher` with UI presentation layers."""
 
-from datetime import UTC, datetime
-import math
-import time
 from typing import Any
-import urllib.parse
 
-from shapely.geometry import Polygon, mapping
+from shapely.geometry import mapping
 
 from frontend.maas_viewer.consensus import (
     build_aligned_timeline,
     build_consensus_row,
     build_flood_summary,
+    emulate_camaflood_physics,
     reach_exceedance_summary,
     spread_confidence,
-)
-from frontend.maas_viewer.inundation import (
-    buffer_reach_corridor,
-    camaflood_unit_feature,
-    chain_length_km,
-    channel_half_width_m,
-    depth_color,
-    emulate_camaflood_physics,
-    geojson_feature,
 )
 from maas.config import (
     CAMA_GRID_RES_DEG,
     TODAYS_EARTH_SOURCE,
     MaaSConfig,
     normalize_requested_models,
-    parse_float_or_default,
 )
 from maas.fetcher import MaaSDataFetcher, daily_series, window_peak
 from maas.floodhub import (
-    FH_LEVEL_COLORS,
-    FH_LEVEL_LABELS,
     FH_SEVERITY_LABELS,
     FH_SEVERITY_RANK,
     FH_SEVERITY_TO_RISK,
@@ -58,19 +43,10 @@ from maas.networks import (
     cama_cell_id,
     cama_cell_polygon,
     glofas_cell_polygon,
-    is_geoglows_river_id,
-    query_hydrorivers_reaches,
     snap_cama_cell,
-    trace_main_stem_chain,
 )
-from maas.thresholds import (
-    EXCEEDANCE_CLASSES,
-    thresholds_from_return_periods,
-)
+from maas.thresholds import thresholds_from_return_periods
 from maas.todays_earth import format_todays_earth_forecast
-
-CORRIDOR_WIDTH_FACTOR: tuple[float, ...] = (1.0, 3.0, 5.0, 8.0, 10.0)
-FH_DERIVED_WIDTH_FACTOR: tuple[float, ...] = (0.0, 4.0, 7.0, 10.0)
 
 
 class MaaSViewer:
@@ -105,7 +81,7 @@ class MaaSViewer:
         area_min_km2: float | str | None = None,
         network: str | None = None,
     ) -> dict[str, Any]:
-        """Fetch raw multi-model forecasts and enrich with UI timeline, consensus, and inundation."""
+        """Fetch raw multi-model forecasts and enrich with UI timeline and consensus."""
         lat, lon = float(lat), float(lon)
         models = normalize_requested_models(requested_models)
         raw_bundle = self.fetcher.fetch_forecasts(
@@ -352,13 +328,6 @@ class MaaSViewer:
         flood_summary = build_flood_summary(consensus, te_fc, fh_fc, fh_fc)
         exceedance = reach_exceedance_summary(gl_fc, gl_rp, gg_fc, gg_rp)
 
-        inundation_features: list[dict[str, Any]] = []
-        if te_fc and te_fc.get('available'):
-            c_lat, c_lon = snap_cama_cell(lat, lon)
-            inundation_features.append(
-                camaflood_unit_feature(c_lat, c_lon, te_fc)
-            )
-
         vs = dict(raw_bundle['virtual_station'])
         if te_fc and te_fc.get('available'):
             vs['todays_earth_cell'] = {
@@ -376,52 +345,6 @@ class MaaSViewer:
                 ),
                 'model_chain': 'MATSIRO + CaMa-Flood',
             }
-
-        eff_gid = raw_bundle['location'].get('gauge_id')
-        eff_rid = raw_bundle['location'].get('river_id')
-        inund_params: dict[str, Any] = {'lat': lat, 'lon': lon}
-        if eff_gid:
-            inund_params['gauge_id'] = eff_gid
-        if reach_id:
-            inund_params['reach_id'] = reach_id
-        if is_geoglows_river_id(eff_rid):
-            inund_params['river_id'] = eff_rid
-
-        flood_inundation = {
-            'endpoint': '/api/maas/flood-inundation?'
-            + urllib.parse.urlencode(inund_params),
-            'layers': ['floodhub_extent', 'camaflood_depth', 'reach_exceedance'],
-            'floodhub': {
-                'status': (fh_fc or {}).get('status'),
-                'gauge_id': eff_gid,
-                'severity': (fh_fc or {}).get('severity'),
-                'trend': (fh_fc or {}).get('trend'),
-                'severity_source': (fh_fc or {}).get('severity_source'),
-                'issued_time': (fh_fc or {}).get('issued_time'),
-                'inundation_maps_available': bool(
-                    (fh_fc or {}).get('inundation_maps_available')
-                ),
-                'inundation_map_levels': (fh_fc or {}).get(
-                    'inundation_map_levels'
-                )
-                or [],
-                'inundation_maps_time_range': (fh_fc or {}).get(
-                    'inundation_maps_time_range'
-                ),
-            },
-            'todays_earth': {
-                'grid_cell_id': (te_fc or {}).get('grid_cell_id'),
-                'status': (te_fc or {}).get('status'),
-                'emulated': (te_fc or {}).get('emulated'),
-                'max_flood_depth_m': te_ff.get('max_flood_depth_m'),
-                'max_flooded_fraction_pct': te_ff.get(
-                    'max_flooded_fraction_pct'
-                ),
-                'max_sfcelv_m': te_ff.get('max_sfcelv_m'),
-                'peak_depth_time': te_ff.get('peak_depth_time'),
-            },
-            'reach_exceedance': exceedance,
-        }
 
         thresholds_by_model = {
             'floodhub': (
@@ -467,274 +390,7 @@ class MaaSViewer:
             'consensus': consensus,
             'flood_summary': flood_summary,
             'reach_exceedance': exceedance,
-            'flood_inundation': flood_inundation,
-            'inundation': {
-                'type': 'FeatureCollection',
-                'features': inundation_features,
-            },
             'meta': meta,
-        }
-
-    def render_inundation_view(
-        self,
-        lat: float,
-        lon: float,
-        gauge_id: str | None = None,
-        reach_id: str | None = None,
-        river_id: int | str | None = None,
-    ) -> dict[str, Any]:
-        """Build the unified 3-layer spatial flood-inundation GeoJSON FeatureCollection."""
-        lat, lon = float(lat), float(lon)
-        t0 = time.time()
-        cell_lat, cell_lon = snap_cama_cell(lat, lon)
-        cell_ring, cell_bbox = cama_cell_polygon(cell_lat, cell_lon)
-        cell_id = cama_cell_id(cell_lat, cell_lon)
-        pad = 0.03
-        q_bbox = (
-            min(cell_bbox['min_lon'], lon - 0.1) - pad,
-            min(cell_bbox['min_lat'], lat - 0.1) - pad,
-            max(cell_bbox['max_lon'], lon + 0.1) + pad,
-            max(cell_bbox['max_lat'], lat + 0.1) + pad,
-        )
-
-        shp_path = (
-            self.config.river_networks_dir
-            / 'hydrorivers'
-            / 'HydroRIVERS_v10.shp'
-        )
-        if not shp_path.exists():
-            shp_path = (
-                self.config.river_networks_dir
-                / 'HydroRIVERS_v10_shp'
-                / 'HydroRIVERS_v10.shp'
-            )
-        reaches = (
-            query_hydrorivers_reaches(shp_path, *q_bbox)
-            if shp_path.exists()
-            else []
-        )
-        start, chain, snap_km = trace_main_stem_chain(
-            reaches, lat, lon, reach_id=reach_id
-        )
-
-        view = self.render_forecast_view(
-            lat,
-            lon,
-            gauge_id=gauge_id,
-            river_id=int(river_id) if is_geoglows_river_id(river_id) else None,
-            reach_id=reach_id,
-        )
-        models_out = view['models']
-        te = models_out.get('todays_earth') or {}
-        gg_fc = models_out.get('geoglows') or {}
-        exceedance = view['reach_exceedance']
-
-        eff_gid = view['location'].get('gauge_id') or gauge_id
-        fh = self.fetcher.floodhub.fetch_inundation(
-            eff_gid,
-            lat,
-            lon,
-            include_polygons=True,
-            forecast=models_out.get('floodhub'),
-        )
-
-        cell_poly = Polygon(cell_ring)
-        te_ff = te.get('flood_forecast') or {}
-        peak_depth = parse_float_or_default(te_ff.get('max_flood_depth_m'), 0.0)
-        peak_frac = parse_float_or_default(
-            te_ff.get('max_flooded_fraction_pct'), 0.0
-        )
-        cell_area = cama_cell_area_km2(cell_lat)
-        te_source = te.get('source', TODAYS_EARTH_SOURCE) + (
-            ' — emulated' if te.get('emulated') else ''
-        )
-
-        features: list[dict[str, Any]] = [
-            camaflood_unit_feature(cell_lat, cell_lon, te)
-        ]
-
-        if chain:
-            rank = int(exceedance.get('rank') or 0)
-            factor = CORRIDOR_WIDTH_FACTOR[
-                min(max(rank, 0), len(CORRIDOR_WIDTH_FACTOR) - 1)
-            ]
-            geom = buffer_reach_corridor(
-                chain,
-                lambda r: channel_half_width_m(r['mean_discharge_m3s']) * factor,
-                lat,
-            )
-            if geom is not None:
-                features.append(
-                    geojson_feature(
-                        geom,
-                        {
-                            'layer': 'reach_exceedance',
-                            'provider': 'GEOGLOWS / GloFAS',
-                            'source': 'HydroRIVERS main stem styled by forecast-peak return-period exceedance',
-                            'label': f"Reach exceedance — {exceedance['label']}",
-                            'exceedance_rank': exceedance['rank'],
-                            'exceedance_label': exceedance['label'],
-                            'risk_level': exceedance['risk_level'],
-                            'return_period': exceedance['return_period'],
-                            'governing_model': exceedance.get('governing_model'),
-                            'per_model': exceedance.get('per_model'),
-                            'reach_count': len(chain),
-                            'hydrorivers_reach': (
-                                f"HYRIV_{start['hyriv_id']}" if start else None
-                            ),
-                            'color': exceedance['color'],
-                        },
-                    )
-                )
-
-        if chain and peak_frac >= 0.1:
-            length_km = chain_length_km(chain, lat, clip=cell_poly)
-            if length_km >= 0.5:
-                target_km2 = peak_frac / 100.0 * cell_area
-                half_width_km = min(
-                    max(target_km2 / (2.0 * length_km), 0.05), 12.0
-                )
-                geom = buffer_reach_corridor(
-                    chain, half_width_km * 1000.0, lat, clip=cell_poly
-                )
-                if geom is not None:
-                    features.append(
-                        geojson_feature(
-                            geom,
-                            {
-                                'layer': 'camaflood_depth',
-                                'feature_role': 'floodplain',
-                                'provider': "JAXA Today's Earth",
-                                'source': te_source,
-                                'status': te.get('status'),
-                                'emulated': te.get('emulated'),
-                                'grid_cell_id': cell_id,
-                                'label': 'CaMa-Flood forecast floodplain inundation',
-                                'peak_flood_depth_m': round(peak_depth, 3),
-                                'peak_flooded_fraction_pct': round(
-                                    peak_frac, 2
-                                ),
-                                'target_flooded_area_km2': round(target_km2, 2),
-                                'peak_depth_time': te_ff.get('peak_depth_time'),
-                                'color': depth_color(max(peak_depth, 0.01)),
-                            },
-                        )
-                    )
-
-        fh_polys = list(fh.get('inundation_polygons') or [])
-        features.extend(fh_polys)
-
-        fh_rank = int(fh.get('severity_rank') or 0)
-        fh_derived = False
-        if not fh_polys and fh_rank >= 1 and chain:
-            factor = FH_DERIVED_WIDTH_FACTOR[min(fh_rank, 3)]
-            geom = buffer_reach_corridor(
-                chain,
-                lambda r: channel_half_width_m(r['mean_discharge_m3s']) * factor,
-                lat,
-            )
-            if geom is not None:
-                fh_derived = True
-                features.append(
-                    geojson_feature(
-                        geom,
-                        {
-                            'layer': 'floodhub_extent',
-                            'provider': 'Google FloodHub',
-                            'source': 'River corridor buffered by FloodHub severity (no official inundation map)',
-                            'derived': True,
-                            'gauge_id': fh.get('gauge_id'),
-                            'probability_level': None,
-                            'label': f"FloodHub {fh.get('severity')} zone (derived)",
-                            'severity': fh.get('severity'),
-                            'color': '#1a73e8',
-                        },
-                    )
-                )
-
-        counts: dict[str, int] = {}
-        for f in features:
-            layer = f['properties']['layer']
-            counts[layer] = counts.get(layer, 0) + 1
-
-        fh_summary = {
-            k: v for k, v in fh.items() if k != 'inundation_polygons'
-        }
-        te_summary = {
-            'grid_cell_id': cell_id,
-            'status': te.get('status'),
-            'emulated': te.get('emulated'),
-            'source': te.get('source'),
-            'note': te.get('note'),
-            'max_flood_depth_m': te_ff.get('max_flood_depth_m'),
-            'max_flooded_fraction_pct': te_ff.get('max_flooded_fraction_pct'),
-            'max_sfcelv_m': te_ff.get('max_sfcelv_m'),
-            'peak_depth_time': te_ff.get('peak_depth_time'),
-            'cell_area_km2': cell_area,
-        }
-        return {
-            'type': 'FeatureCollection',
-            'features': features,
-            'metadata': {
-                'lat': lat,
-                'lon': lon,
-                'gauge_id': fh.get('gauge_id') or eff_gid,
-                'river_id': gg_fc.get('river_id'),
-                'reach_id': f"HYRIV_{start['hyriv_id']}" if start else reach_id,
-                'generated_at': datetime.now(UTC).strftime(
-                    '%Y-%m-%dT%H:%M:%SZ'
-                ),
-                'elapsed_s': round(time.time() - t0, 2),
-                'layers': {
-                    'floodhub_extent': {
-                        'count': counts.get('floodhub_extent', 0),
-                        'status': fh.get('status'),
-                        'severity': fh.get('severity'),
-                        'trend': fh.get('trend'),
-                        'official_maps': bool(fh_polys),
-                        'derived': fh_derived,
-                    },
-                    'camaflood_depth': {
-                        'count': counts.get('camaflood_depth', 0),
-                        **te_summary,
-                    },
-                    'reach_exceedance': {
-                        'count': counts.get('reach_exceedance', 0),
-                        **exceedance,
-                    },
-                },
-                'floodhub': fh_summary,
-                'todays_earth': te_summary,
-                'reach_exceedance': exceedance,
-                'corridor': {
-                    'dataset': 'HydroRIVERS v1.0',
-                    'hydrorivers_reach': (
-                        f"HYRIV_{start['hyriv_id']}" if start else None
-                    ),
-                    'reach_count': len(chain),
-                    'snap_distance_km': snap_km,
-                },
-                'legend': {
-                    'floodhub_extent': [
-                        {
-                            'label': FH_LEVEL_LABELS[k],
-                            'color': FH_LEVEL_COLORS[k],
-                        }
-                        for k in ('HIGH', 'MEDIUM', 'LOW')
-                    ],
-                    'reach_exceedance': [
-                        {'label': c['label'], 'color': c['color']}
-                        for c in EXCEEDANCE_CLASSES
-                    ],
-                    'camaflood_depth': [
-                        {'label': '0 m', 'color': depth_color(0.0)},
-                        {'label': '< 0.5 m', 'color': depth_color(0.25)},
-                        {'label': '0.5-1 m', 'color': depth_color(0.75)},
-                        {'label': '1-2 m', 'color': depth_color(1.5)},
-                        {'label': '> 2 m', 'color': depth_color(2.5)},
-                    ],
-                },
-            },
         }
 
     def render_watershed_polygon(  # noqa: PLR0913

@@ -92,6 +92,12 @@ setup(
     },
     python_requires='>=3.12',
     install_requires=[],
+    extras_require={
+        # Downloading forecast runs with `sync-weather-forecasts`
+        # (multimet.weather_fetcher): the dynamical.org catalog (pystac) and
+        # its Icechunk/Zarr stores, plus GRIB2 decoding for ECMWF Open Data.
+        'weather': ['pystac', 'icechunk', 'eccodes'],
+    },
     classifiers=[
         'Programming Language :: Python :: 3',
         'Operating System :: OS Independent',

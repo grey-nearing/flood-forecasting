@@ -14,9 +14,12 @@
 
 """Frontend multi-model consensus badges, flood summary cards, and chart timeline formatting."""
 
+import math
 from typing import Any
 
-from maas.config import MAAS_MODEL_NAMES, TODAYS_EARTH_SOURCE
+import numpy as np
+
+from maas.config import MAAS_MODEL_NAMES, parse_finite_float
 from maas.fetcher import align_daily_series, daily_series, window_peak
 from maas.thresholds import (
     EXCEEDANCE_CLASSES,
@@ -25,7 +28,104 @@ from maas.thresholds import (
     UNASSESSED_LABEL,
     classify_exceedance,
     estimate_return_period_years,
+    gumbel_quantile_from_return_periods,
 )
+from maas.todays_earth import CAMA_FLDOUT_SHARE, CAMA_FLOODPLAIN_K
+
+
+def route_floodplain_excess(
+    series: list[float],
+    q_bankfull: float,
+    k: float = CAMA_FLOODPLAIN_K,
+) -> list[float]:
+    """Linear-reservoir routing of above-bankfull flow (daily explicit scheme)."""
+    routed: list[float] = []
+    state: float | None = None
+    for q in series:
+        excess = max(q - q_bankfull, 0.0)
+        state = excess if state is None else state + k * (excess - state)
+        routed.append(state)
+    return routed
+
+
+def emulate_camaflood_physics(
+    glofas_records: list[dict[str, Any]],
+    rps: dict[str, Any],
+    elev: float = 80.0,
+    elev_source: str = 'Open-Meteo DEM',
+) -> dict[str, Any]:
+    """Deterministic CaMa-Flood-style streamflow routing emulation from GloFAS v4."""
+    records = (glofas_records or [])[:6]
+
+    def _col(name: str, fallback: str = 'discharge_mean') -> list[float]:
+        out: list[float] = []
+        for r in records:
+            v = parse_finite_float(r.get(name))
+            if v is None:
+                v = parse_finite_float(r.get(fallback))
+            out.append(max(v or 0.0, 0.0))
+        return out
+
+    central = _col('discharge_median')
+    med_val = float(np.median(central)) if central else 1.0
+    q_clim = parse_finite_float((rps or {}).get('mean_flow')) or med_val or 1.0
+    q_clim = max(q_clim, 0.05)
+    width = max(0.40 * q_clim**0.75, 10.0)
+    depth = max(0.10 * q_clim**0.5, 1.0)
+    q_bf = max(
+        gumbel_quantile_from_return_periods(rps or {}, 1.5) or 0.0,
+        1.2 * q_clim,
+        0.5,
+    )
+    elev_c = min(max(float(elev), 0.0), 1500.0)
+    depth_scale = 1.0 + elev_c / 150.0
+    f_max = (0.02 + 0.08 * math.log10(1.0 + q_clim / 10.0)) * (
+        1.0 + 1.5 * math.exp(-elev_c / 30.0)
+    )
+    f_max = min(max(f_max, 0.02), 0.6)
+
+    def _cama(
+        series: list[float],
+    ) -> tuple[list[float], list[float], list[float]]:
+        routed = route_floodplain_excess(series, q_bf)
+        total = [min(q, q_bf) + r for q, r in zip(series, routed)]
+        fld = [CAMA_FLDOUT_SHARE * r for r in routed]
+        return total, [t - f for t, f in zip(total, fld)], fld
+
+    total, rivout, fldout = _cama(central)
+    stage = [depth * (max(r, 0.0) / q_bf) ** 0.6 for r in rivout]
+    flddph = [max(h - depth, 0.0) for h in stage]
+    fldfrc = [100.0 * f_max * (1.0 - math.exp(-d / depth_scale)) for d in flddph]
+    sfcelv = [max(max(float(elev), 0.0) - depth + h, 0.0) for h in stage]
+    r2 = lambda xs: [round(x, 2) for x in xs]
+    return {
+        'series': {
+            'timestamps': [
+                f"{str(r.get('time'))[:10]}T00:00:00Z" for r in records
+            ],
+            'mean': r2(total),
+            'rivout': r2(rivout),
+            'fldout': r2(fldout),
+            'p25': r2(_cama(_col('discharge_p25'))[0]),
+            'p75': r2(_cama(_col('discharge_p75'))[0]),
+            'max': r2(_cama(_col('discharge_max'))[0]),
+            'min': r2(_cama(_col('discharge_min'))[0]),
+            'flddph_m': [round(d, 3) for d in flddph],
+            'fldfrc_pct': r2(fldfrc),
+            'sfcelv_m': r2(sfcelv),
+        },
+        'channel_params': {
+            'mean_flow_m3s': round(q_clim, 3),
+            'bankfull_discharge_m3s': round(q_bf, 2),
+            'channel_width_m': round(width, 1),
+            'channel_depth_m': round(depth, 2),
+            'ground_elevation_m': float(elev),
+            'elevation_source': elev_source,
+            'max_flooded_fraction_ceiling_pct': round(100.0 * f_max, 1),
+        },
+        'forcing_status': 'live',
+        'return_period_status': (rps or {}).get('status'),
+    }
 
 
 def spread_confidence(
@@ -152,7 +252,7 @@ def build_flood_summary(
     consensus: list[dict[str, Any]],
     te: dict[str, Any] | None,
     fh_fc: dict[str, Any] | None,
-    fh_inund: dict[str, Any] | None,
+    fh_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Synthesize overall multi-model flood warning status across all independent models."""
     independent = [
@@ -186,32 +286,13 @@ def build_flood_summary(
         agreement += " (Today's Earth is emulated from GloFAS and excluded)"
     if excluded:
         agreement += f"; offline fallback excluded: {', '.join(excluded)}"
-    te_ff = (te or {}).get('flood_forecast') or {}
-    fh_inund = fh_inund or {}
+    fh_meta = fh_status or fh_fc or {}
     return {
-        'max_inundation_depth_m': te_ff.get('max_flood_depth_m'),
-        'max_flooded_fraction_pct': te_ff.get('max_flooded_fraction_pct'),
-        'peak_sfcelv_m': te_ff.get('max_sfcelv_m'),
-        'peak_depth_time': te_ff.get('peak_depth_time'),
-        'inundation_source': (
-            (
-                TODAYS_EARTH_SOURCE
-                + (' — emulated' if te.get('emulated') else '')
-            )
-            if te
-            else None
-        ),
         'floodhub_severity': (
-            fh_inund.get('severity') if fh_fc else 'UNAVAILABLE'
+            fh_meta.get('severity') if fh_fc else 'UNAVAILABLE'
         ),
-        'floodhub_trend': fh_inund.get('trend') if fh_fc else None,
-        'floodhub_severity_source': fh_inund.get('severity_source'),
-        'floodhub_inundation_maps_available': bool(
-            fh_inund.get('inundation_maps_available')
-        ),
-        'floodhub_inundation_map_levels': (
-            fh_inund.get('inundation_map_levels') or []
-        ),
+        'floodhub_trend': fh_meta.get('trend') if fh_fc else None,
+        'floodhub_severity_source': fh_meta.get('severity_source'),
         'return_period_exceedance': (
             worst['exceedance_label'] if worst else 'Unknown'
         ),

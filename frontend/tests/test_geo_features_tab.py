@@ -6,12 +6,13 @@ import re
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import urllib.parse
 import urllib.request
 
 from frontend.server import EarthkitHydroHandler
 from frontend.static_attributes import (
-    ATTRIBUTE_DEFINITIONS,
+    ATTRIBUTE_REGISTRY,
     StaticAttributesExtractor,
 )
 # Importing the tests package points profiles at a temp folder (never real accounts).
@@ -124,15 +125,16 @@ class GeoFeaturesTabTest(unittest.TestCase):
 
     def test_static_extractor_googlehydrology_integration(self):
         """Verify StaticAttributesExtractor uses the googlehydrology static_extractor package."""
-        extractor = StaticAttributesExtractor()
-        res = extractor.extract_attributes(CATCHMENT_1, catchment_id="geo_test_basin_1")
+        from frontend.static_attributes import get_attributes_extractor, build_attribute_card_payload
+        extractor = get_attributes_extractor()
+        res = build_attribute_card_payload(extractor.extract_attributes_for_polygon(CATCHMENT_1, catchment_id="geo_test_basin_1", era5_source="hybas"))
         self.assertEqual(res["status"], "success")
         self.assertEqual(res["catchment_id"], "geo_test_basin_1")
         self.assertIn("flat_attributes", res)
         self.assertIn("categories", res)
         self.assertIn("summary", res)
         flat = res["flat_attributes"]
-        for key in ("ele_mt_sav", "pre_mm_syr", "for_pc_sse", "cly_pc_sav", "p_mean", "aridity"):
+        for key in ("ele_mt_sav", "pre_mm_syr", "for_pc_sse", "cly_pc_sav", "p_mean", "aridity_ERA5_LAND"):
             self.assertIn(key, flat)
 
     def test_extract_one_some_and_all_catchments(self):
@@ -209,7 +211,13 @@ class GeoFeaturesTabTest(unittest.TestCase):
 
     def test_raw_hydroatlas_attribute_map_layer_endpoint(self):
         """Verify GET /api/attributes/map-layer returns colored BasinATLAS polygons for multiple attributes."""
-        for attr_key in ("ele_mt_sav", "pre_mm_syr", "for_pc_sse", "cly_pc_sav", "p_mean"):
+        s_status, schema = self._get("/api/attributes/schema")
+        self.assertEqual(s_status, 200)
+        self.assertEqual(schema["extractor_source"], "multimet.static_extractor")
+        self.assertIsInstance(schema["attribute_list"], list)
+        self.assertGreater(len(schema["attribute_list"]), 30)
+
+        for attr_key in ("ele_mt_sav", "pre_mm_syr", "for_pc_sse", "cly_pc_sav", "p_mean", "pet_mean_FAO_PM"):
             status, fc = self._get(
                 f"/api/attributes/map-layer?bbox=-106.5,39.4,-105.8,39.9&zoom=8&attribute={attr_key}"
             )
@@ -217,9 +225,10 @@ class GeoFeaturesTabTest(unittest.TestCase):
             self.assertEqual(fc["type"], "FeatureCollection")
             props = fc["properties"]
             self.assertEqual(props["attribute"], attr_key)
-            self.assertEqual(props["unit"], ATTRIBUTE_DEFINITIONS[attr_key]["unit"])
+            self.assertEqual(props["unit"], ATTRIBUTE_REGISTRY[attr_key].physical_unit)
             self.assertGreater(props["count"], 0)
             self.assertIsNotNone(props["min_value"])
+            self.assertIsNotNone(props["mean_value"])
             self.assertIsNotNone(props["max_value"])
             first_feat = fc["features"][0]
             self.assertEqual(first_feat["type"], "Feature")

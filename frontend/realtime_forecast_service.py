@@ -19,7 +19,7 @@ import logging
 import math
 from pathlib import Path
 import sys
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -335,17 +335,162 @@ def resolve_issue_date(
   return pd.Timestamp.now("UTC").floor("D").tz_localize(None)
 
 
+_KNOWN_PRODUCT_PREFIXES: Tuple[str, ...] = (
+    "era5land_",
+    "ifs_ens_",
+    "chirpsgefs_",
+    "graphcast_",
+    "chirps_",
+    "imerg_",
+    "hres_",
+    "aifs_",
+    "gefs_",
+    "gfs_",
+    "cpc_",
+)
+
+
+def _describe_variable(var_name: str) -> Dict[str, Any]:
+  """Builds rich UI metadata (label, unit, kind, chart_type) for a Zarr variable."""
+  short_name = str(var_name)
+  for prefix in _KNOWN_PRODUCT_PREFIXES:
+    if short_name.lower().startswith(prefix):
+      short_name = short_name[len(prefix) :]
+      break
+
+  lower = short_name.lower()
+  if "precip" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "precipitation",
+        "unit": "mm/day",
+        "label": "Total Precipitation (mm/day)",
+        "chart_type": "bar",
+    }
+  if "dewpoint" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "dewpoint",
+        "unit": "°C",
+        "label": "2m Dewpoint Temperature (°C)",
+        "chart_type": "line",
+    }
+  if "temperature" in lower or lower.startswith("temp"):
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "temperature",
+        "unit": "°C",
+        "label": "2m Air Temperature (°C)",
+        "chart_type": "line",
+    }
+  if "solar_radiation" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "solar_radiation",
+        "unit": "W/m²",
+        "label": "Surface Net Solar Radiation (W/m²)",
+        "chart_type": "line",
+    }
+  if "thermal_radiation" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "thermal_radiation",
+        "unit": "W/m²",
+        "label": "Surface Net Thermal Radiation (W/m²)",
+        "chart_type": "line",
+    }
+  if "pressure" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "pressure",
+        "unit": "Pa",
+        "label": "Surface Pressure (Pa)",
+        "chart_type": "line",
+    }
+  if "humidity" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "humidity",
+        "unit": "kg/kg",
+        "label": "Specific Humidity (kg/kg)",
+        "chart_type": "line",
+    }
+  if "u_component_of_wind" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "wind_u",
+        "unit": "m/s",
+        "label": "10m U-Wind Component (m/s)",
+        "chart_type": "line",
+    }
+  if "v_component_of_wind" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "wind_v",
+        "unit": "m/s",
+        "label": "10m V-Wind Component (m/s)",
+        "chart_type": "line",
+    }
+  if "num_stations" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "stations",
+        "unit": "count",
+        "label": "Reporting Gauge Stations (count)",
+        "chart_type": "bar",
+    }
+  if "snow_depth" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "snow",
+        "unit": "mm",
+        "label": f"{short_name.replace('_', ' ').title()} (mm)",
+        "chart_type": "line",
+    }
+  if "potential_evaporation" in lower:
+    return {
+        "name": var_name,
+        "short_name": short_name,
+        "kind": "pet",
+        "unit": "mm/day",
+        "label": f"{short_name.replace('_', ' ').title()} (mm/day)",
+        "chart_type": "line",
+    }
+  return {
+      "name": var_name,
+      "short_name": short_name,
+      "kind": "other",
+      "unit": "",
+      "label": short_name.replace("_", " ").title(),
+      "chart_type": "line",
+  }
+
+
 def extract_multi_stream_precipitation_series(
     username: Optional[str],
     catchment_id: str,
     issue_date: pd.Timestamp,
     lookback_days: int = 14,
 ) -> Dict[str, Any]:
-  """Reads real nowcast and forecast precipitation series from user Zarr stores.
+  """Reads real nowcast and forecast meteorological series from user Zarr stores.
 
-  Strictly preserves `NaN` (serialized as `None`) whenever a satellite/gauge
-  product has not yet reported for recent days (`t0 - 2d`, `t0 - 1d`, etc.).
-  Never fabricates or interpolates missing precipitation!
+  Extracts all input variables across the issue date (`t0`, `lead_time=1d`) and
+  all forecast lead times (`lead_time=1..L`), as well as the trailing nowcast
+  window (`t0 - lookback_days .. t0 - 1d`).
+  Strictly preserves `NaN` (serialized as `None`) whenever a satellite/gauge or
+  forecast product has missing values or latency gaps. Never fabricates or
+  interpolates missing data!
   """
   t0 = pd.Timestamp(issue_date).floor("D").tz_localize(None)
   expected_state_date = t0 - pd.Timedelta(days=1)
@@ -355,6 +500,7 @@ def extract_multi_stream_precipitation_series(
   stores = _discover_zarr_stores(username)
   nowcast_streams: Dict[str, Dict[str, Any]] = {}
   forecast_streams: Dict[str, Dict[str, Any]] = {}
+  input_products: Dict[str, Dict[str, Any]] = {}
 
   for prod_name, store_path in stores.items():
     try:
@@ -367,6 +513,14 @@ def extract_multi_stream_precipitation_series(
     if bkey is None:
       continue
     sub = ds.sel(basin=bkey)
+    all_vars = [
+        str(v)
+        for v in sub.data_vars
+        if not str(v).endswith("_missing_fraction")
+    ]
+    if not all_vars:
+      continue
+    variables_meta = [_describe_variable(v) for v in all_vars]
 
     # Case A: 2D Nowcast store (basin, date)
     if "lead_time" not in sub.dims and "date" in sub.coords:
@@ -376,33 +530,55 @@ def extract_multi_stream_precipitation_series(
               "id": prod_name,
               "label": prod_name,
               "var_name": next(
-                  (
-                      v
-                      for v in sub.data_vars
-                      if "precip" in v and not v.endswith("_missing_fraction")
-                  ),
-                  None,
+                  (v for v in all_vars if "precip" in v.lower()),
+                  all_vars[0],
               ),
           },
       )
-      var_name = meta.get("var_name")
-      if not var_name or var_name not in sub.data_vars:
-        continue
-      da = sub[var_name]
+      var_name = _resolve_var_in_ds(sub, str(meta.get("var_name") or "")) or next(
+          (v for v in all_vars if "precip" in v.lower()),
+          all_vars[0],
+      )
+      t_var = next(
+          (
+              v
+              for v in all_vars
+              if ("temperature" in v.lower() or v.lower().endswith("_temp"))
+              and "dewpoint" not in v.lower()
+              and not v.lower().endswith(("_min", "_max"))
+          ),
+          None,
+      )
       store_dates = pd.to_datetime(sub["date"].values).floor("D")
-      val_map = {
-          _format_date_str(d): _clean_float(v)
-          for d, v in zip(store_dates, da.values)
-      }
+      date_strs = [_format_date_str(d) for d in store_dates]
+
+      var_maps: Dict[str, Dict[str, Optional[float]]] = {}
+      for v_name in all_vars:
+        vals_1d = sub[v_name].values
+        var_maps[v_name] = {
+            d_s: _clean_float(val) for d_s, val in zip(date_strs, vals_1d)
+        }
 
       series_points = []
       latest_valid_date = None
       missing_recent_days = 0
-      for d in nowcast_dates:
+      # Include issue_date t0 if present in the 2D store, after the nowcast window
+      query_dates = list(nowcast_dates)
+      t0_str = _format_date_str(t0)
+      for d in query_dates:
         d_str = _format_date_str(d)
-        val = val_map.get(d_str, None)
-        series_points.append({"date": d_str, "precip_mm": val})
-        if val is not None:
+        p_val = var_maps.get(var_name, {}).get(d_str, None)
+        t_val = var_maps.get(t_var, {}).get(d_str, None) if t_var else None
+        pt_values = {v_name: var_maps[v_name].get(d_str, None) for v_name in all_vars}
+        series_points.append({
+            "date": d_str,
+            "is_issue_date": False,
+            "precip_mm": p_val,
+            "temp_c": t_val,
+            "temperature_c": t_val,
+            "values": pt_values,
+        })
+        if p_val is not None:
           latest_valid_date = d_str
 
       # Count trailing NaN days at the end of the nowcast window (latency gap)
@@ -412,15 +588,28 @@ def extract_multi_stream_precipitation_series(
         else:
           break
 
-      nowcast_streams[prod_name] = {
+      has_precip = any(pt["precip_mm"] is not None for pt in series_points)
+      has_temp = any(pt["temperature_c"] is not None for pt in series_points)
+      nc_entry = {
           "id": prod_name,
+          "product": prod_name,
+          "kind": "nowcast",
           "label": meta.get("label", prod_name),
           "variable": var_name,
+          "precip_var": var_name,
+          "temp_var": t_var,
+          "has_precip": has_precip,
+          "has_temp": has_temp,
+          "variables": variables_meta,
+          "default_variable_mode": "precip_and_temp",
           "zarr_path": str(store_path),
+          "issue_date": t0_str,
           "latest_valid_date": latest_valid_date,
           "trailing_latency_gap_days": missing_recent_days,
           "series": series_points,
       }
+      nowcast_streams[prod_name] = nc_entry
+      input_products[prod_name] = nc_entry
 
     # Case B: 3D Forecast store (basin, date, lead_time)
     elif "lead_time" in sub.dims and "date" in sub.coords:
@@ -430,45 +619,70 @@ def extract_multi_stream_precipitation_series(
               "id": prod_name,
               "label": prod_name,
               "precip_var": next(
-                  (
-                      v
-                      for v in sub.data_vars
-                      if "precip" in v and not v.endswith("_missing_fraction")
-                  ),
+                  (v for v in all_vars if "precip" in v.lower()),
                   None,
               ),
               "temp_var": next(
-                  (v for v in sub.data_vars if "temperature" in v),
+                  (v for v in all_vars if "temperature" in v.lower()),
                   None,
               ),
           },
       )
-      p_var = meta.get("precip_var")
-      t_var = meta.get("temp_var")
+      p_var = _resolve_var_in_ds(sub, str(meta.get("precip_var") or "")) or next(
+          (v for v in all_vars if "precip" in v.lower()),
+          None,
+      )
+      t_var = _resolve_var_in_ds(sub, str(meta.get("temp_var") or "")) or next(
+          (v for v in all_vars if "temperature" in v.lower()),
+          None,
+      )
       if not p_var or p_var not in sub.data_vars:
         continue
 
       store_dates = pd.to_datetime(sub["date"].values).floor("D")
-      # Also expose 1-day lead time (`lead_time=1d`) across the historical/nowcast window
-      # as a zero-latency NWP analysis/hindcast reference stream
-      da_1d = sub[p_var].isel(lead_time=0)
-      hindcast_map = {
-          _format_date_str(d): _clean_float(v)
-          for d, v in zip(store_dates, da_1d.values)
-      }
-      if any(hindcast_map.get(_format_date_str(d)) is not None for d in nowcast_dates):
-        hc_points = [
-            {
-                "date": _format_date_str(d),
-                "precip_mm": hindcast_map.get(_format_date_str(d), None),
-            }
-            for d in nowcast_dates
-        ]
+      store_date_strs = [_format_date_str(d) for d in store_dates]
+
+      # Extract 1-day lead time (`lead_time=1d`) across the historical/nowcast window
+      # for ALL variables in this product
+      hc_var_maps: Dict[str, Dict[str, Optional[float]]] = {}
+      for v_name in all_vars:
+        da_1d_v = sub[v_name].isel(lead_time=0).values
+        hc_var_maps[v_name] = {
+            d_s: _clean_float(val) for d_s, val in zip(store_date_strs, da_1d_v)
+        }
+
+      hc_points = []
+      for d in nowcast_dates:
+        d_str = _format_date_str(d)
+        p_val = hc_var_maps.get(p_var, {}).get(d_str, None)
+        t_val = hc_var_maps.get(t_var, {}).get(d_str, None) if t_var else None
+        hc_points.append({
+            "date": d_str,
+            "lead_time_days": 1,
+            "is_issue_date": False,
+            "precip_mm": p_val,
+            "temp_c": t_val,
+            "temperature_c": t_val,
+            "values": {
+                v_name: hc_var_maps[v_name].get(d_str, None)
+                for v_name in all_vars
+            },
+        })
+
+      if any(pt["precip_mm"] is not None or pt["temperature_c"] is not None for pt in hc_points):
         hc_key = f"{prod_name}_1D"
         nowcast_streams[hc_key] = {
             "id": hc_key,
+            "product": hc_key,
+            "kind": "nowcast_hindcast",
             "label": f"{meta.get('label', prod_name)} (Day-1 Hindcast)",
             "variable": p_var,
+            "precip_var": p_var,
+            "temp_var": t_var,
+            "has_precip": any(pt["precip_mm"] is not None for pt in hc_points),
+            "has_temp": any(pt["temperature_c"] is not None for pt in hc_points),
+            "variables": variables_meta,
+            "default_variable_mode": "precip_and_temp",
             "zarr_path": str(store_path),
             "latest_valid_date": next(
                 (
@@ -488,13 +702,11 @@ def extract_multi_stream_precipitation_series(
         continue
       chosen_issue = max(valid_issue_dates)
       fc_slice = sub.sel(date=chosen_issue)
-      p_vals = fc_slice[p_var].values
-      t_vals = (
-          fc_slice[t_var].values
-          if (t_var and t_var in fc_slice.data_vars)
-          else [None] * len(p_vals)
-      )
       lead_coords = fc_slice["lead_time"].values
+
+      fc_var_arrays: Dict[str, Any] = {
+          v_name: fc_slice[v_name].values for v_name in all_vars
+      }
 
       fc_points = []
       for idx, raw_lt in enumerate(lead_coords):
@@ -505,22 +717,44 @@ def extract_multi_stream_precipitation_series(
         # Follow Guy Shalev / PR #333 convention: lead_time=1d is valid on issue_date `t0`,
         # lead_time=2d is `t0 + 1d`, ..., lead_time=10d is `t0 + 9d`.
         valid_date = pd.Timestamp(chosen_issue) + pd.Timedelta(days=lt_days - 1)
+        valid_date_str = _format_date_str(valid_date)
+        p_val = _clean_float(fc_var_arrays[p_var][idx]) if p_var in fc_var_arrays else None
+        t_val = _clean_float(fc_var_arrays[t_var][idx]) if (t_var and t_var in fc_var_arrays) else None
+        pt_values = {
+            v_name: _clean_float(fc_var_arrays[v_name][idx])
+            for v_name in all_vars
+        }
         fc_points.append({
             "lead_time_days": lt_days,
-            "date": _format_date_str(valid_date),
-            "precip_mm": _clean_float(p_vals[idx]),
-            "temp_c": _clean_float(t_vals[idx]),
+            "date": valid_date_str,
+            "is_issue_date": bool(lt_days == 1),
+            "precip_mm": p_val,
+            "temp_c": t_val,
+            "temperature_c": t_val,
+            "values": pt_values,
         })
 
-      forecast_streams[prod_name] = {
+      fc_entry = {
           "id": prod_name,
+          "product": prod_name,
+          "kind": "forecast",
           "label": meta.get("label", prod_name),
           "variable": p_var,
+          "precip_var": p_var,
+          "temp_var": t_var,
+          "has_precip": any(pt["precip_mm"] is not None for pt in fc_points),
+          "has_temp": any(pt["temperature_c"] is not None for pt in fc_points),
+          "variables": variables_meta,
+          "default_variable_mode": "precip_and_temp",
           "zarr_path": str(store_path),
           "issue_date": _format_date_str(chosen_issue),
           "horizon_days": len(fc_points),
+          "lead_times_days": [pt["lead_time_days"] for pt in fc_points],
           "series": fc_points,
+          "hindcast_series": hc_points,
       }
+      forecast_streams[prod_name] = fc_entry
+      input_products[prod_name] = fc_entry
 
   return {
       "issue_date": _format_date_str(t0),
@@ -528,7 +762,43 @@ def extract_multi_stream_precipitation_series(
       "nowcast_dates": [_format_date_str(d) for d in nowcast_dates],
       "nowcast_products": nowcast_streams,
       "forecast_products": forecast_streams,
+      "input_products": input_products,
   }
+
+
+def _normalize_catchment_id_list(
+    catchment_id: Optional[str] = None,
+    catchment_ids: Optional[Sequence[str]] = None,
+) -> List[str]:
+  """Normalizes `catchment_id` and `catchment_ids` into a deduplicated non-empty list."""
+  ids: List[str] = []
+  if catchment_ids:
+    for raw in catchment_ids:
+      if raw is None:
+        continue
+      for part in str(raw).split(","):
+        cleaned = part.strip()
+        if cleaned and cleaned not in ids:
+          ids.append(cleaned)
+  if catchment_id:
+    cleaned_single = str(catchment_id).strip()
+    if cleaned_single and cleaned_single not in ids:
+      ids.insert(0, cleaned_single)
+  return ids
+
+
+def _basin_has_realtime_data(
+    stores: Dict[str, Path], catchment_id: str
+) -> bool:
+  """Checks whether any Zarr store contains data for `catchment_id`."""
+  for store_path in stores.values():
+    try:
+      ds = xr.open_zarr(store_path, consolidated=False)
+      if _find_basin_key_in_ds(ds, catchment_id) is not None:
+        return True
+    except Exception:  # pylint: disable=broad-except
+      continue
+  return False
 
 
 def get_realtime_status(
@@ -538,11 +808,21 @@ def get_realtime_status(
     model_id: str = "5-basin-example",
     lookback_days: int = 14,
     probe_ecmwf: bool = False,
+    catchment_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-  """Returns full status for the Forecasting tab: issue date, state validation, and streams."""
+  """Returns full status for the Forecasting tab: issue date, state validation, and streams.
+
+  Supports both a focused `catchment_id` (for chart streams) and a multi-select
+  list `catchment_ids` (for batch readiness and strict yesterday-state gating).
+  Hot-Start is strictly enabled ONLY if yesterday's saved state
+  (`state_date == issue_date - 1 day`) exists for every selected catchment.
+  """
+  selected_ids = _normalize_catchment_id_list(catchment_id, catchment_ids)
+  primary_id = str(catchment_id).strip() if catchment_id else (selected_ids[0] if selected_ids else "")
+
   t0 = resolve_issue_date(
       username=username,
-      catchment_id=catchment_id,
+      catchment_id=primary_id,
       requested_issue_date=requested_issue_date,
       probe_ecmwf=probe_ecmwf,
   )
@@ -550,7 +830,7 @@ def get_realtime_status(
   issue_date_str = _format_date_str(t0)
 
   state_info = inspect_saved_state(
-      username=username, catchment_id=catchment_id, model_id=model_id
+      username=username, catchment_id=primary_id, model_id=model_id
   )
   saved_state_date = state_info.get("state_date")
   is_state_from_previous_day = bool(
@@ -559,7 +839,7 @@ def get_realtime_status(
 
   streams = extract_multi_stream_precipitation_series(
       username=username,
-      catchment_id=catchment_id,
+      catchment_id=primary_id,
       issue_date=t0,
       lookback_days=int(lookback_days),
   )
@@ -567,63 +847,233 @@ def get_realtime_status(
       streams["nowcast_products"] or streams["forecast_products"]
   )
 
+  # Inspect all user watersheds + selected_ids so the UI can show per-catchment badges
+  pm = profile_manager.get_profile_manager()
+  watersheds = pm.load_watersheds(username)
+  all_known_ids: List[str] = list(selected_ids)
+  for feat in watersheds:
+    props = feat.get("properties", {})
+    cid = str(props.get("catchment_id") or feat.get("id") or "").strip()
+    if cid and cid not in all_known_ids:
+      all_known_ids.append(cid)
+
+  stores = _discover_zarr_stores(username)
+  catchments_status: Dict[str, Dict[str, Any]] = {}
+  for cid in all_known_ids:
+    if cid == primary_id:
+      c_state = state_info
+      c_prev = is_state_from_previous_day
+      c_has_data = has_realtime_data
+    else:
+      c_state = inspect_saved_state(
+          username=username, catchment_id=cid, model_id=model_id
+      )
+      c_prev = bool(
+          c_state.get("exists")
+          and c_state.get("state_date") == expected_state_date
+      )
+      c_has_data = _basin_has_realtime_data(stores, cid)
+
+    catchments_status[cid] = {
+        "catchment_id": cid,
+        "issue_date": issue_date_str,
+        "expected_state_date": expected_state_date,
+        "saved_state": c_state,
+        "is_state_from_previous_day": c_prev,
+        "has_realtime_data": c_has_data,
+        "can_fetch_hotstart": c_prev,
+        "can_run_hotstart": bool(c_prev and c_has_data),
+        "can_run_coldstart": bool(c_has_data),
+    }
+
+  eval_ids = selected_ids if selected_ids else ([primary_id] if primary_id else [])
+  missing_or_stale: List[Dict[str, Any]] = []
+  for cid in eval_ids:
+    cs = catchments_status.get(cid, {})
+    st = cs.get("saved_state", {})
+    if not cs.get("is_state_from_previous_day"):
+      st_date = st.get("state_date")
+      reason = (
+          f"No saved state file (requires yesterday's state {expected_state_date})"
+          if not st.get("exists") or not st_date
+          else f"Saved state is from {st_date}, not yesterday ({expected_state_date})"
+      )
+      missing_or_stale.append({
+          "catchment_id": cid,
+          "state_exists": bool(st.get("exists")),
+          "state_date": st_date,
+          "expected_state_date": expected_state_date,
+          "reason": reason,
+      })
+
+  all_selected_have_previous_day_state = bool(
+      eval_ids and len(missing_or_stale) == 0
+  )
+  all_selected_have_realtime_data = bool(
+      eval_ids
+      and all(
+          catchments_status.get(cid, {}).get("has_realtime_data", False)
+          for cid in eval_ids
+      )
+  )
+  can_run_hotstart = bool(
+      all_selected_have_previous_day_state and all_selected_have_realtime_data
+  )
+  can_run_coldstart = bool(all_selected_have_realtime_data)
+
+  if not all_selected_have_previous_day_state:
+    bad_summary = "; ".join(
+        f"{item['catchment_id']} ({item['state_date'] or 'no state'})"
+        for item in missing_or_stale
+    )
+    hotstart_msg = (
+        f"Hot-Start requires yesterday's saved state ({expected_state_date}). "
+        f"Unavailable for: {bad_summary}. Run Cold-Start first."
+    )
+  elif not all_selected_have_realtime_data:
+    hotstart_msg = (
+        f"Yesterday's saved state ({expected_state_date}) is valid, but real-time "
+        "forcing data has not been fetched for all selected catchments yet."
+    )
+  else:
+    hotstart_msg = (
+        f"Hot-Start ready for {len(eval_ids)} catchment(s) from yesterday's "
+        f"state ({expected_state_date})."
+    )
+
+  if can_run_coldstart:
+    coldstart_msg = f"Cold-Start ready for {len(eval_ids)} selected catchment(s)."
+  else:
+    coldstart_msg = "Fetch real-time data for the selected catchment(s) before running the model."
+
   return {
       "status": "success",
       "username": username,
-      "basin_id": catchment_id,
-      "catchment_id": catchment_id,
+      "basin_id": primary_id,
+      "catchment_id": primary_id,
+      "selected_catchment_ids": eval_ids,
+      "catchments_status": catchments_status,
+      "missing_or_stale_state_catchments": missing_or_stale,
+      "all_selected_have_previous_day_state": all_selected_have_previous_day_state,
+      "all_selected_have_realtime_data": all_selected_have_realtime_data,
+      "can_fetch_hotstart": all_selected_have_previous_day_state,
       "model_id": model_id,
       "issue_date": issue_date_str,
       "expected_state_date": expected_state_date,
       "saved_state": state_info,
       "is_state_from_previous_day": is_state_from_previous_day,
-      "can_run_hotstart": is_state_from_previous_day and has_realtime_data,
-      "can_run_coldstart": has_realtime_data,
+      "can_run_hotstart": can_run_hotstart,
+      "can_run_coldstart": can_run_coldstart,
       "has_realtime_data": has_realtime_data,
+      "hotstart_status_message": hotstart_msg,
+      "coldstart_status_message": coldstart_msg,
       "nowcast_dates": streams["nowcast_dates"],
       "nowcast_products": streams["nowcast_products"],
       "forecast_products": streams["forecast_products"],
+      "input_products": streams["input_products"],
   }
 
 
 def fetch_realtime_forcing_for_catchment(
     username: Optional[str],
-    catchment_id: str,
+    catchment_id: Optional[str] = None,
     mode: str = "coldstart",
     reference_date: Optional[str] = None,
     spinup_days: int = 365,
     products: Optional[List[str]] = None,
+    catchment_ids: Optional[Sequence[str]] = None,
+    model_id: str = "5-basin-example",
+    overwrite: bool = False,
 ) -> Dict[str, Any]:
-  """Runs `multimet.timeseries_extractors.realtime.fetch_realtime_multimet` for the user's catchment."""
+  """Runs `multimet.timeseries_extractors.realtime.fetch_realtime_multimet` for 1 or more catchments.
+
+  If `mode == 'hotstart'`, strictly verifies that yesterday's saved state
+  (`state_date == issue_date - 1 day`) exists for every selected catchment.
+  """
+  import inspect  # pylint: disable=g-import-not-at-top
+  import json  # pylint: disable=g-import-not-at-top
+
   norm_mode = mode.lower().strip().replace("-", "").replace("_", "")
   if norm_mode not in ("coldstart", "hotstart"):
     raise ValueError(
         f"Invalid mode {mode!r}; expected 'coldstart' or 'hotstart'."
     )
 
+  target_ids = _normalize_catchment_id_list(catchment_id, catchment_ids)
+  if not target_ids:
+    raise ValueError("At least one catchment_id must be selected to fetch real-time data.")
+  primary_id = str(catchment_id).strip() if catchment_id else target_ids[0]
+
   pm = profile_manager.get_profile_manager()
   watersheds = pm.load_watersheds(username)
-  target_feat = None
+  ws_by_id: Dict[str, Dict[str, Any]] = {}
   for feat in watersheds:
     props = feat.get("properties", {})
-    cid = props.get("catchment_id") or feat.get("id")
-    if cid == catchment_id:
-      target_feat = feat
-      break
+    cid = str(props.get("catchment_id") or feat.get("id") or "").strip()
+    if cid:
+      ws_by_id[cid] = feat
 
-  if target_feat is None:
+  target_feats: List[Dict[str, Any]] = []
+  missing_cids: List[str] = []
+  for cid in target_ids:
+    if cid in ws_by_id:
+      target_feats.append(ws_by_id[cid])
+    else:
+      missing_cids.append(cid)
+
+  if missing_cids:
     raise ValueError(
-        f"Catchment {catchment_id!r} not found in active profile watersheds."
+        f"Catchment(s) {missing_cids!r} not found in active profile watersheds."
     )
 
-  # Write a single-catchment GeoJSON file for multimet.realtime
+  norm_ref_date = (
+      None
+      if (not reference_date or str(reference_date).strip().lower() == "latest")
+      else str(reference_date).strip()
+  )
+
+  # Strict yesterday-state verification for Hot-Start fetch
+  if norm_mode == "hotstart":
+    t0_check = resolve_issue_date(
+        username=username,
+        catchment_id=primary_id,
+        requested_issue_date=norm_ref_date,
+        probe_ecmwf=False,
+    )
+    expected_state_date = _format_date_str(t0_check - pd.Timedelta(days=1))
+    issue_date_str = _format_date_str(t0_check)
+    for cid in target_ids:
+      st_info = inspect_saved_state(
+          username=username, catchment_id=cid, model_id=model_id
+      )
+      if not st_info.get("exists"):
+        raise ValueError(
+            f"Cannot fetch in Hot-Start mode: no saved LSTM state file exists "
+            f"for catchment '{cid}'. Hot-Start requires yesterday's saved state "
+            f"({expected_state_date}). Please run Cold-Start first."
+        )
+      if st_info.get("state_date") != expected_state_date:
+        raise ValueError(
+            f"Cannot fetch in Hot-Start mode: saved LSTM state for catchment "
+            f"'{cid}' is stamped '{st_info.get('state_date')}', which is not "
+            f"yesterday's state ('{expected_state_date}') for issue date "
+            f"'{issue_date_str}'. Hot-Start strictly requires yesterday's state."
+        )
+
+  # Write GeoJSON file(s) for multimet.realtime
   shapes_dir = pm.get_catchment_shapes_dir(username)
   shapes_dir.mkdir(parents=True, exist_ok=True)
-  catchment_geojson_path = shapes_dir / f"{catchment_id}.geojson"
-  import json  # pylint: disable=g-import-not-at-top
+  for cid, feat in zip(target_ids, target_feats):
+    single_path = shapes_dir / f"{cid}.geojson"
+    with open(single_path, "w", encoding="utf-8") as f:
+      json.dump({"type": "FeatureCollection", "features": [feat]}, f)
 
-  with open(catchment_geojson_path, "w", encoding="utf-8") as f:
-    json.dump({"type": "FeatureCollection", "features": [target_feat]}, f)
+  if len(target_ids) == 1:
+    catchment_geojson_path = shapes_dir / f"{target_ids[0]}.geojson"
+  else:
+    catchment_geojson_path = shapes_dir / "selected_catchments_batch.geojson"
+    with open(catchment_geojson_path, "w", encoding="utf-8") as f:
+      json.dump({"type": "FeatureCollection", "features": target_feats}, f)
 
   output_dir = pm.get_realtime_dynamics_dir(username)
   output_dir.mkdir(parents=True, exist_ok=True)
@@ -633,42 +1083,80 @@ def fetch_realtime_forcing_for_catchment(
   selected_enums = None
   if products:
     selected_enums = []
+    alias_map = {
+        "ECMWF_AIFS": "AIFS",
+        "NOAA_GFS": "GFS",
+        "NOAA_GEFS": "GEFS",
+        "ECMWF_IFS_ENS": "IFS_ENS",
+    }
     for p_str in products:
       key = p_str.upper().strip()
+      key = alias_map.get(key, key)
       if hasattr(mm_config.Product, key):
         selected_enums.append(getattr(mm_config.Product, key))
 
-  norm_ref_date = (
-      None
-      if (not reference_date or str(reference_date).strip().lower() == "latest")
-      else str(reference_date).strip()
-  )
+  fetch_fn = mm_realtime.fetch_realtime_multimet
+  sig_params = set()
+  try:
+    sig_params = set(inspect.signature(fetch_fn).parameters.keys())
+  except (TypeError, ValueError):
+    sig_params = set()
 
-  summary = mm_realtime.fetch_realtime_multimet(
-      catchments_path=catchment_geojson_path,
-      output_dir=output_dir,
-      mode=norm_mode,
-      spinup_days=int(spinup_days),
-      reference_date=norm_ref_date,
-      id_col="catchment_id",
-      products=selected_enums,
-  )
+  if "basins" in sig_params and "catchments_path" not in sig_params:
+    summary = fetch_fn(
+        basins=catchment_geojson_path,
+        output_dir=output_dir,
+        mode=norm_mode,
+        lookback_days=int(spinup_days) if norm_mode == "coldstart" else 1,
+        reference_date=norm_ref_date,
+        id_column="catchment_id",
+        products=selected_enums,
+        overwrite=bool(overwrite),
+    )
+  else:
+    summary = fetch_fn(
+        catchments_path=catchment_geojson_path,
+        output_dir=output_dir,
+        mode=norm_mode,
+        spinup_days=int(spinup_days),
+        reference_date=norm_ref_date,
+        id_col="catchment_id",
+        products=selected_enums,
+    )
 
-  ref_ts = pd.Timestamp(summary["reference_date"]).floor("D").tz_localize(None)
+  if hasattr(summary, "reference_date"):
+    raw_ref_date = summary.reference_date
+    raw_mode = getattr(summary, "mode", norm_mode)
+    raw_products = getattr(summary, "stores", {}) or {}
+    raw_windows = getattr(summary, "product_windows", {}) or {}
+    elapsed_sec = round(float(getattr(summary, "elapsed_seconds", 0.0)), 2)
+  else:
+    raw_ref_date = summary["reference_date"]
+    raw_mode = summary.get("mode", norm_mode)
+    raw_products = summary.get("products", {}) or {}
+    raw_windows = summary.get("windows", {}) or {}
+    elapsed_sec = round(float(summary.get("elapsed_seconds", 0.0)), 2)
+
+  ref_ts = pd.Timestamp(raw_ref_date).floor("D").tz_localize(None)
   status_payload = get_realtime_status(
       username=username,
-      catchment_id=catchment_id,
+      catchment_id=primary_id,
       requested_issue_date=_format_date_str(ref_ts),
+      model_id=model_id,
+      catchment_ids=target_ids,
   )
   status_payload["fetch_summary"] = {
-      "mode": summary["mode"],
+      "mode": raw_mode,
       "reference_date": _format_date_str(ref_ts),
+      "catchment_ids": target_ids,
+      "basin_count": len(target_ids),
+      "elapsed_seconds": elapsed_sec,
       "products_written": {
-          k: str(v) for k, v in summary.get("products", {}).items()
+          str(k): str(v) for k, v in raw_products.items()
       },
       "windows": {
-          k: [_format_date_str(w[0]), _format_date_str(w[1])]
-          for k, w in summary.get("windows", {}).items()
+          str(k): [_format_date_str(w[0]), _format_date_str(w[1])]
+          for k, w in raw_windows.items()
       },
   }
   return status_payload
@@ -888,7 +1376,9 @@ def _assemble_inference_tensors(
   open_datasets: Dict[str, xr.Dataset] = {}
   for p_name, s_path in stores.items():
     try:
-      open_datasets[p_name.lower()] = xr.open_zarr(s_path, consolidated=False)
+      ds_obj = xr.open_zarr(s_path, consolidated=False)
+      open_datasets[p_name.lower()] = ds_obj
+      open_datasets[p_name.upper()] = ds_obj
     except Exception:  # pylint: disable=broad-except
       pass
 
@@ -896,7 +1386,7 @@ def _assemble_inference_tensors(
   # with the last `lead_time` steps padded with NaN for nowcast-only products.
   model_x_d_hindcast: Dict[str, Any] = {}
   for feat in hc_features:
-    prod = prod_from_feat(feat)
+    prod = str(prod_from_feat(feat)).lower()
     ds = open_datasets.get(prod)
     var_name = _resolve_var_in_ds(ds, feat)
     hc_arr = np.full(seq_len, np.nan, dtype=np.float32)
@@ -931,7 +1421,7 @@ def _assemble_inference_tensors(
   # 2. Populate forecast features (`x_d_forecast`), each shaped `[1, seq_len + lead_time, 1]`
   model_x_d_forecast: Dict[str, Any] = {}
   for feat in fc_features:
-    prod = prod_from_feat(feat)
+    prod = str(prod_from_feat(feat)).lower()
     ds = open_datasets.get(prod)
     var_name = _resolve_var_in_ds(ds, feat)
     hc_arr = np.full(seq_len, np.nan, dtype=np.float32)
@@ -1004,68 +1494,24 @@ def _assemble_inference_tensors(
   return model_input, hindcast_dates, forecast_dates, area_km2
 
 
-def run_forecast_model(
+def _run_forecast_model_single(
     username: Optional[str],
     catchment_id: str,
-    mode: str = "coldstart",
-    requested_issue_date: Optional[str] = None,
+    norm_mode: str,
+    t0: pd.Timestamp,
+    bundle: Dict[str, Any],
     precip_overrides: Optional[Dict[str, float]] = None,
     model_id: str = "5-basin-example",
-    model_run_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-  """Executes Cold-Start or Hot-Start inference on `MeanEmbeddingForecastLSTM`.
-
-  - In **Cold-Start** mode:
-    Runs full `model(data)` over the 365-day spin-up window (`t0 - 365d .. t0 - 1d`)
-    plus forecast (`t0 .. t0 + lead_time - 1d`), and saves the hidden state
-    at the end of `t0 - 1d` (`expected_state_date`) to disk via `model.save_state()`
-    so that immediate or subsequent Hot-Start runs can resume from `t0 - 1d`.
-  - In **Hot-Start** mode:
-    Strictly verifies that a saved state file exists AND that its `date` matches
-    `t0 - 1d` (`expected_state_date`). If not, raises a `ValueError` blocking
-    execution. When valid, calls `model.load_state_from_disk()`, runs the
-    forecast horizon from the saved state, and returns the discharge hydrograph.
-  """
+  """Runs `MeanEmbeddingForecastLSTM` for a single catchment after state validation."""
   import torch  # pylint: disable=g-import-not-at-top
 
-  norm_mode = mode.lower().strip().replace("-", "").replace("_", "")
-  if norm_mode not in ("coldstart", "hotstart"):
-    raise ValueError(
-        f"Invalid mode {mode!r}; expected 'coldstart' or 'hotstart'."
-    )
-
-  t0 = resolve_issue_date(
-      username=username,
-      catchment_id=catchment_id,
-      requested_issue_date=requested_issue_date,
-      probe_ecmwf=False,
-  )
   issue_date_str = _format_date_str(t0)
   expected_state_date = _format_date_str(t0 - pd.Timedelta(days=1))
   state_path = get_state_file_path(
       username=username, catchment_id=catchment_id, model_id=model_id
   )
 
-  if norm_mode == "hotstart":
-    state_info = inspect_saved_state(
-        username=username, catchment_id=catchment_id, model_id=model_id
-    )
-    if not state_info.get("exists"):
-      raise ValueError(
-          f"Cannot run model in Hot-Start mode: no saved LSTM state file exists "
-          f"for catchment '{catchment_id}'. Please run Cold-Start first to "
-          f"initialize the basin state for {expected_state_date}."
-      )
-    if state_info.get("state_date") != expected_state_date:
-      raise ValueError(
-          f"Cannot run model in Hot-Start mode: saved LSTM state is stamped "
-          f"'{state_info.get('state_date')}', but forecast issue date "
-          f"'{issue_date_str}' requires a state from the previous day "
-          f"('{expected_state_date}'). Please run Cold-Start (or fetch/update "
-          f"spin-up data) first."
-      )
-
-  bundle = _load_googlehydrology_model_bundle(run_dir=model_run_dir)
   cfg = bundle["cfg"]
   model = bundle["model"]
   scaler = bundle["scaler"]
@@ -1148,19 +1594,25 @@ def run_forecast_model(
     cms_factor = float(area_km2) * 1000.0 / 86400.0
     q_cms = mm_per_day * cms_factor
 
-  # Last `lead_time` steps are the 10-day forecast trajectory (`t0 .. t0 + 9d`)
+  # Last `lead_time` steps are the forecast trajectory (`t0 .. t0 + lead_time - 1d`)
   fc_mm = mm_per_day[-lead_time:]
   fc_cms = q_cms[-lead_time:]
 
   forecast_series = []
+  peak_q = 0.0
+  peak_date = None
   for idx, d in enumerate(forecast_dates):
     q_val = float(fc_cms[idx])
     mm_val = float(fc_mm[idx])
+    d_str = _format_date_str(d)
+    if q_val >= peak_q:
+      peak_q = q_val
+      peak_date = d_str
     # Provide uncertainty bands around the LSTM point prediction
     spread_frac = 0.08 + 0.025 * idx
     forecast_series.append({
         "lead_time_days": idx + 1,
-        "date": _format_date_str(d),
+        "date": d_str,
         "discharge_cms": round(q_val, 3),
         "discharge_mm_day": round(mm_val, 4),
         "q05_cms": round(max(0.0, q_val * (1.0 - 1.6 * spread_frac)), 3),
@@ -1184,11 +1636,8 @@ def run_forecast_model(
           "discharge_mm_day": round(float(m_v), 4),
       })
 
-  updated_status = get_realtime_status(
-      username=username,
-      catchment_id=catchment_id,
-      requested_issue_date=issue_date_str,
-      model_id=model_id,
+  saved_state = inspect_saved_state(
+      username=username, catchment_id=catchment_id, model_id=model_id
   )
 
   return {
@@ -1202,11 +1651,108 @@ def run_forecast_model(
       "expected_state_date": expected_state_date,
       "area_km2": round(float(area_km2), 2),
       "lead_time_days": lead_time,
-      "peak_discharge_cms": round(
-          max((pt["discharge_cms"] for pt in forecast_series), default=0.0), 3
-      ),
+      "peak_discharge_cms": round(peak_q, 3),
+      "peak_date": peak_date,
       "hindcast_tail": hindcast_series,
       "forecast": forecast_series,
+      "saved_state": saved_state,
+  }
+
+
+def run_forecast_model(
+    username: Optional[str],
+    catchment_id: Optional[str] = None,
+    mode: str = "coldstart",
+    requested_issue_date: Optional[str] = None,
+    precip_overrides: Optional[Dict[str, float]] = None,
+    model_id: str = "5-basin-example",
+    model_run_dir: Optional[Path] = None,
+    catchment_ids: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+  """Executes Cold-Start or Hot-Start inference on `MeanEmbeddingForecastLSTM` for 1 or more catchments.
+
+  - In **Cold-Start** mode:
+    Runs full `model(data)` over the 365-day spin-up window (`t0 - 365d .. t0 - 1d`)
+    plus forecast (`t0 .. t0 + lead_time - 1d`), and saves the hidden state
+    at the end of `t0 - 1d` (`expected_state_date`) to disk via `model.save_state()`
+    so that immediate or subsequent Hot-Start runs can resume from `t0 - 1d`.
+  - In **Hot-Start** mode:
+    Strictly verifies for EVERY selected catchment that a saved state file exists
+    AND that its `date` matches yesterday (`t0 - 1d`, `expected_state_date`).
+    An older state date (e.g. `t0 - 2d` or earlier) is strictly rejected with a
+    `ValueError`. When valid, calls `model.load_state_from_disk()`, runs the
+    forecast horizon from the saved state, and returns the discharge hydrograph(s).
+  """
+  norm_mode = mode.lower().strip().replace("-", "").replace("_", "")
+  if norm_mode not in ("coldstart", "hotstart"):
+    raise ValueError(
+        f"Invalid mode {mode!r}; expected 'coldstart' or 'hotstart'."
+    )
+
+  target_ids = _normalize_catchment_id_list(catchment_id, catchment_ids)
+  if not target_ids:
+    raise ValueError("At least one catchment_id must be selected to run the forecast model.")
+  primary_id = str(catchment_id).strip() if catchment_id else target_ids[0]
+
+  t0 = resolve_issue_date(
+      username=username,
+      catchment_id=primary_id,
+      requested_issue_date=requested_issue_date,
+      probe_ecmwf=False,
+  )
+  issue_date_str = _format_date_str(t0)
+  expected_state_date = _format_date_str(t0 - pd.Timedelta(days=1))
+
+  # Pre-validate ALL selected catchments before running any catchment in Hot-Start mode
+  if norm_mode == "hotstart":
+    for cid in target_ids:
+      state_info = inspect_saved_state(
+          username=username, catchment_id=cid, model_id=model_id
+      )
+      if not state_info.get("exists"):
+        raise ValueError(
+            f"Cannot run model in Hot-Start mode: no saved LSTM state file exists "
+            f"for catchment '{cid}'. Please run Cold-Start first to "
+            f"initialize the basin state for {expected_state_date}."
+        )
+      if state_info.get("state_date") != expected_state_date:
+        raise ValueError(
+            f"Cannot run model in Hot-Start mode: saved LSTM state for catchment "
+            f"'{cid}' is stamped '{state_info.get('state_date')}', but forecast "
+            f"issue date '{issue_date_str}' requires a state from the previous day "
+            f"('{expected_state_date}'). Older states cannot be used; please run "
+            f"Cold-Start first."
+        )
+
+  bundle = _load_googlehydrology_model_bundle(run_dir=model_run_dir)
+
+  results_by_id: Dict[str, Dict[str, Any]] = {}
+  for cid in target_ids:
+    results_by_id[cid] = _run_forecast_model_single(
+        username=username,
+        catchment_id=cid,
+        norm_mode=norm_mode,
+        t0=t0,
+        bundle=bundle,
+        precip_overrides=precip_overrides,
+        model_id=model_id,
+    )
+
+  primary_res = results_by_id[primary_id]
+  updated_status = get_realtime_status(
+      username=username,
+      catchment_id=primary_id,
+      requested_issue_date=issue_date_str,
+      model_id=model_id,
+      catchment_ids=target_ids,
+  )
+
+  return {
+      **primary_res,
+      "batch": len(target_ids) > 1,
+      "basin_count": len(target_ids),
+      "catchment_ids": target_ids,
+      "results_by_id": results_by_id,
       "saved_state": updated_status["saved_state"],
       "post_run_status": updated_status,
   }
@@ -1216,7 +1762,8 @@ def inspect_realtime_stores_for_basin(
     username: Optional[str],
     basin_id: str,
     nowcast_lookback_days: int = 14,
-    query_upstream_if_empty: bool = False,
+    query_upstream_if_empty: bool = False,  # pylint: disable=unused-argument
+    basin_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
   """Server endpoint wrapper for GET /api/forecast/status."""
   return get_realtime_status(
@@ -1224,46 +1771,52 @@ def inspect_realtime_stores_for_basin(
       catchment_id=str(basin_id),
       lookback_days=int(nowcast_lookback_days or 14),
       probe_ecmwf=False,
+      catchment_ids=basin_ids,
   )
 
 
 def fetch_realtime_for_basin(
     username: Optional[str],
-    basin_id: str,
+    basin_id: Optional[str] = None,
     mode: str = "coldstart",
     reference_date: Optional[str] = None,
     products: Optional[List[str]] = None,
     lookback_days: Optional[int] = None,
-    overwrite: bool = False,  # pylint: disable=unused-argument
+    overwrite: bool = False,
+    basin_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
   """Server endpoint wrapper for POST /api/forecast/fetch-realtime."""
   spinup = int(lookback_days) if lookback_days else 365
   return fetch_realtime_forcing_for_catchment(
       username=username,
-      catchment_id=str(basin_id),
+      catchment_id=str(basin_id) if basin_id else None,
       mode=mode,
       reference_date=reference_date,
       spinup_days=spinup,
       products=products,
+      catchment_ids=basin_ids,
+      overwrite=overwrite,
   )
 
 
 def run_hydrological_model_for_basin(
     username: Optional[str],
-    basin_id: str,
+    basin_id: Optional[str] = None,
     mode: str = "coldstart",
     model_run_dir: Optional[Union[str, Path]] = None,
     requested_issue_date: Optional[str] = None,
     precip_overrides: Optional[Dict[str, float]] = None,
+    basin_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
   """Server endpoint wrapper for POST /api/forecast/run-model."""
   return run_forecast_model(
       username=username,
-      catchment_id=str(basin_id),
+      catchment_id=str(basin_id) if basin_id else None,
       mode=mode,
       requested_issue_date=requested_issue_date,
       precip_overrides=precip_overrides,
       model_run_dir=Path(model_run_dir) if model_run_dir else None,
+      catchment_ids=basin_ids,
   )
 
 

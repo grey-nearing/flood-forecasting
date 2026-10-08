@@ -88,9 +88,10 @@ class WeatherViewer:
       bilinear: bool = True,
   ) -> bytes:
     """Renders a 256x256 Web Mercator PNG tile for the specified layer."""
+    arrays, stream_info = self.fetcher.snapshot()
     return render_raster_tile(
-        self.fetcher.arrays,
-        self.fetcher.stream_info,
+        arrays,
+        stream_info,
         model_key,
         var_key,
         step_idx,
@@ -102,15 +103,17 @@ class WeatherViewer:
 
   def get_frame_index(self, model_key: str, var_key: str) -> Dict[str, Any]:
     """Returns animation frame index metadata for `model_key` and `var_key`."""
-    return compute_frame_index(self.fetcher.stream_info, model_key, var_key)
+    arrays, stream_info = self.fetcher.snapshot()
+    return compute_frame_index(stream_info, model_key, var_key)
 
   def render_frame(
       self, model_key: str, var_key: str, step_idx: int
   ) -> bytes:
     """Renders a whole-world indexed PNG animation frame."""
+    arrays, stream_info = self.fetcher.snapshot()
     return render_weather_frame(
-        self.fetcher.arrays,
-        self.fetcher.stream_info,
+        arrays,
+        stream_info,
         model_key,
         var_key,
         step_idx,
@@ -131,9 +134,10 @@ class WeatherViewer:
       bilinear: bool = False,
   ) -> Dict[str, Any]:
     """Extracts subsampled U/V wind vectors for streamline rendering."""
+    arrays, stream_info = self.fetcher.snapshot()
     return extract_wind_vectors(
-        self.fetcher.arrays,
-        self.fetcher.stream_info,
+        arrays,
+        stream_info,
         model_key=model_key,
         step_idx=step_idx,
         subsample=subsample,

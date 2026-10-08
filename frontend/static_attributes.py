@@ -1,540 +1,383 @@
-"""HydroATLAS & Caravan Static Catchment Attributes Extractor for OpenHydroNet.
-
-Wraps the core `multimet.static_extractor` package on `main`, adding:
-1. Automatic local path resolution across `~/.cache/googlehydrology/...` and
-   `~/.cache/openhydronet/data/...` so both caches work out-of-the-box.
-2. Fast viewport-level raw BasinATLAS polygon + attribute querying
-   (`extract_raw_subbasins_in_bbox`) for the Geographical Features Map Viewer tab.
-"""
+"""Frontend adapter for multimet.static_extractor."""
 
 from __future__ import annotations
 
 import logging
 import math
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
-
-import numpy as np
-import pyogrio
-import shapely.geometry
+import os
+from typing import Any, Dict, List, Optional, Tuple, Sequence
+import json
 
 from frontend.config import (
-    HYDRO_BASINS_DIR,
     ensure_flood_forecasting_on_sys_path,
 )
 
 ensure_flood_forecasting_on_sys_path()
 
-from multimet.static_extractor import climate as _gh_climate  # pylint: disable=g-import-not-at-top
-from multimet.static_extractor import config as _gh_config  # pylint: disable=g-import-not-at-top
-from multimet.static_extractor import extractor as _gh_extractor  # pylint: disable=g-import-not-at-top
+import numpy as np
+import pandas as pd
+import shapely.geometry
+
+from multimet.static_extractor import (
+    StaticAttributesExtractor,
+    CatchmentAttributes,
+    ATTRIBUTE_REGISTRY,
+    get_attribute_definition,
+    to_physical_units,
+    UnsupportedHydroATLASLevelError,
+    CARAVAN_CLIMATE_ALIASES,
+)
+from multimet.static_extractor.config import (
+    DEFAULT_GCS_HYDROATLAS_URI,
+    DEFAULT_GCS_ERA5_CLIMATE_URI,
+    DEFAULT_GCS_GRIDDED_ERA5_URI,
+)
 
 logger = logging.getLogger(__name__)
 
-# Re-export canonical constants and helpers from multimet.static_extractor
-ATTRIBUTE_DEFINITIONS = _gh_config.ATTRIBUTE_DEFINITIONS
-for _k, _v in ATTRIBUTE_DEFINITIONS.items():
-  if "label" not in _v and "name" in _v:
-    _v["label"] = _v["name"]
+MAX_MAP_FEATURES = 800
 
-CONTINENT_MAP = _gh_config.CONTINENT_MAP
+ZOOM_TO_LEVEL: Dict[int, int] = {
+    0: 4, 1: 4, 2: 4, 3: 4,
+    4: 5,
+    5: 6,
+    6: 7,
+    7: 8,
+    8: 10,
+    9: 12, 10: 12, 11: 12, 12: 12, 13: 12, 14: 12, 15: 12, 16: 12, 17: 12, 18: 12, 19: 12, 20: 12
+}
 
-CARAVAN_CLIMATE_COLUMNS: List[str] = [
-    "p_mean",
-    "pet_mean",
-    "pet_mean_FAO_PM",
-    "pet_mean_ERA5_LAND",
-    "aridity",
-    "aridity_FAO_PM",
-    "aridity_ERA5_LAND",
-    "frac_snow",
-    "moisture_index",
-    "moisture_index_FAO_PM",
-    "moisture_index_ERA5_LAND",
-    "seasonality",
-    "seasonality_FAO_PM",
-    "seasonality_ERA5_LAND",
-    "high_prec_freq",
-    "high_prec_dur",
-    "low_prec_freq",
-    "low_prec_dur",
-]
-CARAVAN_HYDROATLAS_COLUMNS: List[str] = [
-    k for k in ATTRIBUTE_DEFINITIONS if k not in CARAVAN_CLIMATE_COLUMNS
-]
-CARAVAN_ALL_COLUMNS: List[str] = (
-    CARAVAN_HYDROATLAS_COLUMNS + CARAVAN_CLIMATE_COLUMNS
-)
+LEVEL_SIMPLIFY_TOL: Dict[int, float] = {
+    1: 0.015, 2: 0.015, 3: 0.015, 4: 0.015, 5: 0.015,
+    6: 0.006, 7: 0.006,
+    8: 0.002, 9: 0.002,
+    10: 0.0005, 11: 0.0005, 12: 0.0005
+}
 
-calculate_fao_pm_pet = _gh_climate.calculate_fao_pm_pet
-calculate_knoben_moisture_and_seasonality = (
-    _gh_climate.calculate_knoben_moisture_and_seasonality
-)
-_split_list = _gh_climate._split_list  # pylint: disable=protected-access
-compute_caravan_climate_metrics = _gh_climate.compute_caravan_climate_metrics
-_BaseERA5ClimateLoader = _gh_climate.ERA5ClimateLoader
-_BaseERA5GriddedExtractor = _gh_climate.ERA5GriddedExtractor
-_BaseStaticAttributesExtractor = _gh_extractor.StaticAttributesExtractor
-
-
-def _resolve_best_gdb_path(
-    gdb_path: Optional[Union[str, Path]] = None,
-) -> Path:
-  """Resolves the BasinATLAS v10 Geodatabase path across standard cache locations."""
-  if gdb_path is not None:
-    return Path(gdb_path)
-  env_gdb = os.environ.get("HYDROATLAS_GDB_PATH")
-  if env_gdb:
-    return Path(env_gdb)
-  candidates = [
-      Path.home()
-      / ".cache"
-      / "googlehydrology"
-      / "hydroatlas"
-      / "BasinATLAS_v10.gdb",
-      HYDRO_BASINS_DIR / "basin_atlas" / "BasinATLAS_v10.gdb",
-      Path.home()
-      / ".cache"
-      / "openhydronet"
-      / "data"
-      / "basin_atlas"
-      / "BasinATLAS_v10.gdb",
-  ]
-  for cand in candidates:
-    if cand.exists() and any(cand.glob("*.gdbtable")):
-      return cand
-  return candidates[0]
-
-
-def _resolve_best_era5_cache_dir(
-    era5_cache_dir: Optional[Union[str, Path]] = None,
-) -> Path:
-  """Resolves the Level 12 precomputed ERA5 climate indices directory."""
-  if era5_cache_dir is not None:
-    return Path(era5_cache_dir)
-  env_dir = os.environ.get("ERA5_CLIMATE_CACHE_DIR")
-  if env_dir:
-    return Path(env_dir)
-  candidates = [
-      Path.home() / ".cache" / "openhydronet" / "data" / "era5_climate",
-      Path.home() / ".cache" / "googlehydrology" / "era5_climate",
-  ]
-  for cand in candidates:
-    if cand.exists() and any(cand.glob("*_climate_indices.txt")):
-      return cand
-  return candidates[0]
-
-
-class ERA5ClimateLoader(_BaseERA5ClimateLoader):
-  """ERA5 Level 12 precomputed climate loader with automatic local cache discovery."""
-
-  def __init__(
-      self,
-      cache_dir: Optional[Union[str, Path]] = None,
-      no_download: bool = False,
-  ):
-    super().__init__(
-        cache_dir=_resolve_best_era5_cache_dir(cache_dir),
-        no_download=no_download,
-    )
-
-  def get_indices_for_subbasins(
-      self, hybas_ids: List[int], weights: List[float]
-  ) -> Dict[str, float]:
-    """Calculates area-weighted average ERA5 climate indices with fallback for legacy cache keys."""
-    res = super().get_indices_for_subbasins(hybas_ids, weights)
-    fallback_pairs = (
-        ("pet_mean_ERA5_LAND", "pet_mean"),
-        ("aridity_ERA5_LAND", "aridity"),
-        ("moisture_index_ERA5_LAND", "moisture_index"),
-        ("seasonality_ERA5_LAND", "seasonality"),
-    )
-    for era5_key, base_key in fallback_pairs:
-      val = res.get(era5_key, np.nan)
-      base_val = res.get(base_key, np.nan)
-      if (val is None or np.isnan(val)) and base_val is not None and not np.isnan(base_val):
-        res[era5_key] = float(base_val)
-    return res
-
-
-class ERA5RawGriddedExtractor(_BaseERA5GriddedExtractor):
-  """Backwards-compatible alias for ERA5GriddedExtractor supporting extract_climate_indices_for_polygon."""
-
-  def __init__(self, zarr_uri: Optional[str] = None):
-    if zarr_uri:
-      super().__init__(zarr_uri=zarr_uri)
-    else:
-      self.zarr_uri = None
-      self._ds = None
-      self._lats = None
-      self._lons = None
-      self._dlat = 0.1
-      self._dlon = 0.1
-
-  def extract_climate_indices_for_polygon(
-      self,
-      polygon: Any,
-      baseline_years: Optional[Tuple[int, int]] = (1981, 2020),
-  ) -> Dict[str, float]:
-    """Alias for extract_climate_metrics_for_polygon."""
-    if not self.zarr_uri:
-      return {}
-    try:
-      return self.extract_climate_metrics_for_polygon(
-          polygon, baseline_years=baseline_years
-      )
-    except Exception as e:  # pylint: disable=broad-exception-caught
-      logger.warning("ERA5RawGriddedExtractor failed: %s", e)
-      return {}
-
-
-class StaticAttributesExtractor(_BaseStaticAttributesExtractor):
-  """HydroATLAS + ERA5-Land Caravan static extractor with raw BasinATLAS viewport querying."""
-
-  def __init__(
-      self,
-      gdb_path: Optional[Union[str, Path]] = None,
-      era5_source: str = "hybas",
-      era5_cache_dir: Optional[Union[str, Path]] = None,
-      gridded_era5_uri: Optional[str] = None,
-      auto_download: bool = True,
-  ):
-    norm_source = (
-        "hybas"
-        if (not era5_source or era5_source.strip().lower() == "precomputed")
-        else era5_source.strip().lower()
-    )
-    resolved_gdb = _resolve_best_gdb_path(gdb_path)
-    resolved_era5 = _resolve_best_era5_cache_dir(era5_cache_dir)
-    super().__init__(
-        gdb_path=resolved_gdb,
-        era5_source=norm_source,
-        era5_cache_dir=resolved_era5,
-        gridded_era5_uri=gridded_era5_uri,
-        no_download=not auto_download,
-    )
-    self.era5_loader = ERA5ClimateLoader(
-        cache_dir=resolved_era5, no_download=not auto_download
-    )
-
-  def _ensure_gdb(self) -> None:
-    """No-op compatibility hook (super().__init__ initializes self.gdb_path)."""
-
-  def append_attributes_to_zarr(
-      self,
-      master_zarr_path: Union[str, Path],
-      catchment_id: str,
-      attributes_result: Dict[str, Any],
-  ) -> bool:
-    """Appends static attributes to master_zarr_path if catchment_id is present in the store."""
-    try:
-      return super().append_attributes_to_zarr(
-          master_zarr_path, catchment_id, attributes_result
-      )
-    except KeyError:
-      logger.debug(
-          "Catchment %s not in master Zarr %s; skipping Zarr attribute append.",
-          catchment_id,
-          master_zarr_path,
-      )
-      return False
-    except Exception as e:  # pylint: disable=broad-exception-caught
-      logger.warning(
-          "Could not append attributes for %s to %s: %s",
-          catchment_id,
-          master_zarr_path,
-          e,
-      )
-      return False
-
-  def extract_attributes(
-      self,
-      polygon_geojson: Dict[str, Any],
-      catchment_id: str = "custom_catchment",
-      baseline_years: Optional[Tuple[int, int]] = (1981, 2020),
-  ) -> Dict[str, Any]:
-    """Extracts all Caravan static attributes and attaches frontend status/flat_attributes keys."""
-    res = super().extract_attributes_for_polygon(
-        polygon_geojson=polygon_geojson,
-        catchment_id=catchment_id,
-        baseline_years=baseline_years or (1981, 2020),
-        era5_source=self.era5_source,
-    )
-    res.setdefault("status", "success")
-    res.setdefault("flat_attributes", res.get("caravan_attributes", {}))
-    return res
-
-  def extract_attributes_for_polygon(
-      self,
-      polygon_geojson: Any,
-      catchment_id: Optional[str] = "custom_catchment",
-      min_overlap_threshold: float = 0.0,
-      baseline_years: Optional[Tuple[int, int]] = (1981, 2020),
-      timeseries_df: Any = None,
-      era5_source: Optional[str] = None,
-      use_raw_gridded_era5: bool = False,
-      _batch_mode: bool = False,
-      _skip_climate: bool = False,
-  ) -> Dict[str, Any]:
-    """Extracts all Caravan static attributes for a catchment polygon."""
-    target_source = "gridded" if use_raw_gridded_era5 else (era5_source or self.era5_source)
-    if target_source == "precomputed":
-      target_source = "hybas"
-    res = super().extract_attributes_for_polygon(
-        polygon_geojson=polygon_geojson,
-        catchment_id=catchment_id,
-        min_overlap_threshold=min_overlap_threshold,
-        baseline_years=baseline_years or (1981, 2020),
-        timeseries_df=timeseries_df,
-        era5_source=target_source,
-        _batch_mode=_batch_mode,
-        _skip_climate=_skip_climate,
-    )
-    res.setdefault("status", "success")
-    res.setdefault("flat_attributes", res.get("caravan_attributes", {}))
-    return res
-
-  def get_raw_hydroatlas_map_layer(
-      self,
-      bbox: Tuple[float, float, float, float],
-      zoom: int = 7,
-      attribute: str = "ele_mt_sav",
-      level: Optional[int] = None,
-      max_features: int = 800,
-  ) -> Dict[str, Any]:
-    """Alias for extract_raw_subbasins_in_bbox used by GET /api/attributes/map-layer."""
-    return self.extract_raw_subbasins_in_bbox(
-        bbox=bbox,
-        attribute_key=attribute,
-        zoom=zoom,
-        level=level,
-        max_features=max_features,
-    )
-
-  def extract_raw_subbasins_in_bbox(
-      self,
-      bbox: Tuple[float, float, float, float],
-      attribute_key: str = "ele_mt_sav",
-      zoom: int = 7,
-      level: Optional[int] = None,
-      max_features: int = 800,
-  ) -> Dict[str, Any]:
-    """Queries raw HydroATLAS BasinATLAS sub-basin polygons in a bounding box for map visualization."""
-    self._ensure_gdb()
-    min_lon, min_lat, max_lon, max_lat = bbox
-    min_lon = max(-180.0, float(min_lon))
-    min_lat = max(-90.0, float(min_lat))
-    max_lon = min(180.0, float(max_lon))
-    max_lat = min(90.0, float(max_lat))
-
-    attr_info = ATTRIBUTE_DEFINITIONS.get(
-        attribute_key,
-        {
-            "label": attribute_key,
-            "name": attribute_key,
-            "unit": "",
-            "category": "HydroATLAS",
-            "desc": attribute_key,
-        },
-    )
-    attr_label = attr_info.get("label") or attr_info.get("name") or attribute_key
-
-    is_era5_climate = attribute_key in CARAVAN_CLIMATE_COLUMNS
-
-    if is_era5_climate:
-      chosen_level = 12
-    elif level is not None and 1 <= int(level) <= 12:
-      chosen_level = int(level)
-    else:
-      if zoom <= 3:
-        chosen_level = 4
-      elif zoom <= 4:
-        chosen_level = 5
-      elif zoom <= 5:
-        chosen_level = 6
-      elif zoom <= 6:
-        chosen_level = 7
-      elif zoom <= 7:
-        chosen_level = 8
-      elif zoom <= 8:
-        chosen_level = 10
-      else:
-        chosen_level = 12
-
-    layer_name = f"BasinATLAS_v10_lev{chosen_level:02d}"
-
-    read_cols = ["HYBAS_ID", "SUB_AREA", "UP_AREA"]
-    if not is_era5_climate and attribute_key not in (
-        "basin_area",
-        "HYBAS_ID",
-        "SUB_AREA",
-        "UP_AREA",
-    ):
-      read_cols.append(attribute_key)
-
-    try:
-      gdf = pyogrio.read_dataframe(
-          self.gdb_path,
-          layer=layer_name,
-          bbox=(min_lon, min_lat, max_lon, max_lat),
-          columns=read_cols,
-      )
-    except Exception as e:  # pylint: disable=broad-exception-caught
-      logger.warning(
-          "Failed to read layer %s from %s: %s", layer_name, self.gdb_path, e
-      )
-      return {
-          "type": "FeatureCollection",
-          "features": [],
-          "properties": {
-              "attribute": attribute_key,
-              "label": attr_label,
-              "unit": attr_info["unit"],
-              "category": attr_info["category"],
-              "level": chosen_level,
-              "count": 0,
-              "min_value": None,
-              "max_value": None,
-          },
-      }
-
-    if gdf.empty:
-      return {
-          "type": "FeatureCollection",
-          "features": [],
-          "properties": {
-              "attribute": attribute_key,
-              "label": attr_label,
-              "unit": attr_info["unit"],
-              "category": attr_info["category"],
-              "level": chosen_level,
-              "count": 0,
-              "min_value": None,
-              "max_value": None,
-          },
-      }
-
-    if len(gdf) > max_features:
-      gdf = gdf.iloc[:max_features].copy()
-
-    # Pre-load ERA5 climate records if needed
-    if is_era5_climate and self.era5_loader is not None:
-      needed_continents = set()
-      for hid in gdf["HYBAS_ID"].tolist():
-        first_digit = int(str(int(hid))[0])
-        if first_digit in CONTINENT_MAP:
-          needed_continents.add(CONTINENT_MAP[first_digit])
-      for cont in sorted(needed_continents):
-        try:
-          self.era5_loader.ensure_continent(cont)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-          logger.warning("Could not load ERA5 continent %s: %s", cont, e)
-
-    # Simplify geometries slightly at low zooms for snappy map rendering
-    simplify_tol = 0.0
-    if chosen_level <= 5:
-      simplify_tol = 0.015
-    elif chosen_level <= 7:
-      simplify_tol = 0.006
-    elif chosen_level <= 9:
-      simplify_tol = 0.002
-
-    features: List[Dict[str, Any]] = []
-    valid_values: List[float] = []
-
-    raw_climate_key = attribute_key
-    if attribute_key == "pet_mean_FAO_PM":
-      raw_climate_key = "pet_mean"
-    elif attribute_key == "aridity_FAO_PM":
-      raw_climate_key = "aridity"
-    elif attribute_key == "moisture_index_FAO_PM":
-      raw_climate_key = "moisture_index"
-    elif attribute_key == "seasonality_FAO_PM":
-      raw_climate_key = "seasonality"
-
-    for _, row in gdf.iterrows():
-      geom = row.geometry
-      if geom is None or geom.is_empty:
+def resolve_app_static_extractor_paths() -> Dict[str, Any]:
+  # Use frontend.config logic
+  repo_root = Path(__file__).resolve().parents[1]
+  
+  resolved_gdb = None
+  if os.environ.get("HYDROATLAS_GDB_PATH"):
+    resolved_gdb = Path(os.environ["HYDROATLAS_GDB_PATH"])
+  else:
+    gdb_candidates = [
+      Path.home() / ".cache" / "googlehydrology" / "hydroatlas" / "BasinATLAS_v10.gdb",
+      Path.home() / ".cache" / "googlehydrology" / "hydroatlas",
+      repo_root / "frontend" / "data" / "shared" / "hydroatlas" / "BasinATLAS_v10.gdb",
+      repo_root / "frontend" / "data" / "shared" / "hydroatlas",
+      repo_root / "frontend" / "data" / "base_layers" / "hydro_basins" / "basin_atlas" / "BasinATLAS_v10.gdb",
+      Path.home() / ".cache" / "openhydronet" / "data" / "basin_atlas" / "BasinATLAS_v10.gdb",
+      Path.home() / ".cache" / "openhydronet" / "hydroatlas" / "BasinATLAS_v10.gdb",
+    ]
+    for cand in gdb_candidates:
+      if not cand.exists():
         continue
-      if simplify_tol > 0.0:
-        geom = geom.simplify(simplify_tol, preserve_topology=True)
+      if cand.name.endswith(".gdb") and any(cand.glob("*.gdbtable")):
+        resolved_gdb = cand
+        break
+      if (cand / "hydro_atlas_lev12.parquet").exists() and (cand / "subpolygons").is_dir():
+        resolved_gdb = cand
+        break
+    if resolved_gdb is None:
+      resolved_gdb = gdb_candidates[0]
 
-      hid = int(row["HYBAS_ID"])
-      sub_area = float(row.get("SUB_AREA", 0.0) or 0.0)
-      up_area = float(row.get("UP_AREA", 0.0) or 0.0)
+  resolved_era5 = None
+  if os.environ.get("ERA5_CLIMATE_CACHE_DIR"):
+    resolved_era5 = Path(os.environ["ERA5_CLIMATE_CACHE_DIR"])
+  else:
+    era5_candidates = [
+      Path.home() / ".cache" / "googlehydrology" / "era5_climate",
+      repo_root / "frontend" / "data" / "shared" / "hydroatlas" / "era5_climate",
+      Path.home() / ".cache" / "openhydronet" / "data" / "era5_climate",
+      Path.home() / ".cache" / "openhydronet" / "era5_climate",
+    ]
+    for cand in era5_candidates:
+      if cand.exists() and any(cand.glob("*_climate_indices.txt")):
+        resolved_era5 = cand
+        break
+    if resolved_era5 is None:
+      resolved_era5 = era5_candidates[0]
 
-      val: Optional[float] = None
-      if attribute_key == "basin_area":
-        val = sub_area
-      elif is_era5_climate and self.era5_loader is not None:
-        rec = self.era5_loader.records.get(hid)
-        if rec is not None and raw_climate_key in rec:
-          raw_v = rec[raw_climate_key]
-          if raw_v is not None and not (
-              isinstance(raw_v, float) and math.isnan(raw_v)
-          ):
-            val = float(raw_v)
-      else:
-        raw_v = row.get(attribute_key)
-        if raw_v is not None and not (
-            isinstance(raw_v, float) and math.isnan(raw_v)
-        ):
-          fval = float(raw_v)
-          if fval > -990.0 and fval != -9999.0:
-            if attribute_key in ("tmp_dc_syr", "tmp_dc_smn", "tmp_dc_smx"):
-              fval = fval / 10.0
-            elif attribute_key in ("ari_ix_sav", "SLOPE_GRAD"):
-              fval = fval / 100.0
-            elif attribute_key in ("slp_dg_sav",):
-              fval = fval / 10.0
-            val = fval
-
-      if val is not None and math.isfinite(val):
-        val = round(val, 4)
-        valid_values.append(val)
-      else:
-        val = None
-
-      features.append({
-          "type": "Feature",
-          "properties": {
-              "HYBAS_ID": hid,
-              "sub_area_km2": round(sub_area, 2),
-              "up_area_km2": round(up_area, 2),
-              "attribute": attribute_key,
-              "value": val,
-              "unit": attr_info["unit"],
-          },
-          "geometry": shapely.geometry.mapping(geom),
-      })
-
-    min_val = round(min(valid_values), 4) if valid_values else None
-    max_val = round(max(valid_values), 4) if valid_values else None
-
-    return {
-        "type": "FeatureCollection",
-        "features": features,
-        "properties": {
-            "attribute": attribute_key,
-            "label": attr_label,
-            "unit": attr_info["unit"],
-            "category": attr_info["category"],
-            "description": attr_info.get("desc", ""),
-            "level": chosen_level,
-            "layer": layer_name,
-            "count": len(features),
-            "min_value": min_val,
-            "max_value": max_val,
-        },
-    }
+  resolved_gridded = os.environ.get("ERA5_GRIDDED_ZARR_URI") or None
+  
+  return {
+    "gdb_path": resolved_gdb,
+    "era5_cache_dir": resolved_era5,
+    "gridded_era5_uri": resolved_gridded,
+    "gcs_gdb_uri": DEFAULT_GCS_HYDROATLAS_URI,
+    "gcs_era5_climate_uri": DEFAULT_GCS_ERA5_CLIMATE_URI,
+  }
 
 
 _extractor_instance: Optional[StaticAttributesExtractor] = None
 
-
 def get_attributes_extractor() -> StaticAttributesExtractor:
   global _extractor_instance
   if _extractor_instance is None:
-    _extractor_instance = StaticAttributesExtractor()
+    paths = resolve_app_static_extractor_paths()
+    _extractor_instance = StaticAttributesExtractor(
+      gdb_path=paths["gdb_path"],
+      era5_cache_dir=paths["era5_cache_dir"],
+      gridded_era5_uri=paths["gridded_era5_uri"],
+      gcs_gdb_uri=paths["gcs_gdb_uri"],
+      gcs_era5_climate_uri=paths["gcs_era5_climate_uri"],
+    )
   return _extractor_instance
+
+def zoom_to_hydroatlas_level(zoom: int, available: Sequence[int]) -> int:
+  target = ZOOM_TO_LEVEL.get(zoom, 12)
+  valid = [l for l in available if l <= target]
+  if valid:
+    return max(valid)
+  return min(available) if available else 12
+
+def sanitize_for_json(obj: Any) -> Any:
+  """Recursively converts NaN/Inf floats and numpy scalars to JSON-safe Python types."""
+  if obj is None:
+    return None
+  if isinstance(obj, bool):
+    return obj
+  if isinstance(obj, (np.integer, int)):
+    return int(obj)
+  if isinstance(obj, (np.floating, float)):
+    fv = float(obj)
+    if math.isnan(fv) or math.isinf(fv):
+      return None
+    return fv
+  if isinstance(obj, dict):
+    return {str(k): sanitize_for_json(v) for k, v in obj.items()}
+  if isinstance(obj, (list, tuple)):
+    return [sanitize_for_json(item) for item in obj]
+  return obj
+
+
+def card_payload_from_cache_entry(catchment_id: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+  """Constructs the attribute card payload from a cached entry."""
+  if "attributes" in entry:
+    attrs = entry["attributes"]
+  else:
+    attrs = entry.get("raw_attributes", entry)
+  
+  # For area, try to pull it from the summary if available
+  summary = entry.get("summary", {})
+  area_km2 = entry.get("area_km2") or summary.get("total_area_km2") or attrs.get("basin_area") or 0.0
+  
+  subbasin_ids = tuple(entry.get("subbasin_ids") or summary.get("subbasin_ids") or [])
+  subbasin_weights_km2 = tuple(entry.get("subbasin_weights_km2") or [0.0] * len(subbasin_ids))
+  res = CatchmentAttributes(
+    catchment_id=catchment_id,
+    attributes=attrs,
+    subbasin_ids=subbasin_ids,
+    subbasin_weights_km2=subbasin_weights_km2,
+    area_km2=area_km2,
+    area_fraction_used_for_aggregation=entry.get(
+      "area_fraction_used_for_aggregation",
+      attrs.get("area_fraction_used_for_aggregation", 1.0),
+    ),
+  )
+  return build_attribute_card_payload(res)
+
+
+def build_attribute_card_payload(res: CatchmentAttributes) -> Dict[str, Any]:
+  physical = res.physical_units(strict=False)
+  
+  processed_attributes = {}
+  categories_dict: Dict[str, List[Dict[str, Any]]] = {
+    "Topography": [],
+    "Climate": [],
+    "Soils": [],
+    "Land Cover": [],
+    "Hydrology": [],
+    "Anthropogenic": [],
+  }
+  
+  for key, val in physical.items():
+    defn = get_attribute_definition(key)
+    if not defn:
+      continue
+    
+    unit = defn.physical_unit
+    if math.isnan(val) or math.isinf(val):
+      scaled_val = val
+    elif unit in ["m", "mm/yr", "people", "M m³"]:
+      scaled_val = round(val, 1) if unit != "people" else int(round(val))
+    elif unit.startswith("class"):
+      scaled_val = int(round(val))
+    else:
+      scaled_val = round(val, 3)
+      
+    processed_attributes[key] = scaled_val
+    
+    categories_dict.setdefault(defn.category, []).append({
+      "key": key,
+      "name": defn.name,
+      "value": scaled_val,
+      "unit": defn.physical_unit,
+      "description": defn.description,
+      "category": defn.category,
+    })
+    
+  summary = {
+    "catchment_id": res.catchment_id,
+    "elevation_mean_m": processed_attributes.get("ele_mt_sav", np.nan),
+    "slope_mean_deg": processed_attributes.get("slp_dg_sav", np.nan),
+    "annual_precip_mm": processed_attributes.get("pre_mm_syr", np.nan),
+    "annual_temp_c": processed_attributes.get("tmp_dc_syr", np.nan),
+    "aridity_index": processed_attributes.get("ari_ix_sav", np.nan),
+    "era5_p_mean_mm_day": processed_attributes.get("p_mean", np.nan),
+    "era5_pet_mean_mm_day": processed_attributes.get("pet_mean_ERA5_LAND", np.nan),
+    "era5_fao_pet_mean_mm_day": processed_attributes.get("pet_mean_FAO_PM", np.nan),
+    "era5_aridity": processed_attributes.get("aridity_ERA5_LAND", np.nan),
+    "era5_fao_aridity": processed_attributes.get("aridity_FAO_PM", np.nan),
+    "era5_frac_snow_pc": processed_attributes.get("frac_snow", np.nan),
+    "forest_fraction_pc": processed_attributes.get("for_pc_sse", np.nan),
+    "cropland_fraction_pc": processed_attributes.get("crp_pc_sse", np.nan),
+    "urban_fraction_pc": processed_attributes.get("urb_pc_sse", np.nan),
+    "dominant_land_cover_class": physical.get("glc_cl_smj", np.nan),
+    "soil_clay_pc": processed_attributes.get("cly_pc_sav", np.nan),
+    "soil_sand_pc": processed_attributes.get("snd_pc_sav", np.nan),
+    "soil_silt_pc": processed_attributes.get("slt_pc_sav", np.nan),
+    "groundwater_table_depth_cm": processed_attributes.get("gwt_cm_sav", np.nan),
+    "soil_water_content_pc": processed_attributes.get("swc_pc_syr", np.nan),
+    "inundation_max_pc": processed_attributes.get("inu_pc_smx", np.nan),
+    "total_area_km2": round(res.area_km2, 2),
+    "intersected_subbasins": len(res.subbasin_ids),
+    "subbasin_ids": list(res.subbasin_ids),
+  }
+  
+  return sanitize_for_json({
+    "status": "success",
+    "catchment_id": res.catchment_id,
+    "attributes": dict(res.attributes),
+    "raw_attributes": dict(res.attributes),
+    "flat_attributes": processed_attributes,
+    "summary": summary,
+    "categories": categories_dict,
+    "processed_attributes": processed_attributes,
+    "intersected_subbasins_count": len(res.subbasin_ids),
+    "total_area_km2": round(res.area_km2, 2),
+  })
+
+def build_map_layer_geojson(extractor: StaticAttributesExtractor, bbox: Tuple[float,float,float,float], *, zoom: int, attribute: str, level: Optional[int] = None) -> Dict[str, Any]:
+  avail = extractor.available_levels
+  target_level = level if level is not None else zoom_to_hydroatlas_level(zoom, avail)
+  
+  defn = get_attribute_definition(attribute)
+  if defn and defn.source == "era5_climate":
+    target_level = 12
+      
+  label = defn.name if defn else attribute
+  unit = defn.physical_unit if defn else ""
+  category = defn.category if defn else ""
+  desc = defn.description if defn else ""
+  
+  cols = ["HYBAS_ID", "SUB_AREA", "UP_AREA"]
+  if attribute in ATTRIBUTE_REGISTRY and attribute not in cols:
+    if defn and defn.source == "hydroatlas":
+      cols.append(attribute)
+      
+  gdf = extractor.read_subbasins(bbox, level=target_level, columns=cols)
+      
+  truncated = False
+  if len(gdf) > MAX_MAP_FEATURES:
+    gdf = gdf.head(MAX_MAP_FEATURES).copy()
+    truncated = True
+
+  if target_level == 12 and defn and defn.source == "era5_climate" and len(gdf) > 0:
+    hybas_ids = [int(h) for h in gdf["HYBAS_ID"].tolist()]
+    try:
+      clim_df = extractor.read_subbasin_climate_indices(hybas_ids)
+      gdf = gdf.merge(clim_df, on="HYBAS_ID", how="left")
+    except Exception as e:
+      logger.warning("Could not load climate indices: %s", e)
+            
+  features = []
+  valid_vals = []
+  simplify_tol = LEVEL_SIMPLIFY_TOL.get(target_level, 0.0)
+  
+  for _, row in gdf.iterrows():
+    geom = row.geometry
+    if geom is None or geom.is_empty:
+      continue
+    geom_simplified = geom.simplify(simplify_tol, preserve_topology=True) if simplify_tol > 0 else geom
+    
+    hybas_id = int(row.get("HYBAS_ID", 0))
+    sub_area = round(float(row.get("SUB_AREA", 0.0)), 2)
+    up_area = round(float(row.get("UP_AREA", 0.0)), 2)
+    
+    row_attrs = {attribute: row.get(attribute)} if attribute in row else {}
+    phys = to_physical_units(row_attrs, strict=False)
+    scaled_val = phys.get(attribute)
+    
+    if scaled_val is not None and not math.isnan(scaled_val) and not math.isinf(scaled_val):
+      scaled_val = round(float(scaled_val), 4)
+      valid_vals.append(scaled_val)
+    else:
+      scaled_val = None
+        
+    features.append({
+      "type": "Feature",
+      "geometry": shapely.geometry.mapping(geom_simplified),
+      "properties": {
+        "HYBAS_ID": hybas_id,
+        "SUB_AREA": sub_area,
+        "UP_AREA": up_area,
+        "sub_area_km2": sub_area,
+        "up_area_km2": up_area,
+        "attribute": attribute,
+        attribute: scaled_val,
+        "value": scaled_val,
+        "unit": unit,
+        "level": target_level,
+      },
+    })
+      
+  min_v = round(float(min(valid_vals)), 4) if valid_vals else None
+  max_v = round(float(max(valid_vals)), 4) if valid_vals else None
+  mean_v = round(float(np.mean(valid_vals)), 4) if valid_vals else None
+  
+  props = {
+    "attribute": attribute,
+    "attribute_key": attribute,
+    "label": label,
+    "unit": unit,
+    "category": category,
+    "description": desc,
+    "level": target_level,
+    "layer": f"BasinATLAS_v10_lev{target_level:02d}",
+    "count": len(features),
+    "min_value": min_v,
+    "mean_value": mean_v,
+    "max_value": max_v,
+    "truncated": truncated
+  }
+      
+  return sanitize_for_json({
+    "status": "success",
+    "type": "FeatureCollection",
+    "features": features,
+    "properties": props,
+  })
+
+def build_schema_payload() -> Dict[str, Any]:
+  attr_list = []
+  for k, v in ATTRIBUTE_REGISTRY.items():
+    attr_list.append({
+      "key": v.key,
+      "name": v.name,
+      "label": v.name,
+      "category": v.category,
+      "unit": v.physical_unit,
+      "desc": v.description,
+      "description": v.description,
+    })
+      
+  attr_dict = {a["key"]: a for a in attr_list}
+  return {
+    "attributes": attr_dict,
+    "attribute_list": attr_list,
+    "extractor_source": "multimet.static_extractor"
+  }

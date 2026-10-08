@@ -28,10 +28,7 @@ for p in (PARENT_DIR, REPO_ROOT):
 from frontend import maas_engine
 from frontend.maas_viewer import (
     MaaSViewer,
-    buffer_reach_corridor,
     build_consensus_row,
-    camaflood_unit_feature,
-    chain_length_km,
     emulate_camaflood_physics,
     reach_exceedance_summary,
     route_floodplain_excess,
@@ -334,20 +331,7 @@ class TestMaaSContracts(unittest.TestCase):
     self.assertAlmostEqual(ff["max_flood_depth_m"], 0.8)
     self.assertAlmostEqual(ff["max_flooded_fraction_pct"], 12.0)
 
-  def test_inundation_corridor_buffering_and_camaflood_emulation(self):
-    chain = [
-        {"geometry": LineString([[-90.30, 38.65], [-90.25, 38.63]])},
-        {"geometry": LineString([[-90.25, 38.63], [-90.20, 38.61]])},
-        {"geometry": LineString([[-90.20, 38.61], [-90.15, 38.59]])},
-    ]
-    total_len = chain_length_km(chain, ref_lat=38.63)
-    self.assertGreater(total_len, 12.0)
-
-    poly = buffer_reach_corridor(chain, half_width_m=600.0, ref_lat=38.63)
-    self.assertIsNotNone(poly)
-    self.assertIn(poly.geom_type, ("Polygon", "MultiPolygon"))
-    self.assertGreater(poly.area, 0.0)
-
+  def test_camaflood_emulation(self):
     routed = route_floodplain_excess([1000.0, 2000.0, 2500.0], q_bankfull=1500.0)
     self.assertEqual(len(routed), 3)
     self.assertEqual(routed[0], 0.0)
@@ -359,22 +343,7 @@ class TestMaaSContracts(unittest.TestCase):
     self.assertEqual(len(emulated["series"]["rivout"]), 6)
     self.assertEqual(len(emulated["series"]["flddph_m"]), 6)
 
-    unit_feat = camaflood_unit_feature(
-        38.625,
-        -90.125,
-        {
-            "status": "emulated",
-            "emulated": True,
-            "flood_forecast": {
-                "max_flood_depth_m": 0.85,
-                "max_flooded_fraction_pct": 12.5,
-            },
-        },
-    )
-    self.assertEqual(unit_feat["type"], "Feature")
-    self.assertEqual(unit_feat["properties"]["layer"], "camaflood_depth")
-
-  def test_maas_viewer_render_forecast_and_inundation_views(self):
+  def test_maas_viewer_render_forecast_view(self):
     with tempfile.TemporaryDirectory() as tmp:
       tmp_path = Path(tmp)
       cfg = MaaSConfig(
@@ -421,16 +390,6 @@ class TestMaaSContracts(unittest.TestCase):
           self.assertIn("central", series, key)
           self.assertEqual(len(series["central"]), len(timeline["dates"]), key)
         self.assertIn("status", timeline)
-
-        inund_fc = viewer.render_inundation_view(
-            38.6270, -90.1994, gauge_id="hybas_7120012340"
-        )
-        self.assertEqual(inund_fc["type"], "FeatureCollection")
-        self.assertGreater(len(inund_fc["features"]), 0)
-        self.assertEqual(
-            set(inund_fc["metadata"]["layers"]),
-            {"floodhub_extent", "camaflood_depth", "reach_exceedance"},
-        )
 
 
 class TestMaaSServerEndpoints(unittest.TestCase):
@@ -497,7 +456,7 @@ class TestMaaSServerEndpoints(unittest.TestCase):
     self.assertEqual(status, 200)
     self.assertEqual(data.get("properties", {}).get("grid_cell_id"), "cama_025_23.125_90.625")
 
-  def test_api_maas_forecast_and_inundation_mocked(self):
+  def test_api_maas_forecast_mocked(self):
     mock_gl = _mock_glofas_forecast()
     mock_gg = _mock_geoglows_forecast()
     mock_fh = _mock_floodhub_forecast()
@@ -535,16 +494,6 @@ class TestMaaSServerEndpoints(unittest.TestCase):
       self.assertEqual(
           [r["model"] for r in data_sub["consensus"]], ["glofas", "todays_earth"]
       )
-
-      status_inund, data_inund = self._get(
-          "/api/maas/flood-inundation?lat=32.756&lon=-117.252&gauge_id=hybas_7120012340"
-      )
-      self.assertEqual(status_inund, 200)
-      self.assertEqual(data_inund.get("type"), "FeatureCollection")
-      self.assertGreater(len(data_inund.get("features", [])), 0)
-
-  def test_api_maas_flood_inundation_rejects_bad_coordinates(self):
-    self.assertEqual(self._get_status("/api/maas/flood-inundation?lat=abc&lon=1"), 400)
 
   def test_api_maas_network_telescoping_all_models(self):
     for model in ("floodhub", "glofas", "geoglows", "todays_earth"):
@@ -587,6 +536,91 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         (vs.get("geoglows_reach") or {}).get("upstream_area_km2") or 0, 500000
     )
 
+  def test_live_network_status_coloring(self):
+    from frontend.maas_live_status import (
+        _LIVE_STATUS,
+        _extract_current_floodhub_flow,
+        compute_live_flow_metrics,
+        enrich_network_features_live,
+    )
+
+    m_low = compute_live_flow_metrics(2.0, q2=200.0, q5=350.0, q20=600.0)
+    self.assertLess(m_low["flow_percentile"], 25.0)
+    self.assertEqual(m_low["exceedance_rank"], 0)
+
+    # Global median Q/Q2 (~0.285 -> 57 m3/s for Q2=200) must fall in normal 25-75th pct bin
+    m_norm = compute_live_flow_metrics(57.0, q2=200.0, q5=350.0, q20=600.0)
+    self.assertGreaterEqual(m_norm["flow_percentile"], 25.0)
+    self.assertLess(m_norm["flow_percentile"], 75.0)
+    self.assertEqual(m_norm["exceedance_rank"], 0)
+
+    # High in-bank flow (0.65 <= Q/Q2 < 1.0) maps to 75-90th pct with exceedance_rank == 0
+    m_high = compute_live_flow_metrics(150.0, q2=200.0, q5=350.0, q20=600.0)
+    self.assertGreaterEqual(m_high["flow_percentile"], 75.0)
+    self.assertLess(m_high["flow_percentile"], 90.0)
+    self.assertEqual(m_high["exceedance_rank"], 0)
+
+    m_warn = compute_live_flow_metrics(240.0, q2=200.0, q5=350.0, q20=600.0)
+    self.assertGreaterEqual(m_warn["flow_percentile"], 90.0)
+    self.assertEqual(m_warn["exceedance_rank"], 1)
+
+    m_danger = compute_live_flow_metrics(400.0, q2=200.0, q5=350.0, q20=600.0)
+    self.assertGreaterEqual(m_danger["flow_percentile"], 95.0)
+    self.assertEqual(m_danger["exceedance_rank"], 2)
+
+    m_ext = compute_live_flow_metrics(650.0, q2=200.0, q5=350.0, q20=600.0)
+    self.assertGreaterEqual(m_ext["flow_percentile"], 99.0)
+    self.assertEqual(m_ext["exceedance_rank"], 3)
+
+    # _extract_current_floodhub_flow picks today's active range rather than 7-day peak
+    ranges = [
+        {
+            "forecastStartTime": "2026-10-08T00:00:00Z",
+            "forecastEndTime": "2026-10-09T00:00:00Z",
+            "value": 120.0,
+        },
+        {
+            "forecastStartTime": "2026-10-12T00:00:00Z",
+            "forecastEndTime": "2026-10-13T00:00:00Z",
+            "value": 950.0,
+        },
+    ]
+    self.assertEqual(
+        _extract_current_floodhub_flow(
+            [{"forecastRanges": ranges}], "2026-10-08T12:00:00Z"
+        ),
+        120.0,
+    )
+
+    _LIVE_STATUS["geoglows"]["760021611"] = m_warn
+    feats = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[-90.0, 38.0], [-90.1, 38.1]]},
+            "properties": {"river_id": 760021611, "upstream_area_km2": 50000.0},
+        }
+    ]
+    colored, pending = enrich_network_features_live("geoglows", feats, trigger_fetch=False)
+    self.assertEqual(colored, 1)
+    self.assertEqual(pending, 0)
+    self.assertEqual(feats[0]["properties"]["exceedance_rank"], 1)
+    self.assertGreaterEqual(feats[0]["properties"]["flow_percentile"], 90.0)
+
+    # 4-tier GEOGLOWS return period classification (q50 -> rank 4)
+    m_rp50 = compute_live_flow_metrics(1100.0, q2=200.0, q5=350.0, q20=600.0, q50=950.0)
+    self.assertEqual(m_rp50["exceedance_rank"], 4)
+    self.assertGreaterEqual(m_rp50["flow_percentile"], 99.5)
+
+    # Simplification-invariant grid_feature_key uses downstream endpoint + area
+    from frontend.maas_live_status import grid_feature_key
+    coarse_coords = [[89.5, 24.5], [89.875, 23.875]]
+    fine_coords = [[89.5, 24.5], [89.62, 24.31], [89.74, 24.12], [89.875, 23.875]]
+    self.assertEqual(
+        grid_feature_key(coarse_coords, 45000.0),
+        grid_feature_key(fine_coords, 45000.0),
+    )
+
 
 if __name__ == "__main__":
   unittest.main()
+

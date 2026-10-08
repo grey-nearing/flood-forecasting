@@ -303,6 +303,25 @@
               </span>
             </label>
           </div>
+          <!-- Real-time forecast river color-coding legend + manual refresh -->
+          <div id="maasFlowLegend" class="absolute bottom-5 left-3 z-[500] bg-white/95 backdrop-blur border border-[#dadce0] rounded-lg px-2.5 py-2 shadow-md text-[10px] text-[#3c4043] space-y-1.5 pointer-events-auto">
+            <div class="flex items-center justify-between gap-2.5">
+              <span id="maasFlowLegendTitle" class="font-semibold text-[#202124] uppercase tracking-wider text-[9.5px]">Return-Period Thresholds</span>
+              <div class="flex items-center gap-2">
+                <span id="maasLiveColorBadge" class="text-[9.5px] font-mono text-[#1e8e3e]">Real-time</span>
+                <button id="maasRefreshLiveBtn" type="button" title="Manually fetch the newest live forecasts from the underlying models" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-[#dadce0] bg-[#f8f9fa] hover:bg-[#e8f0fe] hover:border-[#1a73e8] text-[#1a73e8] font-medium text-[9.5px] transition">
+                  <span id="maasRefreshLiveIcon" class="inline-block leading-none">↻</span>
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+            <div id="maasFlowLegendItems" class="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5">
+              <span class="flex items-center gap-1"><span class="w-3 h-1 rounded-full inline-block" style="background:#1a73e8"></span><span>Normal (&lt;2-yr)</span></span>
+              <span class="flex items-center gap-1"><span class="w-3 h-1.5 rounded-full inline-block" style="background:#eab308"></span><span>≥2-yr Medium</span></span>
+              <span class="flex items-center gap-1"><span class="w-3 h-1.5 rounded-full inline-block" style="background:#dc2626"></span><span>≥5-yr High</span></span>
+              <span class="flex items-center gap-1"><span class="w-3 h-1.5 rounded-full inline-block" style="background:#9333ea"></span><span>≥20-yr Severe</span></span>
+            </div>
+          </div>
         </div>
         <!-- Forecast view: selected reach, model selector (or multi-model radio list) and hydrograph -->
         <div id="maasForecastViewContainer" class="hidden flex-1 min-w-0 h-full flex flex-col gap-3 p-5 bg-[#f8f9fa] border-l border-[#dadce0]">
@@ -577,7 +596,17 @@
 
         <!-- What the map is showing right now, and whether it is real data -->
         <section id="weatherStatusCard" class="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-3 space-y-1">
-          <div class="text-[10px] uppercase tracking-wider font-bold text-[#5f6368]">On the map</div>
+          <div class="flex items-center justify-between">
+            <div class="text-[10px] uppercase tracking-wider font-bold text-[#5f6368]">On the map</div>
+            <button id="weatherRefreshAllBtn" class="flex items-center gap-1 text-[#1a73e8] hover:text-[#174ea6] transition-colors bg-transparent border-none cursor-pointer p-0" title="Refresh all weather models">
+              <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+              <span class="text-[10px] font-semibold">Refresh All</span>
+            </button>
+          </div>
+          <div id="weatherRefreshStatusBanner" class="hidden text-[10.5px] leading-snug text-[#0f5132] bg-[#d1e7dd] border border-[#badbcc] p-1.5 rounded flex items-center gap-1">
+            <i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i>
+            <span>Refreshing all weather products…</span>
+          </div>
           <div id="weatherStatusTitle" class="text-sm font-semibold text-[#202124] leading-snug">Rain rate</div>
           <div id="weatherStatusTime" class="text-[11px] text-[#1a73e8] font-mono">Loading forecast info…</div>
           <div class="flex items-start gap-2 pt-1.5">
@@ -593,47 +622,34 @@
           <div class="space-y-1.5">
             <div class="flex items-center justify-between">
               <span class="text-[10px] uppercase font-bold text-[#5f6368] tracking-wider">Model</span>
-              <span id="weatherCurrentModelBadge" class="text-[10px] bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] px-2 py-0.5 rounded-full font-mono">ECMWF IFS</span>
+              <div class="flex items-center gap-1.5">
+                <span id="weatherCurrentModelBadge" class="text-[10px] bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] px-2 py-0.5 rounded-full font-mono">ECMWF HRES</span>
+                <button id="weatherRefreshActiveModelBtn" class="flex items-center gap-1 text-[#5f6368] hover:text-[#202124] bg-white border border-[#dadce0] rounded px-1.5 py-0.5 transition-colors cursor-pointer" title="Refresh active model">
+                  <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+                </button>
+              </div>
             </div>
             <div id="weatherModelPills" class="grid grid-cols-2 gap-1.5">
-              <button type="button" data-model="ecmwf_ifs" class="weather-model-btn active"><span>ECMWF IFS</span><span data-model-tag class="weather-tag unknown">…</span></button>
-              <button type="button" data-model="ecmwf_aifs" class="weather-model-btn"><span>ECMWF AIFS</span><span data-model-tag class="weather-tag unknown">…</span></button>
-              <button type="button" data-model="graphcast" class="weather-model-btn"><span>GraphCast</span><span data-model-tag class="weather-tag unknown">…</span></button>
-              <button type="button" data-model="noaa_gfs" class="weather-model-btn"><span>NOAA GFS</span><span data-model-tag class="weather-tag unknown">…</span></button>
+              <button type="button" data-model="ecmwf_hres" class="weather-model-btn active relative pr-6"><span>ECMWF HRES</span><span data-model-tag class="weather-tag unknown">…</span><div class="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 hover:bg-black/5 rounded cursor-pointer" data-refresh-model="ecmwf_hres" title="Refresh"><i data-lucide="refresh-cw" class="w-3 h-3 text-[#5f6368]"></i></div></button>
+              <button type="button" data-model="ecmwf_ifs" class="weather-model-btn relative pr-6"><span>ECMWF IFS ENS</span><span data-model-tag class="weather-tag unknown">…</span><div class="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 hover:bg-black/5 rounded cursor-pointer" data-refresh-model="ecmwf_ifs" title="Refresh"><i data-lucide="refresh-cw" class="w-3 h-3 text-[#5f6368]"></i></div></button>
+              <button type="button" data-model="ecmwf_aifs" class="weather-model-btn relative pr-6"><span>ECMWF AIFS</span><span data-model-tag class="weather-tag unknown">…</span><div class="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 hover:bg-black/5 rounded cursor-pointer" data-refresh-model="ecmwf_aifs" title="Refresh"><i data-lucide="refresh-cw" class="w-3 h-3 text-[#5f6368]"></i></div></button>
+              <button type="button" data-model="noaa_gfs" class="weather-model-btn relative pr-6"><span>NOAA GFS</span><span data-model-tag class="weather-tag unknown">…</span><div class="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 hover:bg-black/5 rounded cursor-pointer" data-refresh-model="noaa_gfs" title="Refresh"><i data-lucide="refresh-cw" class="w-3 h-3 text-[#5f6368]"></i></div></button>
+              <button type="button" data-model="noaa_gefs" class="weather-model-btn relative pr-6"><span>NOAA GEFS</span><span data-model-tag class="weather-tag unknown">…</span><div class="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 hover:bg-black/5 rounded cursor-pointer" data-refresh-model="noaa_gefs" title="Refresh"><i data-lucide="refresh-cw" class="w-3 h-3 text-[#5f6368]"></i></div></button>
+              <button type="button" data-model="noaa_hrrr" class="weather-model-btn relative pr-6"><span>NOAA HRRR</span><span data-model-tag class="weather-tag unknown">…</span><div class="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 hover:bg-black/5 rounded cursor-pointer" data-refresh-model="noaa_hrrr" title="Refresh"><i data-lucide="refresh-cw" class="w-3 h-3 text-[#5f6368]"></i></div></button>
+              <button type="button" data-model="nasa_imerg" class="weather-model-btn relative pr-6"><span>NASA IMERG</span><span data-model-tag class="weather-tag unknown">…</span><div class="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 hover:bg-black/5 rounded cursor-pointer" data-refresh-model="nasa_imerg" title="Refresh"><i data-lucide="refresh-cw" class="w-3 h-3 text-[#5f6368]"></i></div></button>
+              <button type="button" data-model="noaa_cpc" class="weather-model-btn relative pr-6"><span>NOAA CPC</span><span data-model-tag class="weather-tag unknown">…</span><div class="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 hover:bg-black/5 rounded cursor-pointer" data-refresh-model="noaa_cpc" title="Refresh"><i data-lucide="refresh-cw" class="w-3 h-3 text-[#5f6368]"></i></div></button>
             </div>
           </div>
 
           <div class="space-y-1">
-            <span class="text-[10px] uppercase font-bold text-[#5f6368] tracking-wider">Layer</span>
+            <span id="weatherVariableSectionTitle" class="text-[10px] uppercase font-bold text-[#5f6368] tracking-wider">Variable</span>
             <div id="weatherVariableRadios" class="space-y-0.5">
+              <!-- Populated dynamically by populateWeatherVariableMenu() based on the selected Model -->
               <label class="weather-var-option">
                 <input type="radio" name="weatherVarRadio" value="precipitation" checked class="accent-[#1a73e8]">
                 <i data-lucide="cloud-rain" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
                 <span class="flex-1">Rain rate</span>
-                <span data-var-tag="precipitation" class="weather-tag synthetic hidden">synthetic</span>
-              </label>
-              <!-- Live radar (RainViewer) is kept for compatibility but hidden: its time does not follow the forecast slider -->
-              <label class="hidden">
-                <input type="radio" name="weatherVarRadio" value="radar">
-                <span>Live radar (RainViewer)</span>
-              </label>
-              <label class="weather-var-option">
-                <input type="radio" name="weatherVarRadio" value="accumulated_precip" class="accent-[#1a73e8]">
-                <i data-lucide="droplets" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
-                <span class="flex-1">Rain accumulated since forecast start</span>
-                <span data-var-tag="accumulated_precip" class="weather-tag synthetic hidden">synthetic</span>
-              </label>
-              <label class="weather-var-option">
-                <input type="radio" name="weatherVarRadio" value="temperature" class="accent-[#1a73e8]">
-                <i data-lucide="thermometer" class="w-3.5 h-3.5 text-[#b06000]"></i>
-                <span class="flex-1">Air temperature (2 m)</span>
-                <span data-var-tag="temperature" class="weather-tag synthetic hidden">synthetic</span>
-              </label>
-              <label class="weather-var-option">
-                <input type="radio" name="weatherVarRadio" value="pressure" class="accent-[#1a73e8]">
-                <i data-lucide="gauge" class="w-3.5 h-3.5 text-[#174ea6]"></i>
-                <span class="flex-1">Sea-level pressure</span>
-                <span data-var-tag="pressure" class="weather-tag synthetic hidden">synthetic</span>
+                <span data-var-tag="precipitation" class="weather-tag synthetic hidden">not synced</span>
               </label>
             </div>
           </div>
@@ -653,7 +669,7 @@
             <p id="weatherLegendNote" class="text-[10.5px] text-[#5f6368] leading-snug mt-1.5"></p>
           </div>
 
-          <label class="flex items-center justify-between gap-2 p-2 rounded-lg border border-[#dadce0] hover:border-[#bdc1c6] cursor-pointer">
+          <label id="weatherWindToggleRow" class="flex items-center justify-between gap-2 p-2 rounded-lg border border-[#dadce0] hover:border-[#bdc1c6] cursor-pointer">
             <span class="flex items-center gap-2 text-[#202124]">
               <i data-lucide="wind" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
               <span>Wind particles <span id="weatherWindSourceTag" class="text-[#b06000]">(synthetic)</span></span>
@@ -1309,27 +1325,50 @@
       <!-- Backwards compatibility alias for tab-modeling -->
       <div id="tab-modeling" class="hidden" aria-hidden="true"></div>
 
-      <!-- Left Controls Panel (Simple, Focused Workflow) -->
-      <aside class="w-[370px] bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-4">
-        <!-- Active Basin Card -->
-        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2">
+      <!-- Left Controls Panel (Multi-Catchment Selection, Cold/Hot Start Mode & Execution) -->
+      <aside class="w-[390px] bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-4">
+        <!-- Multi-Catchment Selector Card -->
+        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
           <div class="flex items-center justify-between">
             <div>
-              <span class="text-[10px] text-[#5f6368] uppercase tracking-wider block font-semibold">Active Catchment</span>
+              <span class="text-[10px] text-[#5f6368] uppercase tracking-wider block font-semibold">Custom Catchments to Forecast</span>
               <span id="modelingActiveBasinDisplay" class="font-mono text-[#1e8e3e] font-bold text-xs">No Basin Selected</span>
             </div>
-            <button id="fcRefreshStatusBtn" type="button" title="Refresh status" class="p-1.5 rounded-lg bg-white hover:bg-[#f1f3f4] text-[#5f6368] hover:text-[#202124] border border-[#dadce0] transition">
-              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
-            </button>
+            <div class="flex items-center gap-1">
+              <span id="fcSelectedCatchmentCountBadge" class="text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2 py-0.5 rounded font-mono font-semibold">0 selected</span>
+              <button id="fcRefreshStatusBtn" type="button" title="Refresh real-time status &amp; saved states" class="p-1.5 rounded-lg bg-white hover:bg-[#f1f3f4] text-[#5f6368] hover:text-[#202124] border border-[#dadce0] transition">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
           </div>
-          <select id="fcBasinSelect" class="hidden w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2.5 py-1.5 text-[#202124] focus:outline-none focus:border-[#1e8e3e]"></select>
+
+          <div class="flex items-center justify-between gap-1.5 text-[11px]">
+            <span class="text-[#5f6368]">Select basins for batch fetch &amp; forecast:</span>
+            <div class="flex items-center gap-1">
+              <button id="fcSelectAllBasinsBtn" type="button" class="px-2 py-0.5 rounded bg-white hover:bg-[#e8f0fe] text-[#1a73e8] border border-[#dadce0] font-medium transition">All</button>
+              <button id="fcSelectNoneBasinsBtn" type="button" class="px-2 py-0.5 rounded bg-white hover:bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0] font-medium transition">None</button>
+            </div>
+          </div>
+
+          <!-- Multi-Catchment Checklist with Per-Basin Yesterday-State Badges -->
+          <div id="fcCatchmentSelectorList" class="max-h-44 overflow-y-auto custom-scrollbar space-y-1.5 bg-white p-2 rounded-lg border border-[#dadce0]">
+            <div class="text-[11px] text-[#5f6368] italic py-2 text-center">
+              No custom catchments delineated or uploaded yet.
+            </div>
+          </div>
+
+          <!-- Active Viewing Catchment Dropdown (syncs with chart inspection) -->
+          <div class="flex items-center justify-between gap-2 pt-1">
+            <label for="fcBasinSelect" class="text-[10px] font-semibold uppercase tracking-wider text-[#5f6368] whitespace-nowrap">Viewing Basin:</label>
+            <select id="fcBasinSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2.5 py-1.5 text-[#202124] focus:outline-none focus:border-[#1e8e3e]"></select>
+          </div>
         </div>
 
         <!-- Unified Mode Selector (Controls Both Data Fetching & Model Execution) -->
         <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
           <div class="flex items-center justify-between">
             <label class="text-xs font-bold text-[#202124] uppercase tracking-wider flex items-center gap-1.5">
-              <i data-lucide="sliders" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Forecast Mode
+              <i data-lucide="sliders" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Start Mode
             </label>
             <span id="fcModeBadge" class="text-[10px] bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc] px-2 py-0.5 rounded font-mono">Cold Start</span>
           </div>
@@ -1338,27 +1377,27 @@
             <button id="fcModeColdBtn" type="button" data-mode="coldstart" class="fc-mode-btn py-2 px-3 rounded-md text-xs font-semibold transition bg-[#1a73e8] text-white shadow">
               Cold Start
             </button>
-            <button id="fcModeHotBtn" type="button" data-mode="hotstart" class="fc-mode-btn py-2 px-3 rounded-md text-xs font-medium transition text-[#5f6368] hover:text-[#202124]">
-              Hot Start
+            <button id="fcModeHotBtn" type="button" data-mode="hotstart" disabled title="Hot Start is only available when yesterday's saved state (t₀ − 1d) exists for all selected catchments" class="fc-mode-btn py-2 px-3 rounded-md text-xs font-medium transition text-[#5f6368] hover:text-[#202124] disabled:opacity-45 disabled:cursor-not-allowed">
+              Hot Start (t₀ − 1d)
             </button>
           </div>
 
           <!-- Saved State Date vs. Real-Time Issue Date Comparison -->
           <div class="p-3 bg-white/95 rounded-lg border border-[#dadce0] space-y-1.5 text-xs">
             <div class="flex items-center justify-between">
-              <span class="text-[#5f6368]">Latest Forecast Issue Date:</span>
+              <span class="text-[#5f6368]">Forecast Issue Date (t₀):</span>
               <span id="fcIssueDateText" class="font-mono font-semibold text-[#202124]">—</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="text-[#5f6368]">Required Yesterday State (t₀ − 1d):</span>
+              <span id="fcExpectedStateDateText" class="font-mono font-semibold text-[#3c4043]">—</span>
             </div>
             <div class="flex items-center justify-between">
               <span class="text-[#5f6368]">Saved State File Date:</span>
               <span id="fcSavedStateDateText" class="font-mono font-semibold text-[#5f6368]">None</span>
             </div>
-            <div class="flex items-center justify-between">
-              <span class="text-[#5f6368]">Required State Date (t₀ − 1d):</span>
-              <span id="fcExpectedStateDateText" class="font-mono text-[#3c4043]">—</span>
-            </div>
             <div id="fcStateValidationBanner" class="mt-2 pt-2 border-t border-[#dadce0] text-[11px] text-[#5f6368] leading-relaxed">
-              Select or delineate a catchment to inspect real-time forecast and state readiness.
+              Select or delineate a catchment to inspect real-time forecast and yesterday's state readiness.
             </div>
           </div>
         </section>
@@ -1372,8 +1411,46 @@
             <span class="text-[10px] text-[#5f6368] font-mono">multimet.realtime</span>
           </div>
           <p id="fcFetchModeDesc" class="text-xs text-[#5f6368] leading-relaxed">
-            Fetches 365-day spin-up nowcasts (IMERG, CPC) and 10-day weather forecasts (HRES &amp; dynamical.org streams) into Zarr.
+            Fetches 365-day spin-up nowcasts (IMERG, CPC) and 10-day weather forecasts (HRES &amp; dynamical.org streams) into Zarr for all selected catchments.
           </p>
+
+          <!-- Input Products Selector for MultiMet Fetch -->
+          <div class="bg-white p-2.5 rounded-lg border border-[#dadce0] space-y-1.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-[#5f6368]">Input Products to Fetch &amp; Use</span>
+              <span class="text-[10px] text-[#1a73e8] font-mono">Nowcast + Forecast</span>
+            </div>
+            <div id="fcInputProductsChecklist" class="grid grid-cols-2 gap-1 text-[11px] text-[#3c4043]">
+              <label class="flex items-center gap-1.5 cursor-pointer py-0.5">
+                <input type="checkbox" class="fc-fetch-product-cb rounded text-[#1a73e8]" value="HRES" checked />
+                <span>ECMWF HRES</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer py-0.5">
+                <input type="checkbox" class="fc-fetch-product-cb rounded text-[#1a73e8]" value="IMERG" checked />
+                <span>NASA IMERG</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer py-0.5">
+                <input type="checkbox" class="fc-fetch-product-cb rounded text-[#1a73e8]" value="CPC" checked />
+                <span>NOAA CPC</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer py-0.5">
+                <input type="checkbox" class="fc-fetch-product-cb rounded text-[#1a73e8]" value="AIFS" checked />
+                <span>ECMWF AIFS</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer py-0.5">
+                <input type="checkbox" class="fc-fetch-product-cb rounded text-[#1a73e8]" value="GFS" checked />
+                <span>NOAA GFS</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer py-0.5">
+                <input type="checkbox" class="fc-fetch-product-cb rounded text-[#1a73e8]" value="GEFS" />
+                <span>NOAA GEFS</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer py-0.5">
+                <input type="checkbox" class="fc-fetch-product-cb rounded text-[#1a73e8]" value="IFS_ENS" />
+                <span>ECMWF IFS-ENS</span>
+              </label>
+            </div>
+          </div>
 
           <button id="fcFetchRealtimeBtn" type="button" class="w-full bg-[#1a73e8] hover:bg-[#1557b0] disabled:bg-[#f1f3f4] disabled:text-[#80868b] disabled:cursor-not-allowed text-white font-semibold text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition shadow-md shadow-sky-600/20">
             <i data-lucide="cloud-rain" class="w-4 h-4"></i>
@@ -1390,12 +1467,12 @@
         <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
           <div class="flex items-center justify-between">
             <label class="text-xs font-bold text-[#1e8e3e] uppercase tracking-wider flex items-center gap-1.5">
-              <i data-lucide="play-circle" class="w-4 h-4"></i> 2. Run Hydrological Model
+              <i data-lucide="play-circle" class="w-4 h-4"></i> 2. Make Forecasts
             </label>
             <span class="text-[10px] text-[#5f6368] font-mono">GoogleHydrology</span>
           </div>
           <p id="fcRunModeDesc" class="text-xs text-[#5f6368] leading-relaxed">
-            Runs the MeanEmbeddingForecastLSTM over the 365-day spin-up + forecast window and saves the hot-start state file.
+            Runs the MeanEmbeddingForecastLSTM over the 365-day spin-up + forecast window for all selected catchments and saves yesterday's state file (t₀ − 1d).
           </p>
 
           <button id="fcRunModelBtn" type="button" disabled class="w-full bg-[#1e8e3e] hover:bg-[#137333] disabled:bg-[#f1f3f4] disabled:text-[#80868b] disabled:cursor-not-allowed text-white font-semibold text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition shadow-md shadow-emerald-600/20">
@@ -1443,33 +1520,39 @@
         </div>
       </aside>
 
-      <!-- Right Main Panel (Meteorological Forcings Chart & Streamflow Hydrograph) -->
+      <!-- Right Main Panel (Meteorological Input Data Visualization & Streamflow Forecast Hydrograph) -->
       <main class="flex-1 flex flex-col p-6 bg-[#f8f9fa] overflow-y-auto custom-scrollbar space-y-5">
-        <!-- Top Card: Hyetograph (Precipitation) & 2m Temperature with Nowcast + Forecast Product Selectors -->
-        <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-3 min-h-[300px]">
-          <div class="flex flex-wrap items-center justify-between gap-3">
+        <!-- Top Card: Input Data Visualization across Issue Date (t₀) & All Forecast Lead Times -->
+        <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-3 min-h-[340px]">
+          <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 class="text-xs font-bold text-[#202124] flex items-center gap-2">
+              <h3 id="fcForcingChartTitle" class="text-xs font-bold text-[#202124] flex items-center gap-2">
                 <i data-lucide="cloud-rain" class="w-4 h-4 text-[#1a73e8]"></i>
-                Meteorological Forcings: Hyetograph (mm/day) &amp; 2m Temperature (°C)
+                Input Forcing Visualization: Issue Date (t₀) &amp; All Forecast Lead Times
               </h3>
               <p id="fcForcingSubtitle" class="text-[11px] text-[#5f6368] mt-0.5">
-                Trailing 14-day nowcast and real-time forecast horizon (missing data shown as gaps, never filled)
+                Defaults to Precipitation (bars) &amp; 2m Temperature (lines) for any selected product; missing latency days shown as gaps (NaN)
               </p>
             </div>
 
-            <!-- Product Stream Selectors (Nowcast & Forecast) -->
-            <div class="flex flex-wrap items-center gap-3 text-xs">
+            <!-- Menus for Forecast Product, Forecast Variable, and Nowcast Stream -->
+            <div class="flex flex-wrap items-center gap-2.5 text-xs">
               <div class="flex items-center gap-1.5">
-                <label for="fcNowcastProductSelect" class="text-[11px] text-[#5f6368] font-medium">Nowcast:</label>
-                <select id="fcNowcastProductSelect" class="bg-[#f8f9fa] border border-[#dadce0] text-xs rounded-lg px-2.5 py-1 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
-                  <option value="none">No data fetched</option>
+                <label for="fcForecastProductSelect" class="text-[11px] text-[#202124] font-semibold">Forecast Product:</label>
+                <select id="fcForecastProductSelect" class="bg-[#f8f9fa] border border-[#dadce0] text-xs rounded-lg px-2.5 py-1 text-[#202124] font-medium focus:outline-none focus:border-[#1a73e8]">
+                  <option value="none">No forecast fetched</option>
                 </select>
               </div>
               <div class="flex items-center gap-1.5">
-                <label for="fcForecastProductSelect" class="text-[11px] text-[#5f6368] font-medium">Forecast:</label>
-                <select id="fcForecastProductSelect" class="bg-[#f8f9fa] border border-[#dadce0] text-xs rounded-lg px-2.5 py-1 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
-                  <option value="none">No data fetched</option>
+                <label for="fcForecastVariableSelect" class="text-[11px] text-[#202124] font-semibold">Forecast Variable:</label>
+                <select id="fcForecastVariableSelect" class="bg-[#f8f9fa] border border-[#dadce0] text-xs rounded-lg px-2.5 py-1 text-[#202124] font-medium focus:outline-none focus:border-[#1a73e8]">
+                  <option value="precip_and_temp" selected>Precipitation (Bars) + Temperature (Lines)</option>
+                </select>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <label for="fcNowcastProductSelect" class="text-[11px] text-[#5f6368] font-medium">Nowcast Spin-Up:</label>
+                <select id="fcNowcastProductSelect" class="bg-[#f8f9fa] border border-[#dadce0] text-xs rounded-lg px-2.5 py-1 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
+                  <option value="none">No nowcast fetched</option>
                 </select>
               </div>
             </div>
@@ -1477,6 +1560,17 @@
 
           <div class="flex-1 relative min-h-[230px]">
             <canvas id="whatIfHyetographCanvas"></canvas>
+          </div>
+
+          <!-- Issue Date (t₀) & Forecast Lead-Time Values Inspector Strip -->
+          <div id="fcLeadTimeInspectorContainer" class="hidden pt-2 border-t border-[#e8eaed]">
+            <div class="flex items-center justify-between mb-1.5">
+              <span id="fcLeadTimeInspectorLabel" class="text-[10px] font-semibold uppercase tracking-wider text-[#5f6368]">
+                Issue Date (t₀) &amp; Forecast Lead-Time Values
+              </span>
+              <span id="fcLeadTimeHorizonBadge" class="text-[10px] font-mono text-[#1a73e8]"></span>
+            </div>
+            <div id="fcLeadTimeSummaryTable" class="flex items-stretch gap-1.5 overflow-x-auto custom-scrollbar pb-1 text-[10px]"></div>
           </div>
         </div>
 
@@ -1489,10 +1583,11 @@
                 Streamflow Forecast Hydrograph (m³/s)
               </h3>
               <p id="fcHydrographSubtitle" class="text-[11px] text-[#5f6368] mt-0.5">
-                Click "Run Model" after fetching real-time data to generate the discharge forecast
+                Click "Run Model" after fetching real-time data to generate discharge forecasts for all selected catchments
               </p>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <div id="fcHydroCatchmentTabs" class="hidden flex flex-wrap items-center gap-1"></div>
               <span id="fcHydroPeakBadge" class="hidden text-xs font-mono bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2.5 py-1 rounded-lg">
                 Peak: — m³/s
               </span>
@@ -5150,32 +5245,43 @@
       return { key: attrKey, name: attrKey, category: 'HydroATLAS', unit: '', description: attrKey };
     }
 
+    function ensureGeoAttributeSelectOption(item) {
+      const sel = document.getElementById('geoAttrSelect');
+      if (!sel || !item || !item.key) return;
+      if (sel.querySelector(`option[value="${item.key}"]`)) return;
+      const cat = item.category || 'HydroATLAS';
+      const optgroups = Array.from(sel.querySelectorAll('optgroup'));
+      let group = optgroups.find(g => g.label === cat || g.label.startsWith(cat));
+      if (!group) {
+        group = document.createElement('optgroup');
+        group.label = cat;
+        sel.appendChild(group);
+      }
+      const opt = document.createElement('option');
+      opt.value = item.key;
+      opt.textContent = `${item.name || item.label || item.key} (${item.key})${item.unit ? ` [${item.unit}]` : ''}`;
+      group.appendChild(opt);
+    }
+
     async function loadGeoAttributeSchema() {
       try {
         const resp = await fetch('/api/attributes/schema');
         if (!resp.ok) return;
         const data = await resp.json();
-        const attrs = data.attributes || [];
-        const sel = document.getElementById('geoAttrSelect');
-        const existingValues = new Set();
-        if (sel) {
-          sel.querySelectorAll('option').forEach(o => existingValues.add(o.value));
-        }
-        attrs.forEach(item => {
+        const rawAttrs = Array.isArray(data.attribute_list)
+          ? data.attribute_list
+          : (Array.isArray(data.attributes)
+              ? data.attributes
+              : Object.entries(data.attributes || {}).map(([k, v]) => ({ key: k, ...v })));
+        rawAttrs.forEach(raw => {
+          const item = {
+            ...raw,
+            key: raw.key,
+            name: raw.name || raw.label || raw.key,
+            description: raw.description || raw.desc || `${raw.name || raw.key} (${raw.key})`,
+          };
           geoAttributeSchema[item.key] = item;
-          if (sel && !existingValues.has(item.key)) {
-            let group = sel.querySelector(`optgroup[label="${item.category}"]`);
-            if (!group) {
-              group = document.createElement('optgroup');
-              group.label = item.category || 'Additional Attributes';
-              sel.appendChild(group);
-            }
-            const opt = document.createElement('option');
-            opt.value = item.key;
-            opt.textContent = `${item.name} (${item.key}) [${item.unit}]`;
-            group.appendChild(opt);
-            existingValues.add(item.key);
-          }
+          ensureGeoAttributeSelectOption(item);
         });
         updateGeoAttributeDetailsUI();
       } catch (err) {
@@ -5253,6 +5359,30 @@
       updateGeoExtractButtonUI();
     }
 
+    let geoExtractingCatchmentIds = new Set();
+    let geoExtractionTotalCount = 0;
+    let geoExtractionCompletedCount = 0;
+
+    function updateGeoNavProgressBadge() {
+      const navBtn = document.querySelector('.tab-btn[data-tab="tab-geo-features"]');
+      if (!navBtn) return;
+      let badgeEl = document.getElementById('geoNavProgressBadge');
+      if (geoExtractingCatchmentIds.size > 0) {
+        if (!badgeEl) {
+          badgeEl = document.createElement('span');
+          badgeEl.id = 'geoNavProgressBadge';
+          badgeEl.className = 'ml-1 px-1.5 py-0.5 rounded-full bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] text-[10px] font-mono inline-flex items-center gap-1';
+          navBtn.appendChild(badgeEl);
+        }
+        const label = geoExtractionTotalCount > 1
+          ? `${geoExtractionCompletedCount}/${geoExtractionTotalCount}`
+          : '…';
+        badgeEl.innerHTML = `<i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i><span>${label}</span>`;
+      } else if (badgeEl) {
+        badgeEl.remove();
+      }
+    }
+
     function getTargetCatchmentFeaturesForExtraction() {
       if (!activeWatersheds.length) return [];
       return activeWatersheds.filter(f => geoCheckedCatchmentIds.has(f.properties.catchment_id));
@@ -5262,6 +5392,23 @@
       const btn = document.getElementById('extractAttrsBtn');
       const countLabel = document.getElementById('geoSelectedCountLabel');
       const total = activeWatersheds.length;
+
+      updateGeoNavProgressBadge();
+
+      if (geoExtractingCatchmentIds.size > 0) {
+        if (btn) {
+          btn.disabled = true;
+          const progressSuffix = geoExtractionTotalCount > 1
+            ? ` (${geoExtractionCompletedCount}/${geoExtractionTotalCount} done)`
+            : '';
+          btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Extracting ${geoExtractingCatchmentIds.size} Basin${geoExtractingCatchmentIds.size === 1 ? '' : 's'}${progressSuffix}...`;
+        }
+        if (countLabel) {
+          countLabel.innerText = `Extracting (${geoExtractionCompletedCount}/${geoExtractionTotalCount || geoExtractingCatchmentIds.size})`;
+        }
+        if (typeof lucide !== 'undefined' && lucide.createIcons) lucide.createIcons();
+        return;
+      }
 
       if (total === 0) {
         if (btn) {
@@ -5349,7 +5496,8 @@
         const name = p.name || cid;
         const area = p.area_km2 ? `${Number(p.area_km2).toLocaleString()} km²` : '';
         const entry = extractedAttributesById[cid];
-        const isExtracted = Boolean(entry);
+        const isExtracting = geoExtractingCatchmentIds.has(cid);
+        const isExtracted = Boolean(entry) && !isExtracting;
         const isChecked = geoCheckedCatchmentIds.has(cid);
         const isFocused = (cid === activeCatchmentId);
 
@@ -5360,23 +5508,27 @@
           ? `background:${interpolateGeoColor(t)}; border-color:rgba(60,64,67,0.35);`
           : `background:transparent; border-color:#80868b;`;
 
-        const rightInfoHtml = isExtracted
-          ? `<div class="text-right flex-shrink-0">
-               <div class="font-mono text-[11px] font-bold text-[#202124]">${formatGeoAttrValue(attrVal)} <span class="text-[10px] font-normal text-[#5f6368]">${meta.unit || ''}</span></div>
-               <div class="text-[9px] font-mono text-[#1e8e3e]">✓ Saved</div>
-             </div>`
-          : `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#f3e8fd] text-[#7627bb] border border-[#e9d2fd] flex-shrink-0">Not extracted</span>`;
+        const rightInfoHtml = isExtracting
+          ? `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] flex-shrink-0 inline-flex items-center gap-1"><i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i> Extracting…</span>`
+          : (isExtracted
+              ? `<div class="text-right flex-shrink-0">
+                   <div class="font-mono text-[11px] font-bold text-[#202124]">${formatGeoAttrValue(attrVal)} <span class="text-[10px] font-normal text-[#5f6368]">${meta.unit || ''}</span></div>
+                   <div class="text-[9px] font-mono text-[#1e8e3e]">✓ Saved</div>
+                 </div>`
+              : `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#f3e8fd] text-[#7627bb] border border-[#e9d2fd] flex-shrink-0">Not extracted</span>`);
 
         const row = document.createElement('div');
         row.className = `p-2 rounded-lg border ${
-          isChecked
-            ? 'border-[#1a73e8] bg-[#f3e8fd]'
-            : (isFocused ? 'border-[#bdc1c6] bg-[#f1f3f4]' : 'border-[#dadce0] bg-white')
+          isExtracting
+            ? 'border-[#1a73e8] bg-[#e8f0fe]/60'
+            : (isChecked
+                ? 'border-[#1a73e8] bg-[#f3e8fd]'
+                : (isFocused ? 'border-[#bdc1c6] bg-[#f1f3f4]' : 'border-[#dadce0] bg-white'))
         } hover:border-[#1a73e8] flex items-center justify-between gap-2 text-xs cursor-pointer transition`;
 
         row.innerHTML = `
           <div class="flex items-center gap-2.5 min-w-0 flex-1">
-            <input type="checkbox" class="geo-catchment-check accent-[#1a73e8] w-3.5 h-3.5 rounded cursor-pointer flex-shrink-0" data-cid="${cid}" ${isChecked ? 'checked' : ''} title="Select basin for attribute extraction">
+            <input type="checkbox" class="geo-catchment-check accent-[#1a73e8] w-3.5 h-3.5 rounded cursor-pointer flex-shrink-0" data-cid="${cid}" ${isChecked ? 'checked' : ''} ${geoExtractingCatchmentIds.size > 0 ? 'disabled' : ''} title="Select basin for attribute extraction">
             <span class="w-2.5 h-2.5 rounded-full border flex-shrink-0" style="${dotStyle}"></span>
             <div class="truncate">
               <div class="font-semibold text-[#202124] text-[11px] truncate">${name}</div>
@@ -5390,6 +5542,7 @@
         if (checkboxEl) {
           checkboxEl.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (geoExtractingCatchmentIds.size > 0) return;
             if (checkboxEl.checked) geoCheckedCatchmentIds.add(cid);
             else geoCheckedCatchmentIds.delete(cid);
             renderGeoCatchmentSelector();
@@ -5398,9 +5551,11 @@
         }
 
         row.addEventListener('click', () => {
-          // Clicking the row toggles selection AND zooms/focuses the basin on the map
-          if (geoCheckedCatchmentIds.has(cid)) geoCheckedCatchmentIds.delete(cid);
-          else geoCheckedCatchmentIds.add(cid);
+          // Clicking the row focuses the basin on the map; only toggle checkbox if not currently extracting
+          if (geoExtractingCatchmentIds.size === 0) {
+            if (geoCheckedCatchmentIds.has(cid)) geoCheckedCatchmentIds.delete(cid);
+            else geoCheckedCatchmentIds.add(cid);
+          }
           selectWatershed(cid, true);
           if (extractedAttributesById[cid]) updateGeoSummaryCard(cid);
           renderGeoCatchmentSelector();
@@ -5450,6 +5605,11 @@
       if (soilEl) soilEl.innerText = `Clay ${summary.soil_clay_pc ?? '—'}% | Sand ${summary.soil_sand_pc ?? '—'}%`;
       const landEl = document.getElementById('summaryLand');
       if (landEl) landEl.innerText = `Forest ${summary.forest_fraction_pc ?? '—'}% | Crop ${summary.cropland_fraction_pc ?? '—'}%`;
+      const dlCsvBtn = document.getElementById('downloadCaravanCsvBtn');
+      if (dlCsvBtn) {
+        const u = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+        dlCsvBtn.href = `/api/attributes/csv?username=${encodeURIComponent(u)}`;
+      }
     }
 
     function getExtractedAttributeNumericValue(entry, attrKey) {
@@ -5961,72 +6121,89 @@
     // Extract Static Attributes Handler for Checked Basins
     document.getElementById('extractAttrsBtn').addEventListener('click', async () => {
       if (!activeWatersheds.length) return;
+      if (geoExtractingCatchmentIds.size > 0) return;
 
       const targets = getTargetCatchmentFeaturesForExtraction();
       if (!targets.length) {
         return;
       }
 
-      const btn = document.getElementById('extractAttrsBtn');
-      btn.disabled = true;
-      btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Extracting ${targets.length} Basin${targets.length === 1 ? '' : 's'}...`;
-      lucide.createIcons();
+      geoExtractingCatchmentIds = new Set(targets.map(f => f.properties.catchment_id));
+      geoExtractionTotalCount = targets.length;
+      geoExtractionCompletedCount = 0;
+      renderGeoCatchmentSelector();
+      updateGeoExtractButtonUI();
+
+      const firstExtractedCid = targets[0].properties.catchment_id;
+      const username = activeProfileInfo.username || 'guest';
 
       try {
-        const payload = {
-          username: activeProfileInfo.username || 'guest'
-        };
-        if (targets.length === 1) {
-          payload.catchment_id = targets[0].properties.catchment_id;
-          payload.polygon = targets[0];
-        } else {
-          payload.catchment_ids = targets.map(f => f.properties.catchment_id);
-          payload.features = targets;
+        for (const feat of targets) {
+          const cid = feat.properties.catchment_id;
+          const payload = {
+            username,
+            catchment_id: cid,
+            polygon: feat
+          };
+
+          const resp = await fetch('/api/attributes/extract', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-User-Profile': username
+            },
+            body: JSON.stringify(payload)
+          });
+
+          const res = await resp.json();
+          if (resp.ok) {
+            currentAttributesData = res;
+            if (res.results_by_id && typeof res.results_by_id === 'object') {
+              extractedAttributesById = { ...extractedAttributesById, ...res.results_by_id };
+            } else if (res.results && Array.isArray(res.results)) {
+              res.results.forEach(r => {
+                if (r && r.catchment_id) extractedAttributesById[r.catchment_id] = r;
+              });
+            } else if (res.catchment_id) {
+              extractedAttributesById[res.catchment_id] = res;
+            }
+
+            geoExtractingCatchmentIds.delete(cid);
+            geoCheckedCatchmentIds.delete(cid);
+            geoExtractionCompletedCount += 1;
+
+            updateGeoSummaryCard(cid);
+            renderGeoCatchmentSelector();
+            renderGeoExtractedValuesList();
+            populateModalCatchmentSelector(cid);
+
+            if (currentActiveTabId === 'tab-geo-features') {
+              renderGeoExtractedCatchmentsLayer();
+              updateGeoMapLegend();
+            }
+          } else {
+            geoExtractingCatchmentIds.delete(cid);
+            alert('Failed to extract static attributes for ' + cid + ': ' + (res.error || res.detail || 'Error'));
+            break;
+          }
         }
 
-        const resp = await fetch('/api/attributes/extract', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-User-Profile': activeProfileInfo.username || 'guest'
-          },
-          body: JSON.stringify(payload)
-        });
-
-        const res = await resp.json();
-        if (resp.ok) {
-          currentAttributesData = res;
-          if (res.results_by_id && typeof res.results_by_id === 'object') {
-            extractedAttributesById = { ...extractedAttributesById, ...res.results_by_id };
-          } else if (res.results && Array.isArray(res.results)) {
-            res.results.forEach(r => {
-              if (r && r.catchment_id) extractedAttributesById[r.catchment_id] = r;
-            });
-          } else if (res.catchment_id) {
-            extractedAttributesById[res.catchment_id] = res;
-          }
-
-          // Re-sync default selection so newly extracted basins are unchecked and only remaining unextracted basins stay checked
-          syncDefaultUnextractedSelection();
-
-          const firstExtractedCid = targets[0].properties.catchment_id;
-          updateGeoSummaryCard(firstExtractedCid);
-          renderGeoCatchmentSelector();
-          populateModalCatchmentSelector(firstExtractedCid);
-
-          if (geoLayerViewMode === 'raw') {
-            setGeoLayerViewMode('both');
-          } else if (currentActiveTabId === 'tab-geo-features') {
-            renderGeoExtractedCatchmentsLayer();
-          }
-        } else {
-          alert('Failed to extract static attributes: ' + (res.error || res.detail || 'Error'));
+        // Re-sync default selection so newly extracted basins are unchecked and only remaining unextracted basins stay checked
+        syncDefaultUnextractedSelection();
+        updateGeoSummaryCard(firstExtractedCid);
+        if (geoLayerViewMode === 'raw' && Object.keys(extractedAttributesById).length > 0) {
+          setGeoLayerViewMode('both');
+        } else if (currentActiveTabId === 'tab-geo-features') {
+          renderGeoExtractedCatchmentsLayer();
         }
       } catch (err) {
         console.error(err);
         alert('Error extracting static attributes.');
       } finally {
-        btn.disabled = false;
+        geoExtractingCatchmentIds.clear();
+        geoExtractionTotalCount = 0;
+        geoExtractionCompletedCount = 0;
+        renderGeoCatchmentSelector();
         updateGeoExtractButtonUI();
       }
     });
@@ -6169,6 +6346,11 @@
           <td class="py-2.5 px-3 font-sans text-[#5f6368] text-[11px]">${it.description}</td>
         `;
         tr.addEventListener('click', () => {
+          geoAttributeSchema[it.key] = {
+            ...it,
+            description: it.description || it.desc || `${it.name} (${it.key})`,
+          };
+          ensureGeoAttributeSelectOption(geoAttributeSchema[it.key]);
           geoActiveAttribute = it.key;
           if (geoAttrSelectEl) geoAttrSelectEl.value = it.key;
           updateGeoAttributeDetailsUI();
@@ -6443,9 +6625,27 @@
     const WEATHER_TILE_STYLE_VERSION = '2';  // Bump when tile colours change (tiles are cached for a day).
     const WEATHER_STEP_HOURS = 3;
     const WEATHER_DEFAULT_MAX_LEAD_HOURS = 240;
-    const WEATHER_MODEL_ORDER = ['ecmwf_ifs', 'ecmwf_aifs', 'graphcast', 'noaa_gfs'];
-    const WEATHER_MODEL_LABELS = { ecmwf_ifs: 'ECMWF IFS', ecmwf_aifs: 'ECMWF AIFS', graphcast: 'GraphCast', noaa_gfs: 'NOAA GFS' };
-    const WEATHER_MODEL_COLORS = { ecmwf_ifs: '#1a73e8', ecmwf_aifs: '#9334e6', graphcast: '#1e8e3e', noaa_gfs: '#d93025' };
+    const WEATHER_MODEL_ORDER = ['ecmwf_hres', 'ecmwf_ifs', 'ecmwf_aifs', 'noaa_gfs', 'noaa_gefs', 'noaa_hrrr', 'nasa_imerg', 'noaa_cpc'];
+    const WEATHER_MODEL_LABELS = {
+      ecmwf_hres: 'ECMWF HRES',
+      ecmwf_ifs: 'ECMWF IFS ENS',
+      ecmwf_aifs: 'ECMWF AIFS',
+      noaa_gfs: 'NOAA GFS',
+      noaa_gefs: 'NOAA GEFS',
+      noaa_hrrr: 'NOAA HRRR',
+      nasa_imerg: 'NASA IMERG',
+      noaa_cpc: 'NOAA CPC'
+    };
+    const WEATHER_MODEL_COLORS = {
+      ecmwf_hres: '#0b57d0',
+      ecmwf_ifs: '#1a73e8',
+      ecmwf_aifs: '#9334e6',
+      noaa_gfs: '#d93025',
+      noaa_gefs: '#e8710a',
+      noaa_hrrr: '#1e8e3e',
+      nasa_imerg: '#007b83',
+      noaa_cpc: '#c5221f'
+    };
     const WEATHER_VAR_LABELS = {
       precipitation: 'Rain rate',
       accumulated_precip: 'Rain accumulated since forecast start',
@@ -6525,7 +6725,6 @@
     const WEATHER_FRAME_FADE_MS = 200;  // Cross-fade between pictures.
     const WEATHER_FRAME_PARALLEL = 4;  // Frame downloads at a time.
     const WEATHER_FRAME_DECODED_MAX = 10;  // Decoded frames kept in memory (~8 MB each).
-    const WEATHER_INFO_REFRESH_MS = 15 * 60 * 1000;  // Re-read /api/weather/models (the server checks for new runs hourly).
     const WEATHER_RUN_STALE_HOURS = 24;
     let weatherFrameLayer = null;  // Canvas layer that draws the current frame.
     let weatherFrames = null;  // Frames of the current model/layer/run (see ensureWeatherFrames).
@@ -6545,8 +6744,14 @@
     const WIND_MAX_AGE = 90;  // Frames before a particle respawns.
     const WIND_SPEED_SCALE = 0.12;  // Screen pixels per frame per m/s.
 
+    const WEATHER_OBSERVATION_MODELS = new Set(['nasa_imerg', 'noaa_cpc']);
+
     function weatherModelLabel(key) {
       return WEATHER_MODEL_LABELS[key] || key;
+    }
+
+    function isWeatherObservationModel(key = activeWeatherModel) {
+      return WEATHER_OBSERVATION_MODELS.has(key);
     }
 
     function weatherHexToRgba(hex, alpha) {
@@ -6632,24 +6837,154 @@
         });
     }
 
+    function requestWeatherRefresh(modelKey = 'all') {
+      const banner = document.getElementById('weatherRefreshStatusBanner');
+      const label = modelKey === 'all'
+        ? 'all weather products'
+        : ((WEATHER_MODEL_META[modelKey] && WEATHER_MODEL_META[modelKey].name) || modelKey);
+      if (banner) {
+        banner.className = "text-[10.5px] leading-snug text-[#0f5132] bg-[#d1e7dd] border border-[#badbcc] p-1.5 rounded flex items-center gap-1";
+        banner.innerHTML = `<i data-lucide="loader-2" class="w-3 h-3 animate-spin text-[#0f5132]"></i><span class="text-[#0f5132]">Refreshing ${label}…</span>`;
+        if (window.lucide) window.lucide.createIcons();
+      }
+      if (modelKey === 'all') {
+        const refreshAllBtn = document.getElementById('weatherRefreshAllBtn');
+        if (refreshAllBtn) {
+          const icon = refreshAllBtn.querySelector('i, svg');
+          if (icon) icon.classList.add('animate-spin');
+          refreshAllBtn.classList.add('pointer-events-none', 'opacity-60');
+        }
+      }
+
+      const req = { async: true, force: true, model: modelKey };
+
+      fetch('/api/weather/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req)
+      }).then(res => res.json()).then(data => {
+        if (data.status === 'queued' && data.job_id) {
+          pollWeatherRefreshJob(data.job_id, modelKey);
+        } else {
+          finishWeatherRefreshUI(modelKey, 'completed');
+        }
+      }).catch(err => {
+        console.error('Refresh failed:', err);
+        finishWeatherRefreshUI(modelKey, 'error');
+      });
+    }
+
+    function pollWeatherRefreshJob(jobId, modelKey) {
+      fetch(`/api/jobs/${jobId}`)
+        .then(res => res.json())
+        .then(job => {
+          if (job.status === 'running' || job.status === 'queued') {
+            setTimeout(() => pollWeatherRefreshJob(jobId, modelKey), 1500);
+          } else {
+            finishWeatherRefreshUI(modelKey, job.status);
+          }
+        }).catch(err => {
+          console.error('Job polling failed:', err);
+          finishWeatherRefreshUI(modelKey, 'error');
+        });
+    }
+
+    function finishWeatherRefreshUI(modelKey, status) {
+      const banner = document.getElementById('weatherRefreshStatusBanner');
+      const label = modelKey === 'all'
+        ? 'All weather products'
+        : ((WEATHER_MODEL_META[modelKey] && WEATHER_MODEL_META[modelKey].name) || modelKey);
+      const isOk = (status === 'completed' || status === 'done');
+      if (banner) {
+        if (isOk) {
+          banner.className = "text-[10.5px] leading-snug text-[#0f5132] bg-[#d1e7dd] border border-[#badbcc] p-1.5 rounded flex items-center gap-1";
+          banner.innerHTML = `<i data-lucide="check-circle-2" class="w-3 h-3 text-[#0f5132]"></i><span class="text-[#0f5132]">${label} refresh complete.</span>`;
+        } else {
+          banner.className = "text-[10.5px] leading-snug text-[#842029] bg-[#f8d7da] border border-[#f5c2c7] p-1.5 rounded flex items-center gap-1";
+          banner.innerHTML = `<i data-lucide="alert-circle" class="w-3 h-3"></i><span>${label} refresh ${status}.</span>`;
+        }
+        if (window.lucide) window.lucide.createIcons();
+        setTimeout(() => {
+          banner.classList.add('hidden');
+          banner.className = "hidden text-[10.5px] leading-snug text-[#0f5132] bg-[#d1e7dd] border border-[#badbcc] p-1.5 rounded flex items-center gap-1";
+        }, 4000);
+      }
+
+      document.querySelectorAll('[data-refresh-model]').forEach(btn => {
+        const icon = btn.querySelector('i, svg');
+        if (icon) icon.classList.remove('animate-spin');
+        btn.classList.remove('pointer-events-none', 'opacity-50');
+      });
+      const activeBtn = document.getElementById('weatherRefreshActiveModelBtn');
+      if (activeBtn) {
+        const icon = activeBtn.querySelector('i, svg');
+        if (icon) icon.classList.remove('animate-spin');
+        activeBtn.classList.remove('pointer-events-none', 'opacity-50');
+      }
+      const refreshAllBtn = document.getElementById('weatherRefreshAllBtn');
+      if (refreshAllBtn) {
+        const icon = refreshAllBtn.querySelector('i, svg');
+        if (icon) icon.classList.remove('animate-spin');
+        refreshAllBtn.classList.remove('pointer-events-none', 'opacity-60');
+      }
+
+      loadWeatherModelsInfo().then(() => {
+        disposeWeatherFrames();
+        refreshWeatherView();
+      });
+    }
+
     function initWeatherViewerInteractivity() {
       windCanvas = document.getElementById('windStreamlineCanvas');
       windCtx = windCanvas ? windCanvas.getContext('2d') : null;
 
       // 1. Model buttons
       document.querySelectorAll('.weather-model-btn').forEach(btn => {
-        btn.addEventListener('click', () => setWeatherModel(btn.dataset.model, true));
+        btn.addEventListener('click', (e) => {
+          // Ignore clicks if they occurred on the refresh button inside the pill
+          if (e.target.closest('[data-refresh-model]')) return;
+          setWeatherModel(btn.dataset.model, true);
+        });
       });
 
-      // 2. Layer radios
-      document.querySelectorAll('input[name="weatherVarRadio"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-          if (!e.target.checked) return;
-          activeWeatherVar = e.target.value;
+      // 1.5. Refresh buttons
+      const refreshAllBtn = document.getElementById('weatherRefreshAllBtn');
+      if (refreshAllBtn) {
+        refreshAllBtn.addEventListener('click', () => requestWeatherRefresh('all'));
+      }
+
+      const refreshActiveBtn = document.getElementById('weatherRefreshActiveModelBtn');
+      if (refreshActiveBtn) {
+        refreshActiveBtn.addEventListener('click', () => {
+          const icon = refreshActiveBtn.querySelector('i, svg');
+          if (icon) icon.classList.add('animate-spin');
+          refreshActiveBtn.classList.add('pointer-events-none', 'opacity-50');
+          requestWeatherRefresh(activeWeatherModel);
+        });
+      }
+
+      document.querySelectorAll('[data-refresh-model]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation(); // prevent pill activation
+          const modelKey = btn.dataset.refreshModel;
+          const icon = btn.querySelector('i, svg');
+          if (icon) icon.classList.add('animate-spin');
+          btn.classList.add('pointer-events-none', 'opacity-50');
+          requestWeatherRefresh(modelKey);
+        });
+      });
+
+      // 2. Variable radios (event delegation for dynamically populated options)
+      const varRadiosContainer = document.getElementById('weatherVariableRadios');
+      if (varRadiosContainer) {
+        varRadiosContainer.addEventListener('change', (e) => {
+          const radio = e.target.closest('input[name="weatherVarRadio"]');
+          if (!radio || !radio.checked) return;
+          activeWeatherVar = radio.value;
           if (activeWeatherVar === 'radar') setWeatherPlaying(false);
           refreshWeatherView();
         });
-      });
+      }
 
       // 3. Wind particles
       const windToggle = document.getElementById('layerWindToggle');
@@ -6746,10 +7081,6 @@
       updateWeatherStatus();
       syncActiveCatchmentWeather();
       loadWeatherModelsInfo();
-      // Pick up a newer forecast run while the page stays open.
-      setInterval(() => {
-        if (currentActiveTabId === 'tab-weather' && !weatherModelsInfoLoading && !document.hidden) loadWeatherModelsInfo();
-      }, WEATHER_INFO_REFRESH_MS);
       // The map is created after this runs (see the end of the script); hook it up once it exists.
       setupWeatherMapClickListener();
       window.addEventListener('load', () => {
@@ -6760,11 +7091,91 @@
       });
     }
 
+    const WEATHER_VARIABLE_OPTIONS = [
+      {
+        key: 'precipitation',
+        icon: 'cloud-rain',
+        iconClass: 'w-3.5 h-3.5 text-[#1a73e8]',
+        getLabel: () => 'Rain rate'
+      },
+      {
+        key: 'accumulated_precip',
+        icon: 'droplets',
+        iconClass: 'w-3.5 h-3.5 text-[#1a73e8]',
+        getLabel: (modelKey) => isWeatherObservationModel(modelKey)
+          ? 'Rain accumulated (past 10 days)'
+          : 'Rain accumulated since forecast start'
+      },
+      {
+        key: 'temperature',
+        icon: 'thermometer',
+        iconClass: 'w-3.5 h-3.5 text-[#b06000]',
+        getLabel: () => 'Air temperature (2 m)'
+      },
+      {
+        key: 'pressure',
+        icon: 'gauge',
+        iconClass: 'w-3.5 h-3.5 text-[#174ea6]',
+        getLabel: () => 'Sea-level pressure'
+      }
+    ];
+
+    function weatherAvailableVariables(modelKey = activeWeatherModel) {
+      const info = weatherInfo(modelKey);
+      if (info && Array.isArray(info.real_variables) && info.real_variables.length > 0) {
+        return info.real_variables;
+      }
+      if (info && Array.isArray(info.supported_variables) && info.supported_variables.length > 0) {
+        return info.supported_variables;
+      }
+      return isWeatherObservationModel(modelKey)
+        ? ['precipitation', 'accumulated_precip']
+        : ['precipitation', 'accumulated_precip', 'temperature', 'pressure', 'wind'];
+    }
+
+    function populateWeatherVariableMenu(modelKey = activeWeatherModel) {
+      const container = document.getElementById('weatherVariableRadios');
+      if (!container) return;
+      const avail = weatherAvailableVariables(modelKey);
+      const rasterOptions = WEATHER_VARIABLE_OPTIONS.filter(opt => avail.includes(opt.key));
+      if (rasterOptions.length > 0 && !rasterOptions.some(opt => opt.key === activeWeatherVar) && activeWeatherVar !== 'radar') {
+        activeWeatherVar = rasterOptions[0].key;
+      }
+      container.innerHTML = rasterOptions.map(opt => {
+        const checked = opt.key === activeWeatherVar ? 'checked' : '';
+        const isNotSynced = weatherVarSource(modelKey, opt.key) === 'synthetic';
+        const tagHidden = isNotSynced ? '' : 'hidden';
+        return `<label class="weather-var-option">` +
+          `<input type="radio" name="weatherVarRadio" value="${opt.key}" ${checked} class="accent-[#1a73e8]">` +
+          `<i data-lucide="${opt.icon}" class="${opt.iconClass}"></i>` +
+          `<span class="flex-1">${opt.getLabel(modelKey)}</span>` +
+          `<span data-var-tag="${opt.key}" class="weather-tag synthetic ${tagHidden}">not synced</span>` +
+          `</label>`;
+      }).join('');
+      if (window.lucide) {
+        window.lucide.createIcons();
+      }
+      const windRow = document.getElementById('weatherWindToggleRow');
+      const hasWind = avail.includes('wind');
+      if (windRow) {
+        windRow.classList.toggle('hidden', !hasWind);
+      }
+      if (!hasWind && isWindParticlesEnabled) {
+        stopWindAnimation();
+      }
+    }
+
     function setWeatherModel(key, byUser) {
       if (!WEATHER_MODEL_LABELS[key]) return;
+      const wasObs = isWeatherObservationModel(activeWeatherModel);
+      const nextObs = isWeatherObservationModel(key);
       if (byUser) weatherModelChosenByUser = true;
       activeWeatherModel = key;
-      currentWeatherStep = Math.min(currentWeatherStep, weatherMaxStep());
+      if (wasObs !== nextObs && !weatherTimelineTimer) {
+        currentWeatherStep = nextObs ? weatherMaxStep(key) : 0;
+      } else {
+        currentWeatherStep = Math.min(currentWeatherStep, weatherMaxStep(key));
+      }
       updateWeatherModelPills();
       refreshWeatherView();
       if (weatherLastProbe) {
@@ -6837,14 +7248,21 @@
           const key = btn.dataset.model;
           const info = weatherInfo(key);
           const active = key === activeWeatherModel;
+          const isObs = isWeatherObservationModel(key);
           let cls = 'unknown';
           let text = (weatherModelsInfo || weatherModelsInfoError) ? 'unknown' : '…';
           let tip = '';
           if (info && info.data_source === 'archived_run' && info.init_time) {
             const d = new Date(info.init_time);
             cls = 'real';
-            text = `run ${d.toLocaleString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short' })}`;
-            tip = `Real data: run from ${formatWeatherRunDate(d)}, ${info.max_lead_hours} h of forecast.`;
+            if (isObs) {
+              const endD = weatherValidTime(weatherMaxStep(key), key);
+              text = `obs ${endD.toLocaleString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short' })}`;
+              tip = `Real observation data: trailing ${info.max_lead_hours} h window ending ${formatWeatherRunDate(endD)}.`;
+            } else {
+              text = `run ${d.toLocaleString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short' })}`;
+              tip = `Real data: run from ${formatWeatherRunDate(d)}, ${info.max_lead_hours} h of forecast.`;
+            }
           } else if (info && info.data_source) {
             cls = 'synthetic';
             text = 'not synced';
@@ -6863,11 +7281,7 @@
       }
       const modelBadge = document.getElementById('weatherCurrentModelBadge');
       if (modelBadge) modelBadge.innerText = weatherModelLabel(activeWeatherModel);
-      // Per-layer "not synced" tags for the selected model.
-      document.querySelectorAll('[data-var-tag]').forEach(tag => {
-        tag.innerText = 'not synced';
-        tag.classList.toggle('hidden', weatherVarSource(activeWeatherModel, tag.dataset.varTag) !== 'synthetic');
-      });
+      populateWeatherVariableMenu(activeWeatherModel);
       const windTag = document.getElementById('weatherWindSourceTag');
       if (windTag) {
         const hdr = windVectorData && windVectorData.header;
@@ -6887,7 +7301,10 @@
       const hintEl = document.getElementById('weatherStatusHint');
       if (!titleEl || !timeEl || !sourceEl || !dotEl) return;
       const model = weatherModelLabel(activeWeatherModel);
+      const isObs = isWeatherObservationModel(activeWeatherModel);
+      const maxStep = weatherMaxStep();
       const lead = currentWeatherStep * WEATHER_STEP_HOURS;
+      const lookback = (maxStep - currentWeatherStep) * WEATHER_STEP_HOURS;
       let hint = '';
 
       if (activeWeatherVar === 'radar') {
@@ -6896,19 +7313,32 @@
         dotEl.className = 'weather-status-dot real';
         sourceEl.innerText = 'Live radar mosaic from RainViewer. The model buttons and time slider do not apply to this layer.';
       } else {
-        titleEl.innerText = `${WEATHER_VAR_LABELS[activeWeatherVar] || activeWeatherVar} · ${model}`;
+        const varLabel = (activeWeatherVar === 'accumulated_precip' && isObs)
+          ? 'Rain accumulated (past 10 days)'
+          : (WEATHER_VAR_LABELS[activeWeatherVar] || activeWeatherVar);
+        titleEl.innerText = `${varLabel} · ${model}`;
         const valid = formatWeatherTime(weatherValidTime());
-        timeEl.innerText = activeWeatherVar === 'accumulated_precip'
-          ? `Up to ${valid} · first ${lead} h`
-          : `Valid ${valid} · +${lead} h`;
+        if (isObs) {
+          const relLabel = lookback === 0 ? '0 h (latest observation)' : `−${lookback} h`;
+          timeEl.innerText = activeWeatherVar === 'accumulated_precip'
+            ? `Up to ${valid} · ${lead} h accumulated (${relLabel})`
+            : `Observed ${valid} · ${relLabel}`;
+        } else {
+          timeEl.innerText = activeWeatherVar === 'accumulated_precip'
+            ? `Up to ${valid} · first ${lead} h`
+            : `Valid ${valid} · +${lead} h`;
+        }
         const info = weatherInfo();
         const src = weatherVarSource();
         dotEl.className = `weather-status-dot ${src}`;
         if (src === 'real') {
-          const runDate = info.init_time ? ` from ${formatWeatherRunDate(new Date(info.init_time))}` : '';
-          sourceEl.innerText = weatherAutoUpdating()
-            ? `Real forecast via weather_fetcher: the latest ${model} run${runDate}.`
-            : `Real data from the saved ${model} run${runDate}. This server is not updating it.`;
+          if (isObs) {
+            const endD = formatWeatherRunDate(weatherValidTime(maxStep));
+            sourceEl.innerText = `Real observation analysis via weather_fetcher: trailing ${weatherMaxLeadHours()} h window ending ${endD}.`;
+          } else {
+            const runDate = info.init_time ? ` from ${formatWeatherRunDate(new Date(info.init_time))}` : '';
+            sourceEl.innerText = `Real data from the saved ${model} run${runDate}. Click Refresh to fetch newer upstream runs.`;
+          }
         } else if (src === 'synthetic' && info.data_source === 'archived_run') {
           sourceEl.innerText = `Not synced: this server has no ${WEATHER_VAR_NOUNS[activeWeatherVar] || activeWeatherVar} stream for ${model}.`;
         } else if (src === 'synthetic') {
@@ -6921,7 +7351,9 @@
           sourceEl.innerText = 'Checking which forecast data this server has…';
         }
         if (activeWeatherVar === 'accumulated_precip' && currentWeatherStep === 0) {
-          hint = 'At +0 h no rain has fallen yet, so the map is empty. Move the time slider or press Play.';
+          hint = isObs
+            ? `At −${weatherMaxLeadHours()} h (start of lookback window) accumulation starts at zero. Move the slider right toward 0 h or press Play.`
+            : 'At +0 h no rain has fallen yet, so the map is empty. Move the time slider or press Play.';
         }
       }
       updateWeatherFreshness();
@@ -6938,6 +7370,7 @@
       const maxStep = weatherMaxStep();
       if (currentWeatherStep > maxStep) currentWeatherStep = maxStep;
       const isRadar = activeWeatherVar === 'radar';
+      const isObs = isWeatherObservationModel(activeWeatherModel);
       if (slider) {
         slider.max = String(maxStep);
         slider.value = String(currentWeatherStep);
@@ -6946,6 +7379,14 @@
       if (isRadar) {
         if (timestamp) timestamp.innerText = weatherRadarTime ? formatWeatherTime(weatherRadarTime) : 'Latest radar';
         if (horizon) horizon.innerText = 'observed, not a forecast';
+      } else if (isObs) {
+        if (timestamp) timestamp.innerText = formatWeatherTime(weatherValidTime());
+        const lookback = (maxStep - currentWeatherStep) * WEATHER_STEP_HOURS;
+        if (horizon) {
+          horizon.innerText = lookback === 0
+            ? `0 h (latest observation · past ${weatherMaxLeadHours()} h window)`
+            : `−${lookback} h (past ${weatherMaxLeadHours()} h observations)`;
+        }
       } else {
         if (timestamp) timestamp.innerText = formatWeatherTime(weatherValidTime());
         if (horizon) horizon.innerText = `+${currentWeatherStep * WEATHER_STEP_HOURS} h of ${weatherMaxLeadHours()} h forecast`;
@@ -6992,7 +7433,10 @@
       const note = document.getElementById('weatherLegendNote');
       if (!title || !bar) return;
       const conf = WEATHER_LEGENDS[activeWeatherVar] || WEATHER_LEGENDS.precipitation;
-      title.innerText = conf.title;
+      const isObs = isWeatherObservationModel(activeWeatherModel);
+      title.innerText = (activeWeatherVar === 'accumulated_precip' && isObs)
+        ? 'Observed rain accumulated over past 10 days (mm)'
+        : conf.title;
       if (badge) badge.innerText = activeWeatherVar === 'radar' ? 'RainViewer' : weatherModelLabel(activeWeatherModel);
       if (conf.classes) {
         bar.classList.add('hidden');
@@ -7017,8 +7461,11 @@
         if (maxEl) maxEl.innerText = max;
       }
       if (note) {
-        note.innerText = conf.note || '';
-        note.classList.toggle('hidden', !conf.note);
+        const noteText = (activeWeatherVar === 'accumulated_precip' && isObs)
+          ? 'Starts at zero 10 days ago (−240 h) and accumulates observed precipitation up to 0 h (latest observation).'
+          : (conf.note || '');
+        note.innerText = noteText;
+        note.classList.toggle('hidden', !noteText);
       }
     }
 
@@ -7579,24 +8026,27 @@
         return;
       }
       const now = Date.now();
-      const ageMs = now - new Date(info.init_time).getTime();
-      const stale = ageMs > WEATHER_RUN_STALE_HOURS * 3600 * 1000;
+      const isObs = isWeatherObservationModel(activeWeatherModel);
+      const refTime = isObs ? weatherValidTime(weatherMaxStep()) : new Date(info.init_time);
+      const ageMs = Math.max(0, now - refTime.getTime());
+      const staleThresholdHours = isObs ? 72 : WEATHER_RUN_STALE_HOURS;
+      const stale = ageMs > staleThresholdHours * 3600 * 1000;
       const sync = weatherSyncInfo;
       const failed = !!(sync && (sync.last_result === 'error' || sync.last_result === 'partial'));
-      const parts = [`This run started ${formatWeatherAge(ageMs)} ago.`];
-      if (weatherAutoUpdating()) {
-        if (sync.last_check_utc) {
-          const checked = formatWeatherAge(now - new Date(sync.last_check_utc).getTime());
-          parts.push(failed
-            ? `The last check for a newer run (${checked} ago) had a problem.`
-            : `Checked for a newer run ${checked} ago; checks every hour.`);
-        } else {
-          parts.push('Checks for a newer run every hour.');
-        }
+      const parts = [
+        isObs
+          ? `Latest observation is from ${formatWeatherAge(ageMs)} ago.`
+          : `This run started ${formatWeatherAge(ageMs)} ago.`
+      ];
+      if (sync && sync.last_check_utc) {
+        const checked = formatWeatherAge(now - new Date(sync.last_check_utc).getTime());
+        parts.push(failed
+          ? `The last manual check (${checked} ago) had a problem. Click Refresh to try again.`
+          : `Last manually refreshed ${checked} ago. Click Refresh to fetch newer data.`);
       } else {
-        parts.push('This server is not updating forecasts automatically.');
+        parts.push('Click Refresh to fetch the latest data.');
       }
-      if (stale) parts.push('This run is more than a day old.');
+      if (stale) parts.push(isObs ? 'Observation window is more than 3 days old.' : 'This run is more than a day old.');
       el.innerText = parts.join(' ');
       el.title = (sync && sync.message) || '';
       el.className = `text-[10.5px] leading-snug pt-1 ${(stale || failed) ? 'text-[#b06000]' : 'text-[#5f6368]'}`;
@@ -7905,32 +8355,59 @@
       const el = document.getElementById('weatherMeteogramSubtitle');
       if (!el || !weatherLastProbe) return;
       const models = weatherLastProbe.models || {};
-      const parts = [`Rain rate from each model (left axis) and ${weatherModelLabel(activeWeatherModel)} air temperature (orange, right axis). The dotted line is the time selected on the time bar.`];
+      const parts = [
+        `Observed past rain (−240 h to 0 h: NASA IMERG, NOAA CPC) stitched into 10-day forecast rain (0 h to +240 h, left axis) and ${weatherModelLabel(activeWeatherModel)} air temperature (orange, right axis). The dotted blue line marks the time selected on the scrubber.`
+      ];
       const runs = {};
       WEATHER_MODEL_ORDER.forEach(k => {
         const m = models[k];
-        if (m && m.data_source === 'archived_run' && m.init_time) (runs[m.init_time] = runs[m.init_time] || []).push(weatherModelLabel(k));
+        if (m && m.data_source === 'archived_run' && m.init_time && !isWeatherObservationModel(k)) {
+          (runs[m.init_time] = runs[m.init_time] || []).push(weatherModelLabel(k));
+        }
       });
       const runText = Object.entries(runs).map(([t, names]) => `${names.join(' and ')} from ${formatWeatherRunDate(new Date(t))}`);
-      if (runText.length) parts.push(`Hours count from the start of each run: ${runText.join('; ')}.`);
-      if (WEATHER_MODEL_ORDER.some(k => models[k] && models[k].data_source && models[k].data_source !== 'archived_run')) {
-        parts.push('Synthetic models are dashed and hidden at first; click a name in the legend to show or hide it.');
-      }
+      if (runText.length) parts.push(`Forecast runs: ${runText.join('; ')}.`);
       el.innerText = parts.join(' ');
     }
 
-    // Dotted vertical line at the time selected on the time bar.
+    // Dotted vertical line at the time selected on the time bar + subtle divider at Now (0h).
     const weatherStepLinePlugin = {
       id: 'weatherStepLine',
       afterDatasetsDraw(chart) {
         const xScale = chart.scales.x;
-        if (!xScale || !chart.chartArea || currentWeatherStep >= chart.data.labels.length) return;
-        const x = xScale.getPixelForValue(currentWeatherStep);
-        if (!isFinite(x)) return;
+        if (!xScale || !chart.chartArea) return;
+        const zeroIdx = Number.isInteger(chart.$zeroIdx) ? chart.$zeroIdx : 0;
         const ctx = chart.ctx;
+
+        // 1. Subtle solid divider at 0h ("Now") separating Observed Past from Forecast Future.
+        if (zeroIdx > 0 && zeroIdx < chart.data.labels.length) {
+          const xZero = xScale.getPixelForValue(zeroIdx);
+          if (isFinite(xZero)) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(95, 99, 104, 0.45)';
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            ctx.moveTo(xZero, chart.chartArea.top);
+            ctx.lineTo(xZero, chart.chartArea.bottom);
+            ctx.stroke();
+            ctx.fillStyle = '#5f6368';
+            ctx.font = '600 9px Inter, system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('NOW (0h)', xZero, chart.chartArea.top + 10);
+            ctx.restore();
+          }
+        }
+
+        // 2. Dotted blue cursor at the active scrubber step.
+        const stepIdx = isWeatherObservationModel(activeWeatherModel)
+          ? Math.max(0, zeroIdx - (weatherMaxStep(activeWeatherModel) - currentWeatherStep))
+          : zeroIdx + currentWeatherStep;
+        if (stepIdx < 0 || stepIdx >= chart.data.labels.length) return;
+        const x = xScale.getPixelForValue(stepIdx);
+        if (!isFinite(x)) return;
         ctx.save();
-        ctx.strokeStyle = 'rgba(26, 115, 232, 0.75)';
-        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(26, 115, 232, 0.85)';
+        ctx.lineWidth = 1.5;
         ctx.setLineDash([3, 3]);
         ctx.beginPath();
         ctx.moveTo(x, chart.chartArea.top);
@@ -7955,15 +8432,29 @@
         return -1;
       };
 
-      // Trim the x axis to the longest series that is shown at first.
-      let lastIdx = -1;
+      // Separate lookback horizon (observation models: -240h..0h) from forward horizon (forecast models: 0h..+240h).
+      let obsMaxIdx = 0;
+      let fcstMaxIdx = -1;
       WEATHER_MODEL_ORDER.forEach(key => {
         const m = models[key];
-        if (m && (!isSynthetic(m) || key === activeWeatherModel)) lastIdx = Math.max(lastIdx, lastValueIndex(m.precip_rate_mmh));
+        if (!m || (isSynthetic(m) && key !== activeWeatherModel)) return;
+        const idx = lastValueIndex(m.precip_rate_mmh);
+        if (idx < 0) return;
+        if (isWeatherObservationModel(key)) {
+          obsMaxIdx = Math.max(obsMaxIdx, idx);
+        } else {
+          fcstMaxIdx = Math.max(fcstMaxIdx, idx);
+        }
       });
-      if (lastIdx < 0) lastIdx = leadHours.length - 1;
-      const n = lastIdx + 1;
-      const hours = leadHours.slice(0, n);
+      if (fcstMaxIdx < 0) fcstMaxIdx = Math.max(0, leadHours.length - 1);
+
+      const zeroIdx = obsMaxIdx;  // Index corresponding to 0h ("Now").
+      const totalLen = zeroIdx + fcstMaxIdx + 1;
+      const relHours = [];
+      for (let i = 0; i < totalLen; i++) {
+        relHours.push((i - zeroIdx) * WEATHER_STEP_HOURS);
+      }
+      const formatRelHour = h => (h === 0 ? '0 h' : (h > 0 ? `+${h} h` : `−${Math.abs(h)} h`));
 
       const datasets = [];
       WEATHER_MODEL_ORDER.forEach(key => {
@@ -7971,35 +8462,56 @@
         if (!m) return;
         const synthetic = isSynthetic(m);
         const active = key === activeWeatherModel;
+        const isObs = isWeatherObservationModel(key);
+        const series = new Array(totalLen).fill(null);
+        const raw = m.precip_rate_mmh || [];
+        if (isObs) {
+          const mMaxIdx = lastValueIndex(raw);
+          if (mMaxIdx >= 0) {
+            for (let s = 0; s <= mMaxIdx; s++) {
+              const targetIdx = zeroIdx - (mMaxIdx - s);
+              if (targetIdx >= 0 && targetIdx <= zeroIdx) series[targetIdx] = raw[s];
+            }
+          }
+        } else {
+          const limit = Math.min(raw.length - 1, fcstMaxIdx);
+          for (let s = 0; s <= limit; s++) {
+            series[zeroIdx + s] = raw[s];
+          }
+        }
         datasets.push({
           type: 'line',
-          label: `${weatherModelLabel(key)} rain${synthetic ? ' (synthetic)' : ''}`,
-          data: (m.precip_rate_mmh || []).slice(0, n),
+          label: `${weatherModelLabel(key)} ${isObs ? 'observed' : 'forecast'}${synthetic ? ' (not synced)' : ''}`,
+          data: series,
           borderColor: WEATHER_MODEL_COLORS[key],
-          // The selected model's rain is a shaded area so it stands out.
           backgroundColor: active ? weatherHexToRgba(WEATHER_MODEL_COLORS[key], 0.22) : WEATHER_MODEL_COLORS[key],
           fill: active ? 'origin' : false,
           borderWidth: active ? 2.5 : 1.5,
           borderDash: synthetic ? [6, 4] : [],
           pointRadius: 0,
-          cubicInterpolationMode: 'monotone',  // No overshoot below zero around rain peaks.
+          cubicInterpolationMode: 'monotone',
           spanGaps: false,
           hidden: synthetic && !active,
           yAxisID: 'yRain',
           order: active ? 0 : 1
         });
       });
-      const am = models[activeWeatherModel];
-      if (am && am.temp_c) {
-        const synthetic = am.data_source ? !(am.real_variables || []).includes('temperature') : false;
+
+      const tempModelKey = isWeatherObservationModel(activeWeatherModel) ? 'ecmwf_hres' : activeWeatherModel;
+      const am = models[tempModelKey];
+      if (am && am.temp_c && (am.real_variables || []).includes('temperature')) {
+        const tempSeries = new Array(totalLen).fill(null);
+        const limit = Math.min(am.temp_c.length - 1, fcstMaxIdx);
+        for (let s = 0; s <= limit; s++) {
+          tempSeries[zeroIdx + s] = am.temp_c[s];
+        }
         datasets.push({
           type: 'line',
-          label: `${weatherModelLabel(activeWeatherModel)} temperature${synthetic ? ' (synthetic)' : ''}`,
-          data: am.temp_c.slice(0, n),
+          label: `${weatherModelLabel(tempModelKey)} temperature`,
+          data: tempSeries,
           borderColor: '#e8710a',
           backgroundColor: '#e8710a',
           borderWidth: 1.5,
-          borderDash: synthetic ? [6, 4] : [],
           pointRadius: 0,
           tension: 0.15,
           spanGaps: false,
@@ -8010,7 +8522,7 @@
 
       weatherMeteogramChart = new Chart(canvas.getContext('2d'), {
         type: 'line',
-        data: { labels: hours.map(h => `+${h} h`), datasets },
+        data: { labels: relHours.map(formatRelHour), datasets },
         options: {
           responsive: true,
           maintainAspectRatio: false,
@@ -8018,15 +8530,15 @@
           interaction: { mode: 'index', intersect: false },
           scales: {
             x: {
-              grid: { color: ctx => (hours[ctx.index] % 24 === 0 ? '#e8eaed' : 'transparent') },
+              grid: { color: ctx => (relHours[ctx.index] % 24 === 0 ? '#e8eaed' : 'transparent') },
               ticks: {
                 color: '#5f6368',
                 font: { size: 10 },
                 autoSkip: false,
                 maxRotation: 0,
-                callback: (value, index) => (hours[index] % 24 === 0 ? `+${hours[index]} h` : '')
+                callback: (value, index) => (relHours[index] % 48 === 0 || relHours[index] === 0 ? formatRelHour(relHours[index]) : '')
               },
-              title: { display: true, text: 'Hours since the start of each forecast run', color: '#5f6368', font: { size: 10 } }
+              title: { display: true, text: 'Observed past (−240 h … 0 h)  →  Forecast lead time (0 h … +240 h)', color: '#5f6368', font: { size: 10 } }
             },
             yRain: {
               type: 'linear',
@@ -8050,8 +8562,16 @@
               callbacks: {
                 title: items => {
                   if (!items.length) return '';
-                  const h = hours[items[0].dataIndex];
-                  return [`+${h} h`, `${weatherModelLabel(activeWeatherModel)}: ${formatWeatherTime(weatherValidTime(h / WEATHER_STEP_HOURS))}`];
+                  const idx = items[0].dataIndex;
+                  const h = relHours[idx];
+                  if (h < 0) {
+                    const obsKey = isWeatherObservationModel(activeWeatherModel) ? activeWeatherModel : 'nasa_imerg';
+                    const obsStep = Math.max(0, weatherMaxStep(obsKey) + Math.round(h / WEATHER_STEP_HOURS));
+                    return [`${formatRelHour(h)} (Observed)`, `${weatherModelLabel(obsKey)}: ${formatWeatherTime(weatherValidTime(obsStep, obsKey))}`];
+                  }
+                  const fcstKey = isWeatherObservationModel(activeWeatherModel) ? 'ecmwf_hres' : activeWeatherModel;
+                  const fcstStep = Math.round(h / WEATHER_STEP_HOURS);
+                  return [`${formatRelHour(h)} (Forecast)`, `${weatherModelLabel(fcstKey)}: ${formatWeatherTime(weatherValidTime(fcstStep, fcstKey))}`];
                 }
               }
             }
@@ -8059,6 +8579,7 @@
         },
         plugins: [weatherStepLinePlugin]
       });
+      weatherMeteogramChart.$zeroIdx = zeroIdx;
     }
 
     // Selected basin: outline on the map plus rain numbers in the sidebar card.
@@ -8169,20 +8690,192 @@
     let fcCurrentMode = 'coldstart'; // 'coldstart' | 'hotstart'
     let fcStatusData = null;
     let fcLastModelResult = null;
+    let fcModelResultsByBasin = {};
+    let fcHydroOverlayAll = false;
     let fcSelectedNowcast = null;
     let fcSelectedForecast = null;
+    let fcSelectedVariableMode = 'precip_and_temp';
     let fcIsFetching = false;
     let fcIsRunningModel = false;
+    const fcSelectedCatchmentIds = new Set();
+    const fcKnownCatchmentIds = new Set();
+
+    function getAllForecastCatchments() {
+      const basins = Array.isArray(activeWatersheds) ? activeWatersheds : [];
+      const list = [];
+      basins.forEach(feat => {
+        const p = (feat && feat.properties) || {};
+        const cid = String(p.catchment_id || feat.id || '').trim();
+        if (!cid) return;
+        list.push({
+          id: cid,
+          name: p.name || cid,
+          area_km2: p.area_km2 || p.area || null,
+          feature: feat
+        });
+      });
+      return list;
+    }
+
+    function getSelectedForecastCatchmentIds() {
+      const all = getAllForecastCatchments();
+      const validSet = new Set(all.map(b => b.id));
+      const selected = [];
+      fcSelectedCatchmentIds.forEach(cid => {
+        if (validSet.has(cid)) selected.push(cid);
+      });
+      return selected;
+    }
+
+    function getSelectedFetchProducts() {
+      const cbs = document.querySelectorAll('.fc-fetch-product-cb:checked');
+      const prods = [];
+      cbs.forEach(cb => {
+        if (cb.value) prods.push(String(cb.value).trim());
+      });
+      return prods.length > 0 ? prods : ['HRES', 'IMERG', 'CPC'];
+    }
 
     function getActiveForecastBasinId() {
       const sel = document.getElementById('fcBasinSelect');
-      if (activeCatchmentId) return String(activeCatchmentId);
       if (sel && sel.value) return String(sel.value);
-      if (Array.isArray(activeWatersheds) && activeWatersheds.length > 0) {
-        const first = activeWatersheds[0];
-        return String((first.properties && first.properties.catchment_id) || first.id || '');
-      }
+      if (activeCatchmentId) return String(activeCatchmentId);
+      const selected = getSelectedForecastCatchmentIds();
+      if (selected.length > 0) return selected[0];
+      const all = getAllForecastCatchments();
+      if (all.length > 0) return all[0].id;
       return '';
+    }
+
+    function canSelectHotStart() {
+      if (!fcStatusData) return false;
+      const selectedIds = getSelectedForecastCatchmentIds();
+      if (selectedIds.length === 0) return false;
+      const statusMap = fcStatusData.catchments_status || {};
+      const expectedDate = fcStatusData.expected_state_date;
+      if (!expectedDate) return false;
+      return selectedIds.every(cid => {
+        const cs = statusMap[cid];
+        if (cs) {
+          return Boolean(
+            cs.is_state_from_previous_day &&
+            cs.saved_state &&
+            cs.saved_state.exists &&
+            cs.saved_state.state_date === expectedDate
+          );
+        }
+        if (cid === fcStatusData.catchment_id) {
+          return Boolean(
+            fcStatusData.is_state_from_previous_day &&
+            fcStatusData.saved_state &&
+            fcStatusData.saved_state.exists &&
+            fcStatusData.saved_state.state_date === expectedDate
+          );
+        }
+        return false;
+      });
+    }
+
+    function renderForecastCatchmentChecklist() {
+      const container = document.getElementById('fcCatchmentSelectorList');
+      const badgeEl = document.getElementById('fcSelectedCatchmentCountBadge');
+      if (!container) return;
+
+      const basins = getAllForecastCatchments();
+      const currentViewId = getActiveForecastBasinId();
+      const statusMap = (fcStatusData && fcStatusData.catchments_status) || {};
+      const expectedStateDate = (fcStatusData && fcStatusData.expected_state_date) || null;
+
+      if (badgeEl) {
+        const selCount = getSelectedForecastCatchmentIds().length;
+        badgeEl.innerText = `${selCount} / ${basins.length} selected`;
+      }
+
+      if (basins.length === 0) {
+        container.innerHTML = `
+          <div class="text-[11px] text-[#5f6368] italic py-2 text-center">
+            No custom catchments delineated or uploaded yet.
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = '';
+      basins.forEach(b => {
+        const isChecked = fcSelectedCatchmentIds.has(b.id);
+        const isViewing = b.id === currentViewId;
+        const cs = statusMap[b.id] || (fcStatusData && fcStatusData.catchment_id === b.id ? fcStatusData : null);
+        const st = (cs && cs.saved_state) || {};
+        const isYesterdayState = Boolean(
+          cs &&
+          cs.is_state_from_previous_day &&
+          st.exists &&
+          expectedStateDate &&
+          st.state_date === expectedStateDate
+        );
+
+        let stateBadgeHtml = '';
+        if (isYesterdayState) {
+          stateBadgeHtml = `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#e6f4ea] text-[#137333] border border-[#ceead6]" title="Yesterday's saved state (${st.state_date}) exists — Hot Start available">State: ${st.state_date} ✓</span>`;
+        } else if (st.exists && st.state_date) {
+          stateBadgeHtml = `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#fce8e6] text-[#c5221f] border border-[#fad2cf]" title="Saved state is from ${st.state_date}, NOT yesterday (${expectedStateDate || 't₀−1d'}) — Hot Start blocked">Older: ${st.state_date} ✗</span>`;
+        } else {
+          stateBadgeHtml = `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0]" title="No saved state file — Cold Start required">Cold Only</span>`;
+        }
+
+        const row = document.createElement('div');
+        row.className = `flex items-center justify-between gap-2 px-2 py-1.5 rounded-md border text-xs transition ${
+          isViewing
+            ? 'bg-[#e8f0fe]/60 border-[#1a73e8]'
+            : 'bg-[#f8f9fa] border-transparent hover:border-[#dadce0]'
+        }`;
+
+        const leftLabel = document.createElement('div');
+        leftLabel.className = 'flex items-center gap-2 min-w-0 flex-1';
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'fc-catchment-checkbox rounded text-[#1e8e3e] cursor-pointer flex-shrink-0';
+        cb.checked = isChecked;
+        cb.dataset.catchmentId = b.id;
+        cb.addEventListener('change', (e) => {
+          e.stopPropagation();
+          if (cb.checked) {
+            fcSelectedCatchmentIds.add(b.id);
+          } else {
+            fcSelectedCatchmentIds.delete(b.id);
+          }
+          renderForecastCatchmentChecklist();
+          updateForecastControlsUI();
+        });
+
+        const textBtn = document.createElement('button');
+        textBtn.type = 'button';
+        textBtn.className = 'text-left truncate flex-1 focus:outline-none';
+        textBtn.title = `Click to inspect input forcings & forecast for ${b.name} (${b.id})`;
+        const areaStr = b.area_km2 ? ` · ${Number(b.area_km2).toLocaleString()} km²` : '';
+        textBtn.innerHTML = `
+          <div class="font-semibold text-[#202124] truncate text-[11px]">${b.name}</div>
+          <div class="font-mono text-[10px] text-[#5f6368] truncate">${b.id}${areaStr}</div>
+        `;
+        textBtn.addEventListener('click', () => {
+          activeCatchmentId = b.id;
+          const sel = document.getElementById('fcBasinSelect');
+          if (sel) sel.value = b.id;
+          syncForecastTabBasin();
+        });
+
+        leftLabel.appendChild(cb);
+        leftLabel.appendChild(textBtn);
+
+        const rightDiv = document.createElement('div');
+        rightDiv.className = 'flex items-center gap-1 flex-shrink-0';
+        rightDiv.innerHTML = stateBadgeHtml;
+
+        row.appendChild(leftLabel);
+        row.appendChild(rightDiv);
+        container.appendChild(row);
+      });
     }
 
     function syncForecastTabBasin() {
@@ -8190,36 +8883,40 @@
       const disp = document.getElementById('modelingActiveBasinDisplay');
       if (!sel) return;
 
-      const basins = Array.isArray(activeWatersheds) ? activeWatersheds : [];
-      if (basins.length > 1) {
-        sel.classList.remove('hidden');
-      } else {
-        sel.classList.add('hidden');
-      }
+      const basins = getAllForecastCatchments();
+      const currentIds = new Set(basins.map(b => b.id));
+      // Auto-select any newly added custom catchments by default
+      basins.forEach(b => {
+        if (!fcKnownCatchmentIds.has(b.id)) {
+          fcKnownCatchmentIds.add(b.id);
+          fcSelectedCatchmentIds.add(b.id);
+        }
+      });
+      // Prune removed catchments
+      Array.from(fcSelectedCatchmentIds).forEach(cid => {
+        if (!currentIds.has(cid)) fcSelectedCatchmentIds.delete(cid);
+      });
 
-      const currentId = getActiveForecastBasinId();
+      const currentId = (activeCatchmentId && currentIds.has(String(activeCatchmentId)))
+        ? String(activeCatchmentId)
+        : (basins.length > 0 ? basins[0].id : '');
+
       sel.innerHTML = '';
-      basins.forEach(feat => {
-        const p = feat.properties || {};
-        const cid = String(p.catchment_id || feat.id || '');
-        if (!cid) return;
+      basins.forEach(b => {
         const opt = document.createElement('option');
-        opt.value = cid;
-        const name = p.name || cid;
-        const area = p.area_km2 ? ` (${Number(p.area_km2).toLocaleString()} km²)` : '';
-        opt.textContent = `${name}${area}`;
-        if (cid === currentId) opt.selected = true;
+        opt.value = b.id;
+        const area = b.area_km2 ? ` (${Number(b.area_km2).toLocaleString()} km²)` : '';
+        opt.textContent = `${b.name}${area}`;
+        if (b.id === currentId) opt.selected = true;
         sel.appendChild(opt);
       });
 
       if (disp) {
         if (currentId) {
-          const matched = basins.find(f => String((f.properties && f.properties.catchment_id) || f.id) === currentId);
-          if (matched && matched.properties) {
-            const p = matched.properties;
-            const name = p.name || currentId;
-            const area = p.area_km2 ? `${Number(p.area_km2).toLocaleString()} km²` : '';
-            disp.innerText = area ? `${name} (${area})` : name;
+          const matched = basins.find(b => b.id === currentId);
+          if (matched) {
+            const area = matched.area_km2 ? `${Number(matched.area_km2).toLocaleString()} km²` : '';
+            disp.innerText = area ? `${matched.name} (${area})` : matched.name;
           } else {
             disp.innerText = currentId;
           }
@@ -8227,6 +8924,8 @@
           disp.innerText = 'No Basin Selected — Select in Basin Delineation';
         }
       }
+
+      renderForecastCatchmentChecklist();
 
       const tabEl = document.getElementById('tab-forecasting');
       if (tabEl && !tabEl.classList.contains('hidden')) {
@@ -8245,57 +8944,7 @@
           type: 'bar',
           data: {
             labels: [],
-            datasets: [
-              {
-                type: 'bar',
-                label: 'Nowcast Precip (mm/day)',
-                data: [],
-                yAxisID: 'yPrecip',
-                backgroundColor: 'rgba(66, 133, 244, 0.75)',
-                borderColor: '#4285f4',
-                borderWidth: 1,
-                borderRadius: 3,
-                order: 2
-              },
-              {
-                type: 'bar',
-                label: 'Forecast Precip (mm/day)',
-                data: [],
-                yAxisID: 'yPrecip',
-                backgroundColor: 'rgba(26, 115, 232, 0.85)',
-                borderColor: '#1a73e8',
-                borderWidth: 1,
-                borderRadius: 3,
-                order: 2
-              },
-              {
-                type: 'line',
-                label: 'Nowcast 2m Temp (°C)',
-                data: [],
-                yAxisID: 'yTemp',
-                borderColor: '#f9ab00',
-                backgroundColor: 'rgba(249, 171, 0, 0.15)',
-                borderWidth: 2,
-                pointRadius: 2.5,
-                tension: 0.25,
-                spanGaps: false,
-                order: 1
-              },
-              {
-                type: 'line',
-                label: 'Forecast 2m Temp (°C)',
-                data: [],
-                yAxisID: 'yTemp',
-                borderColor: '#e8710a',
-                backgroundColor: 'rgba(232, 113, 10, 0.15)',
-                borderWidth: 2,
-                borderDash: [5, 3],
-                pointRadius: 2.5,
-                tension: 0.25,
-                spanGaps: false,
-                order: 1
-              }
-            ]
+            datasets: []
           },
           options: {
             responsive: true,
@@ -8317,6 +8966,7 @@
               yTemp: {
                 type: 'linear',
                 position: 'right',
+                display: true,
                 title: { display: true, text: '2m Temperature (°C)', color: '#e8710a', font: { size: 10 } },
                 ticks: { color: '#e8710a' },
                 grid: { drawOnChartArea: false }
@@ -8391,7 +9041,11 @@
     }
 
     function setForecastMode(mode) {
-      fcCurrentMode = mode === 'hotstart' ? 'hotstart' : 'coldstart';
+      if (mode === 'hotstart' && !canSelectHotStart()) {
+        fcCurrentMode = 'coldstart';
+      } else {
+        fcCurrentMode = mode === 'hotstart' ? 'hotstart' : 'coldstart';
+      }
       const coldBtn = document.getElementById('fcModeColdBtn');
       const hotBtn = document.getElementById('fcModeHotBtn');
       const badge = document.getElementById('fcModeBadge');
@@ -8399,14 +9053,14 @@
 
       if (fcCurrentMode === 'coldstart') {
         if (coldBtn) coldBtn.className = 'fc-mode-btn py-2 px-3 rounded-md text-xs font-semibold transition bg-[#1a73e8] text-white shadow';
-        if (hotBtn) hotBtn.className = 'fc-mode-btn py-2 px-3 rounded-md text-xs font-medium transition text-[#5f6368] hover:text-[#202124]';
+        if (hotBtn) hotBtn.className = 'fc-mode-btn py-2 px-3 rounded-md text-xs font-medium transition text-[#5f6368] hover:text-[#202124] disabled:opacity-45 disabled:cursor-not-allowed';
         if (badge) {
           badge.innerText = 'Cold Start';
           badge.className = 'text-[10px] bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc] px-2 py-0.5 rounded font-mono';
         }
         if (execSelect) execSelect.value = 'cold_start';
       } else {
-        if (hotBtn) hotBtn.className = 'fc-mode-btn py-2 px-3 rounded-md text-xs font-semibold transition bg-[#e8710a] text-white shadow';
+        if (hotBtn) hotBtn.className = 'fc-mode-btn py-2 px-3 rounded-md text-xs font-semibold transition bg-[#e8710a] text-white shadow disabled:opacity-45 disabled:cursor-not-allowed';
         if (coldBtn) coldBtn.className = 'fc-mode-btn py-2 px-3 rounded-md text-xs font-medium transition text-[#5f6368] hover:text-[#202124]';
         if (badge) {
           badge.innerText = 'Hot Start';
@@ -8419,7 +9073,32 @@
     }
 
     function updateForecastControlsUI() {
+      const hotBtn = document.getElementById('fcModeHotBtn');
+      const hotAllowed = canSelectHotStart();
+      if (hotBtn) {
+        hotBtn.disabled = !hotAllowed;
+      }
+      // Enforce critical rule: if yesterday's saved state does not exist for all selected basins,
+      // automatically revert to Cold Start so an older or missing state is never used.
+      if (fcCurrentMode === 'hotstart' && !hotAllowed) {
+        fcCurrentMode = 'coldstart';
+        const coldBtn = document.getElementById('fcModeColdBtn');
+        const badge = document.getElementById('fcModeBadge');
+        const execSelect = document.getElementById('executionModeSelect');
+        if (coldBtn) coldBtn.className = 'fc-mode-btn py-2 px-3 rounded-md text-xs font-semibold transition bg-[#1a73e8] text-white shadow';
+        if (hotBtn) hotBtn.className = 'fc-mode-btn py-2 px-3 rounded-md text-xs font-medium transition text-[#5f6368] hover:text-[#202124] disabled:opacity-45 disabled:cursor-not-allowed';
+        if (badge) {
+          badge.innerText = 'Cold Start';
+          badge.className = 'text-[10px] bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc] px-2 py-0.5 rounded font-mono';
+        }
+        if (execSelect) execSelect.value = 'cold_start';
+      }
+
       const modeLabel = fcCurrentMode === 'hotstart' ? 'Hot Start' : 'Cold Start';
+      const selectedIds = getSelectedForecastCatchmentIds();
+      const selCount = selectedIds.length;
+      const countSuffix = selCount > 1 ? ` · ${selCount} Basins` : '';
+
       const fetchBtn = document.getElementById('fcFetchRealtimeBtn');
       const fetchBtnLabel = document.getElementById('fcFetchBtnLabel');
       const fetchDesc = document.getElementById('fcFetchModeDesc');
@@ -8434,40 +9113,40 @@
       const validationBanner = document.getElementById('fcStateValidationBanner');
 
       if (!fcIsFetching && fetchBtnLabel) {
-        fetchBtnLabel.innerText = `Fetch Real-Time Data (${modeLabel})`;
+        fetchBtnLabel.innerText = `Fetch Real-Time Data (${modeLabel}${countSuffix})`;
       }
       if (!fcIsRunningModel && runBtnLabel) {
-        runBtnLabel.innerText = `Run Model (${modeLabel})`;
+        runBtnLabel.innerText = `Run Model (${modeLabel}${countSuffix})`;
       }
 
       if (fetchDesc) {
         if (fcCurrentMode === 'coldstart') {
-          fetchDesc.innerText = 'Fetches 365-day spin-up nowcasts (IMERG, CPC) and 10-day weather forecasts (HRES & dynamical.org streams) into Zarr.';
+          fetchDesc.innerText = 'Fetches 365-day spin-up nowcasts (IMERG, CPC) and 10-day weather forecasts (HRES & dynamical.org streams) into Zarr for all selected catchments.';
         } else {
-          fetchDesc.innerText = 'Fetches recent nowcast updates and the latest 10-day weather forecast streams from the saved state date forward.';
+          fetchDesc.innerText = "Fetches incremental 1-day nowcast updates and the latest 10-day weather forecasts from yesterday's saved state date (t₀ − 1d) forward.";
         }
       }
 
       if (runDesc) {
         if (fcCurrentMode === 'coldstart') {
-          runDesc.innerText = 'Spins up the MeanEmbeddingForecastLSTM over the 365-day hindcast window, generates the 10-day forecast, and saves the state file for (t₀ − 1d).';
+          runDesc.innerText = "Spins up the MeanEmbeddingForecastLSTM over the 365-day hindcast window for all selected catchments, generates the forecast, and saves yesterday's state (t₀ − 1d).";
         } else {
-          runDesc.innerText = 'Resumes directly from the saved state file (strictly requiring state date == t₀ − 1d) and unrolls the 10-day forecast.';
+          runDesc.innerText = "Resumes directly from yesterday's saved state file (strictly requiring state_date == t₀ − 1d for all selected catchments) and unrolls the forecast.";
         }
       }
 
       const basinId = getActiveForecastBasinId();
-      if (!basinId) {
+      if (!basinId || selCount === 0) {
         if (fetchBtn) fetchBtn.disabled = true;
         if (runBtn) runBtn.disabled = true;
-        if (issueDateEl) issueDateEl.innerText = '—';
+        if (issueDateEl) issueDateEl.innerText = fcStatusData ? (fcStatusData.issue_date || '—') : '—';
         if (savedStateEl) savedStateEl.innerText = 'None';
-        if (expectedStateEl) expectedStateEl.innerText = '—';
+        if (expectedStateEl) expectedStateEl.innerText = fcStatusData ? (fcStatusData.expected_state_date || '—') : '—';
         if (validationBanner) {
-          validationBanner.className = 'mt-2 pt-2 border-t border-[#dadce0] text-[11px] text-[#5f6368] leading-relaxed';
-          validationBanner.innerText = 'No active catchment selected. Select or delineate a catchment in the Basin Delineation tab first.';
+          validationBanner.className = 'mt-2 pt-2 border-t border-[#dadce0] text-[11px] text-[#b06000] leading-relaxed';
+          validationBanner.innerText = basinsCountMessage();
         }
-        if (blockedReasonEl) blockedReasonEl.innerText = '';
+        if (blockedReasonEl) blockedReasonEl.innerText = 'Select at least one catchment checkbox above.';
         return;
       }
 
@@ -8487,29 +9166,52 @@
       if (issueDateEl) issueDateEl.innerText = issueDate;
       if (expectedStateEl) expectedStateEl.innerText = expectedStateDate;
 
+      const statusMap = fcStatusData.catchments_status || {};
+      const validSelectedCount = selectedIds.filter(cid => {
+        const cs = statusMap[cid];
+        return cs ? Boolean(cs.is_state_from_previous_day) : (cid === fcStatusData.catchment_id && isStateValid);
+      }).length;
+
       if (savedStateEl) {
-        if (!savedState.exists || !savedStateDate) {
+        if (selCount > 1) {
+          if (validSelectedCount === selCount) {
+            savedStateEl.innerText = `${expectedStateDate} (${validSelectedCount}/${selCount} Valid)`;
+            savedStateEl.className = 'font-mono font-semibold text-[#1e8e3e]';
+          } else {
+            savedStateEl.innerText = `${validSelectedCount}/${selCount} Valid (t₀−1d)`;
+            savedStateEl.className = 'font-mono font-semibold text-[#d93025]';
+          }
+        } else if (!savedState.exists || !savedStateDate) {
           savedStateEl.innerText = 'None';
           savedStateEl.className = 'font-mono font-semibold text-[#d93025]';
         } else if (isStateValid) {
-          savedStateEl.innerText = `${savedStateDate} (Valid)`;
+          savedStateEl.innerText = `${savedStateDate} (Yesterday · Valid)`;
           savedStateEl.className = 'font-mono font-semibold text-[#1e8e3e]';
         } else {
-          savedStateEl.innerText = `${savedStateDate} (Stale)`;
-          savedStateEl.className = 'font-mono font-semibold text-[#b06000]';
+          savedStateEl.innerText = `${savedStateDate} (Older/Stale — Blocked)`;
+          savedStateEl.className = 'font-mono font-semibold text-[#d93025]';
         }
       }
 
       if (validationBanner) {
-        if (isStateValid) {
+        if (hotAllowed) {
           validationBanner.className = 'mt-2 pt-2 border-t border-[#dadce0] text-[11px] text-[#1e8e3e] leading-relaxed';
-          validationBanner.innerText = `Saved state date (${savedStateDate}) matches the day immediately preceding issue date (${issueDate}). Hot-Start is valid.`;
+          validationBanner.innerText = selCount > 1
+            ? `All ${selCount} selected catchments have yesterday's saved state (${expectedStateDate}) for issue date ${issueDate}. Both Cold Start and Hot Start are available.`
+            : `Saved state date (${savedStateDate}) is from yesterday (t₀ − 1d = ${expectedStateDate}) for issue date ${issueDate}. Hot Start is available.`;
+        } else if (selCount > 1) {
+          const invalidList = selectedIds.filter(cid => {
+            const cs = statusMap[cid];
+            return !(cs && cs.is_state_from_previous_day);
+          });
+          validationBanner.className = 'mt-2 pt-2 border-t border-[#dadce0] text-[11px] text-[#b06000] leading-relaxed';
+          validationBanner.innerText = `Hot Start is disabled: ${invalidList.length} of ${selCount} selected catchment(s) (${invalidList.join(', ')}) lack yesterday's saved state (${expectedStateDate}). Run Cold Start first.`;
         } else if (!savedState.exists || !savedStateDate) {
           validationBanner.className = 'mt-2 pt-2 border-t border-[#dadce0] text-[11px] text-[#b06000] leading-relaxed';
-          validationBanner.innerText = `No saved state file for basin '${basinId}'. Run Cold-Start mode to spin up and save state for ${expectedStateDate}.`;
+          validationBanner.innerText = `No saved state file for catchment '${basinId}'. Hot Start is disabled; run Cold Start to spin up and save yesterday's state (${expectedStateDate}).`;
         } else {
-          validationBanner.className = 'mt-2 pt-2 border-t border-[#dadce0] text-[11px] text-[#d93025] leading-relaxed';
-          validationBanner.innerText = `Saved state date (${savedStateDate}) does not match t₀ − 1d (${expectedStateDate}) for issue date ${issueDate}. Hot-Start is disallowed.`;
+          validationBanner.className = 'mt-2 pt-2 border-t border-[#dadce0] text-[11px] text-[#d93025] leading-relaxed font-medium';
+          validationBanner.innerText = `Saved state is from an older date (${savedStateDate}), NOT yesterday (${expectedStateDate}) for issue date ${issueDate}. Hot Start is strictly disabled until Cold Start updates the state to ${expectedStateDate}.`;
         }
       }
 
@@ -8518,31 +9220,103 @@
         return;
       }
 
+      const allHaveData = selectedIds.every(cid => {
+        const cs = statusMap[cid];
+        return cs ? Boolean(cs.has_realtime_data) : Boolean(fcStatusData.has_realtime_data);
+      });
+
       if (fcCurrentMode === 'hotstart') {
-        const canRunHot = Boolean(fcStatusData.can_run_hotstart);
+        const canRunHot = Boolean(hotAllowed && allHaveData);
         if (runBtn) runBtn.disabled = !canRunHot;
         if (blockedReasonEl) {
           if (!canRunHot) {
             blockedReasonEl.className = 'text-[11px] text-[#d93025] leading-relaxed font-medium';
-            blockedReasonEl.innerText = fcStatusData.hotstart_status_message || 'Hot-Start unavailable: saved state is missing or not from the previous day.';
+            blockedReasonEl.innerText = fcStatusData.hotstart_status_message || "Hot-Start unavailable: requires yesterday's saved state (t₀ − 1d) and real-time data for all selected catchments.";
           } else {
             blockedReasonEl.className = 'text-[11px] text-[#1e8e3e] leading-relaxed';
-            blockedReasonEl.innerText = fcStatusData.hotstart_status_message || 'Hot-Start ready.';
+            blockedReasonEl.innerText = `Hot-Start ready for ${selCount} selected catchment(s) from yesterday's state (${expectedStateDate}).`;
           }
         }
       } else {
-        const canRunCold = Boolean(fcStatusData.can_run_coldstart);
+        const canRunCold = Boolean(allHaveData);
         if (runBtn) runBtn.disabled = !canRunCold;
         if (blockedReasonEl) {
           if (!canRunCold) {
             blockedReasonEl.className = 'text-[11px] text-[#b06000] leading-relaxed';
-            blockedReasonEl.innerText = fcStatusData.coldstart_status_message || 'Fetch Cold-Start real-time data before running the model.';
+            blockedReasonEl.innerText = 'Fetch real-time data for all selected catchments before running the model.';
           } else {
             blockedReasonEl.className = 'text-[11px] text-[#1e8e3e] leading-relaxed';
-            blockedReasonEl.innerText = fcStatusData.coldstart_status_message || 'Cold-Start ready.';
+            blockedReasonEl.innerText = `Cold-Start ready for ${selCount} selected catchment(s).`;
           }
         }
       }
+    }
+
+    function basinsCountMessage() {
+      const all = getAllForecastCatchments();
+      if (all.length === 0) {
+        return 'No custom catchments available. Delineate or upload catchments in the Basin Delineation tab first.';
+      }
+      return 'No catchments checked. Select one or more catchments above to fetch real-time data and make forecasts.';
+    }
+
+    function getActiveProductObject() {
+      if (!fcStatusData || !fcSelectedForecast) return null;
+      const forecastProducts = fcStatusData.forecast_products || {};
+      const nowcastProducts = fcStatusData.nowcast_products || {};
+      const inputProducts = fcStatusData.input_products || {};
+      return forecastProducts[fcSelectedForecast] || inputProducts[fcSelectedForecast] || nowcastProducts[fcSelectedForecast] || null;
+    }
+
+    function populateForecastVariableDropdown(resetToDefault = false) {
+      const varSel = document.getElementById('fcForecastVariableSelect');
+      if (!varSel) return;
+
+      if (resetToDefault || !fcSelectedVariableMode) {
+        fcSelectedVariableMode = 'precip_and_temp';
+      }
+
+      const prodObj = getActiveProductObject();
+      const varsMeta = (prodObj && Array.isArray(prodObj.variables)) ? prodObj.variables : [];
+
+      varSel.innerHTML = '';
+
+      // 1. Default combined mode: Precipitation (Bars) + Temperature (Lines)
+      const defOpt = document.createElement('option');
+      defOpt.value = 'precip_and_temp';
+      defOpt.textContent = 'Precipitation (Bars) + Temperature (Lines) [Default]';
+      varSel.appendChild(defOpt);
+
+      // 2. Quick single-variable modes for Precip and Temp
+      const pOpt = document.createElement('option');
+      pOpt.value = 'precip_only';
+      pOpt.textContent = 'Precipitation Only (Bars, mm/day)';
+      varSel.appendChild(pOpt);
+
+      const tOpt = document.createElement('option');
+      tOpt.value = 'temp_only';
+      tOpt.textContent = '2m Temperature Only (Line, °C)';
+      varSel.appendChild(tOpt);
+
+      // 3. All individual variables available in the selected product
+      if (varsMeta.length > 0) {
+        const group = document.createElement('optgroup');
+        group.label = `${ (prodObj && prodObj.product) || fcSelectedForecast } Input Variables`;
+        varsMeta.forEach(vm => {
+          const opt = document.createElement('option');
+          opt.value = vm.name;
+          const styleTag = vm.chart_type === 'bar' ? 'Bars' : 'Line';
+          opt.textContent = `${vm.label} [${styleTag}] — (${vm.name})`;
+          group.appendChild(opt);
+        });
+        varSel.appendChild(group);
+      }
+
+      const validValues = Array.from(varSel.options).map(o => o.value);
+      if (!validValues.includes(fcSelectedVariableMode)) {
+        fcSelectedVariableMode = 'precip_and_temp';
+      }
+      varSel.value = fcSelectedVariableMode;
     }
 
     function populateProductDropdowns() {
@@ -8573,110 +9347,461 @@
           const item = nowcastProducts[key];
           const opt = document.createElement('option');
           opt.value = key;
+          const numVars = Array.isArray(item.variables) ? item.variables.length : 1;
           const varsTag = item.has_precip && item.has_temp ? 'Precip + Temp' : (item.has_precip ? 'Precip' : 'Temp');
-          opt.textContent = `${key} — ${varsTag}`;
+          opt.textContent = `${key} — ${varsTag} (${numVars} var${numVars > 1 ? 's' : ''})`;
           if (key === fcSelectedNowcast) opt.selected = true;
           nowcastSel.appendChild(opt);
         });
       }
 
       forecastSel.innerHTML = '';
-      if (forecastKeys.length === 0) {
+      if (forecastKeys.length === 0 && nowcastKeys.length === 0) {
         const opt = document.createElement('option');
         opt.value = 'none';
         opt.textContent = 'No forecast fetched';
         forecastSel.appendChild(opt);
         fcSelectedForecast = null;
       } else {
-        if (!fcSelectedForecast || !forecastProducts[fcSelectedForecast]) {
+        const allValidKeys = [...forecastKeys, ...nowcastKeys];
+        if (!fcSelectedForecast || !allValidKeys.includes(fcSelectedForecast)) {
           if (forecastProducts['HRES']) fcSelectedForecast = 'HRES';
-          else fcSelectedForecast = forecastKeys[0];
+          else if (forecastKeys.length > 0) fcSelectedForecast = forecastKeys[0];
+          else fcSelectedForecast = nowcastKeys[0];
         }
-        forecastKeys.forEach(key => {
-          const item = forecastProducts[key];
-          const opt = document.createElement('option');
-          opt.value = key;
-          const varsTag = item.has_precip && item.has_temp ? 'Precip + Temp' : (item.has_precip ? 'Precip' : 'Temp');
-          opt.textContent = `${key} (${item.issue_date || 'latest'}) — ${varsTag}`;
-          if (key === fcSelectedForecast) opt.selected = true;
-          forecastSel.appendChild(opt);
-        });
+
+        if (forecastKeys.length > 0) {
+          const fcGroup = document.createElement('optgroup');
+          fcGroup.label = 'Forecast Products (Issue Date t₀ + Lead Times)';
+          forecastKeys.forEach(key => {
+            const item = forecastProducts[key];
+            const opt = document.createElement('option');
+            opt.value = key;
+            const numVars = Array.isArray(item.variables) ? item.variables.length : 2;
+            opt.textContent = `${key} (t₀=${item.issue_date || 'latest'} · ${item.horizon_days || 10}d · ${numVars} vars)`;
+            if (key === fcSelectedForecast) opt.selected = true;
+            fcGroup.appendChild(opt);
+          });
+          forecastSel.appendChild(fcGroup);
+        }
+
+        const directNowcastKeys = nowcastKeys.filter(k => !k.endsWith('_1D'));
+        if (directNowcastKeys.length > 0) {
+          const ncGroup = document.createElement('optgroup');
+          ncGroup.label = 'Nowcast / Spin-Up Input Products';
+          directNowcastKeys.forEach(key => {
+            const item = nowcastProducts[key];
+            const opt = document.createElement('option');
+            opt.value = key;
+            const numVars = Array.isArray(item.variables) ? item.variables.length : 1;
+            opt.textContent = `${key} (${item.label || 'Nowcast'} · ${numVars} var${numVars > 1 ? 's' : ''})`;
+            if (key === fcSelectedForecast) opt.selected = true;
+            ncGroup.appendChild(opt);
+          });
+          forecastSel.appendChild(ncGroup);
+        }
       }
+
+      populateForecastVariableDropdown(false);
+    }
+
+    function renderLeadTimeInspector(prodObj, issueDate) {
+      const container = document.getElementById('fcLeadTimeInspectorContainer');
+      const tableEl = document.getElementById('fcLeadTimeSummaryTable');
+      const labelEl = document.getElementById('fcLeadTimeInspectorLabel');
+      const badgeEl = document.getElementById('fcLeadTimeHorizonBadge');
+      if (!container || !tableEl) return;
+
+      if (!prodObj || !Array.isArray(prodObj.series) || prodObj.series.length === 0) {
+        container.classList.add('hidden');
+        tableEl.innerHTML = '';
+        return;
+      }
+
+      container.classList.remove('hidden');
+      const prodName = prodObj.product || prodObj.id || 'Product';
+      const isForecast = prodObj.kind === 'forecast' || Boolean(prodObj.series[0] && prodObj.series[0].lead_time_days);
+      const varsMeta = Array.isArray(prodObj.variables) ? prodObj.variables : [];
+      const selectedVarMeta = varsMeta.find(v => v.name === fcSelectedVariableMode) || null;
+
+      if (labelEl) {
+        if (isForecast) {
+          labelEl.innerText = `${prodName} — Issue Date (t₀ = ${prodObj.issue_date || issueDate}) & All Forecast Lead Times`;
+        } else {
+          labelEl.innerText = `${prodName} — Trailing Nowcast Input Series (up to t₀ − 1d)`;
+        }
+      }
+      if (badgeEl) {
+        badgeEl.innerText = isForecast
+          ? `${prodObj.series.length} Lead Steps (Day 1 = t₀ … Day ${prodObj.series.length})`
+          : `${prodObj.series.length} Days`;
+      }
+
+      tableEl.innerHTML = '';
+      prodObj.series.forEach(pt => {
+        const card = document.createElement('div');
+        const isT0 = Boolean(pt.is_issue_date || pt.date === issueDate || pt.lead_time_days === 1);
+        card.className = `flex-shrink-0 px-2.5 py-1.5 rounded-lg border ${
+          isT0
+            ? 'bg-[#e8f0fe]/70 border-[#1a73e8]'
+            : 'bg-[#f8f9fa] border-[#dadce0]'
+        }`;
+
+        const leadHeader = pt.lead_time_days
+          ? (pt.lead_time_days === 1 ? `Lead +1d (t₀)` : `Lead +${pt.lead_time_days}d`)
+          : 'Nowcast';
+
+        let valuesHtml = '';
+        if (selectedVarMeta) {
+          const rawVal = pt.values && pt.values[selectedVarMeta.name] !== undefined
+            ? pt.values[selectedVarMeta.name]
+            : null;
+          const valStr = (rawVal !== null && rawVal !== undefined)
+            ? `${Number(rawVal).toFixed(2)} ${selectedVarMeta.unit || ''}`
+            : 'NaN (Gap)';
+          valuesHtml = `<div class="font-mono font-semibold text-[#1a73e8] mt-0.5">${valStr}</div>`;
+        } else if (fcSelectedVariableMode === 'precip_only') {
+          const pStr = (pt.precip_mm !== null && pt.precip_mm !== undefined) ? `${Number(pt.precip_mm).toFixed(1)} mm` : 'NaN';
+          valuesHtml = `<div class="font-mono font-semibold text-[#1a73e8] mt-0.5">P: ${pStr}</div>`;
+        } else if (fcSelectedVariableMode === 'temp_only') {
+          const tVal = pt.temperature_c !== undefined ? pt.temperature_c : pt.temp_c;
+          const tStr = (tVal !== null && tVal !== undefined) ? `${Number(tVal).toFixed(1)} °C` : 'NaN';
+          valuesHtml = `<div class="font-mono font-semibold text-[#e8710a] mt-0.5">T: ${tStr}</div>`;
+        } else {
+          const pStr = (pt.precip_mm !== null && pt.precip_mm !== undefined) ? `${Number(pt.precip_mm).toFixed(1)} mm` : 'NaN';
+          const tVal = pt.temperature_c !== undefined ? pt.temperature_c : pt.temp_c;
+          const tStr = (tVal !== null && tVal !== undefined) ? `${Number(tVal).toFixed(1)} °C` : '—';
+          valuesHtml = `
+            <div class="font-mono font-semibold text-[#1a73e8] mt-0.5">P: ${pStr}</div>
+            <div class="font-mono text-[#e8710a]">T: ${tStr}</div>
+          `;
+        }
+
+        card.innerHTML = `
+          <div class="font-bold text-[#202124] whitespace-nowrap">${leadHeader}</div>
+          <div class="font-mono text-[9px] text-[#5f6368] whitespace-nowrap">${pt.date}</div>
+          ${valuesHtml}
+        `;
+        tableEl.appendChild(card);
+      });
     }
 
     function renderForcingChart() {
       if (!hyetographChart) return;
       const subtitleEl = document.getElementById('fcForcingSubtitle');
+      const titleEl = document.getElementById('fcForcingChartTitle');
 
       const nowcastProducts = (fcStatusData && fcStatusData.nowcast_products) || {};
       const forecastProducts = (fcStatusData && fcStatusData.forecast_products) || {};
 
       const nowcastObj = fcSelectedNowcast ? nowcastProducts[fcSelectedNowcast] : null;
-      const forecastObj = fcSelectedForecast ? forecastProducts[fcSelectedForecast] : null;
+      const prodObj = getActiveProductObject();
 
-      if (!nowcastObj && !forecastObj) {
+      if (!nowcastObj && !prodObj) {
         hyetographChart.data.labels = [];
-        hyetographChart.data.datasets.forEach(ds => { ds.data = []; });
+        hyetographChart.data.datasets = [];
         hyetographChart.update();
+        renderLeadTimeInspector(null, null);
         if (subtitleEl) {
           subtitleEl.innerText = 'No real-time forcing data fetched for this catchment yet. Click "1. Fetch Real-Time Data" to populate.';
         }
         return;
       }
 
-      const nowcastSeries = (nowcastObj && Array.isArray(nowcastObj.series)) ? nowcastObj.series : [];
+      const isSelectedProdForecast = Boolean(prodObj && (prodObj.kind === 'forecast' || forecastProducts[fcSelectedForecast]));
+      const forecastObj = isSelectedProdForecast ? prodObj : null;
+      const activeNowcastObj = isSelectedProdForecast ? nowcastObj : (prodObj || nowcastObj);
+
+      const nowcastSeries = (activeNowcastObj && Array.isArray(activeNowcastObj.series)) ? activeNowcastObj.series : [];
       const forecastSeries = (forecastObj && Array.isArray(forecastObj.series)) ? forecastObj.series : [];
+      const forecastHindcastSeries = (forecastObj && Array.isArray(forecastObj.hindcast_series)) ? forecastObj.hindcast_series : [];
 
       const dateSet = new Set();
       nowcastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+      forecastHindcastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
       forecastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
       const allDates = Array.from(dateSet).sort();
 
       const nowcastByDate = {};
       nowcastSeries.forEach(pt => { if (pt && pt.date) nowcastByDate[pt.date] = pt; });
+      const fcHindcastByDate = {};
+      forecastHindcastSeries.forEach(pt => { if (pt && pt.date) fcHindcastByDate[pt.date] = pt; });
       const forecastByDate = {};
       forecastSeries.forEach(pt => { if (pt && pt.date) forecastByDate[pt.date] = pt; });
 
       const issueDate = (forecastObj && forecastObj.issue_date) || (fcStatusData && fcStatusData.issue_date) || null;
 
-      const labels = allDates.map(d => (d === issueDate ? `${d} (t₀)` : d));
-      const nowcastPrecip = allDates.map(d => {
-        if (issueDate && d >= issueDate) return null;
-        const pt = nowcastByDate[d];
-        return (pt && pt.precip_mm !== undefined && pt.precip_mm !== null) ? pt.precip_mm : null;
+      // Format labels so issue date t₀ and every forecast lead time (+1d .. +Ld) are clearly labeled
+      const labels = allDates.map(d => {
+        const fcPt = forecastByDate[d];
+        if (fcPt && fcPt.lead_time_days) {
+          if (fcPt.lead_time_days === 1 || d === issueDate) {
+            return `${d} (t₀ · +1d)`;
+          }
+          return `${d} (+${fcPt.lead_time_days}d)`;
+        }
+        if (d === issueDate) return `${d} (t₀)`;
+        return d;
       });
-      const forecastPrecip = allDates.map(d => {
-        if (issueDate && d < issueDate) return null;
-        const pt = forecastByDate[d];
-        return (pt && pt.precip_mm !== undefined && pt.precip_mm !== null) ? pt.precip_mm : null;
-      });
-      const nowcastTemp = allDates.map(d => {
-        if (issueDate && d >= issueDate) return null;
-        const pt = nowcastByDate[d];
-        return (pt && pt.temperature_c !== undefined && pt.temperature_c !== null) ? pt.temperature_c : null;
-      });
-      const forecastTemp = allDates.map(d => {
-        if (issueDate && d < issueDate) return null;
-        const pt = forecastByDate[d];
-        return (pt && pt.temperature_c !== undefined && pt.temperature_c !== null) ? pt.temperature_c : null;
-      });
+
+      const varsMeta = (prodObj && Array.isArray(prodObj.variables)) ? prodObj.variables : [];
+      const specificVarMeta = varsMeta.find(v => v.name === fcSelectedVariableMode) || null;
+
+      const datasets = [];
+      const yPrecipScale = hyetographChart.options.scales.yPrecip;
+      const yTempScale = hyetographChart.options.scales.yTemp;
+
+      if (specificVarMeta) {
+        // Specific variable chosen from the Forecast Variable menu
+        const vName = specificVarMeta.name;
+        const isBar = specificVarMeta.chart_type === 'bar';
+        const unitLabel = specificVarMeta.unit ? `${specificVarMeta.label}` : vName;
+
+        const spinupData = allDates.map(d => {
+          if (issueDate && d >= issueDate && isSelectedProdForecast) return null;
+          const ncPt = nowcastByDate[d];
+          if (ncPt && ncPt.values && ncPt.values[vName] !== undefined) return ncPt.values[vName];
+          const hcPt = fcHindcastByDate[d];
+          if (hcPt && hcPt.values && hcPt.values[vName] !== undefined) return hcPt.values[vName];
+          return null;
+        });
+
+        const fcData = allDates.map(d => {
+          if (issueDate && d < issueDate) return null;
+          const fcPt = forecastByDate[d];
+          if (fcPt && fcPt.values && fcPt.values[vName] !== undefined) return fcPt.values[vName];
+          return null;
+        });
+
+        if (spinupData.some(v => v !== null)) {
+          datasets.push({
+            type: isBar ? 'bar' : 'line',
+            label: `${(prodObj && prodObj.product) || 'Spin-Up'} ${specificVarMeta.short_name} (Spin-Up / Nowcast)`,
+            data: spinupData,
+            yAxisID: 'yPrecip',
+            backgroundColor: isBar ? 'rgba(66, 133, 244, 0.72)' : 'rgba(66, 133, 244, 0.15)',
+            borderColor: '#4285f4',
+            borderWidth: isBar ? 1 : 2,
+            borderRadius: isBar ? 3 : 0,
+            pointRadius: isBar ? 0 : 2.5,
+            tension: 0.25,
+            spanGaps: false
+          });
+        }
+
+        if (isSelectedProdForecast) {
+          datasets.push({
+            type: isBar ? 'bar' : 'line',
+            label: `${prodObj.product} ${specificVarMeta.short_name} (Issue t₀ & Lead +1d…+${forecastSeries.length}d)`,
+            data: fcData,
+            yAxisID: 'yPrecip',
+            backgroundColor: isBar ? 'rgba(26, 115, 232, 0.88)' : 'rgba(232, 113, 10, 0.18)',
+            borderColor: isBar ? '#1a73e8' : '#e8710a',
+            borderWidth: isBar ? 1 : 2.5,
+            borderDash: isBar ? [] : [5, 3],
+            borderRadius: isBar ? 3 : 0,
+            pointRadius: isBar ? 0 : 3,
+            tension: 0.25,
+            spanGaps: false
+          });
+        }
+
+        yPrecipScale.beginAtZero = isBar;
+        yPrecipScale.title.text = unitLabel;
+        yPrecipScale.title.color = isBar ? '#1a73e8' : '#e8710a';
+        yTempScale.display = false;
+        if (titleEl) {
+          titleEl.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4 text-[#1a73e8]"></i> Input Forcing Visualization: ${prodObj ? prodObj.product : ''} · ${specificVarMeta.label}`;
+        }
+      } else {
+        // Default mode ('precip_and_temp') or 'precip_only' / 'temp_only'
+        const showPrecip = fcSelectedVariableMode !== 'temp_only';
+        const showTemp = fcSelectedVariableMode !== 'precip_only';
+
+        const nowcastPrecip = allDates.map(d => {
+          if (issueDate && d >= issueDate && isSelectedProdForecast) return null;
+          const pt = nowcastByDate[d];
+          return (pt && pt.precip_mm !== undefined && pt.precip_mm !== null) ? pt.precip_mm : null;
+        });
+        const forecastPrecip = allDates.map(d => {
+          if (issueDate && d < issueDate) return null;
+          const pt = forecastByDate[d];
+          return (pt && pt.precip_mm !== undefined && pt.precip_mm !== null) ? pt.precip_mm : null;
+        });
+        const nowcastTemp = allDates.map(d => {
+          if (issueDate && d >= issueDate && isSelectedProdForecast) return null;
+          const pt = nowcastByDate[d];
+          if (pt && pt.temperature_c !== undefined && pt.temperature_c !== null) return pt.temperature_c;
+          if (pt && pt.temp_c !== undefined && pt.temp_c !== null) return pt.temp_c;
+          const hcPt = fcHindcastByDate[d];
+          if (hcPt && hcPt.temperature_c !== undefined && hcPt.temperature_c !== null) return hcPt.temperature_c;
+          if (hcPt && hcPt.temp_c !== undefined && hcPt.temp_c !== null) return hcPt.temp_c;
+          return null;
+        });
+        const forecastTemp = allDates.map(d => {
+          if (issueDate && d < issueDate) return null;
+          const pt = forecastByDate[d];
+          if (!pt) return null;
+          return (pt.temperature_c !== undefined && pt.temperature_c !== null)
+            ? pt.temperature_c
+            : (pt.temp_c !== undefined ? pt.temp_c : null);
+        });
+
+        const ncLabelName = (activeNowcastObj && (activeNowcastObj.product || activeNowcastObj.id)) || fcSelectedNowcast || 'Nowcast';
+        const fcLabelName = (forecastObj && (forecastObj.product || forecastObj.id)) || fcSelectedForecast || 'Forecast';
+
+        if (showPrecip) {
+          datasets.push({
+            type: 'bar',
+            label: `${ncLabelName} Precip (mm/day)`,
+            data: nowcastPrecip,
+            yAxisID: 'yPrecip',
+            backgroundColor: 'rgba(66, 133, 244, 0.75)',
+            borderColor: '#4285f4',
+            borderWidth: 1,
+            borderRadius: 3,
+            order: 2
+          });
+          if (isSelectedProdForecast) {
+            datasets.push({
+              type: 'bar',
+              label: `${fcLabelName} Forecast Precip (mm/day · t₀…+${forecastSeries.length}d)`,
+              data: forecastPrecip,
+              yAxisID: 'yPrecip',
+              backgroundColor: 'rgba(26, 115, 232, 0.88)',
+              borderColor: '#1a73e8',
+              borderWidth: 1,
+              borderRadius: 3,
+              order: 2
+            });
+          }
+        }
+
+        if (showTemp) {
+          const tempAxisId = showPrecip ? 'yTemp' : 'yPrecip';
+          const spinupTempLabel = (activeNowcastObj && activeNowcastObj.has_temp)
+            ? `${ncLabelName} 2m Temp (°C)`
+            : `${fcLabelName} Day-1 Hindcast 2m Temp (°C)`;
+          datasets.push({
+            type: 'line',
+            label: spinupTempLabel,
+            data: nowcastTemp,
+            yAxisID: tempAxisId,
+            borderColor: '#f9ab00',
+            backgroundColor: 'rgba(249, 171, 0, 0.15)',
+            borderWidth: 2,
+            pointRadius: 2.5,
+            tension: 0.25,
+            spanGaps: false,
+            order: 1
+          });
+          if (isSelectedProdForecast) {
+            datasets.push({
+              type: 'line',
+              label: `${fcLabelName} Forecast 2m Temp (°C · t₀…+${forecastSeries.length}d)`,
+              data: forecastTemp,
+              yAxisID: tempAxisId,
+              borderColor: '#e8710a',
+              backgroundColor: 'rgba(232, 113, 10, 0.15)',
+              borderWidth: 2.5,
+              borderDash: [5, 3],
+              pointRadius: 3,
+              tension: 0.25,
+              spanGaps: false,
+              order: 1
+            });
+          }
+        }
+
+        if (showPrecip && showTemp) {
+          yPrecipScale.beginAtZero = true;
+          yPrecipScale.title.text = 'Precipitation (mm/day)';
+          yPrecipScale.title.color = '#1a73e8';
+          yTempScale.display = true;
+          yTempScale.title.text = '2m Temperature (°C)';
+          yTempScale.title.color = '#e8710a';
+        } else if (showPrecip) {
+          yPrecipScale.beginAtZero = true;
+          yPrecipScale.title.text = 'Precipitation (mm/day)';
+          yPrecipScale.title.color = '#1a73e8';
+          yTempScale.display = false;
+        } else {
+          yPrecipScale.beginAtZero = false;
+          yPrecipScale.title.text = '2m Temperature (°C)';
+          yPrecipScale.title.color = '#e8710a';
+          yTempScale.display = false;
+        }
+
+        if (titleEl) {
+          titleEl.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4 text-[#1a73e8]"></i> Input Forcing Visualization: Precipitation (Bars) &amp; 2m Temperature (Lines)`;
+        }
+      }
 
       hyetographChart.data.labels = labels;
-      hyetographChart.data.datasets[0].label = `${fcSelectedNowcast || 'Nowcast'} Precip (mm/day)`;
-      hyetographChart.data.datasets[0].data = nowcastPrecip;
-      hyetographChart.data.datasets[1].label = `${fcSelectedForecast || 'Forecast'} Precip (mm/day)`;
-      hyetographChart.data.datasets[1].data = forecastPrecip;
-      hyetographChart.data.datasets[2].label = `${fcSelectedNowcast || 'Nowcast'} 2m Temp (°C)`;
-      hyetographChart.data.datasets[2].data = nowcastTemp;
-      hyetographChart.data.datasets[3].label = `${fcSelectedForecast || 'Forecast'} 2m Temp (°C)`;
-      hyetographChart.data.datasets[3].data = forecastTemp;
+      hyetographChart.data.datasets = datasets;
       hyetographChart.update();
 
+      renderLeadTimeInspector(prodObj || activeNowcastObj, issueDate);
+
       if (subtitleEl) {
-        const ncName = nowcastObj ? nowcastObj.product : 'None';
-        const fcName = forecastObj ? `${forecastObj.product} (t₀ = ${forecastObj.issue_date || issueDate})` : 'None';
-        subtitleEl.innerText = `Nowcast: ${ncName} · Forecast: ${fcName} · Missing latency days rendered as true gaps (NaN)`;
+        const ncName = activeNowcastObj ? (activeNowcastObj.product || activeNowcastObj.id) : 'None';
+        const fcName = forecastObj
+          ? `${forecastObj.product || forecastObj.id} (Issue Date t₀ = ${forecastObj.issue_date || issueDate}, Lead +1d…+${forecastSeries.length}d)`
+          : 'None';
+        const basinId = getActiveForecastBasinId();
+        subtitleEl.innerText = `Basin: ${basinId} · Nowcast: ${ncName} · Forecast: ${fcName} · Missing latency days rendered as true gaps (NaN)`;
       }
+    }
+
+    function renderHydroCatchmentTabs() {
+      const tabsEl = document.getElementById('fcHydroCatchmentTabs');
+      if (!tabsEl) return;
+
+      const basinKeys = Object.keys(fcModelResultsByBasin || {});
+      if (basinKeys.length <= 1) {
+        tabsEl.classList.add('hidden');
+        tabsEl.innerHTML = '';
+        return;
+      }
+
+      tabsEl.classList.remove('hidden');
+      tabsEl.innerHTML = '';
+      const activeId = getActiveForecastBasinId();
+
+      basinKeys.forEach(cid => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        const isActive = !fcHydroOverlayAll && cid === activeId;
+        btn.className = `px-2 py-0.5 rounded text-[10px] font-mono border transition ${
+          isActive
+            ? 'bg-[#1e8e3e] text-white border-[#1e8e3e] font-semibold'
+            : 'bg-[#f8f9fa] text-[#3c4043] border-[#dadce0] hover:bg-[#e8f0fe]'
+        }`;
+        btn.textContent = cid;
+        btn.addEventListener('click', () => {
+          fcHydroOverlayAll = false;
+          activeCatchmentId = cid;
+          const sel = document.getElementById('fcBasinSelect');
+          if (sel) sel.value = cid;
+          syncForecastTabBasin();
+          renderHydrographChart(fcModelResultsByBasin[cid]);
+        });
+        tabsEl.appendChild(btn);
+      });
+
+      const allBtn = document.createElement('button');
+      allBtn.type = 'button';
+      allBtn.className = `px-2 py-0.5 rounded text-[10px] font-semibold border transition ${
+        fcHydroOverlayAll
+          ? 'bg-[#1a73e8] text-white border-[#1a73e8]'
+          : 'bg-[#f8f9fa] text-[#1a73e8] border-[#dadce0] hover:bg-[#e8f0fe]'
+      }`;
+      allBtn.textContent = `Compare All (${basinKeys.length})`;
+      allBtn.addEventListener('click', () => {
+        fcHydroOverlayAll = !fcHydroOverlayAll;
+        renderHydrographChart(fcModelResultsByBasin[getActiveForecastBasinId()] || fcLastModelResult);
+      });
+      tabsEl.appendChild(allBtn);
     }
 
     function renderHydrographChart(modelResult) {
@@ -8684,21 +9809,73 @@
       const subtitleEl = document.getElementById('fcHydrographSubtitle');
       const peakBadge = document.getElementById('fcHydroPeakBadge');
 
-      if (!modelResult || !Array.isArray(modelResult.forecast) || modelResult.forecast.length === 0) {
-        masterHydroChart.data.labels = [];
-        masterHydroChart.data.datasets[0].data = [];
-        masterHydroChart.data.datasets[1].data = [];
+      renderHydroCatchmentTabs();
+
+      const basinKeys = Object.keys(fcModelResultsByBasin || {});
+      if (fcHydroOverlayAll && basinKeys.length > 1) {
+        const palette = ['#1e8e3e', '#1a73e8', '#e8710a', '#9334e6', '#d93025', '#007b83'];
+        const dateSet = new Set();
+        let issueDate = null;
+        basinKeys.forEach(cid => {
+          const r = fcModelResultsByBasin[cid];
+          if (!r) return;
+          if (!issueDate && r.issue_date) issueDate = r.issue_date;
+          (r.hindcast_tail || []).forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+          (r.forecast || []).forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+        });
+        const allDates = Array.from(dateSet).sort();
+        const labels = allDates.map(d => (d === issueDate ? `${d} (t₀)` : d));
+
+        const datasets = [];
+        basinKeys.forEach((cid, idx) => {
+          const r = fcModelResultsByBasin[cid];
+          if (!r) return;
+          const color = palette[idx % palette.length];
+          const hcMap = {};
+          (r.hindcast_tail || []).forEach(pt => { if (pt && pt.date) hcMap[pt.date] = pt.discharge_cms; });
+          const fcMap = {};
+          (r.forecast || []).forEach(pt => { if (pt && pt.date) fcMap[pt.date] = pt.discharge_cms; });
+
+          datasets.push({
+            label: `${cid} Forecast (${r.mode === 'hotstart' ? 'Hot' : 'Cold'} · Peak ${Number(r.peak_discharge_cms || 0).toFixed(1)} m³/s)`,
+            data: allDates.map(d => (fcMap[d] !== undefined ? fcMap[d] : (hcMap[d] !== undefined ? hcMap[d] : null))),
+            borderColor: color,
+            backgroundColor: 'transparent',
+            borderWidth: 2.2,
+            pointRadius: 2.5,
+            tension: 0.3,
+            spanGaps: false,
+            fill: false
+          });
+        });
+
+        masterHydroChart.data.labels = labels;
+        masterHydroChart.data.datasets = datasets;
         masterHydroChart.update();
-        if (peakBadge) peakBadge.classList.add('hidden');
+
         if (subtitleEl) {
-          subtitleEl.innerText = 'Click "2. Run Model" after fetching real-time data to generate the discharge forecast.';
+          subtitleEl.innerText = `Multi-catchment forecast comparison across ${basinKeys.length} catchments · Issue date t₀ = ${issueDate || 'latest'}`;
         }
         return;
       }
 
-      const hindcastTail = Array.isArray(modelResult.hindcast_tail) ? modelResult.hindcast_tail : [];
-      const forecastSeries = modelResult.forecast;
-      const issueDate = modelResult.issue_date;
+      const activeId = getActiveForecastBasinId();
+      const targetResult = (activeId && fcModelResultsByBasin[activeId]) ? fcModelResultsByBasin[activeId] : modelResult;
+
+      if (!targetResult || !Array.isArray(targetResult.forecast) || targetResult.forecast.length === 0) {
+        masterHydroChart.data.labels = [];
+        masterHydroChart.data.datasets = [];
+        masterHydroChart.update();
+        if (peakBadge) peakBadge.classList.add('hidden');
+        if (subtitleEl) {
+          subtitleEl.innerText = 'Click "2. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
+        }
+        return;
+      }
+
+      const hindcastTail = Array.isArray(targetResult.hindcast_tail) ? targetResult.hindcast_tail : [];
+      const forecastSeries = targetResult.forecast;
+      const issueDate = targetResult.issue_date;
 
       const dateSet = new Set();
       hindcastTail.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
@@ -8710,7 +9887,13 @@
       const forecastByDate = {};
       forecastSeries.forEach(pt => { if (pt && pt.date) forecastByDate[pt.date] = pt; });
 
-      const labels = allDates.map(d => (d === issueDate ? `${d} (t₀)` : d));
+      const labels = allDates.map(d => {
+        const fcPt = forecastByDate[d];
+        if (fcPt && fcPt.lead_time_days) {
+          return fcPt.lead_time_days === 1 ? `${d} (t₀ · +1d)` : `${d} (+${fcPt.lead_time_days}d)`;
+        }
+        return d === issueDate ? `${d} (t₀)` : d;
+      });
       const hindcastData = allDates.map(d => {
         const pt = hindcastByDate[d];
         return (pt && pt.discharge_cms !== undefined && pt.discharge_cms !== null) ? pt.discharge_cms : null;
@@ -8721,14 +9904,35 @@
       });
 
       masterHydroChart.data.labels = labels;
-      masterHydroChart.data.datasets[0].data = hindcastData;
-      masterHydroChart.data.datasets[1].label = `Forecast Streamflow (${modelResult.mode === 'hotstart' ? 'Hot Start' : 'Cold Start'}, m³/s)`;
-      masterHydroChart.data.datasets[1].data = forecastData;
+      masterHydroChart.data.datasets = [
+        {
+          label: `${targetResult.basin_id} Spin-Up Hindcast Streamflow (m³/s)`,
+          data: hindcastData,
+          borderColor: '#1a73e8',
+          backgroundColor: 'rgba(26, 115, 232, 0.1)',
+          borderWidth: 2,
+          pointRadius: 2,
+          tension: 0.3,
+          spanGaps: false,
+          fill: true
+        },
+        {
+          label: `${targetResult.basin_id} Forecast Streamflow (${targetResult.mode === 'hotstart' ? 'Hot Start' : 'Cold Start'}, m³/s)`,
+          data: forecastData,
+          borderColor: '#1e8e3e',
+          backgroundColor: 'rgba(30, 142, 62, 0.15)',
+          borderWidth: 2.5,
+          pointRadius: 3,
+          tension: 0.3,
+          spanGaps: false,
+          fill: true
+        }
+      ];
       masterHydroChart.update();
 
       if (peakBadge) {
-        if (modelResult.peak_discharge_cms !== null && modelResult.peak_discharge_cms !== undefined) {
-          peakBadge.innerText = `Peak: ${Number(modelResult.peak_discharge_cms).toFixed(2)} m³/s (${modelResult.peak_date || '—'})`;
+        if (targetResult.peak_discharge_cms !== null && targetResult.peak_discharge_cms !== undefined) {
+          peakBadge.innerText = `Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s (${targetResult.peak_date || '—'})`;
           peakBadge.classList.remove('hidden');
         } else {
           peakBadge.classList.add('hidden');
@@ -8736,32 +9940,39 @@
       }
 
       if (subtitleEl) {
-        const modeText = modelResult.mode === 'hotstart' ? 'Hot-Start' : 'Cold-Start';
-        const stateNote = modelResult.saved_state && modelResult.saved_state.state_date
-          ? `State file at ${modelResult.saved_state.state_date}`
+        const modeText = targetResult.mode === 'hotstart' ? 'Hot-Start' : 'Cold-Start';
+        const stateNote = targetResult.saved_state && targetResult.saved_state.state_date
+          ? `Saved state at ${targetResult.saved_state.state_date}`
           : '';
-        subtitleEl.innerText = `${modeText} forecast for basin ${modelResult.basin_id} · Issue date t₀ = ${modelResult.issue_date} · ${stateNote}`;
+        subtitleEl.innerText = `${modeText} forecast for catchment ${targetResult.basin_id} · Issue date t₀ = ${targetResult.issue_date} · ${stateNote}`;
       }
     }
 
     async function refreshForecastTabStatus() {
       const basinId = getActiveForecastBasinId();
+      const selectedIds = getSelectedForecastCatchmentIds();
       updateForecastControlsUI();
       if (!basinId) {
         fcStatusData = null;
         populateProductDropdowns();
+        renderForecastCatchmentChecklist();
         renderForcingChart();
         return;
       }
 
       try {
-        const res = await fetch(`/api/forecast/status?catchment_id=${encodeURIComponent(basinId)}`);
+        const cidsParam = selectedIds.length > 0 ? `&catchment_ids=${encodeURIComponent(selectedIds.join(','))}` : '';
+        const res = await fetch(`/api/forecast/status?catchment_id=${encodeURIComponent(basinId)}${cidsParam}`);
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           fcStatusData = data;
+          renderForecastCatchmentChecklist();
           populateProductDropdowns();
           updateForecastControlsUI();
           renderForcingChart();
+          if (fcModelResultsByBasin[basinId]) {
+            renderHydrographChart(fcModelResultsByBasin[basinId]);
+          }
         }
       } catch (err) {
         console.warn('Could not fetch forecast status:', err);
@@ -8772,9 +9983,12 @@
       const coldBtn = document.getElementById('fcModeColdBtn');
       const hotBtn = document.getElementById('fcModeHotBtn');
       const refreshBtn = document.getElementById('fcRefreshStatusBtn');
+      const selectAllBtn = document.getElementById('fcSelectAllBasinsBtn');
+      const selectNoneBtn = document.getElementById('fcSelectNoneBasinsBtn');
       const basinSel = document.getElementById('fcBasinSelect');
       const nowcastSel = document.getElementById('fcNowcastProductSelect');
       const forecastSel = document.getElementById('fcForecastProductSelect');
+      const variableSel = document.getElementById('fcForecastVariableSelect');
       const fetchBtn = document.getElementById('fcFetchRealtimeBtn');
       const fetchBtnLabel = document.getElementById('fcFetchBtnLabel');
       const fetchStatusBox = document.getElementById('fcFetchStatusBox');
@@ -8788,10 +10002,28 @@
         coldBtn.addEventListener('click', () => setForecastMode('coldstart'));
       }
       if (hotBtn) {
-        hotBtn.addEventListener('click', () => setForecastMode('hotstart'));
+        hotBtn.addEventListener('click', () => {
+          if (canSelectHotStart()) {
+            setForecastMode('hotstart');
+          }
+        });
       }
       if (refreshBtn) {
         refreshBtn.addEventListener('click', () => refreshForecastTabStatus());
+      }
+      if (selectAllBtn) {
+        selectAllBtn.addEventListener('click', () => {
+          getAllForecastCatchments().forEach(b => fcSelectedCatchmentIds.add(b.id));
+          renderForecastCatchmentChecklist();
+          refreshForecastTabStatus();
+        });
+      }
+      if (selectNoneBtn) {
+        selectNoneBtn.addEventListener('click', () => {
+          fcSelectedCatchmentIds.clear();
+          renderForecastCatchmentChecklist();
+          updateForecastControlsUI();
+        });
       }
       if (basinSel) {
         basinSel.addEventListener('change', (e) => {
@@ -8813,6 +10045,14 @@
       if (forecastSel) {
         forecastSel.addEventListener('change', (e) => {
           fcSelectedForecast = e.target.value !== 'none' ? e.target.value : null;
+          // Default to showing precipitation (as bars) and temperature (as lines) for any chosen product
+          populateForecastVariableDropdown(true);
+          renderForcingChart();
+        });
+      }
+      if (variableSel) {
+        variableSel.addEventListener('change', (e) => {
+          fcSelectedVariableMode = e.target.value || 'precip_and_temp';
           renderForcingChart();
         });
       }
@@ -8820,17 +10060,19 @@
       if (fetchBtn) {
         fetchBtn.addEventListener('click', async () => {
           const basinId = getActiveForecastBasinId();
-          if (!basinId || fcIsFetching) return;
+          const selectedIds = getSelectedForecastCatchmentIds();
+          const targetIds = selectedIds.length > 0 ? selectedIds : (basinId ? [basinId] : []);
+          if (targetIds.length === 0 || fcIsFetching) return;
 
           fcIsFetching = true;
           updateForecastControlsUI();
           if (fetchBtnLabel) {
-            fetchBtnLabel.innerText = `Fetching ${fcCurrentMode === 'hotstart' ? 'Hot-Start' : 'Cold-Start'} Data...`;
+            fetchBtnLabel.innerText = `Fetching ${fcCurrentMode === 'hotstart' ? 'Hot-Start' : 'Cold-Start'} Data (${targetIds.length} Basin${targetIds.length > 1 ? 's' : ''})...`;
           }
           if (fetchStatusBox) fetchStatusBox.classList.remove('hidden');
           if (fetchStatusText) {
             fetchStatusText.className = 'font-medium text-[#1a73e8]';
-            fetchStatusText.innerText = 'Running multimet.realtime.fetch_realtime_multimet...';
+            fetchStatusText.innerText = `Running multimet.realtime.fetch_realtime_multimet for ${targetIds.length} catchment(s)...`;
           }
           if (fetchProductsList) fetchProductsList.innerText = '';
 
@@ -8839,8 +10081,10 @@
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                catchment_id: basinId,
+                catchment_id: basinId || targetIds[0],
+                catchment_ids: targetIds,
                 mode: fcCurrentMode,
+                products: getSelectedFetchProducts(),
                 reference_date: 'latest'
               })
             });
@@ -8850,16 +10094,22 @@
             }
 
             fcStatusData = data;
+            renderForecastCatchmentChecklist();
             populateProductDropdowns();
             renderForcingChart();
 
             if (fetchStatusText) {
               fetchStatusText.className = 'font-medium text-[#1e8e3e]';
-              const elapsed = data.fetch_summary ? `${data.fetch_summary.elapsed_seconds}s` : '';
-              fetchStatusText.innerText = `Fetched ${fcCurrentMode} data (${elapsed}) · Issue date: ${data.issue_date || 'latest'}`;
+              const elapsed = (data.fetch_summary && data.fetch_summary.elapsed_seconds !== undefined)
+                ? `${data.fetch_summary.elapsed_seconds}s`
+                : '';
+              fetchStatusText.innerText = `Fetched ${fcCurrentMode} data for ${targetIds.length} catchment(s) ${elapsed ? `(${elapsed})` : ''} · Issue date t₀: ${data.issue_date || 'latest'}`;
             }
-            if (fetchProductsList && data.fetch_summary && Array.isArray(data.fetch_summary.products_written)) {
-              fetchProductsList.innerText = `Streams updated: ${data.fetch_summary.products_written.join(', ')}`;
+            if (fetchProductsList && data.fetch_summary && data.fetch_summary.products_written) {
+              const writtenKeys = Array.isArray(data.fetch_summary.products_written)
+                ? data.fetch_summary.products_written
+                : Object.keys(data.fetch_summary.products_written);
+              fetchProductsList.innerText = `Streams updated: ${writtenKeys.join(', ')}`;
             }
           } catch (err) {
             if (fetchStatusText) {
@@ -8876,12 +10126,14 @@
       if (runBtn) {
         runBtn.addEventListener('click', async () => {
           const basinId = getActiveForecastBasinId();
-          if (!basinId || fcIsRunningModel) return;
+          const selectedIds = getSelectedForecastCatchmentIds();
+          const targetIds = selectedIds.length > 0 ? selectedIds : (basinId ? [basinId] : []);
+          if (targetIds.length === 0 || fcIsRunningModel) return;
 
           fcIsRunningModel = true;
           updateForecastControlsUI();
           if (runBtnLabel) {
-            runBtnLabel.innerText = `Running Model (${fcCurrentMode === 'hotstart' ? 'Hot Start' : 'Cold Start'})...`;
+            runBtnLabel.innerText = `Running Model (${fcCurrentMode === 'hotstart' ? 'Hot Start' : 'Cold Start'} · ${targetIds.length} Basin${targetIds.length > 1 ? 's' : ''})...`;
           }
 
           try {
@@ -8889,7 +10141,8 @@
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                catchment_id: basinId,
+                catchment_id: basinId || targetIds[0],
+                catchment_ids: targetIds,
                 mode: fcCurrentMode
               })
             });
@@ -8899,9 +10152,15 @@
             }
 
             fcLastModelResult = data;
+            if (data.results_by_id) {
+              Object.assign(fcModelResultsByBasin, data.results_by_id);
+            } else if (data.catchment_id) {
+              fcModelResultsByBasin[data.catchment_id] = data;
+            }
             if (data.post_run_status) {
               fcStatusData = data.post_run_status;
             }
+            renderForecastCatchmentChecklist();
             renderHydrographChart(data);
           } catch (err) {
             if (blockedReasonEl) {
@@ -8965,24 +10224,87 @@
     let maasActiveProbeMarker = null;
     let maasHidMainRivers = false;
 
-    // Color ramp for river segments when `flow_percentile` (0-100) or `exceedance_rank` (0-4) is present on feature properties.
-    function maasFlowPercentileColor(props, fallbackColor) {
-      if (!props) return fallbackColor;
-      const pct = Number(props.flow_percentile);
-      if (props.flow_percentile !== null && props.flow_percentile !== undefined && isFinite(pct)) {
-        if (pct >= 99) return '#b31412';
-        if (pct >= 95) return '#d93025';
-        if (pct >= 90) return '#e8710a';
-        if (pct >= 75) return '#f9ab00';
-        if (pct >= 25) return '#1a73e8';
-        return '#8ab4f8';
+    // Provider-standard return-period color schemes:
+    // - All normal or below-threshold rivers (< 2-yr return period / below FloodHub Warning) are Blue (#1a73e8).
+    // - Return-period exceedances use each provider's official operational flood color standard:
+    //   * Google FloodHub: Orange (Warning >=2-yr), Red (Danger >=5-yr), Dark Red (Extreme >=20-yr)
+    //   * Copernicus GloFAS: Yellow (Medium >=2-yr), Red (High >=5-yr), Purple (Severe >=20-yr)
+    //   * GEOGLOWS ECMWF: Yellow (>=2-yr), Orange (>=10-yr), Red (>=25-yr), Purple (>=50-yr)
+    //   * JAXA Today's Earth: Yellow (>=2-yr), Red (>=5-yr), Purple (>=20-yr)
+    const MAAS_NORMAL_BLUE = '#1a73e8';
+    const MAAS_PROVIDER_PALETTES = {
+      floodhub: {
+        title: 'Google FloodHub Thresholds',
+        colors: [MAAS_NORMAL_BLUE, '#f97316', '#d93025', '#991b1b', '#991b1b'],
+        labels: ['Normal (<2-yr)', 'Warning (≥2-yr)', 'Danger (≥5-yr)', 'Extreme (≥20-yr)', 'Extreme (≥20-yr)'],
+        legend: [
+          { color: MAAS_NORMAL_BLUE, label: 'Normal (<2-yr)' },
+          { color: '#f97316', label: 'Warning (≥2-yr)', bold: true },
+          { color: '#d93025', label: 'Danger (≥5-yr)', bold: true },
+          { color: '#991b1b', label: 'Extreme (≥20-yr)', bold: true },
+          { color: '#9aa0a6', label: 'No forecast', dashed: true }
+        ]
+      },
+      glofas: {
+        title: 'GloFAS Return Periods',
+        colors: [MAAS_NORMAL_BLUE, '#eab308', '#dc2626', '#9333ea', '#9333ea'],
+        labels: ['Normal (<2-yr)', '≥2-yr Medium Alert', '≥5-yr High Alert', '≥20-yr Severe Alert', '≥20-yr Severe Alert'],
+        legend: [
+          { color: MAAS_NORMAL_BLUE, label: 'Normal (<2-yr)' },
+          { color: '#eab308', label: '≥2-yr Medium', bold: true },
+          { color: '#dc2626', label: '≥5-yr High', bold: true },
+          { color: '#9333ea', label: '≥20-yr Severe', bold: true }
+        ]
+      },
+      geoglows: {
+        title: 'GEOGLOWS Return Periods',
+        colors: [MAAS_NORMAL_BLUE, '#eab308', '#ff813d', '#fa4343', '#ba25f5'],
+        labels: ['Normal (<2-yr)', 'Exceeds 2-yr', 'Exceeds 10-yr', 'Exceeds 25-yr', 'Exceeds 50-yr'],
+        legend: [
+          { color: MAAS_NORMAL_BLUE, label: 'Normal (<2-yr)' },
+          { color: '#eab308', label: '≥2-yr', bold: true },
+          { color: '#ff813d', label: '≥10-yr', bold: true },
+          { color: '#fa4343', label: '≥25-yr', bold: true },
+          { color: '#ba25f5', label: '≥50-yr', bold: true }
+        ]
+      },
+      todays_earth: {
+        title: "Today's Earth Return Periods",
+        colors: [MAAS_NORMAL_BLUE, '#eab308', '#dc2626', '#9333ea', '#9333ea'],
+        labels: ['Normal (<2-yr)', '≥2-yr Warning', '≥5-yr Danger', '≥20-yr Extreme', '≥20-yr Extreme'],
+        legend: [
+          { color: MAAS_NORMAL_BLUE, label: 'Normal (<2-yr)' },
+          { color: '#eab308', label: '≥2-yr Warn', bold: true },
+          { color: '#dc2626', label: '≥5-yr Danger', bold: true },
+          { color: '#9333ea', label: '≥20-yr Extr', bold: true }
+        ]
       }
+    };
+
+    function renderMaaSFlowLegend(modelKey) {
+      const cfg = MAAS_PROVIDER_PALETTES[modelKey] || MAAS_PROVIDER_PALETTES.glofas;
+      const titleEl = document.getElementById('maasFlowLegendTitle');
+      if (titleEl) titleEl.textContent = cfg.title;
+      const itemsEl = document.getElementById('maasFlowLegendItems');
+      if (itemsEl) {
+        itemsEl.innerHTML = cfg.legend.map(it => {
+          const swatchStyle = it.dashed
+            ? `border-top:2px dashed ${it.color};height:0`
+            : `background:${it.color};height:${it.bold ? '6px' : '4px'}`;
+          return `<span class="flex items-center gap-1"><span class="w-3 rounded-full inline-block" style="${swatchStyle}"></span><span class="${it.bold ? 'font-medium text-[#202124]' : 'text-[#5f6368]'}">${maasEscapeHtml(it.label)}</span></span>`;
+        }).join('');
+      }
+    }
+
+    function maasFlowPercentileColor(props, modelKey) {
+      const cfg = MAAS_PROVIDER_PALETTES[modelKey] || MAAS_PROVIDER_PALETTES.glofas;
+      if (!props) return MAAS_NORMAL_BLUE;
       const rank = Number(props.exceedance_rank);
-      if (props.exceedance_rank !== null && props.exceedance_rank !== undefined && isFinite(rank) && rank > 0) {
-        const rankColors = ['#1e8e3e', '#f9ab00', '#e8710a', '#d93025', '#b31412'];
-        return rankColors[Math.min(Math.max(Math.round(rank), 0), rankColors.length - 1)];
+      if (props.exceedance_rank !== null && props.exceedance_rank !== undefined && isFinite(rank) && rank >= 1) {
+        const idx = Math.min(Math.max(Math.round(rank), 1), cfg.colors.length - 1);
+        return cfg.colors[idx];
       }
-      return fallbackColor;
+      return MAAS_NORMAL_BLUE;
     }
 
     function renderMaaSMultiModelLists() {
@@ -9057,15 +10379,19 @@
       if (dot) dot.style.background = meta.color;
       const caption = document.getElementById('maasNetworkCaption');
       if (caption) caption.textContent = meta.networkLabel;
+      renderMaaSFlowLegend(key);
       if (changed) {
+        clearTimeout(maasLiveRefreshTimer);
+        maasLiveRetryCount = 0;
         maasRiversLoaded = null;
-        if (currentActiveTabId === 'tab-maas') fetchMaaSViewportRivers();
+        if (currentActiveTabId === 'tab-maas') fetchMaaSViewportRivers(false);
       }
       if (currentMaaSView === 'forecast') renderMaaSForecast();
     }
 
     function initMaaSMapLayers() {
       if (!map) return;
+      renderMaaSFlowLegend(currentMaaSModel);
       if (!maasRiversLayerGroup) maasRiversLayerGroup = L.layerGroup();
       if (!map.hasLayer(maasRiversLayerGroup)) maasRiversLayerGroup.addTo(map);
       // The Delineation tab's river layer would duplicate the MaaS reaches (and go stale on pan).
@@ -9077,6 +10403,8 @@
 
     function removeMaaSMapLayers() {
       if (!map) return;
+      clearTimeout(maasLiveRefreshTimer);
+      maasLiveRetryCount = 0;
       if (maasRiversAbortController) maasRiversAbortController.abort();
       if (maasRiversLayerGroup && map.hasLayer(maasRiversLayerGroup)) map.removeLayer(maasRiversLayerGroup);
       // The reach canvas would otherwise sit on top of the shared overlay canvas and swallow its clicks.
@@ -9144,8 +10472,7 @@
     // Matches the backend's zoom thresholds in maas.networks / maas_networks.py so zooming into a finer level of detail
     // fetches new reaches while staying within the same level reuses the drawn layer.
     function maasLodKey(model, zoom) {
-      const z = model === 'floodhub' ? Math.min(Math.max(zoom, 4), 11)
-        : model === 'todays_earth' ? Math.min(Math.max(zoom, 3), 9)
+      const z = model === 'todays_earth' ? Math.min(Math.max(zoom, 3), 9)
         : Math.min(Math.max(zoom, 3), 11);
       return `${model}:${z}`;
     }
@@ -9172,14 +10499,41 @@
 
     // Debounced: one pan, or a burst of wheel zooms, triggers a single request.
     let maasRiversDebounceTimer = null;
+    let maasLiveRefreshTimer = null;
+    let maasLiveRetryCount = 0;
     let maasRiversLoaded = null; // view bounds + lodKey of the reaches currently drawn
     function loadMaaSViewportRivers() {
       clearTimeout(maasRiversDebounceTimer);
-      maasRiversDebounceTimer = setTimeout(fetchMaaSViewportRivers, 300);
+      clearTimeout(maasLiveRefreshTimer);
+      maasLiveRetryCount = 0;
+      maasRiversDebounceTimer = setTimeout(() => fetchMaaSViewportRivers(false), 80);
+    }
+
+    // Manually clears cached live statuses for the active model and re-fetches newest upstream forecasts.
+    function refreshMaaSLiveData() {
+      clearTimeout(maasRiversDebounceTimer);
+      clearTimeout(maasLiveRefreshTimer);
+      maasLiveRetryCount = 0;
+      maasRiversLoaded = null;
+      const iconEl = document.getElementById('maasRefreshLiveIcon');
+      if (iconEl) iconEl.classList.add('animate-spin');
+      const liveBadgeEl = document.getElementById('maasLiveColorBadge');
+      if (liveBadgeEl) {
+        liveBadgeEl.textContent = 'Refreshing live data…';
+        liveBadgeEl.className = 'text-[9.5px] font-mono text-[#1a73e8]';
+      }
+      fetchMaaSViewportRivers(true, true);
+      if (currentMaaSView === 'forecast' && currentMaaSProbe) {
+        const p = currentMaaSProbe;
+        currentMaaSForecastData = null;
+        currentMaaSForecastNote = 'Refreshing forecast…';
+        renderMaaSForecast();
+        fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta);
+      }
     }
 
     // River network of the selected model for the current viewport at telescoping spatial resolution; clicking a line opens its forecast.
-    async function fetchMaaSViewportRivers() {
+    async function fetchMaaSViewportRivers(isLiveRefresh = false, forceManualRefresh = false) {
       if (!map || currentActiveTabId !== 'tab-maas') return;
       initMaaSMapLayers();
       const bounds = map.getBounds();
@@ -9190,16 +10544,17 @@
         west: Math.max(-180, bounds.getWest()), south: Math.max(-85, bounds.getSouth()),
         east: Math.min(180, bounds.getEast()), north: Math.min(85, bounds.getNorth()), lodKey,
       };
-      // Panning or zooming within an already-loaded extent at the same level of detail needs no refetch.
+      // Panning or zooming within an already-loaded extent at the same level of detail needs no refetch unless refreshing live statuses.
       const loaded = maasRiversLoaded;
-      if (loaded && loaded.lodKey === lodKey && view.west >= loaded.west && view.east <= loaded.east &&
+      if (!isLiveRefresh && !forceManualRefresh && loaded && loaded.lodKey === lodKey && view.west >= loaded.west && view.east <= loaded.east &&
           view.south >= loaded.south && view.north <= loaded.north && maasRiversLayerGroup.getLayers().length) return;
       const bbox = [view.west, view.south, view.east, view.north].map(v => v.toFixed(4)).join(',');
       if (maasRiversAbortController) maasRiversAbortController.abort();
       const controller = new AbortController();
       maasRiversAbortController = controller;
       try {
-        const resp = await fetch(`/api/maas/network?model=${encodeURIComponent(model)}&bbox=${bbox}&zoom=${zoom}`, { signal: controller.signal });
+        const refreshParam = forceManualRefresh ? '&refresh=1' : '';
+        const resp = await fetch(`/api/maas/network?model=${encodeURIComponent(model)}&bbox=${bbox}&zoom=${zoom}${refreshParam}`, { signal: controller.signal });
         if (!resp.ok) return;
         const geojson = await resp.json();
         if (controller.signal.aborted || currentActiveTabId !== 'tab-maas' || model !== currentMaaSModel) return;
@@ -9209,35 +10564,115 @@
         // A wider hit tolerance than the default canvas renderer makes thin reaches easy to click.
         if (!maasRiverRenderer) maasRiverRenderer = L.canvas({ tolerance: 6 });
         const modelMeta = MAAS_MODELS[model] || MAAS_MODELS.glofas;
-        // Draw smaller tributaries first so main stems sit on top and win clicks at confluences.
+        const paletteCfg = MAAS_PROVIDER_PALETTES[model] || MAAS_PROVIDER_PALETTES.glofas;
+        const gProps = geojson.properties || {};
+        const captionEl = document.getElementById('maasNetworkCaption');
+        if (captionEl) {
+          if (model === 'floodhub') {
+            const fcCnt = Number(gProps.forecast_feature_count);
+            const totalCnt = geojson.features.length;
+            captionEl.textContent = isFinite(fcCnt)
+              ? `Blue/Alert = FloodHub forecast (${fcCnt.toLocaleString()} / ${totalCnt.toLocaleString()} in view) · Grey = no FloodHub forecast`
+              : `${modelMeta.networkLabel} · Blue/Alert = FloodHub forecast · Grey = no forecast`;
+          } else {
+            captionEl.textContent = modelMeta.networkLabel;
+          }
+        }
+        const liveColored = Number(gProps.live_colored_count || 0);
+        const livePending = Number(gProps.live_pending_count || 0);
+        const activeFloods = Number(gProps.active_flood_count || 0);
+        const liveBadgeEl = document.getElementById('maasLiveColorBadge');
+        const iconEl = document.getElementById('maasRefreshLiveIcon');
+        if (liveBadgeEl) {
+          if (livePending > 0 && maasLiveRetryCount < 8) {
+            if (iconEl) iconEl.classList.add('animate-spin');
+            const floodPrefix = activeFloods > 0 ? `${activeFloods} flood${activeFloods === 1 ? '' : 's'} · ` : '';
+            liveBadgeEl.textContent = liveColored > 0 ? `${floodPrefix}${liveColored.toLocaleString()} live · updating…` : 'Fetching live flows…';
+            liveBadgeEl.className = 'text-[9.5px] font-mono text-[#e8710a]';
+          } else {
+            if (iconEl) iconEl.classList.remove('animate-spin');
+            const floodPrefix = activeFloods > 0 ? `${activeFloods} flood alert${activeFloods === 1 ? '' : 's'} · ` : '';
+            liveBadgeEl.textContent = liveColored > 0 ? `${floodPrefix}${liveColored.toLocaleString()} live` : 'Real-time';
+            liveBadgeEl.className = activeFloods > 0
+              ? 'text-[9.5px] font-mono font-semibold text-[#d93025]'
+              : 'text-[9.5px] font-mono text-[#1e8e3e]';
+          }
+        }
+        clearTimeout(maasLiveRefreshTimer);
+        if (livePending > 0 && maasLiveRetryCount < 8) {
+          maasLiveRetryCount++;
+          maasLiveRefreshTimer = setTimeout(() => fetchMaaSViewportRivers(true, false), 1400);
+        }
+        // Draw non-forecast reaches first, then normal blue rivers, and active flood alerts LAST (on top) so they pop at every zoom level.
         const reachArea = (f) => Number((f.properties || {}).upstream_area_km2 || 0);
-        geojson.features.sort((a, b) => reachArea(a) - reachArea(b));
+        const reachRank = (f) => Number((f.properties || {}).exceedance_rank || 0);
+        const hasFhForecast = (f) => (f.properties || {}).has_forecast !== false;
+        geojson.features.sort((a, b) => {
+          if (model === 'floodhub') {
+            const fa = hasFhForecast(a) ? 1 : 0;
+            const fb = hasFhForecast(b) ? 1 : 0;
+            if (fa !== fb) return fa - fb;
+          }
+          const ra = reachRank(a), rb = reachRank(b);
+          if (ra !== rb) return ra - rb;
+          return reachArea(a) - reachArea(b);
+        });
         const riverLayer = L.geoJSON(geojson, {
           renderer: maasRiverRenderer,
           style: (feat) => {
             const p = feat.properties || {};
             const areaKm2 = reachArea(feat);
-            const weight = Math.max(1.2, Math.min(4.8, 0.85 * Math.log10(Math.max(areaKm2, 50)) - 0.5));
-            const color = maasFlowPercentileColor(p, modelMeta.color);
-            return { color, weight, opacity: 0.9, lineCap: 'round', lineJoin: 'round' };
+            const baseWeight = Math.max(1.2, Math.min(4.6, 0.82 * Math.log10(Math.max(areaKm2, 50)) - 0.5));
+            if (model === 'floodhub' && p.has_forecast === false) {
+              return {
+                color: '#9aa0a6',
+                weight: Math.max(0.9, baseWeight * 0.68),
+                opacity: 0.38,
+                dashArray: '3, 4',
+                lineCap: 'round',
+                lineJoin: 'round'
+              };
+            }
+            const rank = Number(p.exceedance_rank || 0);
+            const isFlood = isFinite(rank) && rank >= 1;
+            const color = maasFlowPercentileColor(p, model);
+            // Active flood exceedances get a bolder stroke and high opacity so they visually pop on the world view and when zooming in.
+            const weight = isFlood ? Math.max(baseWeight + 1.8, 3.3) : baseWeight;
+            const opacity = isFlood ? 0.98 : 0.76;
+            return { color, weight, opacity, lineCap: 'round', lineJoin: 'round' };
           },
           onEachFeature: (feat, layer) => {
             const p = feat.properties || {};
             const reachId = p.river_id || p.reach_id || p.HYRIV_ID || null;
+            const gaugeId = p.gauge_id || null;
             const name = reachId
               ? (model === 'geoglows' ? `TDX-Hydro #${reachId}` : `Reach ${String(reachId).replace(/^HYRIV_/, '')}`)
               : modelMeta.reachLabel;
             const area = Number(p.upstream_area_km2) > 0 ? `${Math.round(Number(p.upstream_area_km2)).toLocaleString()} km² upstream` : '';
-            const pctNote = (p.flow_percentile !== null && p.flow_percentile !== undefined && isFinite(Number(p.flow_percentile)))
-              ? `<br>Flow percentile: ${Number(p.flow_percentile).toFixed(0)}th`
+            const flowNote = (p.current_flow_m3s !== null && p.current_flow_m3s !== undefined && isFinite(Number(p.current_flow_m3s)))
+              ? `<br>Forecast flow: <b>${Number(p.current_flow_m3s).toLocaleString(undefined, { maximumFractionDigits: 1 })} m³/s</b>${(p.return_period_2yr && isFinite(Number(p.return_period_2yr))) ? ` (2-yr: ${Number(p.return_period_2yr).toLocaleString(undefined, { maximumFractionDigits: 1 })} m³/s)` : ''}`
               : '';
-            layer.bindTooltip(`<b>${maasEscapeHtml(name)}</b>${area ? `<br>${maasEscapeHtml(area)}` : ''}${pctNote}<br><span style="color:#5f6368">Click for forecast</span>`, { sticky: true });
-            layer.on('mouseover', () => layer.setStyle({ color: '#d93025', weight: layer.options.weight + 2 }));
+            const rankIdx = Math.min(Math.max(Math.round(Number(p.exceedance_rank || 0)), 0), paletteCfg.labels.length - 1);
+            const statusColor = paletteCfg.colors[rankIdx];
+            const statusLabel = paletteCfg.labels[rankIdx];
+            const pctNote = (p.flow_percentile !== null && p.flow_percentile !== undefined && isFinite(Number(p.flow_percentile)))
+              ? `<br>Status: <b style="color:${statusColor}">${maasEscapeHtml(statusLabel)}</b> (${Number(p.flow_percentile).toFixed(0)}th pct)`
+              : '';
+            let fhNote = '<br><span style="color:#5f6368">Click for forecast</span>';
+            if (model === 'floodhub') {
+              if (p.has_forecast === false) {
+                fhNote = '<br><span style="color:#80868b">No FloodHub forecast on this reach (click for other models)</span>';
+              } else {
+                fhNote = `${gaugeId ? `<br><span style="color:#1a73e8">FloodHub: ${maasEscapeHtml(gaugeId)}</span>` : ''}<br><span style="color:#1e8e3e">✓ FloodHub forecast available — click to view</span>`;
+              }
+            }
+            layer.bindTooltip(`<b>${maasEscapeHtml(name)}</b>${area ? `<br>${maasEscapeHtml(area)}` : ''}${flowNote}${pctNote}${fhNote}`, { sticky: true });
+            layer.on('mouseover', () => layer.setStyle({ color: '#174ea6', weight: (layer.options.weight || 2) + 2, opacity: 1.0, dashArray: null }));
             layer.on('mouseout', () => riverLayer.resetStyle(layer));
             layer.on('click', (e) => {
               L.DomEvent.stopPropagation(e);
               const pt = maasSnapToFeature(feat, e.latlng);
-              probeMaaSPoint(pt.lat, pt.lon, null, reachId, area ? `${name} · ${area}` : name, {
+              probeMaaSPoint(pt.lat, pt.lon, gaugeId, reachId, area ? `${name} · ${area}` : name, {
                 upstreamAreaKm2: p.upstream_area_km2, areaMinKm2: p.area_min_km2, network: model,
               });
             });
@@ -9278,6 +10713,22 @@
       if (meta && meta.areaMinKm2) url += `&area_min_km2=${encodeURIComponent(meta.areaMinKm2)}`;
       if (meta && meta.network) url += `&network=${encodeURIComponent(meta.network)}`;
       try {
+        if (!maasMultiMode && currentMaaSModel) {
+          const fastResp = await fetch(`${url}&models=${encodeURIComponent(currentMaaSModel)}`);
+          if (!fastResp.ok) throw new Error(`HTTP ${fastResp.status}`);
+          const fastData = await fastResp.json();
+          if (requestSeq !== maasForecastRequestSeq) return;
+          currentMaaSForecastData = fastData;
+          currentMaaSForecastNote = null;
+          renderMaaSForecast();
+          // Prefetch all models in the background so switching models or toggling multi-model mode is instant.
+          fetch(url).then(r => r.ok ? r.json() : null).then(fullData => {
+            if (!fullData || requestSeq !== maasForecastRequestSeq) return;
+            currentMaaSForecastData = fullData;
+            renderMaaSForecast();
+          }).catch(() => {});
+          return;
+        }
         const resp = await fetch(url);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
@@ -9348,11 +10799,12 @@
       const m = (data && data.models && data.models[key]) || {};
       const rps = (data && data.return_periods) || {};
       const fh = key === 'floodhub';
+      const pal = MAAS_PROVIDER_PALETTES[key] || MAAS_PROVIDER_PALETTES.glofas;
       const src = (fh ? m.thresholds : (m.return_periods || rps[key] || (key === 'todays_earth' ? rps.glofas : null))) || {};
       return [
-        [fh ? 'Warning level' : '2-yr return period', fh ? src.warning_2yr : src.return_period_2, '#f9ab00'],
-        [fh ? 'Danger level' : '5-yr return period', fh ? src.danger_5yr : src.return_period_5, '#e8710a'],
-        [fh ? 'Extreme danger level' : '20-yr return period', fh ? src.extreme_20yr : src.return_period_20, '#d93025']
+        [fh ? 'Warning level' : '2-yr return period', fh ? src.warning_2yr : src.return_period_2, pal.tiers[1] ? pal.tiers[1].color : '#eab308'],
+        [fh ? 'Danger level' : '5-yr return period', fh ? src.danger_5yr : src.return_period_5, pal.tiers[2] ? pal.tiers[2].color : '#dc2626'],
+        [fh ? 'Extreme danger level' : '20-yr return period', fh ? src.extreme_20yr : src.return_period_20, pal.tiers[3] ? pal.tiers[3].color : '#9333ea']
       ].filter(([, v]) => v !== null && v !== undefined && isFinite(v) && Number(v) > 0)
         .map(([label, v, color]) => ({ label, value: Number(v), color }));
     }
@@ -9566,6 +11018,9 @@
         }
       });
       renderMaaSMultiModelLists();
+      renderMaaSFlowLegend(currentMaaSModel);
+      const refreshBtn = document.getElementById('maasRefreshLiveBtn');
+      if (refreshBtn) refreshBtn.addEventListener('click', refreshMaaSLiveData);
       const closeBtn = document.getElementById('maasCloseForecastBtn');
       if (closeBtn) closeBtn.addEventListener('click', closeMaaSForecastView);
     }

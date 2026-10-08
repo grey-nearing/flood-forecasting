@@ -29,13 +29,20 @@ from multimet.weather_fetcher.fetcher import (
 def extract_wind_vectors(
     arrays: Mapping[str, np.ndarray],
     stream_info: Mapping[str, Mapping[str, Any]],
-    model_key: str = "ecmwf_ifs",
+    model_key: str,
     step_idx: int = 0,
     subsample: int = 2,
     bbox: Optional[Tuple[float, float, float, float]] = None,
     bilinear: bool = False,
 ) -> Dict[str, Any]:
-  """Formats subsampled 10m U/V wind vectors for client-side Canvas streamlines."""
+  """Formats subsampled 10 m U/V wind vectors for client-side streamlines.
+
+  Returns the `fetch_wind_grid` payload unchanged: `u`/`v` hold `nx * ny`
+  values in row-major order with `None` for masked cells, and
+  `header["missing_count"]` counts them. `FileNotFoundError` (wind streams
+  not synced) and `ValueError` (unknown model, lead not stored, bad
+  `step_idx`/`subsample`/`bbox`) propagate from `multimet.weather_fetcher`.
+  """
   return fetch_wind_grid(
       arrays,
       stream_info,

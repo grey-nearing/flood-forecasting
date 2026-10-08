@@ -1,6 +1,7 @@
 """Integration tests for Earthkit Hydro server endpoints using standard library urllib."""
 
 import unittest
+from unittest.mock import patch
 import threading
 import time
 import json
@@ -112,15 +113,15 @@ class ServerApiIntegrationTest(unittest.TestCase):
         self.assertEqual(extract_status, 200)
         self.assertIn("summary", extract_data)
         self.assertIn("categories", extract_data)
-        self.assertIn("caravan_attributes", extract_data)
+        self.assertIn("attributes", extract_data)
         self.assertGreater(extract_data["intersected_subbasins_count"], 0)
         self.assertGreater(extract_data["summary"]["elevation_mean_m"], 100)
         self.assertGreater(extract_data["summary"]["annual_precip_mm"], 500)
         # Verify ERA5-Land values
-        self.assertGreater(extract_data["caravan_attributes"]["p_mean"], 1.0)
-        self.assertGreater(extract_data["caravan_attributes"]["pet_mean_ERA5_LAND"], 1.0)
+        self.assertGreater(extract_data["attributes"]["p_mean"], 1.0)
+        self.assertGreater(extract_data["attributes"]["pet_mean"], 1.0)
         self.assertGreater(extract_data["summary"]["era5_p_mean_mm_day"], 1.0)
-        self.assertGreater(extract_data["summary"]["era5_aridity"], 0.1)
+        self.assertGreater(extract_data["summary"]["era5_fao_aridity"], 0.1)
         self.assertIn("Topography", extract_data["categories"])
         self.assertIn("Soils", extract_data["categories"])
         self.assertIn("Climate", extract_data["categories"])

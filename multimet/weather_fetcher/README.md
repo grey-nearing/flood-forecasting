@@ -1,135 +1,247 @@
-# Gridded Weather Forecast Fetcher & Synchronizer (`multimet.weather_fetcher`)
+# Gridded Weather Forecast Synchronizer and Fetcher (`multimet.weather_fetcher`)
 
-This package downloads global weather forecasts from [dynamical.org](https://dynamical.org/) and provides a Python API for querying gridded forecast arrays, wind vector grids, point meteogram time series, and catchment weather summaries.
+This package downloads the newest 10-day weather forecasts from public sources
+and stores them as compact binary grids on your disk. It then gives you a
+Python API to read those grids as maps, wind fields, point time series, and
+catchment (river basin) averages.
 
 > **Do you need these tools?**
-> If you only want to train or evaluate flood-forecasting models using the published MultiMet dataset, **you do not need to run these tools**. Point `dynamics_data_dir` in your training configuration file to `gs://caravan-multimet/v1.1`.
+> If you only want to train or evaluate flood-forecasting models with the
+> published MultiMet dataset, **you do not need this package**. Point
+> `dynamics_data_dir` in your training configuration to
+> `gs://caravan-multimet/v1.1`.
 >
-> Use `multimet.weather_fetcher` when you need to download and query live 10-day gridded weather forecasts from operational numerical weather prediction (NWP) and AI weather models.
+> Use `multimet.weather_fetcher` when you need live gridded forecasts from
+> operational weather models.
 
 ---
 
-## Overview & Entry Points
+## Entry Points
 
-Installing this repository with `pip install -e .` provides the `sync-weather-forecasts` command-line tool and the `multimet.weather_fetcher` Python package.
+Installing this repository with `pip install -e .` provides one command-line
+tool and one Python package.
 
-| Component | Entry Point | Purpose |
+| Component | Entry point | Purpose |
 | :--- | :--- | :--- |
-| **CLI Synchronizer** | `sync-weather-forecasts` | Downloads the newest 10-day global forecast runs (`0.25°`, `721 × 1440`) and updates the active run folder. |
-| **Python Sync API** | `WeatherSynchronizer`, `sync_all_models` | Checks upstream forecast catalogs, converts units to `float16` binary grids, and swaps the `current` symlink. |
-| **Python Data Fetcher** | `WeatherDataFetcher` | Reads synced forecast runs to return 2D physical forecast grids, subsampled 10 m U/V wind arrays, 10-day point meteograms, and catchment-averaged summaries. |
+| CLI synchronizer | `sync-weather-forecasts` | Downloads the newest runs of the selected models into `<data-dir>` and updates the `current` run. |
+| Python sync API | `WeatherSynchronizer`, `sync_all_models`, `sync_model` | Same as the CLI, from Python. |
+| Python data fetcher | `WeatherDataFetcher` | Reads a synced `<data-dir>` and returns forecast grids, wind vectors, point meteograms, and catchment summaries. |
 
-### Supported Weather Models
+---
 
-| Model Key | Model Name | Upstream Dataset ID | Grid Resolution | Variables |
-| :--- | :--- | :--- | :--- | :--- |
-| `ecmwf_ifs` | ECMWF IFS ENS (Control Member) | `ecmwf-ifs-ens-forecast-15-day-0-25-degree` | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature |
-| `ecmwf_aifs` | ECMWF AIFS Single | `ecmwf-aifs-single-forecast` | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
-| `noaa_gfs` | NOAA GFS | `noaa-gfs-forecast` | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
-| `noaa_gefs` | NOAA GEFS (Control Member) | `noaa-gefs-forecast-35-day` | `0.25°` (`721 × 1440`) | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
-| `noaa_hrrr` | NOAA HRRR CONUS | `noaa-hrrr-forecast-48-hour` | `3 km` CONUS | Precipitation rate, 2 m temperature, sea-level pressure, 10 m U/V wind |
+## Supported Weather Models
 
-### Supported Weather Variables
+All models are stored on the same global `0.25°` grid (`721 × 1440` cells,
+latitude `+90` to `-90`, longitude `-180` to `+179.75`). Each model keeps its
+own forecast lead hours; the fetcher never interpolates between them.
 
-| Variable Key | Description | Physical Units | Range |
-| :--- | :--- | :--- | :--- |
-| `precipitation` | Mean precipitation rate over each 3-hour step | `mm/h` | `0.0` to `25.0` |
-| `accumulated_precip` | Cumulative precipitation since forecast start | `mm` | `0.0` to `250.0` |
-| `temperature` | Air temperature at 2 meters above ground | `°C` | `-40.0` to `45.0` |
-| `wind` | Wind speed and direction at 10 meters above ground | `m/s` | `0.0` to `40.0` |
-| `pressure` | Atmospheric pressure reduced to mean sea level | `hPa` | `960.0` to `1040.0` |
+| Model key | Model | Source | Native grid | Stored lead hours | Variables |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `ecmwf_hres` | ECMWF IFS HRES (deterministic) | `gs://ecmwf-open-data` | `0.25°` global | every 3 h to 144 h, then every 6 h to 240 h | precipitation, temperature, pressure, wind |
+| `ecmwf_ifs` | ECMWF IFS ENS (control member) | dynamical.org | `0.25°` global | every 3 h to 144 h, then every 6 h to 240 h | precipitation, temperature, pressure, wind |
+| `ecmwf_aifs` | ECMWF AIFS (AI model) | dynamical.org | `0.25°` global | every 6 h to 240 h | precipitation, temperature, pressure, wind |
+| `noaa_gfs` | NOAA GFS | dynamical.org | `0.25°` global | every 3 h to 240 h | precipitation, temperature, pressure, wind |
+| `noaa_gefs` | NOAA GEFS (control member) | dynamical.org | `0.25°` global | every 3 h to 240 h | precipitation, temperature, pressure, wind |
+| `noaa_hrrr` | NOAA HRRR (CONUS only) | dynamical.org | `3 km` CONUS, averaged onto `0.25°` | every 3 h to 48 h | precipitation, temperature, pressure, wind |
+| `nasa_imerg` | NASA GPM IMERG Early (satellite analysis) | dynamical.org | `0.10°` global, averaged onto `0.25°` | last 10 days, every 3 h | precipitation |
+| `noaa_cpc` | NOAA CPC Unified (gauge analysis) | NOAA PSL | `0.50°` land only, mapped onto `0.25°` | last 10 days, every 24 h | precipitation |
+
+Cells with no data (for example outside the HRRR domain, or over the ocean for
+CPC) are stored as `NaN` and are returned as `NaN` (`null` in JSON). They are
+never replaced by zeros or by neighbouring cells.
+
+## Supported Weather Variables
+
+| Variable key | Description | Units |
+| :--- | :--- | :--- |
+| `precipitation` | Mean rain rate over the model interval that ends at the requested time | `mm/h` |
+| `accumulated_precip` | Rain accumulated since the forecast start | `mm` |
+| `temperature` | Air temperature 2 m above ground | `°C` |
+| `wind` | Wind speed and direction 10 m above ground (`u`/`v` components) | `m/s` |
+| `pressure` | Air pressure reduced to mean sea level | `hPa` |
 
 ---
 
 ## Prerequisites
 
-Activate the Conda environment and install the package in editable mode:
-
 ```bash
-conda activate googlehydrology
-pip install -e .
+conda activate openhydronet
+pip install -e ".[weather]"
 ```
 
-No API keys or login credentials are required to download public forecasts from `dynamical.org`.
+The `weather` extra adds the download dependencies: `pystac` and `icechunk`
+(dynamical.org catalog and stores) and `eccodes` (GRIB2 decoding of ECMWF Open
+Data; `rasterio` is used when `eccodes` is not installed). The `openhydronet`
+Conda environment files already include them as `pystac`, `icechunk`, and
+`python-eccodes`. Downloading also uses `xarray`, `zarr`, `gcsfs`, and
+`netCDF4` from that environment and needs network access; no API keys are
+required. Reading synced data uses `numpy`, `shapely`, `geopandas`, `pyproj`,
+and `scipy`.
 
 ---
 
-## Quick Start Examples
+## Quick Start
 
-### 1. Command-Line Usage (`sync-weather-forecasts`)
+### 1. Command line (`sync-weather-forecasts`)
+
+`--data-dir` is always required. There is no default location.
 
 ```bash
-# Download the newest runs for default models (ECMWF IFS, ECMWF AIFS, NOAA GFS)
+# Download the newest runs of all eight models
 sync-weather-forecasts --data-dir /tmp/weather_cache
 
 # Download only NOAA GFS and ECMWF AIFS
-sync-weather-forecasts \
-  --data-dir /tmp/weather_cache \
-  --models noaa_gfs,ecmwf_aifs
+sync-weather-forecasts --data-dir /tmp/weather_cache --models noaa_gfs,ecmwf_aifs
 
-# Force re-download even if the current run timestamp has not changed
-sync-weather-forecasts \
-  --data-dir /tmp/weather_cache \
-  --force
+# Download again even if the newest run is already on disk
+sync-weather-forecasts --data-dir /tmp/weather_cache --force
 
-# Print the current synchronization status as JSON
+# Print the last synchronization status as JSON and exit
 sync-weather-forecasts --data-dir /tmp/weather_cache --status
 ```
 
-### 2. Python API Usage
+The command exits with code `0` when the data directory is consistent
+afterwards (`updated`, `up_to_date`, or `busy` because another process is
+already synchronizing) and `1` when a selected model failed (`partial` or
+`error`). An unknown model key raises `ValueError`.
+
+### 2. Python API
 
 ```python
 from pathlib import Path
+
 from multimet.weather_fetcher import WeatherDataFetcher, WeatherSynchronizer
 
 data_dir = Path("/tmp/weather_cache")
 
-# 1. Synchronize forecast runs to disk
-synchronizer = WeatherSynchronizer(
-    data_dir=data_dir,
-    models=["ecmwf_aifs", "noaa_gfs"],
-)
+# Download runs (same work as the CLI).
+synchronizer = WeatherSynchronizer(data_dir=data_dir, models=["ecmwf_aifs", "noaa_gfs"])
 status = synchronizer.sync_all()
+print(status["last_result"])  # "updated", "up_to_date", "partial", "error" or "busy"
 
-# 2. Open the data fetcher on the synced directory
-fetcher = WeatherDataFetcher(data_dir=data_dir)
+# Read the synced runs. `step_idx` counts 3-hour steps: step 2 = +6 h.
+with WeatherDataFetcher(data_dir=data_dir) as fetcher:
+  info = fetcher.get_model_info("ecmwf_aifs")
+  print(info["init_time"], info["stored_lead_hours"], info["real_variables"])
 
-# Fetch a 2D physical forecast grid (step=2 -> +6h)
-precip_grid = fetcher.fetch_forecast_grid("ecmwf_aifs", "precipitation", step_idx=2)
+  # 2D grid (721 x 1440) in physical units, or None when +6 h is not stored.
+  rain = fetcher.fetch_forecast_grid("ecmwf_aifs", "precipitation", step_idx=2)
 
-# Fetch subsampled global 10m U/V wind vectors
-wind = fetcher.fetch_wind_grid("ecmwf_aifs", step_idx=2, subsample=2)
+  # 10 m wind components on a 2-degree grid (subsample=2), optional viewport.
+  wind = fetcher.fetch_wind_grid("ecmwf_aifs", step_idx=2, subsample=2)
+  viewport = fetcher.fetch_wind_grid(
+      "noaa_gfs", step_idx=2, subsample=1, bbox=(-90.0, 35.0, -80.0, 45.0)
+  )
 
-# Query a 10-day multi-model point forecast meteogram
-probe = fetcher.fetch_point_timeseries(lat=40.42, lon=-86.92, models=["ecmwf_aifs", "noaa_gfs"])
+  # 10-day meteogram at one point for several models.
+  probe = fetcher.fetch_point_timeseries(
+      lat=40.42, lon=-86.92, models=["ecmwf_aifs", "noaa_gfs"]
+  )
+  print(probe["lead_hours"][:3], probe["models"]["noaa_gfs"]["temp_c"][:3])
+
+  # Area-weighted catchment statistics for a GeoJSON Feature.
+  basin = {
+      "id": "wabash",
+      "properties": {"area_km2": 3200.0},
+      "geometry": {
+          "type": "Polygon",
+          "coordinates": [[[-87.0, 40.0], [-86.0, 40.0], [-86.0, 41.0], [-87.0, 41.0], [-87.0, 40.0]]],
+      },
+  }
+  summary = fetcher.fetch_catchment_summary(basin, step_idx=2, model_key="noaa_gfs")
+  print(summary["basin_mean_precip_mmh"], summary["basin_accumulated_10d_mm"])
+
+  # Pick up a newer run written by the synchronizer (safe while other
+  # threads are still reading the previous run).
+  fetcher.reload_if_changed()
 ```
 
 ---
 
-## Architecture & What to Watch Out For
+## What the Fetcher Returns
 
-* **Directory Layout:** Synchronized runs are written to `<data_dir>/runs/<timestamp>/` as memory-mapped `float16` binary grids (`<model>_<stream>.bin`) alongside `latest_dynamical_meta.json`. Once all streams for a run finish downloading, `<data_dir>/current` is updated to point to the new run folder.
-* **Required Explicit Path in Python API:** `WeatherDataFetcher`, `WeatherSynchronizer`, and `sync_all_models` require an explicit `data_dir` argument.
-* **Synced Data Required:** `WeatherDataFetcher` reads only real downloaded forecast files from `data_dir`. If you request grids, wind vectors, or point time series for a model that has not been downloaded to `data_dir`, Python raises `FileNotFoundError`.
-* **Upstream Publication Delays:** Weather agencies publish forecast lead times progressively. If the newest run in the catalog still has missing values at the end of the 240-hour horizon, the synchronizer skips the incomplete run and keeps the previous complete run active.
+| Method | Returns | Missing data |
+| :--- | :--- | :--- |
+| `to_xarray(model_key, variables=None)` | `xarray.Dataset` containing all stored leads on a `(lead_time, latitude, longitude)` physical grid, plus `valid_time`. | masked cells are `NaN`. Coordinates and data arrays have standard CF `units` and `long_name` attrs. |
+| `fetch_forecast_grid(model_key, var_key, step_idx=None, lead_hours=None, lats=None, lons=None, bilinear=False)` | `float32` array, shape `(721, 1440)` or `(len(lats), len(lons))` | `None` when the lead is beyond the run, or when temperature/pressure is not stored at exactly that lead; masked cells are `NaN` |
+| `fetch_wind_grid(model_key, step_idx=None, lead_hours=None, resolution_deg=None, subsample=2, bbox=None, bilinear=False)` | `{"header": {...}, "u": [...], "v": [...]}` with `nx * ny` values on a `1° × subsample` grid (`subsample` 1 to 4) | masked cells are `None`; `header["missing_count"]` counts them; `ValueError` when wind is not stored at that lead |
+| `fetch_point_timeseries(lat, lon, models=None, strict=True)` | `lead_hours` (0 to 240 h, step 3 h) and, per model, `precip_rate_mmh`, `accum_precip_mm`, `temp_c`, `wind_speed_mps`, `wind_direction_deg`, `pressure_hpa`, `stored_lead_hours`, `init_time`, `max_lead_hours` | `None` entries at leads the model did not store, beyond its horizon, or over masked cells |
+| `fetch_catchment_summary(geojson_feature, model_key, step_idx=None, lead_hours=None)` | `catchment_id`, `area_km2`, `area_km2_source`, `basin_mean_precip_mmh`, `basin_max_precip_mmh`, `basin_accumulated_10d_mm`, `basin_mean_temp_c`, `missing_area_fraction`, `grid_cells`, `centroid`, `valid_time_utc`, `accumulation_hours` | a statistic is `None` when less than 80% of the basin area has data at that lead |
+| `get_model_info(model_key)` / `get_all_models_info()` | `data_source` (`"archived_run"` or `"unavailable"`), `init_time`, `stored_lead_hours`, `max_lead_hours`, `real_variables`, `missing_variables` | empty lists / `None` when the model is not synced |
+| `get_sync_status()` | contents of `sync_status.json` plus `sync_status_found` and the loaded `data_dir` | `sync_status_found` is `False` before the first sync |
+
+Catchment statistics weight every grid cell by its intersection area with the
+polygon (holes excluded) times `cos(latitude)`. The feature needs an `id` or
+`properties.catchment_id` and a `Polygon` or `MultiPolygon` geometry in
+longitude/latitude degrees. `properties.area_km2` is reported when present;
+otherwise the WGS84 geodesic area of the polygon is computed
+(`area_km2_source` tells you which).
 
 ---
 
-## Command-Line Arguments Reference (`sync-weather-forecasts`)
+## Directory Layout
 
-| Flag | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--data-dir` / `--data-root` | `str` | `$EARTHKIT_WEATHER_DATA_DIR` or `~/.cache/openhydronet/weather` | Local folder where forecast runs and `sync_status.json` are stored. |
-| `--models` | `str` | `ecmwf_ifs,ecmwf_aifs,noaa_gfs` | Comma-separated list of model keys to download. |
-| `--force` | `flag` | `False` | Downloads the run again even if the local run has the same issue time. |
-| `--status` | `flag` | `False` | Prints the contents of `sync_status.json` and exits without downloading. |
+```
+<data-dir>/
+  current -> runs/<run>/            symlink to the active run (swapped atomically)
+  runs/<run>/<model>_<stream>.bin   float16 planes, shape (n_leads, 721, 1440)
+  runs/<run>/latest_dynamical_meta.json   init time, lead hours and units per model
+  sync_status.json                  result and time of the last synchronization
+  cpc_cache/                        cached NOAA PSL CPC annual NetCDF files
+```
+
+Streams are `precip` (mm/h), `temp` (°C), `mslp` (hPa minus the offset stored
+in the metadata, 1000 hPa), `u10` and `v10` (m/s).
+
+---
+
+## What to Watch Out For
+
+* **`step_idx` and `lead_hours`.** `step_idx` counts 3-hour steps (e.g. `step_idx=2` means +6 h). Or use physical `lead_hours` directly (e.g. `lead_hours=6.0`). Steps beyond a model's horizon return `None`.
+* **No lead substitution.** For a 6-hourly model (`ecmwf_aifs`) temperature,
+  pressure, and wind are `None` at +3 h, +9 h, and so on. Rain rate at +3 h is
+  the mean rate of the model interval that contains +3 h (0 to 6 h), and the
+  accumulation grows only at stored leads.
+* **Errors are explicit.** Requesting a model or variable that is not synced
+  raises `FileNotFoundError`; invalid coordinates (latitude outside
+  `[-90, 90]`, longitude outside `[-180, 360]`), invalid geometries, unknown
+  model keys, or bad `step_idx`/`subsample` values raise `ValueError`; a
+  catchment feature without an id raises `KeyError`.
+* **Antimeridian.** Wind `bbox` values may cross the antimeridian
+  (`min_lon > max_lon`); the returned header `lo1` continues past 180.
+  Catchment polygons spanning more than 180° of longitude are rejected: split
+  them at ±180 first.
+* **Corrupt or inconsistent runs are refused.** A `.bin` file whose size is not
+  a whole number of planes, or that does not match the lead hours in
+  `latest_dynamical_meta.json`, raises `ValueError` when the fetcher opens the
+  run.
+* **Hot reload is safe.** `reload_if_changed()` swaps in the newer run; requests
+  that are still reading the old run keep their arrays until they finish.
+  Call `close()` (or use `with WeatherDataFetcher(...)`) when you are done so
+  the memory maps are released.
+* **Upstream publication delays.** Weather centres publish lead times
+  progressively. The synchronizer keeps the previous complete run active until
+  the new run is complete for every selected model.
+
+---
+
+## Command-Line Reference (`sync-weather-forecasts`)
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--data-dir` / `--data-root` | required | Folder for downloaded runs, `current`, `sync_status.json`, and `cpc_cache`. |
+| `--models` | all eight models | Comma-separated model keys to download. |
+| `--cpc-cache-dir` | `<data-dir>/cpc_cache` | Folder caching the NOAA PSL CPC annual NetCDF files. |
+| `--force` | off | Download again even if the newest run is already on disk. |
+| `--status` | off | Print `sync_status.json` and exit without downloading. |
 
 ---
 
 ## Running Tests
 
-Run the unit and integration test suites with `pytest`:
-
 ```bash
 pytest multimet/tests/test_weather_fetcher.py multimet/tests/test_weather_sync.py -v
+
+# Also run the live check against the dynamical.org catalog (needs network):
+pytest multimet/tests/test_weather_fetcher.py --run-canary -m canary
 ```
