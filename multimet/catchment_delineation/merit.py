@@ -20,15 +20,12 @@ import io
 import json
 import os
 import threading
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
-from typing import Any
 
 import google.auth
 import google.auth.transport.requests
 import numpy as np
+import requests
 
 from multimet.catchment_delineation.config import RES_DEG, TILE_CELLS
 from multimet.catchment_delineation.datasets import MERIT_HYDRO_90M
@@ -36,42 +33,47 @@ from multimet.catchment_delineation.tiles import (
     is_tile_in_coverage,
     tile_key_to_filename,
 )
+from utils.file_paths import EE_MERIT_GET_PIXELS_URL, MERIT_HYDRO_EE_ASSET
 
-MERIT_HYDRO_EE_ASSET: str = 'MERIT/Hydro/v1_0_1'
-EE_MERIT_GET_PIXELS_URL: str = (
-    'https://earthengine-highvolume.googleapis.com/v1/'
-    f'projects/earthengine-public/assets/{MERIT_HYDRO_EE_ASSET}:getPixels'
-)
+__all__ = [
+    'EE_MERIT_GET_PIXELS_URL',
+    'FULL_COLS',
+    'HALF_ROWS',
+    'MERIT_HYDRO_EE_ASSET',
+    'VALID_D8_CODES',
+    'download_merit_d8_tile',
+    'fetch_merit_d8_half_tile',
+]
+
 HALF_ROWS: int = TILE_CELLS // 2
 FULL_COLS: int = TILE_CELLS
 VALID_D8_CODES: np.ndarray = np.array(
     [1, 2, 4, 8, 16, 32, 64, 128], dtype=np.int16
 )
 _MIN_TILE_FILE_BYTES: int = 36_000_000
-_RETRYABLE_HTTP_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 _EE_SCOPES: list[str] = [
     'https://www.googleapis.com/auth/earthengine.readonly',
     'https://www.googleapis.com/auth/cloud-platform',
 ]
 
 _CRED_LOCK = threading.Lock()
-_CACHED_CREDENTIALS: Any = None
+_CRED_CACHE: dict[str, object] = {}
 
 
 def _get_access_token(
-    credentials: Any = None, *, force_refresh: bool = False
+    credentials: object = None, *, force_refresh: bool = False
 ) -> str:
     """Obtain a valid Google Cloud OAuth2 access token via google.auth."""
-    global _CACHED_CREDENTIALS
     with _CRED_LOCK:
         creds = credentials
         if creds is None:
-            if _CACHED_CREDENTIALS is None:
-                _CACHED_CREDENTIALS, _ = google.auth.default(scopes=_EE_SCOPES)
-            creds = _CACHED_CREDENTIALS
-        if force_refresh or not creds.valid or not creds.token:
-            creds.refresh(google.auth.transport.requests.Request())
-        token = creds.token
+            if 'default' not in _CRED_CACHE:
+                default_creds, _ = google.auth.default(scopes=_EE_SCOPES)
+                _CRED_CACHE['default'] = default_creds
+            creds = _CRED_CACHE['default']
+        if force_refresh or not creds.valid or not creds.token:  # type: ignore[union-attr]
+            creds.refresh(google.auth.transport.requests.Request())  # type: ignore[union-attr]
+        token = creds.token  # type: ignore[union-attr]
         if not token:
             raise RuntimeError(
                 'Failed to obtain Google Cloud Application Default Credentials '
@@ -85,7 +87,7 @@ def fetch_merit_d8_half_tile(
     lon_left: float,
     *,
     ee_project: str,
-    credentials: Any = None,
+    credentials: object = None,
     retries: int = 3,
 ) -> np.ndarray:
     """Fetch a (3000, 6000) half-tile of MERIT/Hydro/v1_0_1 'dir' band."""
@@ -114,39 +116,20 @@ def fetch_merit_d8_half_tile(
         },
     }).encode('utf-8')
 
-    last_err: Exception | None = None
-    for attempt in range(retries):
-        try:
-            token = _get_access_token(
-                credentials=credentials, force_refresh=(attempt > 0)
-            )
-            req = urllib.request.Request(
-                EE_MERIT_GET_PIXELS_URL,
-                data=payload,
-                headers={
-                    'Authorization': f'Bearer {token}',
-                    'x-goog-user-project': str(ee_project).strip(),
-                    'Content-Type': 'application/json',
-                },
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                raw = np.load(io.BytesIO(resp.read()))
-            return np.asarray(raw['dir'])
-        except urllib.error.HTTPError as err:
-            last_err = err
-            if err.code not in _RETRYABLE_HTTP_CODES or attempt == retries - 1:
-                raise
-            time.sleep(0.5 * (attempt + 1))
-        except urllib.error.URLError as err:
-            last_err = err
-            if attempt == retries - 1:
-                raise
-            time.sleep(0.5 * (attempt + 1))
-
-    raise RuntimeError(
-        f'Failed to fetch MERIT-Hydro dir half-tile ({lat_top}, {lon_left}): '
-        f'{last_err}'
-    ) from last_err
+    token = _get_access_token(credentials=credentials, force_refresh=False)
+    resp = requests.post(
+        EE_MERIT_GET_PIXELS_URL,
+        data=payload,
+        headers={
+            'Authorization': f'Bearer {token}',
+            'x-goog-user-project': str(ee_project).strip(),
+            'Content-Type': 'application/json',
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    raw = np.load(io.BytesIO(resp.content))
+    return np.asarray(raw['dir'])
 
 
 def download_merit_d8_tile(
@@ -155,17 +138,16 @@ def download_merit_d8_tile(
     target_dir: str | Path,
     *,
     ee_project: str,
-    credentials: Any = None,
-    created_files: set[Path] | None = None,
+    credentials: object = None,
 ) -> Path:
-    """Download a single 5x5 degree (6000, 6000) uint8 MERIT-Hydro D8 tile atomically."""
+    """Download a 5x5 deg (6000, 6000) uint8 MERIT-Hydro D8 tile atomically."""
     if not target_dir:
         raise ValueError('An explicit target_dir must be provided.')
     if not ee_project or not str(ee_project).strip():
         raise ValueError('An explicit ee_project must be provided.')
 
-    tile_lat = int(round(lat_top))
-    tile_lon = int(round(lon_left))
+    tile_lat = int(lat_top)
+    tile_lon = int(lon_left)
     tile_name = tile_key_to_filename(tile_lat, tile_lon)
     if not is_tile_in_coverage(tile_lat, tile_lon, dataset=MERIT_HYDRO_90M):
         raise ValueError(
@@ -200,13 +182,8 @@ def download_merit_d8_tile(
         directory
         / f'.{tile_name}.tmp.{os.getpid()}.{threading.get_ident()}.npy'
     )
-    try:
-        np.save(tmp_path, d8_uint8)
-        os.replace(tmp_path, out_path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-
-    if created_files is not None:
-        created_files.add(out_path)
+    np.save(tmp_path, d8_uint8)
+    tmp_path.replace(out_path)
     return out_path
+
+
