@@ -684,7 +684,9 @@ class StaticAttributesExtractor:
       Dictionary containing extracted attributes, summary, categories, and area metadata.
     """
     if timeseries_df is not None and not timeseries_df.empty:
-      actual_era5_source = "timeseries"
+      actual_era5_source: Optional[str] = "timeseries"
+    elif _skip_climate and not era5_source:
+      actual_era5_source = ""
     else:
       actual_era5_source = self._resolve_era5_source(era5_source)
 
