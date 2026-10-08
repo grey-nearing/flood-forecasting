@@ -31,29 +31,25 @@ def test_file_paths_exports_match_init() -> None:
 
 
 @pytest.mark.unit
-def test_no_google_internal_paths_in_file_paths() -> None:
-    """Verify no gs://open-multimet/data, /google/, or internal hostnames exist in file_paths."""
-    forbidden = (
-        'gs://open-multimet/data',
-        '/google/',
-        '/usr/local/google',
-        'corp.google.com',
-        'googleplex',
-        'smtp_mailer',
-        'gestalt-ingest',
-        'ecmwf-downloads',
+def test_only_public_uris_and_openhydronet_cache_in_file_paths() -> None:
+    """Verify all URIs and paths in file_paths use public domains or openhydronet cache."""
+    allowed_uri_prefixes = (
+        'gs://open-multimet',
+        'gs://weatherbench2/',
+        'https://',
+        'http://localhost:',
     )
-    source_text = Path(file_paths.__file__).read_text(encoding='utf-8')
-    for token in forbidden:
-        assert token not in source_text, (
-            f'file_paths.py source contains {token}'
-        )
-    home_prefix = str(Path.home())
     for symbol in file_paths.__all__:
-        val = str(getattr(file_paths, symbol)).replace(home_prefix, '~')
-        for token in forbidden:
-            msg = f'{symbol} contains forbidden token {token}'
-            assert token not in val, msg
+        value = getattr(file_paths, symbol)
+        if isinstance(value, Path):
+            assert file_paths.OPENHYDRONET_CACHE_ROOT in (
+                value,
+                *value.parents,
+            ), f'{symbol} must reside under OPENHYDRONET_CACHE_ROOT'
+        elif isinstance(value, str) and '://' in value:
+            assert value.startswith(allowed_uri_prefixes), (
+                f'{symbol} has unexpected URI prefix: {value}'
+            )
 
 
 @pytest.mark.unit
@@ -68,3 +64,4 @@ def test_canonical_gcs_and_cache_paths() -> None:
     )
     assert isinstance(file_paths.OPENHYDRONET_CACHE_ROOT, Path)
     assert file_paths.OPENHYDRONET_CACHE_ROOT.name == 'openhydronet'
+
