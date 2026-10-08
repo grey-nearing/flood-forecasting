@@ -21,6 +21,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from utils.file_paths import (
+    FLOODHUB_BASE_URL as FLOODHUB_BASE_URL,
+)
+from utils.file_paths import (
+    GEOGLOWS_BASE_URL as GEOGLOWS_BASE_URL,
+)
+from utils.file_paths import (
+    GLOFAS_BASE_URL as GLOFAS_BASE_URL,
+)
+from utils.file_paths import (
+    OPEN_METEO_ELEVATION_URL as OPEN_METEO_ELEVATION_URL,
+)
+
 PROVIDERS: tuple[str, ...] = (
     'floodhub',
     'glofas',
@@ -48,11 +61,6 @@ NETWORK_LABELS: dict[str, str] = {
     'glofas': 'GloFAS v4 LISFLOOD 0.05° river grid',
     'geoglows': 'GEOGLOWS v2 TDX-Hydro streams',
 }
-
-FLOODHUB_BASE_URL = 'https://floodforecasting.googleapis.com/v1'
-GEOGLOWS_BASE_URL = 'https://geoglows.ecmwf.int/api/v2'
-GLOFAS_BASE_URL = 'https://flood-api.open-meteo.com/v1/flood'
-OPEN_METEO_ELEVATION_URL = 'https://api.open-meteo.com/v1/elevation'
 
 GLOFAS_RES_DEG = 0.05
 GLOFAS_NLAT = 3600

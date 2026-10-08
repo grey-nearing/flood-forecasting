@@ -17,28 +17,41 @@
 from __future__ import annotations
 
 import csv
+import io
+import json
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
-from shapely.geometry import box
+from shapely.geometry import LineString, box, shape
 
+import multimet.catchment_delineation.merit as merit_mod
 from multimet.catchment_delineation import (
+    HYDROSHEDS_90M,
+    MERIT_HYDRO_90M,
     RES_DEG,
     TILE_CELLS,
     CatchmentCoverageError,
     DemDelineator,
+    ElevationTiles,
+    GlobalElevationGrid,
+    HydroBasinsLayer,
+    RiverNetwork,
+    UnitCatchmentDelineator,
+    delineate_hybrid,
+    download_merit_d8_tile,
+    is_coord_in_coverage,
     is_tile_available,
+    is_tile_in_coverage,
     latlon_to_tile_key,
     list_available_tiles,
+    resolve_dem_dataset,
     tile_key_to_filename,
-)
-from multimet.catchment_delineation.benchmark import (
-    compute_iou_and_metrics,
-    run_benchmark,
 )
 from multimet.catchment_delineation.cli import (
     _sanitize_feature_for_export,
@@ -48,6 +61,9 @@ from multimet.catchment_delineation.cli import (
     parse_coord_str,
 )
 from multimet.utils.gcs import is_gcs_path, normalize_gcs_path
+
+if TYPE_CHECKING:
+    import urllib.request
 
 _SOUTH_D8: int = 4
 _WEST_D8: int = 16
@@ -419,43 +435,6 @@ def test_cli_preserve_caravan_dirs(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_benchmark_metrics_return_nan_not_zero(tmp_path: Path) -> None:
-    """Metric calculation failures or zero ref areas must return NaN, not 0.0."""
-    poly = box(0, 0, 1, 1)
-    iou, dice, bias, abs_err = compute_iou_and_metrics(poly, poly, 0.0, 100.0)
-    assert math.isnan(iou)
-    assert math.isnan(dice)
-    assert math.isnan(bias)
-    assert math.isnan(abs_err)
-
-    tiles_dir = tmp_path / 'tiles'
-    _write_synthetic_tile(tiles_dir)
-    bench_pq = tmp_path / 'bench.parquet'
-    pd.DataFrame(
-        {
-            'gauge_id': ['valid_1', 'ooc_1'],
-            'continent': ['North America', 'North America'],
-            'hemisphere': ['NW', 'NW'],
-            'size_tier': ['1_micro', '1_micro'],
-            'latitude': [39.6828, 65.0],
-            'longitude': [-88.7729, -150.0],
-            'reference_area_km2': [0.03, 100.0],
-            'geometry_wkt': [
-                box(-88.78, 39.68, -88.77, 39.69).wkt,
-                box(-150.1, 64.9, -149.9, 65.1).wkt,
-            ],
-        }
-    ).to_parquet(bench_pq, index=False)
-
-    res_df = run_benchmark(
-        dataset_path=bench_pq, tiles_dir=tiles_dir, workers=1
-    )
-    ooc_row = res_df[res_df['gauge_id'] == 'ooc_1'].iloc[0]
-    assert math.isnan(ooc_row['iou'])
-    assert math.isnan(ooc_row['area_bias_pct'])
-
-
-@pytest.mark.unit
 def test_gcs_helpers() -> None:
     assert is_gcs_path('gs://bucket/path')
     assert is_gcs_path('gcs://bucket/path')
@@ -616,120 +595,295 @@ def test_area_hint_skips_candidates_exceeding_max_cells_without_try_except(
 
 
 @pytest.mark.unit
-def test_build_benchmark_dataset_cli_explicit_args(tmp_path: Path) -> None:
-    """build_benchmark_dataset.py requires --shapes, --world-geojson, and --output."""
-    from multimet.catchment_delineation.tools.build_benchmark_dataset import (
-        main as build_bench_main,
-    )
+def test_dem_datasets_and_merit_high_latitude_delineation(
+    tmp_path: Path,
+) -> None:
+    """MERIT-Hydro supports 60N-90N while HydroSHEDS raises coverage error."""
+    assert resolve_dem_dataset('hydrosheds') == HYDROSHEDS_90M
+    assert resolve_dem_dataset('merit') == MERIT_HYDRO_90M
+    assert resolve_dem_dataset(MERIT_HYDRO_90M) == MERIT_HYDRO_90M
+    with pytest.raises(ValueError, match='Unknown DEM dataset'):
+        resolve_dem_dataset('nonexistent_dem')
 
-    with pytest.raises(SystemExit):
-        build_bench_main([])
+    # 63.5°N is outside HydroSHEDS (-56..60) but inside MERIT-Hydro (-60..90)
+    assert not is_coord_in_coverage(63.5, -145.2, dataset=HYDROSHEDS_90M)
+    assert is_coord_in_coverage(63.5, -145.2, dataset=MERIT_HYDRO_90M)
+    assert not is_tile_in_coverage(65, -150, dataset=HYDROSHEDS_90M)
+    assert is_tile_in_coverage(65, -150, dataset=MERIT_HYDRO_90M)
 
-    with pytest.raises(SystemExit):
-        build_bench_main(
-            [
-                '--data-dir',
-                str(tmp_path),
-                '--output',
-                str(tmp_path / 'o.parquet'),
-            ]
-        )
+    # Write a synthetic high-latitude tile n65w150.npy (60..65°N, -150..-145°E)
+    tile_arr = np.zeros((TILE_CELLS, TILE_CELLS), dtype=np.uint8)
+    for r in range(200, 215):
+        tile_arr[r, 300] = _SOUTH_D8
+    np.save(tmp_path / 'n65w150.npy', tile_arr)
 
-    world_path = tmp_path / 'world.geojson'
-    gpd.GeoDataFrame(
-        {'continent': ['North America']},
-        geometry=[box(-130.0, 20.0, -60.0, 55.0)],
-        crs='EPSG:4326',
-    ).to_file(world_path, driver='GeoJSON')
-
-    out_pq = tmp_path / 'benchmark.parquet'
+    hs_delin = DemDelineator(tiles_dir=tmp_path, dataset='hydrosheds_90m')
     with pytest.raises(
-        FileNotFoundError, match='Shapefile path does not exist'
+        CatchmentCoverageError,
+        match=r'outside the global DEM coverage domain \(-56\.0° to 60\.0°',
     ):
-        build_bench_main(
-            [
-                '--shapes',
-                str(tmp_path / 'missing_shapes.shp'),
-                '--world-geojson',
-                str(world_path),
-                '--output',
-                str(out_pq),
-            ]
+        hs_delin.delineate_point(
+            lat=65.0 - 210 * RES_DEG, lon=-150.0 + 300 * RES_DEG
         )
 
-    shapes_dir = tmp_path / 'shapes_dir'
-    shapes_dir.mkdir()
-    shp_file = shapes_dir / 'camels_basin_shapes.shp'
-    gpd.GeoDataFrame(
-        {'gauge_id': ['camels_001', 'camels_002']},
+    merit_delin = DemDelineator(tiles_dir=tmp_path, dataset='merit_hydro_90m')
+    feat = merit_delin.delineate_point(
+        lat=65.0 - 210 * RES_DEG,
+        lon=-150.0 + 300 * RES_DEG,
+        snap_window_cells=5,
+    )
+    props = feat['properties']
+    assert props['dem_id'] == 'merit_hydro_90m'
+    assert props['dem_name'] == 'MERIT-Hydro 90m DEM (3 arc-sec)'
+    assert props['grid_resolution'] == '90m (3 arc-second)'
+    assert props['delineation_method'] == (
+        'DEM Digital Elevation Flow-Routing (90m MERIT-Hydro Multi-Tile '
+        'Seamless Grid)'
+    )
+    min_upstream_cells = 10
+    assert props['upstream_cells_count'] >= min_upstream_cells
+
+
+@pytest.mark.unit
+def test_elevation_tiles_and_global_grid(tmp_path: Path) -> None:
+    """ElevationTiles and GlobalElevationGrid sample elevation and nodata."""
+    elv_dir = tmp_path / 'elv_tiles'
+    elv_dir.mkdir()
+    arr = np.full((TILE_CELLS, TILE_CELLS), 250, dtype=np.int16)
+    arr[10, 20] = -9999
+    np.save(elv_dir / 'n40w090.npy', arr)
+
+    tiles = ElevationTiles(elv_dir)
+    assert tiles.has_tile(40, -90)
+    sampled = tiles.sample(np.array([39.5]), np.array([-89.5]))
+    assert sampled[0] == pytest.approx(250.0)
+    nodata_lat = 40.0 - 10 * RES_DEG
+    nodata_lon = -90.0 + 20 * RES_DEG
+    nodata_sampled = tiles.sample(
+        np.array([nodata_lat]), np.array([nodata_lon])
+    )
+    assert np.isnan(nodata_sampled[0])
+
+    global_npy = tmp_path / 'global_dem.npy'
+    g_arr = np.full((140, 360), 120.0, dtype=np.float32)
+    np.save(global_npy, g_arr)
+    grid = GlobalElevationGrid(global_npy, res_deg=1.0)
+    g_sampled = grid.sample(np.array([10.0]), np.array([20.0]))
+    assert g_sampled[0] == pytest.approx(120.0)
+
+
+@pytest.mark.unit
+def test_backend_hydrography_vector_and_hybrid_delineation(
+    tmp_path: Path,
+) -> None:
+    """RiverNetwork, UnitCatchmentDelineator, and delineate_hybrid work."""
+    rivers_dir = tmp_path / 'rivers'
+    rivers_dir.mkdir()
+    basins_dir = tmp_path / 'basins'
+    basins_dir.mkdir()
+    dem_dir = tmp_path / 'dem'
+    dem_dir.mkdir()
+
+    rivers_shp = rivers_dir / 'HydroRIVERS_v10_na.shp'
+    rivers_gdf = gpd.GeoDataFrame(
+        {
+            'HYRIV_ID': [101, 102],
+            'NEXT_DOWN': [102, 0],
+            'MAIN_RIV': [102, 102],
+            'LENGTH_KM': [2.5, 3.0],
+            'DIST_DN_KM': [3.0, 0.0],
+            'DIST_UP_KM': [2.5, 5.5],
+            'CATCH_SKM': [1.2, 1.5],
+            'UPLAND_SKM': [1.2, 2.7],
+            'DIS_AV_CMS': [0.5, 1.2],
+            'ORD_STRA': [2, 3],
+            'ORD_CLAS': [1, 1],
+            'ORD_FLOW': [6, 5],
+            'HYBAS_L12': [1001, 1002],
+        },
         geometry=[
-            box(-88.80, 39.65, -88.70, 39.75),
-            box(-86.95, 40.35, -86.80, 40.50),
+            LineString([(-88.78, 39.70), (-88.78, 39.68)]),
+            LineString([(-88.78, 39.68), (-88.78, 39.66)]),
         ],
         crs='EPSG:4326',
-    ).to_file(shp_file)
-
-    coords_csv = tmp_path / 'coords.csv'
-    pd.DataFrame(
-        {
-            'gauge_id': ['camels_001', 'camels_002'],
-            'latitude': [39.6828, 40.4172],
-            'longitude': [-88.7729, -86.8858],
-            'calculated_drain_area': [95.0, 210.0],
-        }
-    ).to_csv(coords_csv, index=False)
-
-    with pytest.raises(
-        FileNotFoundError, match='Coordinate CSV does not exist'
-    ):
-        build_bench_main(
-            [
-                '--shapes',
-                str(shapes_dir),
-                '--coords-csv',
-                str(tmp_path / 'nonexistent_coords.csv'),
-                '--world-geojson',
-                str(world_path),
-                '--output',
-                str(out_pq),
-            ]
-        )
-
-    # Sibling coordinates.csv must NOT be implicitly read when --coords-csv is omitted,
-    # and empty matched basins must raise ValueError instead of writing a 0-row file.
-    sibling_csv = shapes_dir / 'coordinates.csv'
-    sibling_csv.write_text(coords_csv.read_text(encoding='utf-8'), encoding='utf-8')
-    with pytest.raises(
-        ValueError, match='No valid benchmark basins matched'
-    ):
-        build_bench_main(
-            [
-                '--shapes',
-                str(shapes_dir),
-                '--world-geojson',
-                str(world_path),
-                '--output',
-                str(out_pq),
-            ]
-        )
-    assert not out_pq.exists()
-
-    rc = build_bench_main(
-        [
-            '--shapes',
-            str(shapes_dir),
-            '--coords-csv',
-            str(coords_csv),
-            '--world-geojson',
-            str(world_path),
-            '--output',
-            str(out_pq),
-        ]
     )
-    assert rc == 0
-    assert out_pq.is_file()
-    df = pd.read_parquet(out_pq)
-    assert len(df) == 2
-    assert set(df['gauge_id']) == {'camels_001', 'camels_002'}
-    assert 'geometry_wkt' in df.columns
-    assert 'reference_area_km2' in df.columns
+    rivers_gdf.to_file(rivers_shp)
+
+    basins_gdf = gpd.GeoDataFrame(
+        {
+            'HYBAS_ID': [1001, 1002],
+            'NEXT_DOWN': [1002, 0],
+            'NEXT_SINK': [1002, 1002],
+            'MAIN_BAS': [1002, 1002],
+            'DIST_SINK': [3.0, 0.0],
+            'DIST_MAIN': [3.0, 0.0],
+            'SUB_AREA': [1.2, 1.5],
+            'UP_AREA': [1.2, 2.7],
+            'PFAF_ID': [71201, 71202],
+            'ENDO': [0, 0],
+            'COAST': [0, 0],
+            'ORDER': [2, 3],
+            'SORT': [1, 2],
+        },
+        geometry=[
+            box(-88.79, 39.68, -88.77, 39.70),
+            box(-88.79, 39.66, -88.77, 39.68),
+        ],
+        crs='EPSG:4326',
+    )
+    basins_gdf.to_file(basins_dir / 'hybas_na_lev12_v1c.shp')
+    _write_synthetic_tile(dem_dir)
+
+    network = RiverNetwork.from_hydrorivers(rivers_shp)
+    reaches = network.query_reaches(
+        (-88.80, 39.65, -88.75, 39.71), min_stream_order=1
+    )
+    expected_reach_count = 2
+    assert len(reaches) == expected_reach_count
+
+    snap = network.snap_to_reach(39.67, -88.78)
+    expected_reach_id = 102
+    assert snap.reach.reach_id == expected_reach_id
+
+    unit_layer = HydroBasinsLayer(basins_dir)
+    vec_delin = UnitCatchmentDelineator(unit_layer)
+    vec_res = vec_delin.delineate_exact_pour_point(
+        1002, snap.lat, snap.lon, snap.reach.geometry
+    )
+    expected_outlet_unit_id = 1002
+    assert vec_res.outlet_unit_id == expected_outlet_unit_id
+    assert set(vec_res.unit_ids) == {1001, 1002}
+    assert vec_res.area_km2 == pytest.approx(5.7, rel=1e-3)
+    assert vec_res.geometry.bounds == (-88.79, 39.67, -88.77, 39.7)
+
+    dem_delin = DemDelineator(tiles_dir=dem_dir)
+    hyb_feat = delineate_hybrid(
+        dem_delin,
+        network,
+        39.6828,
+        -88.7729,
+    )
+    assert hyb_feat['type'] == 'Feature'
+    assert hyb_feat['properties']['area_km2'] == pytest.approx(
+        0.0329, abs=1e-4
+    )
+    bounds = shape(hyb_feat['geometry']).bounds
+    assert bounds[0] == pytest.approx(-88.77333333333333, abs=1e-5)
+    assert bounds[1] == pytest.approx(39.681666666666665, abs=1e-5)
+    assert bounds[2] == pytest.approx(-88.77083333333333, abs=1e-5)
+    assert bounds[3] == pytest.approx(39.68416666666667, abs=1e-5)
+
+
+@pytest.mark.unit
+def test_merit_d8_tile_download_with_custom_fetcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """download_merit_d8_tile assembles top and bottom halves atomically."""
+    top_half_lat = 45.0
+    bottom_half_d8 = 4
+
+    def mock_post(
+        url: str,
+        *,
+        data: bytes = b'',
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> MagicMock:
+        del url, headers, timeout
+        parsed = json.loads(data.decode('utf-8'))
+        lat = parsed['grid']['affineTransform']['translateY']
+        val = 1 if lat == top_half_lat else bottom_half_d8
+        arr = np.full((3000, 6000), val, dtype=np.uint8)
+
+        buf = io.BytesIO()
+        np.savez(buf, dir=arr)
+        buf.seek(0)
+
+        mock_resp = MagicMock()
+        mock_resp.content = buf.read()
+        mock_resp.raise_for_status.return_value = None
+        return mock_resp
+
+    monkeypatch.setattr('requests.post', mock_post)
+    monkeypatch.setattr(
+        merit_mod, '_get_access_token', lambda **_kwargs: 'fake_token'
+    )
+
+    out_path = download_merit_d8_tile(
+        45, -90, tmp_path, ee_project='test-ee-proj'
+    )
+    assert out_path == tmp_path / 'n45w090.npy'
+    loaded = np.load(out_path)
+    assert loaded.shape == (6000, 6000)
+    assert int(loaded[0, 0]) == 1
+    assert int(loaded[3000, 0]) == bottom_half_d8
+
+
+@pytest.mark.unit
+def test_elevation_registration_consistency(tmp_path: Path) -> None:
+    """ElevationTiles and GlobalElevationGrid map (lat, lon) identically."""
+    elv_dir = tmp_path / 'elv_tiles'
+    elv_dir.mkdir()
+    rng = np.random.default_rng(42)
+    tile_arr = rng.integers(100, 200, size=(6000, 6000), dtype=np.int16)
+    np.save(elv_dir / 'n40w090.npy', tile_arr)
+
+    global_npy = tmp_path / 'global.npy'
+    res_deg = 5.0 / 6000.0
+    np.save(global_npy, tile_arr.astype(np.float32))
+
+    tiles = ElevationTiles(elv_dir)
+    grid = GlobalElevationGrid(
+        global_npy,
+        res_deg=res_deg,
+        top_lat=40.0,
+        bottom_lat=35.0,
+        left_lon=-90.0,
+        right_lon=-85.0,
+    )
+
+    lats = np.array([39.999, 39.5, 38.001, 35.001])
+    lons = np.array([-89.999, -89.5, -86.001, -85.001])
+
+    tile_samp = tiles.sample(lats, lons)
+    grid_samp = grid.sample(lats, lons)
+
+    np.testing.assert_allclose(tile_samp, grid_samp, equal_nan=True)
+
+
+@pytest.mark.unit
+def test_antimeridian_query_reaches(tmp_path: Path) -> None:
+    """query_reaches must split bboxes crossing the 180 antimeridian."""
+    rivers_dir = tmp_path / 'rivers_anti'
+    rivers_dir.mkdir()
+    rivers_shp = rivers_dir / 'HydroRIVERS_v10_na.shp'
+    rivers_gdf = gpd.GeoDataFrame(
+        {
+            'HYRIV_ID': [1, 2],
+            'NEXT_DOWN': [0, 0],
+            'MAIN_RIV': [1, 2],
+            'LENGTH_KM': [1.0, 1.0],
+            'DIST_DN_KM': [0.0, 0.0],
+            'DIST_UP_KM': [1.0, 1.0],
+            'CATCH_SKM': [1.0, 1.0],
+            'UPLAND_SKM': [1.0, 1.0],
+            'DIS_AV_CMS': [1.0, 1.0],
+            'ORD_STRA': [1, 1],
+            'ORD_CLAS': [1, 1],
+            'ORD_FLOW': [1, 1],
+            'HYBAS_L12': [1, 2],
+        },
+        geometry=[
+            LineString([(179.9, 0.0), (179.95, 0.0)]),
+            LineString([(-179.9, 0.0), (-179.95, 0.0)]),
+        ],
+        crs='EPSG:4326',
+    )
+    rivers_gdf.to_file(rivers_shp)
+
+    network = RiverNetwork.from_hydrorivers(rivers_shp)
+    reaches = network.query_reaches((179.8, -1.0, -179.8, 1.0))
+    expected_reaches = 2
+    assert len(reaches) == expected_reaches
+    ids = {r.reach_id for r in reaches}
+    assert ids == {1, 2}

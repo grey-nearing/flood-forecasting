@@ -39,13 +39,17 @@ setup(
         'multimet',
         'multimet.utils',
         'multimet.catchment_delineation',
+        'multimet.catchment_delineation.tools',
         'multimet.static_extractor',
         'multimet.gridded_archive_builders',
         'multimet.timeseries_extractors',
+        'multimet.weather_fetcher',
         'maas',
         'maas.tools',
         'return_periods',
-        'return_periods.tools',
+        'utils',
+        'benchmarks',
+        'benchmarks.tools',
     ],
     package_data={
         'return_periods': ['*.csv'],
@@ -69,15 +73,25 @@ setup(
             'extract-multimet=multimet.timeseries_extractors.runner:main',
             'extract-multimet-dask=multimet.timeseries_extractors.dask_runner:main',
             'multimet-realtime=multimet.timeseries_extractors.realtime:main',
+            'sync-weather-forecasts=multimet.weather_fetcher.cli:main',
             'delineate-catchment=multimet.catchment_delineation.cli:main',
-            'benchmark-catchment=multimet.catchment_delineation.benchmark:main',
+            'download-merit-d8-tiles=multimet.catchment_delineation.tools.download_merit_d8_tiles:main',
             'extract-caravan-static=multimet.static_extractor.cli:main',
             'extract-static-attributes=multimet.static_extractor.cli:main',
             'extract-caravan-static-batch=multimet.static_extractor.batch_runner:main',
             'extract-static-attributes-batch=multimet.static_extractor.batch_runner:main',
+<<<<<<< HEAD
             'benchmark-static-extractor=multimet.static_extractor.benchmark:main',
             'fetch-maas-forecast=maas.cli:main',
             'benchmark-return-periods=return_periods.tools.run_caravan_usgs_benchmark:main',
+=======
+            'benchmark-catchment=benchmarks.catchment_delineation:main',
+            'benchmark-static-extractor=benchmarks.static_extractor:main',
+            'benchmark-gridded-archive=benchmarks.gridded_archive_builders:main',
+            'benchmark-timeseries-extractor=benchmarks.timeseries_extractors:main',
+            'benchmark-return-periods=benchmarks.return_periods:main',
+            'benchmark-model=benchmarks.model:main',
+>>>>>>> fork/main
         ]
     },
     python_requires='>=3.12',
@@ -113,6 +127,22 @@ setup(
         'xarray',
         'zarr',
     ],
+    extras_require={
+        'dynamical': [
+            'dynamical-catalog',
+            'icechunk',
+            'pystac',
+            'eccodes',
+        ],
+        # Downloading forecast runs with `sync-weather-forecasts`
+        # (multimet.weather_fetcher): the dynamical.org catalog (pystac) and
+        # its Icechunk/Zarr stores, plus GRIB2 decoding for ECMWF Open Data.
+        'weather': [
+            'pystac',
+            'icechunk',
+            'eccodes',
+        ],
+    },
     classifiers=[
         'Programming Language :: Python :: 3',
         'Operating System :: OS Independent',

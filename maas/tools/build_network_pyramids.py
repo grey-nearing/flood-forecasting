@@ -15,6 +15,7 @@
 """Offline builder for zoom-stratified river network `.npz` pyramids."""
 
 import argparse
+import logging
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -124,9 +125,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         models=models,
     )
     for model, sizes in counts.items():
-        print(
-            f'{model}: lines per level {sizes} ({time.time() - t0:.1f} s)',
-            flush=True,
+        logging.info(
+            f'{model}: lines per level {sizes} ({time.time() - t0:.1f} s)'
         )
     return 0
 

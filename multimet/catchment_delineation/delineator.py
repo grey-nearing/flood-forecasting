@@ -23,7 +23,7 @@ expected-area-guided pour-point snapping.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 import ctypes
 import gc
 import logging
@@ -43,18 +43,18 @@ from shapely.geometry import Polygon, mapping, shape
 from shapely.ops import unary_union
 
 from multimet.catchment_delineation.config import (
-    DEM_MAX_LAT,
-    DEM_MAX_LON,
-    DEM_MIN_LAT,
-    DEM_MIN_LON,
     INFLOW_MAP,
     RES_DEG,
     TILE_CELLS,
     TILE_DEG,
 )
+from multimet.catchment_delineation.datasets import (
+    HYDROSHEDS_90M,
+    DemDataset,
+    resolve_dem_dataset,
+)
 from multimet.catchment_delineation.gcs import download_tile_from_gcs
 from multimet.catchment_delineation.tiles import (
-    MIN_TILE_LAT_TOP,
     is_coord_in_coverage,
     is_tile_in_coverage,
     tile_key_to_filename,
@@ -229,11 +229,28 @@ class CatchmentAreaMismatchError(CatchmentCoverageError):
     """Raised when no channel matches a user-supplied expected_area_km2 hint."""
 
 
+def _format_delineation_method(dataset: DemDataset) -> str:
+    """Return the canonical delineation_method label for a DEM dataset."""
+    if dataset.id == 'hydrosheds_90m':
+        return (
+            'DEM Digital Elevation Flow-Routing '
+            '(90m HydroSHEDS Multi-Tile Seamless Grid)'
+        )
+    if dataset.id == 'merit_hydro_90m':
+        return (
+            'DEM Digital Elevation Flow-Routing '
+            '(90m MERIT-Hydro Multi-Tile Seamless Grid)'
+        )
+    return f'DEM Digital Elevation Flow-Routing ({dataset.name})'
+
+
 def build_missing_feature(
     lat: float,
     lon: float,
     catchment_id: str | None,
     reason: str,
+    *,
+    dataset: DemDataset = HYDROSHEDS_90M,
 ) -> dict[str, Any]:
     """Build an explicit NaN/None Feature for missing or out-of-domain input."""
     nan_val = float('nan')
@@ -246,7 +263,9 @@ def build_missing_feature(
             'area': nan_val,
             'upstream_cells_count': None,
             'tiles_spanned_count': None,
-            'grid_resolution': '90m (3 arc-second)',
+            'grid_resolution': dataset.resolution_label,
+            'dem_id': dataset.id,
+            'dem_name': dataset.name,
             'outlet': {
                 'input_latitude': lat,
                 'input_longitude': lon,
@@ -257,10 +276,7 @@ def build_missing_feature(
             },
             'reach_attributes': None,
             'bbox': None,
-            'delineation_method': (
-                'DEM Digital Elevation Flow-Routing '
-                '(90m HydroSHEDS Multi-Tile Seamless Grid)'
-            ),
+            'delineation_method': _format_delineation_method(dataset),
             'delineation_mode': 'dem_flow_direction',
             'status': f'MISSING_DATA: {reason}',
         },
@@ -292,17 +308,30 @@ def _trace_downstream_chain(
 
 
 class DemDelineator:
-    """Multi-tile DEM watershed delineator using D8 flow-direction rasters."""
+    """Multi-tile DEM watershed delineator using D8 flow-direction rasters.
+
+    Note:
+        Instances reuse pre-allocated internal scratch buffers (`_q_buf`,
+        `_b_r`, `_b_c`, `_b_req`) across BFS calls and are **not thread-safe**.
+        Multi-threaded callers must guard each instance with a lock or use one
+        instance per thread.
+    """
 
     def __init__(
         self,
         tiles_dir: str | Path | None = None,
         *,
+        dataset: DemDataset | str = HYDROSHEDS_90M,
         cache_tiles: bool = True,
         gcs_uri: str | None = None,
         cache_dir: str | Path | None = None,
+        tile_fetcher: Callable[[int, int, Path], Path] | None = None,
     ) -> None:
         """Initialize the DEM delineator with explicit user-supplied I/O paths."""
+        self.dataset: DemDataset = resolve_dem_dataset(dataset)
+        self.dem_id: str = self.dataset.id
+        self.tile_fetcher = tile_fetcher
+
         if tiles_dir is not None and is_gcs_path(tiles_dir):
             if gcs_uri is not None:
                 raise ValueError(
@@ -316,10 +345,11 @@ class DemDelineator:
                 'Provide either tiles_dir (local) or gcs_uri (GCS), not both.'
             )
 
-        if tiles_dir is None and gcs_uri is None:
+        if tiles_dir is None and gcs_uri is None and tile_fetcher is None:
             raise ValueError(
                 'An explicit tile source is required: pass tiles_dir '
-                '(local directory) or gcs_uri + cache_dir.'
+                '(local directory) or gcs_uri + cache_dir (or tile_fetcher + '
+                'cache_dir).'
             )
 
         if tiles_dir is not None:
@@ -337,10 +367,13 @@ class DemDelineator:
         else:
             if cache_dir is None:
                 raise ValueError(
-                    'An explicit cache_dir is required when using gcs_uri.'
+                    'An explicit cache_dir is required when using gcs_uri '
+                    'or tile_fetcher without tiles_dir.'
                 )
             self.tiles_dir = None
-            self.gcs_uri = normalize_gcs_path(gcs_uri)  # type: ignore[arg-type]
+            self.gcs_uri = (
+                normalize_gcs_path(gcs_uri) if gcs_uri is not None else None
+            )
             resolved_cache = Path(cache_dir).expanduser().resolve()
             self._created_cache_dir = not resolved_cache.exists()
             self.cache_dir = resolved_cache
@@ -383,15 +416,22 @@ class DemDelineator:
             return self._tile_cache[key]
 
         tile_name = tile_key_to_filename(tile_lat, tile_lon)
-        if not is_tile_in_coverage(tile_lat, tile_lon):
+        if not is_tile_in_coverage(tile_lat, tile_lon, dataset=self.dataset):
             raise CatchmentCoverageError(
-                f'DEM tile {tile_name} is outside the global DEM coverage '
-                f'domain ({DEM_MIN_LAT}° to {DEM_MAX_LAT}° latitude, '
-                f'{DEM_MIN_LON}° to {DEM_MAX_LON}° longitude).'
+                f'DEM tile {tile_name} is outside the {self.dataset.name} '
+                f'coverage domain ({self.dataset.min_lat}° to '
+                f'{self.dataset.max_lat}° latitude, {self.dataset.min_lon}° '
+                f'to {self.dataset.max_lon}° longitude).'
             )
 
         if self.tiles_dir is not None:
             local_npy = self.tiles_dir / tile_name
+            if not local_npy.exists() and self.tile_fetcher is not None:
+                target = self.cache_dir or self.tiles_dir
+                dl_path = self.tile_fetcher(tile_lat, tile_lon, target)
+                if dl_path is not None and Path(dl_path).is_file():
+                    local_npy = Path(dl_path)
+                    self.created_cache_files.add(local_npy)
             if not local_npy.exists():
                 raise FileNotFoundError(
                     f'Missing flow direction tile for ({tile_lat}, {tile_lon}) '
@@ -400,20 +440,28 @@ class DemDelineator:
             tile_path = local_npy
         else:
             assert self.cache_dir is not None
-            assert self.gcs_uri is not None
             tile_path = self.cache_dir / tile_name
             if not tile_path.is_file():
-                dl_path = download_tile_from_gcs(
-                    tile_lat,
-                    tile_lon,
-                    target_dir=self.cache_dir,
-                    source_uri=self.gcs_uri,
-                    created_files=self.created_cache_files,
-                )
+                if self.tile_fetcher is not None:
+                    dl_path = self.tile_fetcher(
+                        tile_lat, tile_lon, self.cache_dir
+                    )
+                    if dl_path is not None and Path(dl_path).is_file():
+                        self.created_cache_files.add(Path(dl_path))
+                else:
+                    assert self.gcs_uri is not None
+                    dl_path = download_tile_from_gcs(
+                        tile_lat,
+                        tile_lon,
+                        target_dir=self.cache_dir,
+                        source_uri=self.gcs_uri,
+                        created_files=self.created_cache_files,
+                    )
                 if dl_path is None or not Path(dl_path).exists():
+                    source_desc = self.gcs_uri or 'tile_fetcher'
                     raise FileNotFoundError(
                         f'Missing flow direction tile for ({tile_lat}, '
-                        f'{tile_lon}) in {self.gcs_uri} '
+                        f'{tile_lon}) in {source_desc} '
                         f'(expected {tile_name}).'
                     )
                 tile_path = Path(dl_path)
@@ -437,12 +485,13 @@ class DemDelineator:
                 f'Pour point coordinates ({lat}, {lon}) are missing or '
                 'non-finite. Catchment cannot be delineated.'
             )
-        if not is_coord_in_coverage(lat, lon):
+        if not is_coord_in_coverage(lat, lon, dataset=self.dataset):
             return (
                 f'Pour point coordinates ({lat:.4f}, {lon:.4f}) are outside '
-                f'the global DEM coverage domain ({DEM_MIN_LAT}° to '
-                f'{DEM_MAX_LAT}° latitude, {DEM_MIN_LON}° to {DEM_MAX_LON}° '
-                'longitude). Catchment cannot be delineated.'
+                f'the global DEM coverage domain ({self.dataset.min_lat}° to '
+                f'{self.dataset.max_lat}° latitude, {self.dataset.min_lon}° '
+                f'to {self.dataset.max_lon}° longitude). Catchment cannot be '
+                'delineated.'
             )
         return None
 
@@ -516,17 +565,20 @@ class DemDelineator:
     def _format_out_of_coverage_msg(
         self, nt_lat: int, nt_lon: int, t_lon: int, cc_src: int
     ) -> str:
-        if nt_lat > int(DEM_MAX_LAT):
+        min_tile_lat_top = int(
+            round(math.ceil((self.dataset.min_lat + 1e-9) / TILE_DEG) * TILE_DEG)
+        )
+        if nt_lat > int(self.dataset.max_lat):
             return (
                 'Watershed extends north past the DEM coverage boundary '
-                f'({DEM_MAX_LAT}°N) at longitude '
+                f'({self.dataset.max_lat}°N) at longitude '
                 f'{t_lon + cc_src * RES_DEG:.4f}°. Delineation stopped to '
                 'prevent returning a partial catchment.'
             )
-        if nt_lat < MIN_TILE_LAT_TOP:
+        if nt_lat < min_tile_lat_top:
             return (
                 'Watershed extends south past the DEM coverage boundary '
-                f'({DEM_MIN_LAT}°S) at longitude '
+                f'({self.dataset.min_lat}°S) at longitude '
                 f'{t_lon + cc_src * RES_DEG:.4f}°. Delineation stopped to '
                 'prevent returning a partial catchment.'
             )
@@ -625,7 +677,9 @@ class DemDelineator:
                         cc -= TILE_CELLS
                         nt_lon += int(TILE_DEG)
 
-                    if not is_tile_in_coverage(nt_lat, nt_lon):
+                    if not is_tile_in_coverage(
+                        nt_lat, nt_lon, dataset=self.dataset
+                    ):
                         msg = self._format_out_of_coverage_msg(
                             nt_lat, nt_lon, t_lon, cc_src
                         )
@@ -763,7 +817,9 @@ class DemDelineator:
                                     cc -= TILE_CELLS
                                     nt_lon += int(TILE_DEG)
 
-                                if not is_tile_in_coverage(nt_lat, nt_lon):
+                                if not is_tile_in_coverage(
+                                    nt_lat, nt_lon, dataset=self.dataset
+                                ):
                                     msg = self._format_out_of_coverage_msg(
                                         nt_lat, nt_lon, t_lon, cc_src
                                     )
@@ -1166,7 +1222,9 @@ class DemDelineator:
                 'tiles_spanned_count': sum(
                     1 for m in visited_tiles.values() if m.any()
                 ),
-                'grid_resolution': '90m (3 arc-second)',
+                'grid_resolution': self.dataset.resolution_label,
+                'dem_id': self.dataset.id,
+                'dem_name': self.dataset.name,
                 'outlet': {
                     'input_latitude': lat,
                     'input_longitude': lon,
@@ -1186,10 +1244,7 @@ class DemDelineator:
                     'upstream_area_km2': total_area_km2,
                 },
                 'bbox': bbox_dict,
-                'delineation_method': (
-                    'DEM Digital Elevation Flow-Routing '
-                    '(90m HydroSHEDS Multi-Tile Seamless Grid)'
-                ),
+                'delineation_method': _format_delineation_method(self.dataset),
                 'delineation_mode': 'dem_flow_direction',
                 'status': 'SUCCESS',
             },
@@ -1348,7 +1403,11 @@ class DemDelineator:
                     lon,
                     reason,
                 )
-                features.append(build_missing_feature(lat, lon, cid, reason))
+                features.append(
+                    build_missing_feature(
+                        lat, lon, cid, reason, dataset=self.dataset
+                    )
+                )
 
         return {
             'type': 'FeatureCollection',
@@ -1419,6 +1478,7 @@ def delineate_dem(
     lon: float,
     tiles_dir: str | Path | None = None,
     *,
+    dataset: DemDataset | str = HYDROSHEDS_90M,
     gcs_uri: str | None = None,
     cache_dir: str | Path | None = None,
     snap_window_cells: int = 12,
@@ -1429,7 +1489,10 @@ def delineate_dem(
 ) -> dict[str, Any]:
     """Delineate a catchment from (lat, lon) using explicit DEM tile paths."""
     delineator = DemDelineator(
-        tiles_dir=tiles_dir, gcs_uri=gcs_uri, cache_dir=cache_dir
+        tiles_dir=tiles_dir,
+        dataset=dataset,
+        gcs_uri=gcs_uri,
+        cache_dir=cache_dir,
     )
     return delineator.delineate(
         lat=lat,
@@ -1449,6 +1512,7 @@ def delineate_coordinates(
     coords: Iterable[tuple[float, float]],
     tiles_dir: str | Path | None = None,
     *,
+    dataset: DemDataset | str = HYDROSHEDS_90M,
     gcs_uri: str | None = None,
     cache_dir: str | Path | None = None,
     ids: Iterable[str | None] | None = None,
@@ -1459,7 +1523,10 @@ def delineate_coordinates(
 ) -> dict[str, Any]:
     """Delineate multiple catchments from coordinate tuples."""
     delineator = DemDelineator(
-        tiles_dir=tiles_dir, gcs_uri=gcs_uri, cache_dir=cache_dir
+        tiles_dir=tiles_dir,
+        dataset=dataset,
+        gcs_uri=gcs_uri,
+        cache_dir=cache_dir,
     )
     return delineator.delineate_batch(
         coords=coords,

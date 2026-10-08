@@ -14,6 +14,7 @@
 
 """Unit and integration tests for Caravan Static Attributes Extractor."""
 
+import dataclasses
 import json
 from pathlib import Path
 import geopandas as gpd
@@ -24,16 +25,31 @@ import shapely.geometry
 import zarr
 
 from multimet.static_extractor import (
+    ATTRIBUTE_CATEGORIES,
     ATTRIBUTE_DEFINITIONS,
+    ATTRIBUTE_REGISTRY,
+    CARAVAN_CLIMATE_ALIASES,
+    CARAVAN_CLIMATE_COLUMNS,
     MAJORITY_PROPERTIES,
+    POUR_POINT_PROPERTIES,
+    AttributeDefinition,
+    CatchmentAttributes,
     StaticAttributesExtractor,
+    UnknownAttributeWarning,
+    UnsupportedHydroATLASLevelError,
     calculate_fao_pm_pet,
     calculate_knoben_moisture_and_seasonality,
     compute_caravan_climate_metrics,
     compute_pour_point_properties,
+    expand_caravan_climate_aliases,
+    get_attribute_definition,
+    to_physical_units,
+    unknown_attribute_keys,
 )
 from multimet.static_extractor.cli import main as cli_main, parse_args
 from multimet.static_extractor.extractor import _worker_extract_polygon
+
+pytestmark = pytest.mark.unit
 
 
 def test_schema_definitions():
@@ -51,29 +67,77 @@ def test_schema_definitions():
 
 
 def test_fao_pm_pet_calculation():
-  """Tests FAO-56 Penman-Monteith daily reference evapotranspiration."""
+  """Tests FAO-56 Penman-Monteith daily reference evapotranspiration across radiation units."""
   dates = pd.date_range("2020-01-01", periods=5, freq="D")
   sp = pd.Series([101.3] * 5, index=dates)
   t2m = pd.Series([20.0, 25.0, 15.0, 30.0, 10.0], index=dates)
   d2m = pd.Series([15.0, 18.0, 10.0, 20.0, 5.0], index=dates)
   u10 = pd.Series([2.0] * 5, index=dates)
   v10 = pd.Series([1.5] * 5, index=dates)
-  ssr = pd.Series([800000.0] * 5, index=dates)
-  str_s = pd.Series([200000.0] * 5, index=dates)
 
-  pet = calculate_fao_pm_pet(
+  # Default W/m^2 (e.g. 200 W/m^2 solar + -50 W/m^2 thermal = 150 W/m^2 = 12.96 MJ/m^2/day)
+  ssr_wm2 = pd.Series([200.0] * 5, index=dates)
+  str_wm2 = pd.Series([-50.0] * 5, index=dates)
+  pet_wm2 = calculate_fao_pm_pet(
       surface_pressure_kpa=sp,
       temperature_2m_c=t2m,
       dewpoint_temperature_2m_c=d2m,
       u_component_of_wind_10m=u10,
       v_component_of_wind_10m=v10,
-      surface_net_solar_radiation_mean=ssr,
-      surface_net_thermal_radiation_mean=str_s,
+      surface_net_solar_radiation_mean=ssr_wm2,
+      surface_net_thermal_radiation_mean=str_wm2,
   )
+  expected_et0 = np.array(
+      [3.96304676, 4.74326908, 3.49355904, 5.65530986, 3.0010607]
+  )
+  np.testing.assert_allclose(pet_wm2.values, expected_et0, rtol=1e-6)
 
-  assert len(pet) == 5
-  assert (pet >= 0.0).all()
-  assert 2.0 <= pet.mean() <= 8.0
+  # Equivalent daily accumulated J/m^2/day (W/m^2 * 86400), hourly J/m^2/hr (W/m^2 * 3600), and MJ/m^2/day
+  pet_jm2_day = calculate_fao_pm_pet(
+      surface_pressure_kpa=sp,
+      temperature_2m_c=t2m,
+      dewpoint_temperature_2m_c=d2m,
+      u_component_of_wind_10m=u10,
+      v_component_of_wind_10m=v10,
+      surface_net_solar_radiation_mean=ssr_wm2 * 86400.0,
+      surface_net_thermal_radiation_mean=str_wm2 * 86400.0,
+      radiation_units="J/m^2/day",
+  )
+  pet_jm2_hr = calculate_fao_pm_pet(
+      surface_pressure_kpa=sp,
+      temperature_2m_c=t2m,
+      dewpoint_temperature_2m_c=d2m,
+      u_component_of_wind_10m=u10,
+      v_component_of_wind_10m=v10,
+      surface_net_solar_radiation_mean=ssr_wm2 * 3600.0,
+      surface_net_thermal_radiation_mean=str_wm2 * 3600.0,
+      radiation_units="J/m^2/hr",
+  )
+  pet_mjm2_day = calculate_fao_pm_pet(
+      surface_pressure_kpa=sp,
+      temperature_2m_c=t2m,
+      dewpoint_temperature_2m_c=d2m,
+      u_component_of_wind_10m=u10,
+      v_component_of_wind_10m=v10,
+      surface_net_solar_radiation_mean=ssr_wm2 * 0.0864,
+      surface_net_thermal_radiation_mean=str_wm2 * 0.0864,
+      radiation_units="MJ/m^2/day",
+  )
+  np.testing.assert_allclose(pet_wm2.values, pet_jm2_day.values, rtol=1e-6)
+  np.testing.assert_allclose(pet_wm2.values, pet_jm2_hr.values, rtol=1e-6)
+  np.testing.assert_allclose(pet_wm2.values, pet_mjm2_day.values, rtol=1e-6)
+
+  with pytest.raises(ValueError, match="Unsupported radiation_units"):
+    calculate_fao_pm_pet(
+        surface_pressure_kpa=sp,
+        temperature_2m_c=t2m,
+        dewpoint_temperature_2m_c=d2m,
+        u_component_of_wind_10m=u10,
+        v_component_of_wind_10m=v10,
+        surface_net_solar_radiation_mean=ssr_wm2,
+        surface_net_thermal_radiation_mean=str_wm2,
+        radiation_units="ergs/cm^2",
+    )
 
 
 def test_knoben_moisture_and_seasonality():
@@ -245,13 +309,20 @@ def test_extract_attributes_for_polygon_end_to_end(tmp_path):
   }
 
   res = extractor.extract_attributes_for_polygon(feature, era5_source="hybas")
-  assert res["catchment_id"] == "test_basin_01"
-  assert res["intersected_subbasins_count"] == 2
+  assert isinstance(res, CatchmentAttributes)
+  assert res.catchment_id == "test_basin_01"
+  assert res.n_subbasins == 2
+  assert set(res.subbasin_ids) == {712000001, 712000002}
+  assert len(res.subbasin_weights_km2) == 2 and all(w > 0 for w in res.subbasin_weights_km2)
+  assert res.era5_source == "hybas"
+  assert res.baseline_years == (1981, 2020)
+  assert res.area_km2 > 0 and np.isclose(res.area_km2, res.attributes["basin_area"])
 
-  attrs = res["caravan_attributes"]
+  attrs = res.attributes
   assert np.isclose(attrs["ele_mt_sav"], 350.0, rtol=1e-3)
   assert np.isclose(attrs["slp_dg_sav"], 25.0, rtol=1e-3)
   assert np.isclose(attrs["area_fraction_used_for_aggregation"], 1.0)
+  assert np.isclose(res.area_fraction_used_for_aggregation, 1.0)
 
   assert attrs["glc_cl_smj"] == 12
   assert attrs["clz_cl_smj"] == 9
@@ -265,9 +336,27 @@ def test_extract_attributes_for_polygon_end_to_end(tmp_path):
   assert np.isclose(attrs["pet_mean_ERA5_LAND"], 4.0, rtol=1e-3)
   assert np.isclose(attrs["aridity_ERA5_LAND"], 1.0, rtol=1e-3)
 
+  # Native values are never scaled by the extractor; physical units come from the registry.
+  # tmp_dc_syr: 100 and 200 (tenths of °C) area-weighted 0.25/0.75 -> 175 -> 17.5 °C
+  assert np.isclose(attrs["tmp_dc_syr"], 175.0, rtol=1e-3)
+  phys = res.physical_units()
+  assert np.isclose(phys["tmp_dc_syr"], 17.5, rtol=1e-3)
+  assert np.isclose(phys["slp_dg_sav"], 2.5, rtol=1e-3)
+  assert np.isclose(phys["ele_mt_sav"], 350.0, rtol=1e-3)
+  assert phys["glc_cl_smj"] == 12
+
+  # Result mapping is read-only; conversions round-trip.
+  with pytest.raises(TypeError):
+    res.attributes["ele_mt_sav"] = 0.0  # type: ignore[index]
+  series = res.to_series()
+  assert series.name == "test_basin_01" and np.isclose(series["ele_mt_sav"], 350.0)
+  rebuilt = CatchmentAttributes.from_dict(res.to_dict())
+  assert rebuilt == res
+
   # Gridded mode: both FAO-PM (2.0) and ERA5-Land (4.0) come from the Zarr store
   res_gridded = extractor.extract_attributes_for_polygon(query_poly, catchment_id="b_grid", era5_source="gridded")
-  g_attrs = res_gridded["caravan_attributes"]
+  assert res_gridded.era5_source == "gridded"
+  g_attrs = res_gridded.attributes
   assert np.isclose(g_attrs["p_mean"], 4.0)
   assert np.isclose(g_attrs["pet_mean"], 2.0)
   assert np.isclose(g_attrs["pet_mean_FAO_PM"], 2.0)
@@ -286,7 +375,8 @@ def test_extract_attributes_for_polygon_end_to_end(tmp_path):
       index=dates,
   )
   res_ts = extractor.extract_attributes_for_polygon(query_poly, catchment_id="b_ts", timeseries_df=ts_df)
-  ts_attrs = res_ts["caravan_attributes"]
+  assert res_ts.era5_source == "timeseries"
+  ts_attrs = res_ts.attributes
   assert np.isclose(ts_attrs["pet_mean"], 2.5)
   assert np.isclose(ts_attrs["pet_mean_FAO_PM"], 2.5)
   assert np.isnan(ts_attrs["pet_mean_ERA5_LAND"])
@@ -295,17 +385,19 @@ def test_extract_attributes_for_polygon_end_to_end(tmp_path):
   # Non-intersecting polygon returns NaN (never substitutes nearest sub-basin)
   non_inter_poly = shapely.geometry.box(-89.0, 40.1, -88.5, 40.5)
   res_no_inter = extractor.extract_attributes_for_polygon(non_inter_poly, catchment_id="offshore", era5_source="hybas")
-  assert res_no_inter["intersected_subbasins_count"] == 0
-  assert res_no_inter["caravan_attributes"]["area_fraction_used_for_aggregation"] == 0.0
-  assert np.isnan(res_no_inter["caravan_attributes"]["ele_mt_sav"])
-  assert np.isnan(res_no_inter["caravan_attributes"]["dis_m3_pyr"])
+  assert res_no_inter.n_subbasins == 0
+  assert res_no_inter.subbasin_ids == ()
+  assert res_no_inter.attributes["area_fraction_used_for_aggregation"] == 0.0
+  assert np.isnan(res_no_inter.attributes["ele_mt_sav"])
+  assert np.isnan(res_no_inter.attributes["dis_m3_pyr"])
 
   # High min_overlap_threshold filtering all slivers returns NaN
   res_filtered = extractor.extract_attributes_for_polygon(
       query_poly, catchment_id="filtered", min_overlap_threshold=1e6, era5_source="hybas"
   )
-  assert res_filtered["caravan_attributes"]["area_fraction_used_for_aggregation"] == 0.0
-  assert np.isnan(res_filtered["caravan_attributes"]["ele_mt_sav"])
+  assert res_filtered.min_overlap_threshold_km2 == 1e6
+  assert res_filtered.attributes["area_fraction_used_for_aggregation"] == 0.0
+  assert np.isnan(res_filtered.attributes["ele_mt_sav"])
 
   # Omitting era5_source when timeseries_df is not provided must raise ValueError
   with pytest.raises(ValueError, match="era5_source must be explicitly specified"):
@@ -335,9 +427,30 @@ def test_extract_attributes_batch_and_file_io(tmp_path):
       ]
   )
   assert len(batch_res) == 2
-  assert np.isclose(batch_res[0]["caravan_attributes"]["ele_mt_sav"], 200.0)
-  assert np.isclose(batch_res[1]["caravan_attributes"]["ele_mt_sav"], 400.0)
-  assert np.isnan(batch_res[0]["caravan_attributes"]["pet_mean_ERA5_LAND"])
+  assert all(isinstance(r, CatchmentAttributes) for r in batch_res)
+  assert [r.catchment_id for r in batch_res] == ["g1", "g2"]
+  assert np.isclose(batch_res[0].attributes["ele_mt_sav"], 200.0)
+  assert np.isclose(batch_res[1].attributes["ele_mt_sav"], 400.0)
+  assert np.isnan(batch_res[0].attributes["pet_mean_ERA5_LAND"])
+
+  # export_caravan_csv consumes typed results: basin_area first, remaining columns sorted
+  csv_df = extractor.export_caravan_csv(batch_res)
+  assert csv_df.index.name == "gauge_id"
+  assert list(csv_df.index) == ["g1", "g2"]
+  assert list(csv_df.columns)[0] == "basin_area"
+  assert list(csv_df.columns)[1:] == sorted(csv_df.columns[1:])
+  assert set(csv_df.columns) == set(batch_res[0].attributes.keys())
+
+  # Single-pass gridded batch returns new merged results (results are immutable)
+  batch_gridded = extractor.extract_attributes_batch(
+      [
+          {"type": "Feature", "properties": {"gauge_id": "g1"}, "geometry": shapely.geometry.mapping(b1)},
+      ],
+      era5_source="gridded",
+  )
+  assert batch_gridded[0].era5_source == "gridded"
+  assert np.isclose(batch_gridded[0].attributes["p_mean"], 4.0)
+  assert np.isclose(batch_gridded[0].attributes["ele_mt_sav"], 200.0)
 
   basins_gdf = gpd.GeoDataFrame({"gauge_id": ["g1", "g2"]}, geometry=[b1, b2], crs="EPSG:4326")
   geojson_path = tmp_path / "input_basins.geojson"
@@ -363,15 +476,16 @@ def test_extract_attributes_batch_and_file_io(tmp_path):
 
   # GeoDataFrame and raw geometry dict inputs
   res_gdf = extractor.extract_attributes_for_polygon(basins_gdf.iloc[[0]])
-  assert res_gdf["catchment_id"] == "g1"
+  assert res_gdf.catchment_id == "g1"
   res_geom_dict = extractor.extract_attributes_for_polygon(
       shapely.geometry.mapping(b1), catchment_id="explicit_id"
   )
-  assert res_geom_dict["catchment_id"] == "explicit_id"
+  assert res_geom_dict.catchment_id == "explicit_id"
 
   # Worker function and export_caravan_csv with DataFrame
   w_res = _worker_extract_polygon((b1, "w1", 0.0, "hybas", str(shp_path), str(era5_cache), str(zarr_dir), False))
-  assert w_res["catchment_id"] == "w1"
+  assert isinstance(w_res, CatchmentAttributes)
+  assert w_res.catchment_id == "w1"
   assert extractor.export_caravan_csv(df).shape == df.shape
 
   # Missing/unreachable Zarr store or GDB path must raise an error instead of returning silent NaNs
@@ -513,13 +627,22 @@ def test_era5_gridded_extractor_synthetic(tmp_path):
   p_arr.attrs["units"] = "m"
   temp_arr = root_u.create_array("era5land_temperature_2m", data=np.full((n_times, len(lats), len(lons)), 288.15, dtype=np.float32))
   temp_arr.attrs["units"] = "K"
-  pet_arr = root_u.create_array("era5land_potential_evaporation_FAO_PENMAN_MONTEITH", data=np.full((n_times, len(lats), len(lons)), -0.002, dtype=np.float32))
+  pet_arr = root_u.create_array(
+      "era5land_potential_evaporation_FAO_PENMAN_MONTEITH",
+      data=np.full((n_times, len(lats), len(lons)), 0.002, dtype=np.float32),
+  )
   pet_arr.attrs["units"] = "m"
+  pev_arr = root_u.create_array(
+      "potential_evaporation",
+      data=np.full((n_times, len(lats), len(lons)), -0.004, dtype=np.float32),
+  )
+  pev_arr.attrs["units"] = "m"
 
   ext_u = ERA5GriddedExtractor(zarr_uri=str(zarr_units_dir))
   m_u = ext_u.extract_climate_metrics_for_polygon(poly, baseline_years=None)
   assert np.isclose(m_u["p_mean"], 4.0)
   assert np.isclose(m_u["pet_mean_FAO_PM"], 2.0)
+  assert np.isclose(m_u["pet_mean_ERA5_LAND"], 4.0)
   assert m_u["frac_snow"] == 0.0
 
 
@@ -554,54 +677,6 @@ def test_batch_runner_discovery(tmp_path):
   # Nonexistent input file must raise FileNotFoundError
   with pytest.raises(FileNotFoundError):
     discover_datasets(input_files=[str(tmp_path / "missing.shp")])
-
-
-def test_benchmark_metrics_continuous():
-  """Tests continuous statistical validation metrics calculation."""
-  from multimet.static_extractor.benchmark import compute_continuous_metrics
-
-  y_true = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
-  y_pred = np.array([10.1, 19.9, 30.2, 39.8, 50.1])
-
-  res = compute_continuous_metrics(y_true, y_pred)
-  assert res["n"] == 5
-  assert res["pearson_r"] > 0.999
-  assert res["spearman_rho"] == 1.0
-  assert res["r2"] > 0.999
-  assert res["mae"] < 0.2
-  assert res["rmse"] < 0.2
-  assert res["max_abs_error"] == 0.2
-  assert res["med_rel_error_pct"] < 1.0
-  assert res["max_rel_error_pct"] < 1.5
-
-
-def test_benchmark_metrics_categorical():
-  """Tests categorical classification accuracy calculation."""
-  from multimet.static_extractor.benchmark import compute_categorical_metrics
-
-  y_true = np.array([1, 2, 3, 4, 5, 2, 1, 3])
-  y_pred = np.array([1, 2, 3, 4, 5, 2, 1, 4])
-
-  res = compute_categorical_metrics(y_true, y_pred)
-  assert res["n"] == 8
-  assert res["accuracy_pct"] == 87.5
-  assert res["classes_count"] == 5
-
-
-def test_benchmark_attribute_categorization():
-  """Tests categorization of all standard attribute names."""
-  from multimet.static_extractor.benchmark import get_attribute_category
-
-  assert get_attribute_category("ele_mt_sav") == "Topography"
-  assert get_attribute_category("tmp_dc_syr") == "Climate (HydroATLAS)"
-  assert get_attribute_category("p_mean") == "Caravan ERA5 Climate"
-  assert get_attribute_category("aridity_ERA5_LAND") == "Caravan ERA5 Climate"
-  assert get_attribute_category("run_mm_syr") == "Hydrology"
-  assert get_attribute_category("cly_pc_sav") == "Soils & Geology"
-  assert get_attribute_category("for_pc_sse") == "Land Cover"
-  assert get_attribute_category("ppd_pk_sav") == "Anthropogenic"
-  assert get_attribute_category("glc_cl_smj") == "Land Cover"
-  assert get_attribute_category("wet_cl_smj") == "Hydrology"
 
 
 def test_batch_runner_gcs_output_and_args(tmp_path, monkeypatch):
@@ -639,23 +714,22 @@ def test_batch_runner_gcs_output_and_args(tmp_path, monkeypatch):
   monkeypatch.setattr("multimet.static_extractor.batch_runner.upload_to_gcs", mock_upload)
   monkeypatch.setattr("multimet.static_extractor.batch_runner.gcs_path_exists", lambda uri: False)
 
-  dummy_df = pd.DataFrame({"basin_id": ["b1"], "ele_mt_sav": [100.0]})
-  dummy_shp = tmp_path / "test.shp"
-  dummy_shp.write_text("dummy")
-
-  mock_extractor = MagicMock()
-  mock_extractor.extract_attributes_from_file.return_value = dummy_df
-  monkeypatch.setattr(
-      "multimet.static_extractor.batch_runner.StaticAttributesExtractor",
-      lambda **kwargs: mock_extractor,
+  shp_path, era5_cache, _ = _build_synthetic_hydroatlas_env(
+      tmp_path, include_native_pet=False
   )
+  dummy_shp = tmp_path / "test_query.shp"
+  gpd.GeoDataFrame(
+      {"gauge_id": ["b1"]},
+      geometry=[shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)],
+      crs="EPSG:4326",
+  ).to_file(dummy_shp)
 
   results = run_batch_extraction(
       dataset_map={"test_ds": dummy_shp},
       output_dir="gs://open-multimet/data/caravan_static_attributes/",
-      gdb_path=tmp_path / "BasinATLAS_v10.gdb",
+      gdb_path=shp_path,
       era5_source="hybas",
-      era5_cache_dir=tmp_path / "era5",
+      era5_cache_dir=era5_cache,
       workers=1,
       staging_cache_dir=tmp_path / "staged",
       combine=True,
@@ -743,7 +817,6 @@ def test_export_subdataset_partitioned_files(tmp_path):
 
 def test_batch_runner_partition_outputs(tmp_path, monkeypatch):
   """Verifies that partition_outputs=True partitions output per dataset and supports resume."""
-  from unittest.mock import MagicMock
   from multimet.static_extractor.batch_runner import run_batch_extraction
 
   uploaded_uris = []
@@ -753,30 +826,24 @@ def test_batch_runner_partition_outputs(tmp_path, monkeypatch):
   monkeypatch.setattr("multimet.static_extractor.batch_runner.upload_to_gcs", mock_upload)
   monkeypatch.setattr("multimet.static_extractor.batch_runner.gcs_path_exists", lambda uri: False)
 
+  shp_path, era5_cache, _ = _build_synthetic_hydroatlas_env(
+      tmp_path, include_native_pet=False
+  )
   ds_dir = tmp_path / "camels"
   ds_dir.mkdir()
   dummy_shp = ds_dir / "camels_basin_shapes.shp"
-  dummy_shp.write_text("dummy")
-
-  dummy_df = pd.DataFrame(
-      {"basin_area": [150.0], "ele_mt_sav": [300.0], "p_mean": [3.2]},
-      index=["camels_01"],
-  )
-  dummy_df.index.name = "gauge_id"
-
-  mock_extractor = MagicMock()
-  mock_extractor.extract_attributes_from_file.return_value = dummy_df
-  monkeypatch.setattr(
-      "multimet.static_extractor.batch_runner.StaticAttributesExtractor",
-      lambda **kwargs: mock_extractor,
-  )
+  gpd.GeoDataFrame(
+      {"gauge_id": ["camels_01"]},
+      geometry=[shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)],
+      crs="EPSG:4326",
+  ).to_file(dummy_shp)
 
   results = run_batch_extraction(
       dataset_map={"camels": dummy_shp},
       output_dir="gs://my-bucket/attributes/",
-      gdb_path=tmp_path / "BasinATLAS_v10.gdb",
+      gdb_path=shp_path,
       era5_source="hybas",
-      era5_cache_dir=tmp_path / "era5",
+      era5_cache_dir=era5_cache,
       workers=1,
       staging_cache_dir=tmp_path / "staged",
       partition_outputs=True,
@@ -796,9 +863,9 @@ def test_batch_runner_partition_outputs(tmp_path, monkeypatch):
   results_resume = run_batch_extraction(
       dataset_map={"camels": dummy_shp},
       output_dir="gs://my-bucket/attributes/",
-      gdb_path=tmp_path / "BasinATLAS_v10.gdb",
+      gdb_path=shp_path,
       era5_source="hybas",
-      era5_cache_dir=tmp_path / "era5",
+      era5_cache_dir=era5_cache,
       workers=1,
       staging_cache_dir=tmp_path / "staged",
       partition_outputs=True,
@@ -850,6 +917,28 @@ def test_append_attributes_to_zarr_validation(tmp_path):
   assert "caravan_ele_mt_sav" in ds_reloaded
   assert np.isclose(float(ds_reloaded["caravan_ele_mt_sav"].values[0]), 250.0)
   assert np.isnan(float(ds_reloaded["caravan_ele_mt_sav"].values[1]))
+  ds_reloaded.close()
+
+  # A typed extraction result can be appended directly.
+  typed = CatchmentAttributes(
+      catchment_id="b2",
+      attributes={"ele_mt_sav": 410.0, "glc_cl_smj": 12, "basin_area": 42.0},
+      area_km2=42.0,
+      area_fraction_used_for_aggregation=1.0,
+  )
+  extractor.append_attributes_to_zarr(master_zarr_path=zarr_path, basin_id="b2", attributes=typed)
+  ds_typed = xr.open_zarr(str(zarr_path))
+  assert np.isclose(float(ds_typed["caravan_ele_mt_sav"].values[1]), 410.0)
+  assert np.isclose(float(ds_typed["caravan_glc_cl_smj"].values[1]), 12.0)
+  assert np.isclose(float(ds_typed["caravan_basin_area"].values[1]), 42.0)
+  assert np.isclose(float(ds_typed["caravan_ele_mt_sav"].values[0]), 250.0)  # b1 untouched
+  ds_typed.close()
+
+  # Empty payloads are rejected.
+  with pytest.raises(ValueError):
+    extractor.append_attributes_to_zarr(master_zarr_path=zarr_path, basin_id="b1", attributes={})
+  with pytest.raises(ValueError):
+    extractor.append_attributes_to_zarr(master_zarr_path=zarr_path, basin_id="b1")
 
 
 def test_no_silent_fallbacks_or_masked_errors(tmp_path):
@@ -858,8 +947,8 @@ def test_no_silent_fallbacks_or_masked_errors(tmp_path):
 
   zarr_path = tmp_path / "synthetic_era5.zarr"
   root = zarr.open(str(zarr_path), mode="w")
-  lats = np.array([10.0, 11.0], dtype=np.float64)
-  lons = np.array([20.0, 21.0], dtype=np.float64)
+  lats = np.linspace(10.0, 11.0, 11, dtype=np.float64)
+  lons = np.linspace(20.0, 21.0, 11, dtype=np.float64)
   times = np.arange(10, dtype=np.int64)
   lat_arr = root.create_array("latitude", shape=lats.shape, dtype=lats.dtype)
   lat_arr[:] = lats
@@ -868,10 +957,14 @@ def test_no_silent_fallbacks_or_masked_errors(tmp_path):
   t_arr = root.create_array("time", shape=times.shape, dtype=times.dtype)
   t_arr[:] = times
   t_arr.attrs["units"] = "days since 2022-01-01"
-  p_arr = root.create_array("total_precipitation", shape=(10, 2, 2), dtype=np.float32)
+  p_arr = root.create_array(
+      "total_precipitation", shape=(10, 11, 11), dtype=np.float32
+  )
   p_arr[:] = 2.0
   p_arr.attrs["units"] = "mm"
-  temp_arr = root.create_array("temperature_2m", shape=(10, 2, 2), dtype=np.float32)
+  temp_arr = root.create_array(
+      "temperature_2m", shape=(10, 11, 11), dtype=np.float32
+  )
   temp_arr[:] = 15.0
   temp_arr.attrs["units"] = "degC"
 
@@ -964,7 +1057,8 @@ def test_no_download_in_memory_cloud_streaming(tmp_path, monkeypatch):
 
   query_poly = shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)
   res_cloud = ext_cloud.extract_attributes_for_polygon(query_poly, catchment_id="cloud_01")
-  attrs = res_cloud["caravan_attributes"]
+  assert res_cloud.n_subbasins == 2
+  attrs = res_cloud.attributes
   assert np.isclose(attrs["ele_mt_sav"], 350.0, rtol=1e-3)
   assert np.isclose(attrs["slp_dg_sav"], 25.0, rtol=1e-3)
   assert attrs["glc_cl_smj"] == 12
@@ -982,7 +1076,20 @@ def test_no_download_in_memory_cloud_streaming(tmp_path, monkeypatch):
       no_download=True,
   )
   res_single = ext_single_gpq.extract_attributes_for_polygon(query_poly, catchment_id="cloud_02")
-  assert np.isclose(res_single["caravan_attributes"]["ele_mt_sav"], 350.0, rtol=1e-3)
+  assert np.isclose(res_single.attributes["ele_mt_sav"], 350.0, rtol=1e-3)
+
+  # Plain sub-basin queries work against in-memory and partitioned cloud sources (Level 12 only)
+  assert ext_single_gpq.available_levels == (12,)
+  assert ext_cloud.available_levels == (12,)
+  sub_mem = ext_single_gpq.read_subbasins((-87.1, 39.9, -84.9, 41.1), columns=["ele_mt_sav"])
+  assert sorted(sub_mem["HYBAS_ID"].tolist()) == [712000001, 712000002]
+  assert list(sub_mem.columns) == ["HYBAS_ID", "ele_mt_sav", "geometry"]
+  sub_part = ext_cloud.read_subbasins((-87.1, 39.9, -84.9, 41.1), columns=["ele_mt_sav"])
+  assert sorted(sub_part["HYBAS_ID"].tolist()) == [712000001, 712000002]
+  assert sub_part.crs is not None and sub_part.crs.to_epsg() == 4326
+  sub_none = ext_cloud.read_subbasins((10.0, 10.0, 11.0, 11.0), columns=["ele_mt_sav"])
+  assert len(sub_none) == 0
+  assert list(sub_none.columns) == ["HYBAS_ID", "ele_mt_sav", "geometry"]
 
   # Test CLI with --no-download and no --gdb-path or --era5-cache-dir
   in_geojson = tmp_path / "query.geojson"
@@ -1002,4 +1109,351 @@ def test_no_download_in_memory_cloud_streaming(tmp_path, monkeypatch):
   df_out = pd.read_csv(out_csv, index_col=0)
   assert np.isclose(df_out.loc["cloud_cli", "ele_mt_sav"], 350.0, rtol=1e-3)
   assert np.isclose(df_out.loc["cloud_cli", "p_mean"], 4.5, rtol=1e-3)
+
+
+def test_timeseries_df_era5land_columns_and_on_the_fly_fao_pm(tmp_path):
+  """Tests timeseries_df extraction with era5land_* column names, unit normalization, Caravan PET sign rules, and on-the-fly FAO-PM PET."""
+  shp_path, era5_cache, _ = _build_synthetic_hydroatlas_env(tmp_path)
+  extractor = StaticAttributesExtractor(gdb_path=shp_path, era5_cache_dir=era5_cache)
+  query_poly = shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)
+
+  dates = pd.date_range("2000-01-01", periods=365, freq="D")
+  df_met = pd.DataFrame(
+      {
+          "era5land_total_precipitation": np.full(365, 3.0),
+          "era5land_temperature_2m": np.full(365, 18.0),
+          "era5land_dewpoint_temperature_2m": np.full(365, 12.0),
+          "era5land_surface_pressure": np.full(365, 98.0),
+          "era5land_surface_net_solar_radiation": np.full(365, 180.0),
+          "era5land_surface_net_thermal_radiation": np.full(365, -60.0),
+          "era5land_u_component_of_wind_10m": np.full(365, 1.5),
+          "era5land_v_component_of_wind_10m": np.full(365, 1.0),
+          "era5land_potential_evaporation_DEPRECATED": np.full(365, -8.5),
+      },
+      index=dates,
+  )
+
+  # 1. On-the-fly FAO-PM PET when era5land_potential_evaporation_FAO_PENMAN_MONTEITH is absent
+  res_on_fly = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="ts_on_fly", timeseries_df=df_met
+  ).attributes
+  assert np.isclose(res_on_fly["p_mean"], 3.0, atol=1e-4)
+  assert np.isclose(res_on_fly["pet_mean_ERA5_LAND"], 8.5, atol=1e-4)
+  assert res_on_fly["pet_mean_FAO_PM"] > 1.5
+  assert not np.isnan(res_on_fly["aridity_FAO_PM"])
+  assert not np.isnan(res_on_fly["moisture_index_FAO_PM"])
+  assert not np.isnan(res_on_fly["seasonality_FAO_PM"])
+
+  # 2. Explicit pre-computed era5land_potential_evaporation_FAO_PENMAN_MONTEITH column matches
+  df_with_fao = df_met.copy()
+  df_with_fao["era5land_potential_evaporation_FAO_PENMAN_MONTEITH"] = calculate_fao_pm_pet(
+      surface_pressure_kpa=df_met["era5land_surface_pressure"],
+      temperature_2m_c=df_met["era5land_temperature_2m"],
+      dewpoint_temperature_2m_c=df_met["era5land_dewpoint_temperature_2m"],
+      u_component_of_wind_10m=df_met["era5land_u_component_of_wind_10m"],
+      v_component_of_wind_10m=df_met["era5land_v_component_of_wind_10m"],
+      surface_net_solar_radiation_mean=df_met["era5land_surface_net_solar_radiation"],
+      surface_net_thermal_radiation_mean=df_met["era5land_surface_net_thermal_radiation"],
+  )
+  res_explicit = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="ts_explicit", timeseries_df=df_with_fao
+  ).attributes
+  assert np.isclose(res_on_fly["pet_mean_FAO_PM"], res_explicit["pet_mean_FAO_PM"], atol=1e-4)
+  assert np.isclose(res_on_fly["aridity_FAO_PM"], res_explicit["aridity_FAO_PM"], atol=1e-4)
+
+  # 3. All-NaN era5land_potential_evaporation_FAO_PENMAN_MONTEITH column triggers on-the-fly FAO-PM calculation
+  df_nan_fao = df_met.copy()
+  df_nan_fao["era5land_potential_evaporation_FAO_PENMAN_MONTEITH"] = np.nan
+  res_nan_fao = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="ts_nan_fao", timeseries_df=df_nan_fao
+  ).attributes
+  assert np.isclose(res_nan_fao["pet_mean_FAO_PM"], res_on_fly["pet_mean_FAO_PM"], atol=1e-4)
+
+  # 4. Pa -> kPa and K -> degC automatic unit conversion in timeseries_df
+  df_pa_k = df_met.copy()
+  df_pa_k["era5land_surface_pressure"] = 98000.0
+  df_pa_k["era5land_temperature_2m"] = 18.0 + 273.15
+  df_pa_k["era5land_dewpoint_temperature_2m"] = 12.0 + 273.15
+  res_pa_k = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="ts_pa_k", timeseries_df=df_pa_k
+  ).attributes
+  assert np.isclose(res_pa_k["pet_mean_FAO_PM"], res_on_fly["pet_mean_FAO_PM"], atol=1e-4)
+
+  # 5. Kratzert Caravan PET sign convention: preserve negative winter condensation days when series mean > 0
+  pet_caravan = np.full(365, 2.0)
+  pet_caravan[:30] = -0.2  # 30 winter condensation days; exact mean = (335*2.0 - 30*0.2)/365 = 1.819178
+  df_condensation = df_met.copy()
+  df_condensation["era5land_potential_evaporation_DEPRECATED"] = pet_caravan
+  res_cond = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="ts_cond", timeseries_df=df_condensation
+  ).attributes
+  assert np.isclose(res_cond["pet_mean_ERA5_LAND"], float(np.mean(pet_caravan)), atol=1e-5)
+
+
+def test_gridded_era5_on_the_fly_fao_pm_pet(tmp_path):
+  """Tests ERA5GriddedExtractor computing FAO-PM PET from raw meteorological bands when pre-baked FAO_PM band is absent or all-NaN."""
+  shp_path, _, _ = _build_synthetic_hydroatlas_env(tmp_path)
+  zarr_dir = tmp_path / "gridded_raw_met.zarr"
+  root = zarr.open_group(str(zarr_dir), mode="w")
+  n_times = 60
+  lats = np.linspace(39.8, 41.2, 15, dtype=np.float32)
+  lons = np.linspace(-87.2, -84.8, 25, dtype=np.float32)
+  root.create_array("latitude", data=lats)
+  root.create_array("longitude", data=lons)
+  time_arr = root.create_array("time", data=np.arange(n_times, dtype=np.int64))
+  time_arr.attrs["units"] = "days since 2000-01-01"
+
+  shape = (n_times, len(lats), len(lons))
+  root.create_array("era5land_total_precipitation", data=np.full(shape, 3.0, dtype=np.float32))
+  t_arr = root.create_array("era5land_temperature_2m", data=np.full(shape, 18.0 + 273.15, dtype=np.float32))
+  t_arr.attrs["units"] = "K"
+  d_arr = root.create_array("era5land_dewpoint_temperature_2m", data=np.full(shape, 12.0 + 273.15, dtype=np.float32))
+  d_arr.attrs["units"] = "K"
+  sp_arr = root.create_array("era5land_surface_pressure", data=np.full(shape, 98000.0, dtype=np.float32))
+  sp_arr.attrs["units"] = "Pa"
+  root.create_array("era5land_surface_net_solar_radiation", data=np.full(shape, 180.0, dtype=np.float32))
+  root.create_array("era5land_surface_net_thermal_radiation", data=np.full(shape, -60.0, dtype=np.float32))
+  root.create_array("era5land_u_component_of_wind_10m", data=np.full(shape, 1.5, dtype=np.float32))
+  root.create_array("era5land_v_component_of_wind_10m", data=np.full(shape, 1.0, dtype=np.float32))
+  root.create_array("era5land_potential_evaporation_DEPRECATED", data=np.full(shape, -8.5, dtype=np.float32))
+  # Include an all-NaN FAO_PENMAN_MONTEITH band to verify fallback to on-the-fly calculation
+  root.create_array("era5land_potential_evaporation_FAO_PENMAN_MONTEITH", data=np.full(shape, np.nan, dtype=np.float32))
+
+  extractor = StaticAttributesExtractor(
+      gdb_path=shp_path,
+      gridded_era5_uri=str(zarr_dir),
+      era5_source="gridded",
+  )
+  query_poly = shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)
+  res = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="gridded_raw_01", era5_source="gridded"
+  ).attributes
+  assert np.isclose(res["p_mean"], 3.0, atol=1e-4)
+  assert np.isclose(res["pet_mean_ERA5_LAND"], 8.5, atol=1e-4)
+  assert res["pet_mean_FAO_PM"] > 1.5
+  assert not np.isnan(res["aridity_FAO_PM"])
+  assert not np.isnan(res["moisture_index_FAO_PM"])
+  assert not np.isnan(res["seasonality_FAO_PM"])
+
+
+def test_read_subbasins_plain_geospatial_query(tmp_path):
+  """read_subbasins returns native, unscaled, untruncated sub-basins as a GeoDataFrame."""
+  shp_path, era5_cache, _ = _build_synthetic_hydroatlas_env(tmp_path, include_native_pet=False)
+  extractor = StaticAttributesExtractor(
+      gdb_path=shp_path,
+      era5_cache_dir=era5_cache,
+      era5_source="hybas",
+  )
+
+  # A shapefile source only provides Level 12.
+  assert extractor.available_levels == (12,)
+
+  bbox = (-87.1, 39.9, -84.9, 41.1)
+  gdf = extractor.read_subbasins(bbox, columns=["HYBAS_ID", "tmp_dc_syr"])
+  assert isinstance(gdf, gpd.GeoDataFrame)
+  assert list(gdf.columns) == ["HYBAS_ID", "tmp_dc_syr", "geometry"]
+  assert gdf.crs is not None and gdf.crs.to_epsg() == 4326
+  assert sorted(gdf["HYBAS_ID"].tolist()) == [712000001, 712000002]
+  # Native HydroATLAS encoding (tenths of degC) is returned untouched; scaling is explicit.
+  assert sorted(gdf["tmp_dc_syr"].tolist()) == [100.0, 200.0]
+  assert gdf.geometry.notna().all() and not gdf.geometry.is_empty.any()
+  phys = to_physical_units({"tmp_dc_syr": float(gdf["tmp_dc_syr"].mean())})
+  assert np.isclose(phys["tmp_dc_syr"], 15.0)
+
+  # HYBAS_ID is always included; geometry is always returned.
+  gdf_one = extractor.read_subbasins(bbox, columns=["ele_mt_sav"])
+  assert list(gdf_one.columns) == ["HYBAS_ID", "ele_mt_sav", "geometry"]
+
+  # columns=None returns every column of the source.
+  gdf_all = extractor.read_subbasins(bbox)
+  assert len(gdf_all) == 2
+  assert {"HYBAS_ID", "NEXT_DOWN", "SUB_AREA", "ele_mt_sav", "geometry"} <= set(gdf_all.columns)
+
+  # Partial overlap only returns the intersecting sub-basin; non-overlapping returns an empty typed frame.
+  gdf_west = extractor.read_subbasins((-86.9, 40.2, -86.5, 40.8), columns=["ele_mt_sav"])
+  assert gdf_west["HYBAS_ID"].tolist() == [712000001]
+  gdf_none = extractor.read_subbasins((-89.0, 40.1, -88.5, 40.5), columns=["ele_mt_sav"])
+  assert len(gdf_none) == 0
+  assert list(gdf_none.columns) == ["HYBAS_ID", "ele_mt_sav", "geometry"]
+  assert gdf_none.crs is not None and gdf_none.crs.to_epsg() == 4326
+
+  # Unknown columns and unavailable levels are errors, never silently ignored.
+  with pytest.raises(ValueError, match="Unknown HydroATLAS level 12 column"):
+    extractor.read_subbasins(bbox, columns=["not_a_column"])
+  with pytest.raises(UnsupportedHydroATLASLevelError, match="level 8 is not available"):
+    extractor.read_subbasins(bbox, level=8)
+  with pytest.raises(UnsupportedHydroATLASLevelError):
+    extractor.read_subbasins(bbox, level="twelve")
+
+  # The library never clamps or reorders a caller's bounding box.
+  for bad_bbox in [
+      (-87.1, 39.9, -84.9),  # wrong arity
+      (-84.9, 39.9, -87.1, 41.1),  # min_lon > max_lon
+      (-87.1, 41.1, -84.9, 39.9),  # min_lat > max_lat
+      (-181.0, 39.9, -84.9, 41.1),  # out of range longitude
+      (-87.1, -91.0, -84.9, 41.1),  # out of range latitude
+      (-87.1, float("nan"), -84.9, 41.1),  # non-finite
+      (-87.1, 40.0, -87.1, 41.0),  # degenerate (zero width)
+  ]:
+    with pytest.raises(ValueError):
+      extractor.read_subbasins(bad_bbox)
+
+
+def test_read_subbasin_climate_indices_table(tmp_path):
+  """Precomputed ERA5 climate indices are exposed as a plain DataFrame keyed by HYBAS_ID."""
+  shp_path, era5_cache, _ = _build_synthetic_hydroatlas_env(tmp_path, include_native_pet=False)
+  extractor = StaticAttributesExtractor(
+      gdb_path=shp_path,
+      era5_cache_dir=era5_cache,
+      era5_source="hybas",
+  )
+
+  table = extractor.read_subbasin_climate_indices([712000002, 712000001, 712000099])
+  assert isinstance(table, pd.DataFrame)
+  assert table.index.name == "HYBAS_ID"
+  assert table.index.tolist() == [712000002, 712000001, 712000099]  # requested order is preserved
+  assert list(table.columns) == list(CARAVAN_CLIMATE_COLUMNS)
+  assert len(table.columns) == 18
+  assert np.isclose(table.loc[712000001, "pet_mean"], 1.5)
+  assert np.isclose(table.loc[712000002, "pet_mean"], 2.5)
+  # FAO-PM aliases are filled from their canonical columns ...
+  assert np.isclose(table.loc[712000001, "pet_mean_FAO_PM"], 1.5)
+  assert np.isclose(table.loc[712000002, "aridity_FAO_PM"], 0.5)
+  # ... ERA5-Land variants are distinct and absent from the precomputed tables.
+  assert np.isnan(table.loc[712000001, "pet_mean_ERA5_LAND"])
+  # Native fraction is returned, not a percentage.
+  assert np.isclose(table.loc[712000001, "frac_snow"], 0.1)
+  assert np.isclose(table.loc[712000002, "frac_snow"], 0.3)
+  # Unknown ids give an all-NaN row rather than being dropped.
+  assert table.loc[712000099].isna().all()
+  # Empty request -> empty, correctly shaped frame.
+  empty = extractor.read_subbasin_climate_indices([])
+  assert len(empty) == 0 and list(empty.columns) == list(CARAVAN_CLIMATE_COLUMNS)
+
+  # Unknown continent prefix is an error; a continent without a climate table is an error too
+  # (never a silent NaN row).
+  with pytest.raises(ValueError, match="Unrecognized continent prefix"):
+    extractor.read_subbasin_climate_indices([0])
+  with pytest.raises(FileNotFoundError):
+    extractor.read_subbasin_climate_indices([112000001])  # 'af' table is not in the synthetic cache
+
+  # Without a precomputed climate source the method refuses rather than returning NaNs.
+  no_climate = StaticAttributesExtractor(gdb_path=shp_path)
+  with pytest.raises(ValueError, match="era5_cache_dir"):
+    no_climate.read_subbasin_climate_indices([712000001])
+
+  # Alias expansion helper is pure and total over CARAVAN_CLIMATE_COLUMNS.
+  expanded = expand_caravan_climate_aliases({"pet_mean": 2.0, "aridity": 0.4})
+  assert set(expanded) == set(CARAVAN_CLIMATE_COLUMNS)
+  assert expanded["pet_mean_FAO_PM"] == 2.0 and expanded["aridity_FAO_PM"] == 0.4
+  assert np.isnan(expanded["p_mean"])
+  assert CARAVAN_CLIMATE_ALIASES["pet_mean_FAO_PM"] == "pet_mean"
+
+
+def test_attribute_registry_and_physical_units():
+  """The attribute registry is the single source of truth for units; scaling is explicit and lossless."""
+  # Legacy read-only view still answers the old questions.
+  assert ATTRIBUTE_DEFINITIONS["tmp_dc_s01"]["category"] == "Climate"
+  assert ATTRIBUTE_DEFINITIONS["tmp_dc_s01"]["scale"] == 0.1
+  assert ATTRIBUTE_DEFINITIONS["tmp_dc_s01"]["unit"] == "°C"
+  assert ATTRIBUTE_DEFINITIONS["glc_pc_s22"]["category"] == "Land Cover"
+  with pytest.raises(TypeError):
+    ATTRIBUTE_DEFINITIONS["tmp_dc_s01"] = {}  # type: ignore[index]
+
+  # Typed registry entries.
+  tmp = get_attribute_definition("tmp_dc_syr")
+  assert isinstance(tmp, AttributeDefinition)
+  assert tmp.key == "tmp_dc_syr" and tmp.scale == 0.1 and tmp.physical_unit == "°C"
+  assert tmp.category in ATTRIBUTE_CATEGORIES
+  assert tmp.source == "hydroatlas" and tmp.aggregation == "area_weighted_mean"
+  assert get_attribute_definition("not_an_attribute") is None
+  assert ATTRIBUTE_REGISTRY["basin_area"].physical_unit == "km²"
+
+  # Categorical (majority) HydroATLAS classes and pour-point metrics carry their aggregation rule.
+  # Class codes are identity-scaled (1.0); ``None`` is reserved for "scale unknown".
+  for key in MAJORITY_PROPERTIES:
+    assert ATTRIBUTE_REGISTRY[key].aggregation == "majority", key
+    assert ATTRIBUTE_REGISTRY[key].scale == 1.0, key
+  for key in POUR_POINT_PROPERTIES:
+    assert ATTRIBUTE_REGISTRY[key].aggregation == "pour_point_sum", key
+  # Every Caravan climate index is registered as an ERA5 climate attribute.
+  for key in CARAVAN_CLIMATE_COLUMNS:
+    assert ATTRIBUTE_REGISTRY[key].source == "era5_climate", key
+  assert ATTRIBUTE_REGISTRY["frac_snow"].scale == 100.0
+  assert ATTRIBUTE_REGISTRY["high_prec_freq"].scale == 365.25
+  assert ATTRIBUTE_REGISTRY["hdi_ix_sav"].scale == 0.001
+
+  # Scaling: multiplies by the registered factor, leaves integers/classes alone, no rounding.
+  phys = to_physical_units({"tmp_dc_syr": 100, "frac_snow": 0.1, "glc_cl_smj": 4, "slp_dg_sav": 123.4567})
+  assert np.isclose(phys["tmp_dc_syr"], 10.0)
+  assert np.isclose(phys["frac_snow"], 10.0)
+  assert phys["glc_cl_smj"] == 4 and isinstance(phys["glc_cl_smj"], int)
+  assert np.isclose(phys["slp_dg_sav"], 12.34567)
+  # Missing values stay NaN.
+  assert np.isnan(to_physical_units({"tmp_dc_syr": np.nan})["tmp_dc_syr"])
+  assert np.isnan(to_physical_units({"tmp_dc_syr": None})["tmp_dc_syr"])
+
+  # Unknown keys: pass through with a single warning, or raise in strict mode.
+  assert unknown_attribute_keys({"tmp_dc_syr": 1, "mystery": 2, "other": 3}) == ("mystery", "other")
+  with pytest.warns(UnknownAttributeWarning):
+    passthrough = to_physical_units({"tmp_dc_syr": 100, "mystery": 7})
+  assert passthrough["mystery"] == 7 and np.isclose(passthrough["tmp_dc_syr"], 10.0)
+  with pytest.raises(KeyError):
+    to_physical_units({"mystery": 7}, strict=True)
+
+
+def test_catchment_attributes_container_round_trip():
+  """CatchmentAttributes is immutable, picklable-by-structure and round-trips through to_dict/from_dict."""
+  res = CatchmentAttributes(
+      catchment_id=12345,
+      attributes={"basin_area": 10.0, "area": 10.0, "tmp_dc_syr": 150.0, "glc_cl_smj": 4, "p_mean": np.nan},
+      area_km2=10.0,
+      area_fraction_used_for_aggregation=0.9,
+      subbasin_ids=[712000001, 712000002],
+      subbasin_weights_km2=[6.0, 3.0],
+      min_overlap_threshold_km2=0.5,
+      era5_source="hybas",
+  )
+  assert res.catchment_id == "12345"
+  assert res.n_subbasins == 2
+  assert res.subbasin_ids == (712000001, 712000002)
+  with pytest.raises(dataclasses.FrozenInstanceError):
+    res.area_km2 = 1.0  # type: ignore[misc]
+  with pytest.raises(TypeError):
+    res.attributes["tmp_dc_syr"] = 0.0  # type: ignore[index]
+
+  updated = res.with_attributes({"p_mean": 3.0})
+  assert np.isnan(res.attributes["p_mean"]) and updated.attributes["p_mean"] == 3.0
+
+  d = res.to_dict()
+  assert d["catchment_id"] == "12345" and d["subbasin_ids"] == [712000001, 712000002]
+  assert isinstance(d["attributes"], dict)
+  payload = json.loads(
+      json.dumps({
+          **d,
+          "attributes": {
+              k: (None if (isinstance(v, float) and np.isnan(v)) else v)
+              for k, v in d["attributes"].items()
+          },
+      })
+  )
+  rebuilt = CatchmentAttributes.from_dict(payload)
+  assert payload["attributes"]["p_mean"] is None  # caller dict not mutated
+  assert rebuilt.catchment_id == res.catchment_id
+  assert rebuilt.subbasin_ids == res.subbasin_ids
+  assert rebuilt.subbasin_weights_km2 == res.subbasin_weights_km2
+  assert rebuilt.era5_source == "hybas" and rebuilt.min_overlap_threshold_km2 == 0.5
+  assert np.isnan(rebuilt.attributes["p_mean"])  # JSON null -> NaN
+  assert rebuilt.attributes["tmp_dc_syr"] == 150.0
+
+  phys = res.physical_units()
+  assert np.isclose(phys["tmp_dc_syr"], 15.0) and phys["glc_cl_smj"] == 4
+  series = res.to_series()
+  assert series.name == "12345" and series["basin_area"] == 10.0
+
+  with pytest.raises(ValueError):
+    CatchmentAttributes(catchment_id="x", attributes={}, area_km2=1.0,
+                        area_fraction_used_for_aggregation=1.0, subbasin_ids=(1,), subbasin_weights_km2=())
+  with pytest.raises(ValueError):
+    CatchmentAttributes.from_dict({"catchment_id": "x"})
 

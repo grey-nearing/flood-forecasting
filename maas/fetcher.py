@@ -19,15 +19,15 @@ Provides `MaaSDataFetcher` and functional entry points (`resolve_reaches`,
 without any UI presentation, color-coding, or map-corridor rendering logic.
 """
 
-from collections.abc import Mapping, Sequence
 import concurrent.futures
-from contextlib import closing
-from datetime import UTC, datetime
 import json
-from pathlib import Path
 import sqlite3
 import threading
 import time
+from collections.abc import Mapping, Sequence
+from contextlib import closing
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -108,7 +108,7 @@ class SQLiteCache:
         self._ensure_initialized()
         with closing(sqlite3.connect(str(self.db_path), timeout=5)) as conn:
             row = conn.execute(
-                f'SELECT payload, created_at FROM {self.table_name} '  # noqa: S608
+                f'SELECT payload, created_at FROM {self.table_name} '
                 'WHERE cache_key = ?',
                 (cache_key,),
             ).fetchone()
@@ -126,7 +126,7 @@ class SQLiteCache:
         self._ensure_initialized()
         with closing(sqlite3.connect(str(self.db_path), timeout=5)) as conn:
             conn.execute(
-                f'INSERT OR REPLACE INTO {self.table_name} '  # noqa: S608
+                f'INSERT OR REPLACE INTO {self.table_name} '
                 '(cache_key, payload, created_at) VALUES (?, ?, ?)',
                 (cache_key, json.dumps(dict(payload)), time.time()),
             )
@@ -228,7 +228,7 @@ def _get_cached_geoglows_lookup(attrs_path: Path) -> tuple[Any, Any] | None:
         return lookup
 
 
-def resolve_reaches(  # noqa: PLR0913
+def resolve_reaches(
     lat: float,
     lon: float,
     config: MaaSConfig,
@@ -392,7 +392,7 @@ def fetch_gauges(
     )
 
 
-def fetch_historical(  # noqa: PLR0913
+def fetch_historical(
     config: MaaSConfig,
     provider: str,
     *,
@@ -474,6 +474,7 @@ def fetch_historical(  # noqa: PLR0913
         client = GeoGLOWSClient(
             base_url=config.geoglows_base_url,
             timeout_s=max(config.http_timeout_s, 30.0),
+            cache_dir=config.cache_dir,
         )
         url = f'{client.base_url}/retrospectivedaily/{rid}'
         resp = client.session.get(
@@ -510,7 +511,7 @@ def fetch_historical(  # noqa: PLR0913
     )
 
 
-def fetch_return_periods(  # noqa: PLR0913
+def fetch_return_periods(
     config: MaaSConfig,
     provider: str,
     *,
@@ -615,6 +616,7 @@ def fetch_return_periods(  # noqa: PLR0913
         client = GeoGLOWSClient(
             base_url=config.geoglows_base_url,
             timeout_s=config.http_timeout_s,
+            cache_dir=config.cache_dir,
         )
         rp = client.fetch_official_return_periods(rid)
         if rp is None:
@@ -630,7 +632,7 @@ def fetch_return_periods(  # noqa: PLR0913
     )
 
 
-def fetch_forecasts(  # noqa: PLR0913
+def fetch_forecasts(
     config: MaaSConfig,
     lat: float,
     lon: float,
@@ -697,6 +699,7 @@ def fetch_forecasts(  # noqa: PLR0913
         gg_client = GeoGLOWSClient(
             base_url=config.geoglows_base_url,
             timeout_s=config.http_timeout_s,
+            cache_dir=config.cache_dir,
         )
         eff_rid = (
             int(river_id)
@@ -768,6 +771,7 @@ class MaaSDataFetcher:
         self.geoglows = GeoGLOWSClient(
             base_url=config.geoglows_base_url,
             timeout_s=config.http_timeout_s,
+            cache_dir=config.cache_dir,
         )
         self.flood_cache = SQLiteCache(
             config.cache_dir / 'maas_flood_cache.sqlite',
@@ -811,7 +815,7 @@ class MaaSDataFetcher:
         """Compute or fetch `[2, 5, 10, 20, 50, 100]`-yr return period thresholds."""
         return fetch_return_periods(self.config, provider, **kwargs)
 
-    def fetch_forecasts(  # noqa: PLR0913
+    def fetch_forecasts(
         self,
         lat: float,
         lon: float,
@@ -869,16 +873,9 @@ class MaaSDataFetcher:
             gauge_meta: dict[str, Any] | None = None
             if not gid:
                 target_area = reaches['probe'].get('upstream_area_km2')
-                try:
-                    gid, gauge_meta, dist_km = self.floodhub.find_nearest_gauge(
-                        fh_lat, fh_lon, target_area_km2=target_area
-                    )
-                except TypeError:
-                    gid, gauge_meta, dist_km = self.floodhub.find_nearest_gauge(
-                        fh_lat, fh_lon
-                    )
-                except Exception:  # noqa: BLE001
-                    gid = None
+                gid, gauge_meta, dist_km = self.floodhub.find_nearest_gauge(
+                    fh_lat, fh_lon, target_area_km2=target_area
+                )
             if not gid:
                 return None, None
             is_live_fh = not hasattr(self.floodhub.fetch_forecast, '_mock_name')
@@ -887,16 +884,7 @@ class MaaSDataFetcher:
                 cached_fh = self.flood_cache.get(fh_cache_key, max_age_s=1800)
                 if isinstance(cached_fh, dict) and cached_fh.get('status') == 'live':
                     return cached_fh, gid
-            try:
-                fc = self.floodhub.fetch_forecast(gid)
-            except Exception:  # noqa: BLE001
-                fc = {
-                    'model': 'google_floodhub',
-                    'available': False,
-                    'status': 'unavailable',
-                    'gauge_id': gid,
-                    'data': [],
-                }
+            fc = self.floodhub.fetch_forecast(gid)
             enriched = self.floodhub.enrich_forecast_status(
                 gid,
                 fc,
@@ -929,33 +917,20 @@ class MaaSDataFetcher:
                     and gl_fc_cached.get('status') == 'live'
                 ):
                     return gl_fc_cached
-                try:
-                    res_fc = self.glofas.fetch_forecast(
-                        gl_query_lat, gl_query_lon, forecast_days=15
-                    )
-                    if is_live_gl and res_fc.get('status') == 'live':
-                        self.flood_cache.put(fc_key, res_fc)
-                    return res_fc
-                except Exception:  # noqa: BLE001
-                    return {
-                        'model': 'copernicus_glofas',
-                        'available': False,
-                        'status': 'unavailable',
-                        'lat': gl_query_lat,
-                        'lon': gl_query_lon,
-                        'data': [],
-                    }
+                res_fc = self.glofas.fetch_forecast(
+                    gl_query_lat, gl_query_lon, forecast_days=15
+                )
+                if is_live_gl and res_fc.get('status') == 'live':
+                    self.flood_cache.put(fc_key, res_fc)
+                return res_fc
 
             def _fetch_gl_rp() -> dict[str, Any] | None:
-                try:
-                    res_rp = self.glofas.fetch_reanalysis_return_periods(
-                        gl_query_lat, gl_query_lon
-                    )
-                    if res_rp is not None and res_rp.get('source') != 'unit_test_rp':
-                        self.flood_cache.put(rp_key, res_rp)
-                    return res_rp
-                except Exception:  # noqa: BLE001
-                    return None
+                res_rp = self.glofas.fetch_reanalysis_return_periods(
+                    gl_query_lat, gl_query_lon
+                )
+                if res_rp is not None and res_rp.get('source') != 'unit_test_rp':
+                    self.flood_cache.put(rp_key, res_rp)
+                return res_rp
 
             if gl_rp is not None:
                 gl_fc = _fetch_gl_fc()
@@ -976,10 +951,7 @@ class MaaSDataFetcher:
                 return None, None, eff_river_id
             rid = eff_river_id
             if not is_geoglows_river_id(rid):
-                try:
-                    rid = self.geoglows.fetch_river_id(lat, lon)
-                except Exception:  # noqa: BLE001
-                    rid = None
+                rid = self.geoglows.fetch_river_id(lat, lon)
             if rid is None:
                 return (
                     {
@@ -1008,35 +980,17 @@ class MaaSDataFetcher:
                     and gg_f_cached.get('status') == 'live'
                 ):
                     return gg_f_cached
-                try:
-                    res_fc = self.geoglows.fetch_forecast(rid)
-                    if is_live_gg and res_fc.get('status') == 'live':
-                        self.flood_cache.put(fc_key, res_fc)
-                    return res_fc
-                except Exception:  # noqa: BLE001
-                    return {
-                        'model': 'geoglows',
-                        'available': False,
-                        'status': 'unavailable',
-                        'river_id': rid,
-                        'data': [],
-                    }
+                res_fc = self.geoglows.fetch_forecast(rid)
+                if is_live_gg and res_fc.get('status') == 'live':
+                    self.flood_cache.put(fc_key, res_fc)
+                return res_fc
 
             def _fetch_gg_rp() -> dict[str, Any] | None:
-                res_rp: dict[str, Any] | None = None
-                try:
-                    res_rp = self.geoglows.fetch_return_periods(rid)
-                except Exception:  # noqa: BLE001
-                    res_rp = None
+                res_rp = self.geoglows.fetch_return_periods(rid)
                 if res_rp is None:
-                    try:
-                        res_rp = (
-                            self.geoglows.fetch_retrospective_return_periods(
-                                rid
-                            )
-                        )
-                    except Exception:  # noqa: BLE001
-                        res_rp = None
+                    res_rp = self.geoglows.fetch_retrospective_return_periods(
+                        rid
+                    )
                 if res_rp is not None:
                     self.flood_cache.put(rp_key, res_rp)
                 return res_rp
