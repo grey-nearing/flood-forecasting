@@ -20,11 +20,12 @@ import datetime
 import importlib.util
 import json
 import os
-from pathlib import Path
 import shutil
 import struct
 import sys
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -32,42 +33,42 @@ import xarray as xr
 
 from multimet.weather_fetcher import cli
 from multimet.weather_fetcher.config import (
-    MAX_LEAD_HOURS,
-    MSLP_OFFSET_HPA,
-    N_LAT,
-    N_LON,
-    output_lead_hours,
-    run_lead_hours,
-    RUN_METADATA_FILE,
-    to_stored_units,
+  MAX_LEAD_HOURS,
+  MSLP_OFFSET_HPA,
+  N_LAT,
+  N_LON,
+  RUN_METADATA_FILE,
+  output_lead_hours,
+  run_lead_hours,
+  to_stored_units,
 )
 from multimet.weather_fetcher.fetcher import WeatherDataFetcher
 from multimet.weather_fetcher.sync import (
-    _build_2d_to_global_reprojector,
-    _extract_hres_streams,
-    _latest_hres_run_info,
-    _resample_1d_rectilinear_to_global,
-    aggregate_rates,
-    current_run_dir,
-    download_model_run,
-    DYNAMICAL_MODELS,
-    IncompleteRunError,
-    is_plane_complete,
-    latest_init_time_str,
-    list_available_runs,
-    prune_old_runs,
-    swap_current_symlink,
-    sync_all_models,
-    WeatherSynchronizer,
+  DYNAMICAL_MODELS,
+  IncompleteRunError,
+  WeatherSynchronizer,
+  _build_2d_to_global_reprojector,
+  _extract_hres_streams,
+  _latest_hres_run_info,
+  _resample_1d_rectilinear_to_global,
+  aggregate_rates,
+  current_run_dir,
+  download_model_run,
+  is_plane_complete,
+  latest_init_time_str,
+  list_available_runs,
+  prune_old_runs,
+  swap_current_symlink,
+  sync_all_models,
 )
 
-_UTC = datetime.timezone.utc
+_UTC = datetime.UTC
 _PSL_FILL = np.float32(-9.96921e36)
 _GRID_LATS = np.linspace(90.0, -90.0, N_LAT)
 _GRID_LONS = np.linspace(-180.0, 180.0, N_LON, endpoint=False)
 
 
-def _grid_index(lat: float, lon: float) -> Tuple[int, int]:
+def _grid_index(lat: float, lon: float) -> tuple[int, int]:
   """Row/column of the viewer grid cell centred at (lat, lon)."""
   return int(round((90.0 - lat) / 0.25)), int(round((lon + 180.0) / 0.25))
 
@@ -105,7 +106,7 @@ def _build_native_forecast_dataset(
       "wind_u_10m": (np.full(shape, 3.0, np.float32), "m s-1"),
       "wind_v_10m": (np.full(shape, -4.0, np.float32), "m s-1"),
   }
-  coords: Dict[str, Any] = {
+  coords: dict[str, Any] = {
       "init_time": np.array(init_times, dtype="datetime64[ns]"),
       "lead_time": np.array(lead_hours, dtype="timedelta64[h]").astype(
           "timedelta64[ns]"
@@ -115,7 +116,7 @@ def _build_native_forecast_dataset(
           -180.0, 180.0, N_LON, endpoint=False, dtype=np.float32
       ),
   }
-  dims: Tuple[str, ...] = ("init_time", "lead_time", "latitude", "longitude")
+  dims: tuple[str, ...] = ("init_time", "lead_time", "latitude", "longitude")
   if members:
     coords["ensemble_member"] = np.arange(3)
     dims = (
@@ -131,7 +132,7 @@ def _build_native_forecast_dataset(
   )
 
 
-def _hrrr_native_latlon() -> Tuple[np.ndarray, np.ndarray]:
+def _hrrr_native_latlon() -> tuple[np.ndarray, np.ndarray]:
   """Cell-centre latitude/longitude of the native 1059 x 1799 HRRR grid.
 
   Uses the Lambert conformal parameters published in the dynamical.org store
@@ -260,7 +261,7 @@ class _CpcUpstream:
   def __init__(self, staging: Path, published_years: Sequence[int]):
     self.staging = staging
     self.published_years = set(published_years)
-    self.downloads: List[str] = []
+    self.downloads: list[str] = []
 
   def exists(self, url: str, **_kwargs: Any) -> bool:
     return int(url.rsplit(".", 2)[-2]) in self.published_years
@@ -299,8 +300,8 @@ class _FakeOpenDataGcs:
 
   def __init__(self, date_str: str, cycle: str, max_lead: int):
     self.date_str, self.cycle, self.max_lead = date_str, cycle, max_lead
-    self._files: Dict[str, bytes] = {}
-    self._index: Dict[str, str] = {}
+    self._files: dict[str, bytes] = {}
+    self._index: dict[str, str] = {}
 
   def _prefix(self, lead_h: int) -> str:
     hh = self.cycle[:2]
@@ -1035,7 +1036,7 @@ def test_cpc_falls_back_to_previous_year_until_new_file_is_published(
   _write_psl_cpc_file(staging / "precip.2025.nc", dec, dec)
   upstream = _install_cpc_upstream(monkeypatch, staging, [2025])
 
-  logs: List[str] = []
+  logs: list[str] = []
   status = sync_all_models(
       data_dir=tmp_path / "data",
       models=["noaa_cpc"],
@@ -1206,7 +1207,7 @@ def test_swap_current_symlink_windows_compatibility(
   (tmp_path / "runs" / "run1").mkdir(parents=True)
   (tmp_path / "runs" / "run2").mkdir(parents=True)
 
-  calls: List[bool] = []
+  calls: list[bool] = []
   real_symlink = os.symlink
   real_replace = os.replace
 
@@ -1215,7 +1216,7 @@ def test_swap_current_symlink_windows_compatibility(
       dst: os.PathLike[str] | str,
       target_is_directory: bool = False,
       *,
-      dir_fd: Optional[int] = None,
+      dir_fd: int | None = None,
   ) -> None:
     calls.append(target_is_directory)
     real_symlink(
@@ -1270,9 +1271,9 @@ def test_cli_requires_data_dir_and_maps_results_to_exit_codes(
   with pytest.raises(ValueError, match="Unsupported weather model"):
     cli.main(["--data-dir", str(tmp_path), "--models", "graphcast"])
 
-  seen: Dict[str, Any] = {}
+  seen: dict[str, Any] = {}
 
-  def fake_sync(**kwargs: Any) -> Dict[str, Any]:
+  def fake_sync(**kwargs: Any) -> dict[str, Any]:
     seen.update(kwargs)
     return {"last_result": seen.pop("expected")}
 

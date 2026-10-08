@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
+from pathlib import Path
 
 from multimet.weather_fetcher.config import DYNAMICAL_MODELS, SOURCE_LABELS
 from multimet.weather_fetcher.sync import read_sync_status, sync_all_models
@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
   return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
   """CLI entry point for `sync-weather-forecasts`.
 
   Returns:
@@ -102,7 +102,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(json.dumps(read_sync_status(data_dir), indent=2))
     return 0
 
-  models: Optional[List[str]] = (
+  models: list[str] | None = (
       [m.strip() for m in args.models.split(",") if m.strip()]
       if args.models
       else None

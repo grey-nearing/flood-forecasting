@@ -32,68 +32,62 @@ centres fall inside each target cell and become ``NaN`` when fewer than
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 import datetime
 import json
 import os
-from pathlib import Path
 import shutil
 import time
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
+  Any,
 )
 
 import numpy as np
 import pandas as pd
-from scipy import sparse
 import xarray as xr
+from scipy import sparse
 
 from multimet.utils.cpc import (
-    ensure_psl_cpc_netcdf,
-    EXPECTED_PSL_LATS,
-    EXPECTED_PSL_LONS,
-    NOAA_PSL_URL_TEMPLATE,
+  EXPECTED_PSL_LATS,
+  EXPECTED_PSL_LONS,
+  NOAA_PSL_URL_TEMPLATE,
+  ensure_psl_cpc_netcdf,
 )
 from multimet.utils.http import check_http_url_exists
 from multimet.weather_fetcher.config import (
-    CPC_CACHE_REFRESH_HOURS,
-    CPC_MAX_PUBLICATION_LAG_DAYS,
-    DEFAULT_MSLP_OFFSET_HPA,
-    DEFAULT_SYNC_MODELS,
-    DYNAMICAL_MODELS,
-    GRID_DEG,
-    KEEP_PREVIOUS_RUNS,
-    MAX_LEAD_HOURS,
-    MIN_VALID_RESAMPLE_FRACTION,
-    MODEL_NATIVE_LEAD_HOURS,
-    MSLP_OFFSET_HPA,
-    N_LAT,
-    N_LON,
-    output_lead_hours,
-    RUN_DATASET_TO_MODEL,
-    RUN_METADATA_FILE,
-    SOURCE_LABELS,
-    STAC_CATALOG_URL,
-    STEP_HOURS,
-    STREAM_VARIABLES,
-    SUPPORTED_MODELS,
-    SYNC_STATUS_FILE,
-    to_stored_units,
+  CPC_CACHE_REFRESH_HOURS,
+  CPC_MAX_PUBLICATION_LAG_DAYS,
+  DEFAULT_MSLP_OFFSET_HPA,
+  DEFAULT_SYNC_MODELS,
+  DYNAMICAL_MODELS,
+  GRID_DEG,
+  KEEP_PREVIOUS_RUNS,
+  MAX_LEAD_HOURS,
+  MIN_VALID_RESAMPLE_FRACTION,
+  MODEL_NATIVE_LEAD_HOURS,
+  MSLP_OFFSET_HPA,
+  N_LAT,
+  N_LON,
+  RUN_DATASET_TO_MODEL,
+  RUN_METADATA_FILE,
+  SOURCE_LABELS,
+  STAC_CATALOG_URL,
+  STEP_HOURS,
+  STREAM_VARIABLES,
+  SUPPORTED_MODELS,
+  SYNC_STATUS_FILE,
+  output_lead_hours,
+  to_stored_units,
 )
+from utils.file_paths import ECMWF_OPEN_DATA_BUCKET
 
 # ECMWF Open Data (gs://ecmwf-open-data) IFS HRES 0.25 deg surface GRIB2.
-_HRES_BUCKET: str = "ecmwf-open-data"
-_HRES_LEAD_HOURS: Tuple[int, ...] = MODEL_NATIVE_LEAD_HOURS["ecmwf_hres"]
-_HRES_STREAM_TO_PARAM: Dict[str, str] = {
+_HRES_BUCKET: str = ECMWF_OPEN_DATA_BUCKET
+_HRES_LEAD_HOURS: tuple[int, ...] = MODEL_NATIVE_LEAD_HOURS["ecmwf_hres"]
+_HRES_STREAM_TO_PARAM: dict[str, str] = {
     "precip": "tp",
     "temp": "2t",
     "mslp": "msl",
@@ -101,7 +95,7 @@ _HRES_STREAM_TO_PARAM: Dict[str, str] = {
     "v10": "10v",
 }
 # Raw GRIB2 units of each parameter ("tp" is metres accumulated since init).
-_HRES_PARAM_UNITS: Dict[str, str] = {
+_HRES_PARAM_UNITS: dict[str, str] = {
     "tp": "m",
     "2t": "K",
     "msl": "Pa",
@@ -109,7 +103,7 @@ _HRES_PARAM_UNITS: Dict[str, str] = {
     "10v": "m s-1",
 }
 # Only the 00z and 12z cycles extend to 240 h.
-_HRES_CYCLES: Tuple[str, ...] = ("12z", "00z")
+_HRES_CYCLES: tuple[str, ...] = ("12z", "00z")
 _HRES_LOOKBACK_DAYS: int = 5
 
 # A lead plane counts as published when it holds at least this fraction of the
@@ -120,7 +114,7 @@ _MAX_PLANE_DEFICIT_FRACTION: float = 0.01
 _CPC_WINDOW_DAYS: int = MAX_LEAD_HOURS // 24
 _CPC_MAX_SCAN_DAYS: int = 60
 _CPC_DAY_END_HOUR_UTC: int = 12
-_CPC_HTTP_HEADERS: Dict[str, str] = {
+_CPC_HTTP_HEADERS: dict[str, str] = {
     "User-Agent": "OpenMultiMet/1.1 (Google Research)"
 }
 
@@ -141,16 +135,16 @@ class IncompleteRunError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_now(now: Optional[datetime.datetime]) -> datetime.datetime:
+def _resolve_now(now: datetime.datetime | None) -> datetime.datetime:
   """Returns ``now`` as an aware UTC datetime (current time when omitted)."""
   if now is None:
-    return datetime.datetime.now(datetime.timezone.utc)
+    return datetime.datetime.now(datetime.UTC)
   if now.tzinfo is None or now.utcoffset() is None:
     raise ValueError("now must be a timezone-aware datetime")
-  return now.astimezone(datetime.timezone.utc)
+  return now.astimezone(datetime.UTC)
 
 
-def utc_now_str(now: Optional[datetime.datetime] = None) -> str:
+def utc_now_str(now: datetime.datetime | None = None) -> str:
   """Returns ``now`` (default: current UTC time) as an ISO-8601 'Z' string."""
   return _resolve_now(now).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -160,7 +154,7 @@ def _iso_seconds(value: Any) -> str:
   return str(np.datetime_as_string(np.datetime64(value), unit="s"))
 
 
-def require_data_dir(data_dir: Union[str, Path, None]) -> Path:
+def require_data_dir(data_dir: str | Path | None) -> Path:
   """Validates that an explicit data_dir path was supplied."""
   if data_dir is None or str(data_dir).strip() == "":
     raise ValueError(
@@ -169,7 +163,7 @@ def require_data_dir(data_dir: Union[str, Path, None]) -> Path:
   return Path(data_dir).expanduser().resolve()
 
 
-def write_json_atomic(path: Union[str, Path], data: Mapping[str, Any]) -> None:
+def write_json_atomic(path: str | Path, data: Mapping[str, Any]) -> None:
   """Atomically writes a JSON dictionary to disk."""
   target = Path(path)
   target.parent.mkdir(parents=True, exist_ok=True)
@@ -178,7 +172,7 @@ def write_json_atomic(path: Union[str, Path], data: Mapping[str, Any]) -> None:
   os.replace(tmp, target)
 
 
-def read_json_if_exists(path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+def read_json_if_exists(path: str | Path) -> dict[str, Any] | None:
   """Reads a JSON file if it exists and is non-empty."""
   target = Path(path)
   if not target.is_file() or target.stat().st_size == 0:
@@ -186,7 +180,7 @@ def read_json_if_exists(path: Union[str, Path]) -> Optional[Dict[str, Any]]:
   return json.loads(target.read_text(encoding="utf-8"))
 
 
-def _global_grid_axes() -> Tuple[np.ndarray, np.ndarray]:
+def _global_grid_axes() -> tuple[np.ndarray, np.ndarray]:
   """Returns the viewer grid cell-centre latitudes (90..-90) and longitudes."""
   glats = np.linspace(90.0, -90.0, N_LAT, dtype=np.float64)
   glons = np.linspace(-180.0, 180.0, N_LON, endpoint=False, dtype=np.float64)
@@ -363,7 +357,7 @@ def _binned_sums_counts(
     a_rows: sparse.csr_matrix,
     a_cols_t: sparse.csr_matrix,
     plane: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
   """Sums and finite counts of ``plane`` binned by row and column matrices."""
   finite = np.isfinite(plane)
   vals = np.where(finite, plane, np.float32(0.0)).astype(np.float32)
@@ -471,7 +465,7 @@ class _GridReprojector:
           f"latitude {lat.shape} and longitude {lon.shape} must be equal 2-D"
           " arrays."
       )
-    self.source_shape: Tuple[int, int] = (int(lat.shape[0]), int(lat.shape[1]))
+    self.source_shape: tuple[int, int] = (int(lat.shape[0]), int(lat.shape[1]))
     flat_lat = lat.ravel()
     flat_lon = _wrap_longitudes(lon.ravel())
     row = np.rint((90.0 - flat_lat) / GRID_DEG)
@@ -568,7 +562,7 @@ def _first_deficient_lead(
     leads: Sequence[int],
     reference_count: int,
     start: int,
-) -> Optional[int]:
+) -> int | None:
   """Returns the first lead whose plane has too few finite cells, or None."""
   counts = _finite_counts(planes)
   threshold = (1.0 - _MAX_PLANE_DEFICIT_FRACTION) * reference_count
@@ -583,7 +577,7 @@ def _first_deficient_lead(
 # ---------------------------------------------------------------------------
 
 
-def current_run_dir(data_dir: Union[str, Path]) -> Optional[Path]:
+def current_run_dir(data_dir: str | Path) -> Path | None:
   """Returns the resolved directory '<data_dir>/current' points to, or None."""
   root = require_data_dir(data_dir)
   link = root / "current"
@@ -593,14 +587,14 @@ def current_run_dir(data_dir: Union[str, Path]) -> Optional[Path]:
 
 
 def load_run_metadata(
-    target_dir: Union[str, Path],
-) -> Dict[str, Dict[str, Any]]:
+    target_dir: str | Path,
+) -> dict[str, dict[str, Any]]:
   """Reads archived-run metadata (init time, lead steps) keyed by model."""
   folder = require_data_dir(target_dir)
   meta = read_json_if_exists(folder / RUN_METADATA_FILE)
   if not meta:
     return {}
-  runs: Dict[str, Dict[str, Any]] = {}
+  runs: dict[str, dict[str, Any]] = {}
   for dataset_key, dataset in (meta.get("datasets") or {}).items():
     model_key = dataset.get("model") or RUN_DATASET_TO_MODEL.get(dataset_key)
     if model_key not in SUPPORTED_MODELS or not dataset.get("init_time"):
@@ -625,12 +619,12 @@ def load_run_metadata(
   return runs
 
 
-def list_available_runs(data_dir: Union[str, Path]) -> List[Dict[str, Any]]:
+def list_available_runs(data_dir: str | Path) -> list[dict[str, Any]]:
   """Lists completed forecast run directories stored under '<data_dir>/runs'."""
   root = require_data_dir(data_dir)
   runs_dir = root / "runs"
   active = current_run_dir(root)
-  results: List[Dict[str, Any]] = []
+  results: list[dict[str, Any]] = []
   if not runs_dir.is_dir():
     return results
   for item in sorted(runs_dir.iterdir()):
@@ -646,27 +640,27 @@ def list_available_runs(data_dir: Union[str, Path]) -> List[Dict[str, Any]]:
   return results
 
 
-def read_sync_status(data_dir: Union[str, Path]) -> Dict[str, Any]:
+def read_sync_status(data_dir: str | Path) -> dict[str, Any]:
   """Reads sync_status.json from data_dir if present."""
   root = require_data_dir(data_dir)
   return read_json_if_exists(root / SYNC_STATUS_FILE) or {}
 
 
 def current_models_metadata(
-    data_dir: Union[str, Path],
-) -> Tuple[Optional[Path], Dict[str, Dict[str, Any]]]:
+    data_dir: str | Path,
+) -> tuple[Path | None, dict[str, dict[str, Any]]]:
   """Returns (active_run_dir, model_key -> dataset entry) of the current run."""
   root = require_data_dir(data_dir)
   run_dir = current_run_dir(root)
   meta = read_json_if_exists(run_dir / RUN_METADATA_FILE) if run_dir else None
-  models: Dict[str, Dict[str, Any]] = {}
+  models: dict[str, dict[str, Any]] = {}
   for entry in ((meta or {}).get("datasets") or {}).values():
     if entry.get("model"):
       models[entry["model"]] = entry
   return run_dir, models
 
 
-def swap_current_symlink(data_dir: Union[str, Path], run_name: str) -> Path:
+def swap_current_symlink(data_dir: str | Path, run_name: str) -> Path:
   """Atomically repoints '<data_dir>/current' to 'runs/<run_name>'.
 
   Args:
@@ -695,7 +689,7 @@ def swap_current_symlink(data_dir: Union[str, Path], run_name: str) -> Path:
 
 
 def prune_old_runs(
-    data_dir: Union[str, Path],
+    data_dir: str | Path,
     keep_previous: int = KEEP_PREVIOUS_RUNS,
 ) -> None:
   """Deletes superseded completed runs, keeping current and recent ones.
@@ -722,7 +716,7 @@ def prune_old_runs(
     shutil.rmtree(path, ignore_errors=True)
 
 
-def _partial_dir_pid(path: Path) -> Optional[int]:
+def _partial_dir_pid(path: Path) -> int | None:
   """Extracts the owning pid from a '<run>.<pid>.partial' directory name."""
   parts = path.name.split(".")
   if len(parts) < 3 or parts[-1] != "partial" or not parts[-2].isdigit():
@@ -730,7 +724,7 @@ def _partial_dir_pid(path: Path) -> Optional[int]:
   return int(parts[-2])
 
 
-def _pid_is_alive(pid: int) -> Optional[bool]:
+def _pid_is_alive(pid: int) -> bool | None:
   """Returns whether ``pid`` is running, or None when it cannot be known."""
   if pid == os.getpid():
     return True
@@ -742,10 +736,10 @@ def _pid_is_alive(pid: int) -> Optional[bool]:
 
 def _classify_partial_dirs(
     runs_root: Path, now_epoch: float
-) -> Tuple[List[Path], List[Path]]:
+) -> tuple[list[Path], list[Path]]:
   """Splits staging directories into (live, stale) by owner pid and age."""
-  live: List[Path] = []
-  stale: List[Path] = []
+  live: list[Path] = []
+  stale: list[Path] = []
   for item in runs_root.iterdir():
     if not item.is_dir() or not item.name.endswith(".partial"):
       continue
@@ -799,7 +793,7 @@ class _AnalysisWindow:
   """
 
   init_time: np.datetime64
-  lead_hours: Tuple[int, ...]
+  lead_hours: tuple[int, ...]
   frame_minutes: int
   frame_indices: np.ndarray
 
@@ -876,7 +870,7 @@ def _extract_dynamical_analysis_streams(
     out_dir: Path,
     log: Callable[[str], None] = print,
     band_rows: int = _ANALYSIS_BAND_ROWS,
-) -> Tuple[Optional[Dict[str, Any]], Optional[IncompleteRunError]]:
+) -> tuple[dict[str, Any] | None, IncompleteRunError | None]:
   """Extracts trailing 10-day 3-hourly precipitation from an analysis store.
 
   Each stored plane is the mean rate over the 3 h ending at its lead,
@@ -1008,7 +1002,7 @@ def _extract_model_streams(
     out_dir: Path,
     log: Callable[[str], None] = print,
     max_workers: int = 2,
-) -> Tuple[Optional[Dict[str, Any]], Optional[IncompleteRunError]]:
+) -> tuple[dict[str, Any] | None, IncompleteRunError | None]:
   """Extracts binary streams for the newest run of a dynamical.org dataset.
 
   Non-precipitation streams load only the stored 3-hourly leads; precipitation
@@ -1046,8 +1040,8 @@ def _extract_model_streams(
     )
   out_pos = [in_leads.index(h) for h in out_leads]
   ref_pos = out_pos[1]
-  sel: Dict[str, Any] = {"init_time": init_val}
-  member: Optional[int] = None
+  sel: dict[str, Any] = {"init_time": init_val}
+  member: int | None = None
   if "ensemble_member" in ds.dims:
     member = int(cfg.get("ensemble_member", 0))
     members = [int(m) for m in ds["ensemble_member"].values]
@@ -1077,7 +1071,7 @@ def _extract_model_streams(
           f"{dataset_id} has no variable {STREAM_VARIABLES[stream]!r}."
       )
 
-  def _one_stream(stream: str) -> Optional[IncompleteRunError]:
+  def _one_stream(stream: str) -> IncompleteRunError | None:
     var = STREAM_VARIABLES[stream]
     da = ds[var].sel(**sel)
     is_precip = stream == "precip"
@@ -1128,7 +1122,7 @@ def _extract_model_streams(
     if err is not None:
       return None, err
 
-  entry: Dict[str, Any] = {
+  entry: dict[str, Any] = {
       "id": dataset_id,
       "type": "forecast",
       "model": model_key,
@@ -1151,10 +1145,10 @@ def download_model_run(
     ds: xr.Dataset,
     model_key: str,
     cfg: Mapping[str, Any],
-    out_dir: Union[str, Path],
+    out_dir: str | Path,
     log: Callable[[str], None] = print,
     max_workers: int = 2,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Writes <model>_<stream>.bin files for the newest run; returns metadata.
 
   Raises:
@@ -1194,9 +1188,9 @@ def _hres_prefix(date_str: str, cycle: str, lead_h: int) -> str:
 
 def _latest_hres_run_info(
     fs: Any = None,
-    now: Optional[datetime.datetime] = None,
+    now: datetime.datetime | None = None,
     lookback_days: int = _HRES_LOOKBACK_DAYS,
-) -> Optional[Tuple[str, str, str]]:
+) -> tuple[str, str, str] | None:
   """Finds the newest 00z/12z HRES run whose 240 h step is published.
 
   Returns:
@@ -1216,13 +1210,17 @@ def _latest_hres_run_info(
 
 def _fetch_single_hres_step(
     gcs: Any, date_str: str, cycle: str, lead_h: int
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
   """Downloads and decodes the surface GRIB2 parameters of one HRES step.
 
   Raises:
     KeyError: If the step's index lacks one of the required parameters.
   """
-  from multimet.timeseries_extractors.hres import decode_grib2_message, parse_ecmwf_index, fetch_byte_range
+  from multimet.timeseries_extractors.hres import (
+    decode_grib2_message,
+    fetch_byte_range,
+    parse_ecmwf_index,
+  )
 
   prefix = _hres_prefix(date_str, cycle, lead_h)
   idx_text = gcs.cat(f"{prefix}.index").decode("utf-8")
@@ -1232,7 +1230,7 @@ def _fetch_single_hres_step(
   if missing:
     raise KeyError(f"{prefix}.index lacks surface parameters {missing}.")
 
-  decoded: Dict[str, np.ndarray] = {}
+  decoded: dict[str, np.ndarray] = {}
   grib_path = f"{prefix}.grib2"
   for param, (start_b, end_b) in byte_ranges.items():
     msg_bytes = fetch_byte_range(gcs, grib_path, start_b, end_b)
@@ -1248,11 +1246,11 @@ def _extract_hres_streams(
     out_dir: Path,
     log: Callable[[str], None] = print,
     fs: Any = None,
-    leads: Optional[Sequence[int]] = None,
+    leads: Sequence[int] | None = None,
     max_workers: int = 16,
-    now: Optional[datetime.datetime] = None,
-    run_info: Optional[Tuple[str, str, str]] = None,
-) -> Tuple[Optional[Dict[str, Any]], Optional[IncompleteRunError]]:
+    now: datetime.datetime | None = None,
+    run_info: tuple[str, str, str] | None = None,
+) -> tuple[dict[str, Any] | None, IncompleteRunError | None]:
   """Downloads ECMWF IFS HRES 0.25 deg GRIB2 streams from gs://ecmwf-open-data.
 
   Total precipitation (metres accumulated since init) is de-accumulated into
@@ -1371,12 +1369,12 @@ class _CpcWindow:
   """
 
   init_time: str
-  day_dates: Tuple[str, ...]
-  lead_hours: Tuple[int, ...]
+  day_dates: tuple[str, ...]
+  lead_hours: tuple[int, ...]
   mm_per_day: np.ndarray
   lats: np.ndarray
   lons: np.ndarray
-  files: Tuple[str, ...]
+  files: tuple[str, ...]
 
 
 def _cpc_year_file(
@@ -1385,7 +1383,7 @@ def _cpc_year_file(
     now: datetime.datetime,
     log: Callable[[str], None],
     required: bool,
-) -> Optional[str]:
+) -> str | None:
   """Returns the cached NOAA PSL ``precip.<year>.nc``, downloading if needed.
 
   A cached file older than ``CPC_CACHE_REFRESH_HOURS`` is downloaded again so
@@ -1452,7 +1450,7 @@ def _cpc_day_plane(ds: xr.Dataset, index: int) -> np.ndarray:
 
 def _cpc_last_valid_date(
     nc_path: str, today: datetime.date, max_scan_days: int
-) -> Optional[datetime.date]:
+) -> datetime.date | None:
   """Newest date up to ``today`` with any finite value, scanning backwards."""
   with xr.open_dataset(nc_path, decode_timedelta=False) as ds:
     dates = _validate_cpc_dataset(ds, nc_path)
@@ -1465,9 +1463,9 @@ def _cpc_last_valid_date(
 
 def _cpc_read_days(
     nc_path: str, wanted: Sequence[datetime.date]
-) -> Dict[datetime.date, np.ndarray]:
+) -> dict[datetime.date, np.ndarray]:
   """Reads the daily planes of ``wanted`` dates that carry any finite value."""
-  planes: Dict[datetime.date, np.ndarray] = {}
+  planes: dict[datetime.date, np.ndarray] = {}
   with xr.open_dataset(nc_path, decode_timedelta=False) as ds:
     dates = _validate_cpc_dataset(ds, nc_path)
     lookup = {d.date(): i for i, d in enumerate(dates)}
@@ -1496,8 +1494,8 @@ def _load_cpc_window(
     RuntimeError: If no published CPC day exists within the scan range.
   """
   today = now.date()
-  files: Dict[int, str] = {}
-  last_valid: Optional[datetime.date] = None
+  files: dict[int, str] = {}
+  last_valid: datetime.date | None = None
   current = _cpc_year_file(today.year, cache_dir, now, log, required=False)
   if current is not None:
     files[today.year] = current
@@ -1560,7 +1558,7 @@ def _extract_cpc_streams(
     out_dir: Path,
     window: _CpcWindow,
     log: Callable[[str], None] = print,
-) -> Tuple[Optional[Dict[str, Any]], Optional[IncompleteRunError]]:
+) -> tuple[dict[str, Any] | None, IncompleteRunError | None]:
   """Writes the NOAA CPC daily gauge analysis as a 0.25 deg precip stream.
 
   Lead ``24 k`` holds the mean rate (mm/h) of CPC day ``k``, whose nominal
@@ -1613,11 +1611,11 @@ def _extract_cpc_streams(
 def _carry_forward_entries(
     root: Path,
     new_dir: Path,
-    fresh: Mapping[str, Dict[str, Any]],
+    fresh: Mapping[str, dict[str, Any]],
     log: Callable[[str], None],
-) -> Dict[str, Dict[str, Any]]:
+) -> dict[str, dict[str, Any]]:
   """Links or copies the current run's streams of models not refreshed now."""
-  carried: Dict[str, Dict[str, Any]] = {}
+  carried: dict[str, dict[str, Any]] = {}
   run_dir, current = current_models_metadata(root)
   if run_dir is None:
     return carried
@@ -1649,9 +1647,9 @@ def _carry_forward_entries(
 
 def _write_status(
     status_path: Path,
-    status: Dict[str, Any],
+    status: dict[str, Any],
     log: Callable[[str], None],
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Persists and logs the synchronisation status."""
   write_json_atomic(status_path, status)
   log(str(status.get("message", "")))
@@ -1659,17 +1657,17 @@ def _write_status(
 
 
 def sync_all_models(
-    data_dir: Union[str, Path],
-    models: Optional[Sequence[str]] = None,
+    data_dir: str | Path,
+    models: Sequence[str] | None = None,
     force: bool = False,
     log: Callable[[str], None] = print,
     catalog: Any = None,
-    open_dataset: Optional[Callable[[Any, str], xr.Dataset]] = None,
-    cpc_cache_dir: Union[str, Path, None] = None,
+    open_dataset: Callable[[Any, str], xr.Dataset] | None = None,
+    cpc_cache_dir: str | Path | None = None,
     hres_fs: Any = None,
-    now: Optional[datetime.datetime] = None,
+    now: datetime.datetime | None = None,
     max_workers: int = 2,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   """Checks upstream sources and downloads models whose newest run changed.
 
   Models are planned and extracted one after another into a single staging
@@ -1750,11 +1748,11 @@ def sync_all_models(
       open_dataset if open_dataset is not None else open_dynamical_dataset
   )
   active_catalog = catalog
-  plan: Dict[str, str] = {}
-  datasets: Dict[str, xr.Dataset] = {}
-  hres_runs: Dict[str, Tuple[str, str, str]] = {}
-  cpc_windows: Dict[str, _CpcWindow] = {}
-  errors: Dict[str, str] = {}
+  plan: dict[str, str] = {}
+  datasets: dict[str, xr.Dataset] = {}
+  hres_runs: dict[str, tuple[str, str, str]] = {}
+  cpc_windows: dict[str, _CpcWindow] = {}
+  errors: dict[str, str] = {}
 
   for model_key in selected_models:
     cfg = DYNAMICAL_MODELS[model_key]
@@ -1799,7 +1797,7 @@ def sync_all_models(
       prev_init = have.get("init_time") if have else "none"
       log(f"[{model_key}] new run {latest} (have {prev_init})")
 
-  updated: List[str] = []
+  updated: list[str] = []
   if plan:
     run_name = moment.strftime("%Y%m%dT%H%M%SZ")
     base_name, n = run_name, 1
@@ -1808,7 +1806,7 @@ def sync_all_models(
       n += 1
     new_dir = runs_root / f"{run_name}.{os.getpid()}.partial"
     new_dir.mkdir(parents=True, exist_ok=False)
-    entries: Dict[str, Dict[str, Any]] = {}
+    entries: dict[str, dict[str, Any]] = {}
 
     for model_key in selected_models:
       if model_key not in plan:
@@ -1910,16 +1908,16 @@ def sync_all_models(
 
 
 def sync_model(
-    data_dir: Union[str, Path],
+    data_dir: str | Path,
     model_key: str,
     force: bool = False,
     log: Callable[[str], None] = print,
     catalog: Any = None,
-    open_dataset: Optional[Callable[[Any, str], xr.Dataset]] = None,
-    cpc_cache_dir: Union[str, Path, None] = None,
+    open_dataset: Callable[[Any, str], xr.Dataset] | None = None,
+    cpc_cache_dir: str | Path | None = None,
     hres_fs: Any = None,
-    now: Optional[datetime.datetime] = None,
-) -> Dict[str, Any]:
+    now: datetime.datetime | None = None,
+) -> dict[str, Any]:
   """Synchronizes a single model into data_dir."""
   return sync_all_models(
       data_dir=data_dir,
@@ -1939,9 +1937,9 @@ class WeatherSynchronizer:
 
   def __init__(
       self,
-      data_dir: Union[str, Path],
-      models: Optional[Sequence[str]] = None,
-      cpc_cache_dir: Union[str, Path, None] = None,
+      data_dir: str | Path,
+      models: Sequence[str] | None = None,
+      cpc_cache_dir: str | Path | None = None,
   ):
     self.data_dir = require_data_dir(data_dir)
     self.models = (
@@ -1953,15 +1951,15 @@ class WeatherSynchronizer:
         else self.data_dir / "cpc_cache"
     )
 
-  def current_run_dir(self) -> Optional[Path]:
+  def current_run_dir(self) -> Path | None:
     """Returns the resolved current run directory, or None if not synced."""
     return current_run_dir(self.data_dir)
 
-  def list_runs(self) -> List[Dict[str, Any]]:
+  def list_runs(self) -> list[dict[str, Any]]:
     """Lists all available forecast runs in data_dir."""
     return list_available_runs(self.data_dir)
 
-  def get_status(self) -> Dict[str, Any]:
+  def get_status(self) -> dict[str, Any]:
     """Returns the synchronization status dictionary."""
     return read_sync_status(self.data_dir)
 
@@ -1970,10 +1968,10 @@ class WeatherSynchronizer:
       force: bool = False,
       log: Callable[[str], None] = print,
       catalog: Any = None,
-      open_dataset: Optional[Callable[[Any, str], xr.Dataset]] = None,
+      open_dataset: Callable[[Any, str], xr.Dataset] | None = None,
       hres_fs: Any = None,
-      now: Optional[datetime.datetime] = None,
-  ) -> Dict[str, Any]:
+      now: datetime.datetime | None = None,
+  ) -> dict[str, Any]:
     """Synchronizes all configured models."""
     return sync_all_models(
         data_dir=self.data_dir,
@@ -1993,10 +1991,10 @@ class WeatherSynchronizer:
       force: bool = False,
       log: Callable[[str], None] = print,
       catalog: Any = None,
-      open_dataset: Optional[Callable[[Any, str], xr.Dataset]] = None,
+      open_dataset: Callable[[Any, str], xr.Dataset] | None = None,
       hres_fs: Any = None,
-      now: Optional[datetime.datetime] = None,
-  ) -> Dict[str, Any]:
+      now: datetime.datetime | None = None,
+  ) -> dict[str, Any]:
     """Synchronizes a single model."""
     return sync_model(
         data_dir=self.data_dir,
