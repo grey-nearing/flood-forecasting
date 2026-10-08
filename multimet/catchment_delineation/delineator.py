@@ -60,6 +60,7 @@ from multimet.catchment_delineation.tiles import (
     tile_key_to_filename,
 )
 from multimet.utils.gcs import is_gcs_path, normalize_gcs_path
+_MAGIC_NEG_2 = -2
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +328,8 @@ class DemDelineator:
         cache_dir: str | Path | None = None,
         tile_fetcher: Callable[[int, int, Path], Path] | None = None,
     ) -> None:
-        """Initialize the DEM delineator with explicit user-supplied I/O paths."""
+        """Initialize the DEM delineator with explicit user-supplied I/O 
+            paths."""
         self.dataset: DemDataset = resolve_dem_dataset(dataset)
         self.dem_id: str = self.dataset.id
         self.tile_fetcher = tile_fetcher
@@ -408,7 +410,8 @@ class DemDelineator:
             self.cache_dir.rmdir()
 
     def get_tile(self, lat_top: float, lon_left: float) -> np.ndarray:
-        """Load a 5x5 degree (6000, 6000) uint8 tile array or raise on failure."""
+        """Load a 5x5 degree (6000, 6000) uint8 tile array 
+            or raise on failure."""
         tile_lat = int(round(lat_top))
         tile_lon = int(round(lon_left))
         key = (tile_lat, tile_lon)
@@ -479,7 +482,8 @@ class DemDelineator:
         return arr
 
     def _check_coord_coverage(self, lat: float, lon: float) -> str | None:
-        """Return an error reason if (lat, lon) is non-finite or out of coverage."""
+        """Return an error reason if (lat,
+            lon) is non-finite or out of coverage."""
         if not (math.isfinite(lat) and math.isfinite(lon)):
             return (
                 f'Pour point coordinates ({lat}, {lon}) are missing or '
@@ -566,7 +570,9 @@ class DemDelineator:
         self, nt_lat: int, nt_lon: int, t_lon: int, cc_src: int
     ) -> str:
         min_tile_lat_top = int(
-            round(math.ceil((self.dataset.min_lat + 1e-9) / TILE_DEG) * TILE_DEG)
+            round(
+                math.ceil((self.dataset.min_lat + 1e-9) / TILE_DEG) * TILE_DEG
+            )
         )
         if nt_lat > int(self.dataset.max_lat):
             return (
@@ -713,7 +719,8 @@ class DemDelineator:
         abort_on_limit: bool = True,
         abort_on_coverage: bool = True,
     ) -> tuple[dict[tuple[int, int], np.ndarray], int]:
-        """Run multi-tile reverse-flow BFS (C-accelerated with NumPy fallback)."""
+        """Run multi-tile reverse-flow BFS 
+            (C-accelerated with NumPy fallback)."""
         self._last_coverage_error = None
         c_lib = _get_c_bfs_lib()
         if c_lib is not None:
@@ -887,7 +894,8 @@ class DemDelineator:
         dict[tuple[int, int], np.ndarray],
         int,
     ]:
-        """Find the nearest pour-point cell matching expected_area_km2 or fail loudly."""
+        """Find the nearest pour-point cell matching expected_area_km2 
+            or fail loudly."""
         if not math.isfinite(expected_area_km2) or expected_area_km2 <= 0.0:
             msg = (
                 f'[AREA HINT FAILURE] Catchment {catchment_id or ""} at '
@@ -1011,7 +1019,7 @@ class DemDelineator:
                     for rr, cc in chain:
                         rejected[rr, cc] = True
                     continue
-                if cnt_p == -2:
+                if cnt_p == _MAGIC_NEG_2:
                     for rr, cc in chain:
                         rejected[rr, cc] = True
                     continue
@@ -1038,7 +1046,8 @@ class DemDelineator:
                         rejected[rr, cc] = True
                     continue
                 if min_area <= area_e <= max_area:
-                    # Binary search along chain to find the first cell >= min_area
+                    # Binary search along chain to find the first cell >= 
+                        min_area
                     chosen_r, chosen_c, chosen_vt, chosen_cnt = (
                         er,
                         ec,
@@ -1138,7 +1147,8 @@ class DemDelineator:
 
         msg = (
             f'[AREA HINT FAILURE] Catchment {catchment_id or "unnamed"} at '
-            f'({lat:.4f}, {lon:.4f}) failed expected_area_km2={expected_area_km2:.2f} km2 '
+            f'({lat:.4f}, {lon:.4f}) failed expected_area_km2={expected_area_km2:.2f} km2 
+                '
             f'(allowed range [{min_area:.2f}, {max_area:.2f}] km2; '
             f'closest candidate found={closest_area_seen:.2f} km2 within '
             f'{search_w}-cell search window). Refusing to output a polygon.'
@@ -1165,7 +1175,8 @@ class DemDelineator:
         simplify_tolerance: float | None,
         catchment_id: str | None,
     ) -> dict[str, Any]:
-        """Vectorize visited tile masks and assemble the output GeoJSON Feature."""
+        """Vectorize visited tile masks and assemble the output GeoJSON 
+            Feature."""
         total_area_km2 = _compute_visited_area_km2(visited_tiles)
 
         if simplify_tolerance is None:
@@ -1397,7 +1408,8 @@ class DemDelineator:
             else:
                 reason = err_msg or 'Out of coverage'
                 logger.warning(
-                    'Catchment %s at (%s, %s) failed coverage or area check: %s',
+                    'Catchment %s at (%s, %s) failed coverage 
+                        or area check: %s',
                     cid or f'{lat},{lon}',
                     lat,
                     lon,

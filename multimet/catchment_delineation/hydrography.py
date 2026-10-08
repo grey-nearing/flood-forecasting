@@ -29,6 +29,7 @@ from shapely.geometry import Point
 
 from multimet.catchment_delineation.delineator import CatchmentCoverageError
 from multimet.utils.hydrography import (
+_MAGIC_2 = 2
     Partition,
     Reach,
     UnitCatchment,
@@ -58,7 +59,8 @@ class ReachSnap:
 
 
 class RiverNetwork:
-    """Vector river network supporting spatial queries and pour-point snapping."""
+    """Vector river network supporting spatial queries 
+        and pour-point snapping."""
 
     def __init__(
         self,
@@ -67,6 +69,7 @@ class RiverNetwork:
         hydrorivers_shp: Path | None = None,
         merit_partitions: tuple[Partition, ...] | None = None,
     ) -> None:
+        """Docstring."""
         self.dataset = dataset
         self._hydrorivers_shp = hydrorivers_shp
         self._merit_partitions = merit_partitions
@@ -83,7 +86,8 @@ class RiverNetwork:
 
     @classmethod
     def from_merit_basins(cls, merit_basins_dir: str | Path) -> RiverNetwork:
-        """Construct a RiverNetwork backed by MERIT-Basins riv_pfaf_* shapefiles."""
+        """Construct a RiverNetwork backed by MERIT-Basins riv_pfaf_* 
+            shapefiles."""
         partitions = discover_partitions(merit_basins_dir, 'riv_pfaf_*.shp')
         if not partitions:
             raise FileNotFoundError(
@@ -105,7 +109,33 @@ class RiverNetwork:
         min_upstream_area_km2: float | None = None,
         simplify_tolerance_deg: float | None = None,
     ) -> list[Reach]:
-        """Query river reaches intersecting bbox and meeting stream order/area filters."""
+        """Query river reaches intersecting bbox 
+            and meeting stream order/area filters."""
+        if bbox is not None:
+            min_lon, min_lat, max_lon, max_lat = bbox
+            if min_lon > max_lon:
+                bbox1 = (min_lon, min_lat, 180.0, max_lat)
+                bbox2 = (-180.0, min_lat, max_lon, max_lat)
+                reaches1 = self.query_reaches(
+                    bbox=bbox1,
+                    min_stream_order=min_stream_order,
+                    min_upstream_area_km2=min_upstream_area_km2,
+                    simplify_tolerance_deg=simplify_tolerance_deg,
+                )
+                reaches2 = self.query_reaches(
+                    bbox=bbox2,
+                    min_stream_order=min_stream_order,
+                    min_upstream_area_km2=min_upstream_area_km2,
+                    simplify_tolerance_deg=simplify_tolerance_deg,
+                )
+                seen = set()
+                result = []
+                for r in reaches1 + reaches2:
+                    if r.reach_id not in seen:
+                        seen.add(r.reach_id)
+                        result.append(r)
+                return result
+
         if self.dataset == 'hydroatlas':
             assert self._hydrorivers_shp is not None
             reaches = read_hydrorivers(
@@ -123,13 +153,13 @@ class RiverNetwork:
                 min_upstream_area_km2=min_upstream_area_km2,
             )
         else:
-            raise ValueError(f'Unsupported river network dataset: {self.dataset}')
+            raise ValueError(
+                f'Unsupported river network dataset: {self.dataset}'
+            )
 
         if simplify_tolerance_deg is not None and simplify_tolerance_deg > 0.0:
             reaches = [
-                replace(
-                    r, geometry=r.geometry.simplify(simplify_tolerance_deg)
-                )
+                replace(r, geometry=r.geometry.simplify(simplify_tolerance_deg))
                 for r in reaches
             ]
         return reaches
@@ -143,7 +173,8 @@ class RiverNetwork:
         max_distance_m: float = 250.0,
         area_weight: float = 0.25,
     ) -> ReachSnap:
-        """Snap (lat, lon) onto the nearest river reach or raise RiverSnapError."""
+        """Snap (lat, lon) onto the nearest river reach 
+            or raise RiverSnapError."""
         if not (math.isfinite(lat) and math.isfinite(lon)):
             raise ValueError(
                 f'Coordinates ({lat}, {lon}) must be finite numbers.'
@@ -196,7 +227,8 @@ class RiverNetwork:
         dist_m = float(best_proj_pt.distance(click_pt) * _METERS_PER_DEGREE)
         if dist_m > max_distance_m:
             raise RiverSnapError(
-                f'Nearest river reach ({best_reach.reach_id}) is {dist_m:.1f} m '
+                f'Nearest river reach ({best_reach.reach_id}) is {dist_m:.1f} m 
+                    '
                 f'away from ({lat:.4f}, {lon:.4f}), exceeding '
                 f'max_distance_m={max_distance_m:.1f} m.'
             )
@@ -216,7 +248,8 @@ class UnitCatchmentLayer(Protocol):
     dataset: str
 
     def locate_unit(self, lat: float, lon: float) -> int:
-        """Return the unit_id of the polygon containing (lat, lon) or raise LookupError."""
+        """Return the unit_id of the polygon containing (lat,
+            lon) or raise LookupError."""
         ...
 
     def get_unit(self, unit_id: int) -> UnitCatchment:
@@ -226,7 +259,8 @@ class UnitCatchmentLayer(Protocol):
     def upstream_units(
         self, unit_id: int, *, max_units: int | None = None
     ) -> list[UnitCatchment]:
-        """Return all upstream UnitCatchments (including unit_id) or raise on limit."""
+        """Return all upstream UnitCatchments 
+            (including unit_id) or raise on limit."""
         ...
 
 
@@ -236,6 +270,7 @@ class HydroBasinsLayer:
     dataset: str = 'hydroatlas'
 
     def __init__(self, hydrobasins_dir: str | Path) -> None:
+        """Docstring."""
         self.hydrobasins_dir = Path(hydrobasins_dir).expanduser().resolve()
         self.partitions: tuple[Partition, ...] = discover_partitions(
             self.hydrobasins_dir, '*.shp'
@@ -305,18 +340,25 @@ class HydroBasinsLayer:
                     if u.geometry.contains(pt) or u.geometry.touches(pt):
                         return u.unit_id
         raise LookupError(
-            f'No HydroBASINS unit catchment polygon contains ({lat:.4f}, {lon:.4f}).'
+            f'No HydroBASINS unit catchment polygon contains ({lat:.4f},
+                {lon:.4f}).'
         )
 
     def _find_unit_and_partition(
-        self, unit_id: int, *, hint_lat: float | None = None, hint_lon: float | None = None
+        self,
+        unit_id: int,
+        *,
+        hint_lat: float | None = None,
+        hint_lon: float | None = None,
     ) -> tuple[UnitCatchment, Partition]:
         ordered_parts = list(self.partitions)
         if hint_lat is not None and hint_lon is not None:
             ordered_parts.sort(
-                key=lambda p: not (
-                    p.bounds[0] <= hint_lon <= p.bounds[2]
-                    and p.bounds[1] <= hint_lat <= p.bounds[3]
+                key=lambda p: (
+                    not (
+                        p.bounds[0] <= hint_lon <= p.bounds[2]
+                        and p.bounds[1] <= hint_lat <= p.bounds[3]
+                    )
                 )
             )
         where_clause = f'HYBAS_ID = {int(unit_id)}'
@@ -334,7 +376,8 @@ class HydroBasinsLayer:
     def upstream_units(
         self, unit_id: int, *, max_units: int | None = None
     ) -> list[UnitCatchment]:
-        """Traverse all upstream HydroBASINS L12 units within the same MAIN_BAS."""
+        """Traverse all upstream HydroBASINS L12 units within the same 
+            MAIN_BAS."""
         outlet_unit, part = self._find_unit_and_partition(unit_id)
         where_clause = (
             f'MAIN_BAS = {outlet_unit.main_basin_id}'
@@ -371,11 +414,13 @@ class HydroBasinsLayer:
 
 
 class MeritBasinsLayer:
-    """MERIT-Basins unit-catchment topological layer with cross-partition traversal."""
+    """MERIT-Basins unit-catchment topological layer with cross-partition 
+        traversal."""
 
     dataset: str = 'merit-hydro'
 
     def __init__(self, merit_basins_dir: str | Path) -> None:
+        """Docstring."""
         self.merit_basins_dir = Path(merit_basins_dir).expanduser().resolve()
         self.riv_partitions: tuple[Partition, ...] = discover_partitions(
             self.merit_basins_dir, 'riv_pfaf_*.shp'
@@ -390,7 +435,8 @@ class MeritBasinsLayer:
             )
 
     def locate_unit(self, lat: float, lon: float) -> int:
-        """Locate the MERIT-Basins unit catchment COMID containing (lat, lon)."""
+        """Locate the MERIT-Basins unit catchment COMID containing (lat,
+            lon)."""
         pt = Point(lon, lat)
         for pad in (0.15, 0.5):
             bbox = (lon - pad, lat - pad, lon + pad, lat + pad)
@@ -411,7 +457,8 @@ class MeritBasinsLayer:
                         if geom.contains(pt) or geom.touches(pt):
                             return int(comids[i])
         raise LookupError(
-            f'No MERIT-Basins unit catchment polygon contains ({lat:.4f}, {lon:.4f}).'
+            f'No MERIT-Basins unit catchment polygon contains ({lat:.4f},
+                {lon:.4f}).'
         )
 
     def get_unit(self, unit_id: int) -> UnitCatchment:
@@ -422,13 +469,16 @@ class MeritBasinsLayer:
         )
         if wkb is None or len(wkb) == 0:
             raise LookupError(
-                f'MERIT-Basins COMID {unit_id} not found in {cat_part.path.name}'
+                f'MERIT-Basins COMID {unit_id} not found in 
+                    {cat_part.path.name}'
             )
         geoms = shapely.from_wkb(wkb)
         cols = dict(zip(meta['fields'], field_arrays))
         area_arr = cols.get('unitarea')
         if area_arr is None:
-            area_arr = cols.get('uparea', np.zeros(len(geoms), dtype=np.float64))
+            area_arr = cols.get(
+                'uparea', np.zeros(len(geoms), dtype=np.float64)
+            )
         return UnitCatchment(
             unit_id=int(unit_id),
             next_down=0,
@@ -439,13 +489,16 @@ class MeritBasinsLayer:
     def upstream_units(
         self, unit_id: int, *, max_units: int | None = None
     ) -> list[UnitCatchment]:
-        """Traverse upstream COMIDs across all sibling Pfafstetter partitions."""
+        """Traverse upstream COMIDs across all sibling Pfafstetter 
+            partitions."""
         comid_str = str(int(unit_id))
-        if len(comid_str) < 2:
+        if len(comid_str) < _MAGIC_2:
             raise LookupError(f'Invalid MERIT-Basins COMID: {unit_id}')
         pfaf2 = int(comid_str[:2])
-        # Even Pfafstetter level-2 codes (2, 4, 6, 8) are self-contained tributary
-        # basins; odd codes (1, 3, 5, 7, 9) are mainstem interbasins whose upstream
+        # Even Pfafstetter level-2 codes (2, 4, 6,
+            8) are self-contained tributary
+        # basins; odd codes (1, 3, 5, 7, 9) are mainstem interbasins whose 
+            upstream
         # network spans sibling level-2 partitions within the level-1 continent.
         if pfaf2 % 2 == 0:
             try:
@@ -541,6 +594,7 @@ class MeritBasinsLayer:
 
         if not units:
             raise LookupError(
-                f'No MERIT-Basins unit catchment geometries found for COMID {unit_id}.'
+                f'No MERIT-Basins unit catchment geometries found for COMID 
+                    {unit_id}.'
             )
         return units

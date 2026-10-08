@@ -142,17 +142,17 @@ delineate-catchment \
 ```python
 from multimet.catchment_delineation import DemDelineator
 
-delineator = DemDelineator(tiles_dir="/path/to/tiles_5deg")
+delineator = DemDelineator(tiles_dir='/path/to/tiles_5deg')
 
 feature = delineator.delineate(
     lat=39.6828,
     lon=-88.7729,
-    catchment_id="USGS_05592500",
+    catchment_id='USGS_05592500',
     expected_area_km2=480.0,  # optional expected area in km²
 )
 
-print("Gauge ID:", feature["properties"]["catchment_id"])
-print("Area (km²):", feature["properties"]["area_km2"])
+print('Gauge ID:', feature['properties']['catchment_id'])
+print('Area (km²):', feature['properties']['area_km2'])
 ```
 
 ---
