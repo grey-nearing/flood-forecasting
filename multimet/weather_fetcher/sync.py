@@ -1638,7 +1638,12 @@ def _carry_forward_entries(
         os.link(src, dst)
       else:
         shutil.copy2(src, dst)
-    carried[model_key] = dict(prev_entry)
+    entry_copy = dict(prev_entry)
+    if not entry_copy.get("source") and model_key in DYNAMICAL_MODELS:
+      entry_copy["source"] = SOURCE_LABELS[
+          DYNAMICAL_MODELS[model_key]["source"]
+      ]
+    carried[model_key] = entry_copy
   return carried
 
 
@@ -1849,7 +1854,11 @@ def sync_all_models(
       meta = {
           "status": "HEALTHY",
           "source": ", ".join(
-              dict.fromkeys(e["source"] for e in entries.values())
+              dict.fromkeys(
+                  e.get("source")
+                  or SOURCE_LABELS[DYNAMICAL_MODELS[k]["source"]]
+                  for k, e in entries.items()
+              )
           ),
           "last_updated_utc": utc_now_str(),
           "datasets": {
