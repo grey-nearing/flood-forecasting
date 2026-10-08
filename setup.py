@@ -43,6 +43,7 @@ setup(
         'multimet.static_extractor',
         'multimet.gridded_archive_builders',
         'multimet.timeseries_extractors',
+        'multimet.weather_fetcher',
         'return_periods',
         'utils',
         'benchmarks',
@@ -70,6 +71,7 @@ setup(
             'extract-multimet=multimet.timeseries_extractors.runner:main',
             'extract-multimet-dask=multimet.timeseries_extractors.dask_runner:main',
             'multimet-realtime=multimet.timeseries_extractors.realtime:main',
+            'sync-weather-forecasts=multimet.weather_fetcher.cli:main',
             'delineate-catchment=multimet.catchment_delineation.cli:main',
             'download-merit-d8-tiles=multimet.catchment_delineation.tools.download_merit_d8_tiles:main',
             'extract-caravan-static=multimet.static_extractor.cli:main',
@@ -121,6 +123,16 @@ setup(
         'dynamical': [
             'dynamical-catalog',
             'icechunk',
+            'pystac',
+            'eccodes',
+        ],
+        # Downloading forecast runs with `sync-weather-forecasts`
+        # (multimet.weather_fetcher): the dynamical.org catalog (pystac) and
+        # its Icechunk/Zarr stores, plus GRIB2 decoding for ECMWF Open Data.
+        'weather': [
+            'pystac',
+            'icechunk',
+            'eccodes',
         ],
     },
     classifiers=[

@@ -1,6 +1,6 @@
 # MultiMet Data Workflows (`multimet`)
 
-The `multimet` package provides tools for **watershed boundary delineation** ([`multimet/catchment_delineation`](catchment_delineation/README.md)), **gridded meteorological archives** ([`multimet/gridded_archive_builders`](gridded_archive_builders/README.md)), **static watershed attribute tables** (`multimet/static_extractor`), and **catchment meteorological timeseries** ([`multimet/timeseries_extractors`](timeseries_extractors/README.md)) for OpenHydroNet.
+The `multimet` package provides tools for **watershed boundary delineation** ([`multimet/catchment_delineation`](catchment_delineation/README.md)), **gridded meteorological archives** ([`multimet/gridded_archive_builders`](gridded_archive_builders/README.md)), **static watershed attribute tables** (`multimet/static_extractor`), **catchment meteorological timeseries** ([`multimet/timeseries_extractors`](timeseries_extractors/README.md)), and **live gridded weather forecasts** ([`multimet/weather_fetcher`](weather_fetcher/README.md)) for OpenHydroNet.
 
 ---
 
@@ -384,3 +384,9 @@ The [`multimet/timeseries_extractors`](timeseries_extractors/README.md) subpacka
 ## Part 4: Watershed Boundary Delineation (`multimet/catchment_delineation`)
 
 The [`multimet/catchment_delineation`](catchment_delineation/README.md) subpackage creates watershed boundary polygons and calculates drainage areas ($\text{km}^2$) from 90-meter flow-direction map tiles (`delineate-catchment` and `benchmark-catchment`). See [`multimet/catchment_delineation/README.md`](catchment_delineation/README.md) for quick-start commands, Python examples, and CLI flags.
+
+---
+
+## Part 5: Live Gridded Weather Forecasts (`multimet/weather_fetcher`)
+
+The [`multimet/weather_fetcher`](weather_fetcher/README.md) subpackage downloads the latest operational weather forecast runs (ECMWF IFS/AIFS/HRES, NOAA GFS/GEFS/HRRR) and recent precipitation analyses (NASA IMERG, NOAA CPC) onto a common 0.25° global grid (`sync-weather-forecasts`), and reads them back as map grids, 10-day point meteograms, wind fields, and area-weighted catchment summaries (`WeatherDataFetcher`). See [`multimet/weather_fetcher/README.md`](weather_fetcher/README.md) for the model table, CLI flags, and Python examples.
