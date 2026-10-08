@@ -40,6 +40,7 @@ from tqdm.notebook import tqdm
 # Get the current working directory and go one level up
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..', '..')))
 from model.evaluation import metrics
+from utils.file_paths import TEST_RESULTS_ZARR_NAME
 
 # --- Model Selection and Data Loading ---
 
@@ -73,7 +74,7 @@ def find_model_run_dirs(base_dir: str) -> Dict[str, str]:
             epoch_dirs = glob.glob(os.path.join(test_dir, 'model_epoch*'))
             
             for epoch_dir in epoch_dirs:
-                if os.path.isdir(os.path.join(epoch_dir, 'test_results.zarr')):
+                if os.path.isdir(os.path.join(epoch_dir, TEST_RESULTS_ZARR_NAME)):
                     run_dirs[subdir] = root
                     break 
                     
@@ -225,7 +226,7 @@ def load_test_results(run_dir: str) -> Tuple[xr.Dataset, int]:
     Returns:
         A tuple containing (xarray_dataset, epoch_number).
     """
-    search_pattern = os.path.join(run_dir, 'test', 'model_epoch*', 'test_results.zarr')
+    search_pattern = os.path.join(run_dir, 'test', 'model_epoch*', TEST_RESULTS_ZARR_NAME)
     result_files = glob.glob(search_pattern)
 
     # Extract epoch numbers and find the max
