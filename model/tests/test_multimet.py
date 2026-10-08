@@ -1496,6 +1496,7 @@ def test_multimet_lazy_load_keeps_on_disk_basin_chunks(
             'forecast_inputs': ['hres_3d'],
             'train_start_date': ['01/01/2000'],
             'train_end_date': ['02/01/2000'],
+            'loss': 'NSE',
             'lazy_load': True,
         }
     )
@@ -1516,6 +1517,8 @@ def test_multimet_lazy_load_keeps_on_disk_basin_chunks(
     lazy = Multimet(cfg=cfg, is_train=True, period='train')
     assert len(lazy) == len(basins) * num_issue_dates
     assert lazy._dataset.chunksizes['basin'] == (2, 2, 1)
+    assert lazy._per_basin_target_stds is not None
+    assert lazy._per_basin_target_stds.chunks == {}
     variables = ['static_f1', 'era5land_2d', 'hres_3d', 'target_v1']
     for name in variables:
         assert lazy._dataset[name].chunksizes['basin'] == (2, 2, 1), name
@@ -1553,6 +1556,10 @@ def test_multimet_lazy_load_keeps_on_disk_basin_chunks(
     assert torch.equal(lazy_batch['basin_index'], eager_batch['basin_index'])
     assert torch.equal(lazy_batch['x_s'], eager_batch['x_s'])
     assert torch.equal(lazy_batch['y'], eager_batch['y'])
+    assert torch.equal(
+        lazy_batch['per_basin_target_stds'],
+        eager_batch['per_basin_target_stds'],
+    )
     for group in ['x_d_hindcast', 'x_d_forecast']:
         assert lazy_batch[group].keys() == eager_batch[group].keys()
         for name, values in lazy_batch[group].items():
