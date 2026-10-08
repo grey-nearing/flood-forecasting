@@ -35,6 +35,8 @@ import zarr
 import gcsfs
 
 import importlib.util
+import struct
+import sys
 import threading
 
 from multimet.timeseries_extractors.base import BaseExtractor
@@ -61,6 +63,34 @@ OPEN_DATA_GRID_SHAPE = (721, 1440)
 _RASTERIO_LOCK = threading.Lock()
 
 
+def _has_module(name: str) -> bool:
+  """Returns True when ``name`` is an importable module with a valid spec."""
+  mod = sys.modules.get(name)
+  if mod is not None:
+    return getattr(mod, "__spec__", None) is not None
+  return importlib.util.find_spec(name) is not None
+
+
+def _has_grib2_grid_section(raw_bytes: bytes) -> bool:
+  """Returns True when a GRIB2 message includes Section 3 (Grid Definition)."""
+  if (
+      len(raw_bytes) < 20
+      or raw_bytes[:4] != b"GRIB"
+      or raw_bytes[-4:] != b"7777"
+  ):
+    return False
+  pos = 16
+  end = len(raw_bytes) - 4
+  while pos + 5 <= end:
+    sec_len, sec_num = struct.unpack(">IB", raw_bytes[pos : pos + 5])
+    if sec_len < 5 or pos + sec_len > end:
+      return False
+    if sec_num == 3:
+      return True
+    pos += sec_len
+  return False
+
+
 def deaccumulate(
     accumulated: np.ndarray, clip_negative: bool = False
 ) -> np.ndarray:
@@ -80,7 +110,7 @@ def decode_grib2_message(
     context: str = "",
 ) -> np.ndarray:
   """Decodes a single GRIB2 message into a 2D float32 array in raw WMO units."""
-  if importlib.util.find_spec("eccodes") is not None:
+  if _has_module("eccodes"):
     import eccodes  # type: ignore[import-untyped]
 
     gid = eccodes.codes_new_from_message(raw_bytes)
@@ -106,60 +136,55 @@ def decode_grib2_message(
       arr = np.where(np.isclose(arr, np.float32(missing_val)), np.nan, arr)
     return arr
 
-  if importlib.util.find_spec("rasterio") is not None:
-    import rasterio  # type: ignore[import-untyped]
+  if _has_module("rasterio") and _has_grib2_grid_section(raw_bytes):
     from rasterio.io import MemoryFile  # type: ignore[import-untyped]
 
     logging.getLogger("rasterio").setLevel(logging.CRITICAL)
-    try:
-      with _RASTERIO_LOCK:
-        with MemoryFile(raw_bytes, ext=".grib2") as memfile:
-          with memfile.open() as dataset:
-            arr = dataset.read(1).astype(np.float32)
-            nodata = dataset.nodata
-            grib_tags = dataset.tags(1)
-            grib_unit = grib_tags.get("GRIB_UNIT", "")
-            pds_nums = grib_tags.get("GRIB_PDS_TEMPLATE_NUMBERS", "").split()
-    except Exception:
-      arr = None
-    else:
-      if param and len(pds_nums) >= 2:
-        cat_num = (int(pds_nums[0]), int(pds_nums[1]))
-        pds_to_param = {
-            (0, 0): "2t",
-            (3, 0): "sp",
-            (1, 193): "tp",
-            (1, 52): "tp",
-            (1, 8): "tp",
-            (4, 9): "ssr",
-            (180, 176): "ssr",
-            (5, 5): "str",
-            (180, 177): "str",
-        }
-        detected_param = pds_to_param.get(cat_num)
-        if detected_param is not None and detected_param != param:
-          label = f" at {context}" if context else ""
-          raise ValueError(
-              f"GRIB2 parameter mismatch{label}: expected {param!r}, got {detected_param!r}"
-          )
-      if nodata is not None:
-        arr = np.where(np.isclose(arr, np.float32(nodata)), np.nan, arr)
-      if grib_unit == "[C]":
-        arr = arr + np.float32(273.15)
-      if arr.size != expected_shape[0] * expected_shape[1]:
-        label = f" for {param} at {context}" if (param or context) else ""
+    with _RASTERIO_LOCK:
+      with MemoryFile(raw_bytes, ext=".grib2") as memfile:
+        with memfile.open() as dataset:
+          arr = dataset.read(1).astype(np.float32)
+          nodata = dataset.nodata
+          grib_tags = dataset.tags(1)
+          grib_unit = grib_tags.get("GRIB_UNIT", "")
+          pds_nums = grib_tags.get("GRIB_PDS_TEMPLATE_NUMBERS", "").split()
+    if param and len(pds_nums) >= 2:
+      cat_num = (int(pds_nums[0]), int(pds_nums[1]))
+      pds_to_param = {
+          (0, 0): "2t",
+          (3, 0): "sp",
+          (1, 193): "tp",
+          (1, 52): "tp",
+          (1, 8): "tp",
+          (4, 9): "ssr",
+          (180, 176): "ssr",
+          (5, 5): "str",
+          (180, 177): "str",
+      }
+      detected_param = pds_to_param.get(cat_num)
+      if detected_param is not None and detected_param != param:
+        label = f" at {context}" if context else ""
         raise ValueError(
-            f"Grid size mismatch{label}: "
-            f"got {arr.size} values, expected {expected_shape}"
+            f"GRIB2 parameter mismatch{label}: expected {param!r}, got"
+            f" {detected_param!r}"
         )
-      return arr.reshape(expected_shape)
+    if nodata is not None:
+      arr = np.where(np.isclose(arr, np.float32(nodata)), np.nan, arr)
+    if grib_unit == "[C]":
+      arr = arr + np.float32(273.15)
+    if arr.size != expected_shape[0] * expected_shape[1]:
+      label = f" for {param} at {context}" if (param or context) else ""
+      raise ValueError(
+          f"Grid size mismatch{label}: "
+          f"got {arr.size} values, expected {expected_shape}"
+      )
+    return arr.reshape(expected_shape)
 
   if (
       len(raw_bytes) >= 20
       and raw_bytes[:4] == b"GRIB"
       and raw_bytes[-4:] == b"7777"
   ):
-    import struct
 
     pos = 16
     end = len(raw_bytes) - 4

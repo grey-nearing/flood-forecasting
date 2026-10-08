@@ -18,30 +18,26 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import sys
 from typing import List, Optional, Sequence
 
-from multimet.weather_fetcher.config import DYNAMICAL_MODELS
+from multimet.weather_fetcher.config import DYNAMICAL_MODELS, SOURCE_LABELS
 from multimet.weather_fetcher.sync import read_sync_status, sync_all_models
 
-
-def resolve_default_weather_data_dir() -> Path:
-  """Resolves the default CLI weather cache directory."""
-  env = os.environ.get("EARTHKIT_WEATHER_DATA_DIR")
-  if env and env.strip():
-    return Path(env).expanduser().resolve()
-  return Path.home() / ".cache" / "openhydronet" / "weather"
+# Exit code 0 only when the data directory is fully consistent afterwards.
+_SUCCESS_RESULTS = ("updated", "up_to_date", "busy")
 
 
 def build_parser() -> argparse.ArgumentParser:
   """Builds the argument parser for `sync-weather-forecasts`."""
+  sources = ", ".join(dict.fromkeys(SOURCE_LABELS.values()))
   parser = argparse.ArgumentParser(
       prog="sync-weather-forecasts",
       description=(
-          "Synchronize operational gridded NWP weather forecasts from "
-          "dynamical.org into float16 binary streams with atomic directory swap."
+          "Synchronize operational gridded weather runs from "
+          f"{sources} into float16 binary streams on the 0.25 degree global "
+          "grid with an atomic run-directory swap."
       ),
   )
   parser.add_argument(
@@ -49,11 +45,20 @@ def build_parser() -> argparse.ArgumentParser:
       "--data-root",
       dest="data_dir",
       type=str,
+      required=True,
+      help=(
+          "Directory for downloaded forecast runs (required; runs are stored"
+          " under <data-dir>/runs and exposed through <data-dir>/current)."
+      ),
+  )
+  parser.add_argument(
+      "--cpc-cache-dir",
+      dest="cpc_cache_dir",
+      type=str,
       default=None,
       help=(
-          "Directory for downloaded forecast runs "
-          "(defaults to $EARTHKIT_WEATHER_DATA_DIR or "
-          "~/.cache/openhydronet/weather)."
+          "Directory caching NOAA PSL CPC annual NetCDF files (defaults to"
+          " <data-dir>/cpc_cache)."
       ),
   )
   parser.add_argument(
@@ -68,7 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument(
       "--force",
       action="store_true",
-      help="Force re-download even when the latest init_time is already synced.",
+      help=(
+          "Force re-download even when the latest init_time is already"
+          " synced."
+      ),
   )
   parser.add_argument(
       "--status",
@@ -79,19 +87,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-  """CLI entry point for `sync-weather-forecasts`."""
+  """CLI entry point for `sync-weather-forecasts`.
+
+  Returns:
+    ``0`` when the run directory is consistent afterwards (``updated``,
+    ``up_to_date`` or ``busy``), ``1`` when any selected model failed
+    (``partial`` or ``error``). Unsupported model keys raise ``ValueError``.
+  """
   parser = build_parser()
   args = parser.parse_args(argv)
-
-  data_dir = (
-      Path(args.data_dir).expanduser().resolve()
-      if args.data_dir
-      else resolve_default_weather_data_dir()
-  )
+  data_dir = Path(args.data_dir).expanduser().resolve()
 
   if args.status:
-    status = read_sync_status(data_dir)
-    print(json.dumps(status, indent=2))
+    print(json.dumps(read_sync_status(data_dir), indent=2))
     return 0
 
   models: Optional[List[str]] = (
@@ -99,18 +107,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
       if args.models
       else None
   )
-
   result = sync_all_models(
       data_dir=data_dir,
       models=models,
       force=args.force,
       log=lambda msg: print(msg, flush=True),
+      cpc_cache_dir=args.cpc_cache_dir,
   )
-  ok = result.get("last_result") in ("updated", "up_to_date", "busy")
-  if argv is None:
-    sys.exit(0 if ok else 1)
-  return 0 if ok else 1
+  return 0 if result.get("last_result") in _SUCCESS_RESULTS else 1
 
 
 if __name__ == "__main__":
-  main()
+  sys.exit(main())
