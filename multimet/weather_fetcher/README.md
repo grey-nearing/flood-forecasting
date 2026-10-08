@@ -162,10 +162,11 @@ with WeatherDataFetcher(data_dir=data_dir) as fetcher:
 
 | Method | Returns | Missing data |
 | :--- | :--- | :--- |
-| `fetch_forecast_grid(model_key, var_key, step_idx, lats=None, lons=None, bilinear=False)` | `float32` array, shape `(721, 1440)` or `(len(lats), len(lons))` | `None` when the lead is beyond the run, or when temperature/pressure is not stored at exactly that lead; masked cells are `NaN` |
-| `fetch_wind_grid(model_key, step_idx=0, subsample=2, bbox=None, bilinear=False)` | `{"header": {...}, "u": [...], "v": [...]}` with `nx * ny` values on a `1° × subsample` grid (`subsample` 1 to 4) | masked cells are `None`; `header["missing_count"]` counts them; `ValueError` when wind is not stored at that lead |
+| `to_xarray(model_key, variables=None)` | `xarray.Dataset` containing all stored leads on a `(lead_time, latitude, longitude)` physical grid, plus `valid_time`. | masked cells are `NaN`. Coordinates and data arrays have standard CF `units` and `long_name` attrs. |
+| `fetch_forecast_grid(model_key, var_key, step_idx=None, lead_hours=None, lats=None, lons=None, bilinear=False)` | `float32` array, shape `(721, 1440)` or `(len(lats), len(lons))` | `None` when the lead is beyond the run, or when temperature/pressure is not stored at exactly that lead; masked cells are `NaN` |
+| `fetch_wind_grid(model_key, step_idx=None, lead_hours=None, resolution_deg=None, subsample=2, bbox=None, bilinear=False)` | `{"header": {...}, "u": [...], "v": [...]}` with `nx * ny` values on a `1° × subsample` grid (`subsample` 1 to 4) | masked cells are `None`; `header["missing_count"]` counts them; `ValueError` when wind is not stored at that lead |
 | `fetch_point_timeseries(lat, lon, models=None, strict=True)` | `lead_hours` (0 to 240 h, step 3 h) and, per model, `precip_rate_mmh`, `accum_precip_mm`, `temp_c`, `wind_speed_mps`, `wind_direction_deg`, `pressure_hpa`, `stored_lead_hours`, `init_time`, `max_lead_hours` | `None` entries at leads the model did not store, beyond its horizon, or over masked cells |
-| `fetch_catchment_summary(geojson_feature, step_idx, model_key)` | `catchment_id`, `area_km2`, `area_km2_source`, `basin_mean_precip_mmh`, `basin_max_precip_mmh`, `basin_accumulated_10d_mm`, `basin_mean_temp_c`, `missing_area_fraction`, `grid_cells`, `centroid`, `valid_time_utc`, `accumulation_hours` | a statistic is `None` when less than 80% of the basin area has data at that lead |
+| `fetch_catchment_summary(geojson_feature, model_key, step_idx=None, lead_hours=None)` | `catchment_id`, `area_km2`, `area_km2_source`, `basin_mean_precip_mmh`, `basin_max_precip_mmh`, `basin_accumulated_10d_mm`, `basin_mean_temp_c`, `missing_area_fraction`, `grid_cells`, `centroid`, `valid_time_utc`, `accumulation_hours` | a statistic is `None` when less than 80% of the basin area has data at that lead |
 | `get_model_info(model_key)` / `get_all_models_info()` | `data_source` (`"archived_run"` or `"unavailable"`), `init_time`, `stored_lead_hours`, `max_lead_hours`, `real_variables`, `missing_variables` | empty lists / `None` when the model is not synced |
 | `get_sync_status()` | contents of `sync_status.json` plus `sync_status_found` and the loaded `data_dir` | `sync_status_found` is `False` before the first sync |
 
@@ -196,8 +197,7 @@ in the metadata, 1000 hPa), `u10` and `v10` (m/s).
 
 ## What to Watch Out For
 
-* **`step_idx` is a 3-hour step.** `step_idx=2` means +6 h. The maximum is 80
-  (+240 h). Steps beyond a model's horizon return `None`.
+* **`step_idx` and `lead_hours`.** `step_idx` counts 3-hour steps (e.g. `step_idx=2` means +6 h). Or use physical `lead_hours` directly (e.g. `lead_hours=6.0`). Steps beyond a model's horizon return `None`.
 * **No lead substitution.** For a 6-hourly model (`ecmwf_aifs`) temperature,
   pressure, and wind are `None` at +3 h, +9 h, and so on. Rain rate at +3 h is
   the mean rate of the model interval that contains +3 h (0 to 6 h), and the

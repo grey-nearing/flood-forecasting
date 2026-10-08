@@ -45,6 +45,8 @@ from typing import (
 )
 
 import numpy as np
+import pandas as pd
+import xarray as xr
 import shapely.geometry
 import shapely.validation
 
@@ -631,7 +633,8 @@ def fetch_forecast_grid(
     stream_info: Mapping[str, Mapping[str, Any]],
     model_key: str,
     var_key: str,
-    step_idx: int,
+    step_idx: Optional[int] = None,
+    lead_hours: Optional[float] = None,
     lats: Optional[np.ndarray] = None,
     lons: Optional[np.ndarray] = None,
     bilinear: bool = False,
@@ -651,7 +654,12 @@ def fetch_forecast_grid(
   """
   if model_key not in SUPPORTED_MODELS:
     raise ValueError(f"Unknown weather model '{model_key}'")
-  lead_h = _validate_step_idx(step_idx) * STEP_HOURS
+  if lead_hours is not None:
+    lead_h = float(lead_hours)
+  elif step_idx is not None:
+    lead_h = float(_validate_step_idx(step_idx) * STEP_HOURS)
+  else:
+    raise ValueError("Must provide either lead_hours or step_idx.")
   if lats is None:
     lats = GRID_LATS
   if lons is None:
@@ -735,7 +743,9 @@ def fetch_wind_grid(
     arrays: Mapping[str, np.ndarray],
     stream_info: Mapping[str, Mapping[str, Any]],
     model_key: str,
-    step_idx: int = 0,
+    step_idx: Optional[int] = None,
+    lead_hours: Optional[float] = None,
+    resolution_deg: Optional[float] = None,
     subsample: int = 2,
     bbox: Optional[Tuple[float, float, float, float]] = None,
     bilinear: bool = False,
@@ -778,8 +788,17 @@ def fetch_wind_grid(
         f"subsample must be an integer in [1, {WIND_MAX_SUBSAMPLE}], got"
         f" {subsample!r}."
     )
-  step_deg = WIND_BASE_STEP_DEG * int(subsample)
-  lead_h = _validate_step_idx(step_idx) * STEP_HOURS
+  if resolution_deg is not None:
+    step_deg = float(resolution_deg)
+  else:
+    step_deg = WIND_BASE_STEP_DEG * int(subsample)
+
+  if lead_hours is not None:
+    lead_h = float(lead_hours)
+  elif step_idx is not None:
+    lead_h = float(_validate_step_idx(step_idx) * STEP_HOURS)
+  else:
+    raise ValueError("Must provide either lead_hours or step_idx.")
 
   fu = file_step_for_lead(u_info, lead_h, is_rate=False)
   fv = file_step_for_lead(v_info, lead_h, is_rate=False)
@@ -1103,7 +1122,6 @@ def fetch_point_timeseries(
 
     results["models"][m_key] = {
         "name": m_info["name"],
-        "badge": m_info["badge"],
         "precip_rate_mmh": precip_curve,
         "accum_precip_mm": [round_or_none(a, 1) for a in accum],
         "temp_c": temp_curve,
@@ -1196,8 +1214,9 @@ def fetch_catchment_summary(
     arrays: Mapping[str, np.ndarray],
     stream_info: Mapping[str, Mapping[str, Any]],
     geojson_feature: Mapping[str, Any],
-    step_idx: int,
     model_key: str,
+    step_idx: Optional[int] = None,
+    lead_hours: Optional[float] = None,
 ) -> Dict[str, Any]:
   """Computes exact area-weighted basin statistics for a catchment polygon.
 
@@ -1228,7 +1247,12 @@ def fetch_catchment_summary(
     raise FileNotFoundError(
         f"Synced precipitation stream for '{model_key}' not found."
     )
-  lead_h = _validate_step_idx(step_idx) * STEP_HOURS
+  if lead_hours is not None:
+    lead_h = float(lead_hours)
+  elif step_idx is not None:
+    lead_h = float(_validate_step_idx(step_idx) * STEP_HOURS)
+  else:
+    raise ValueError("Must provide either lead_hours or step_idx.")
 
   props = geojson_feature.get("properties") or {}
   catchment_id = props.get("catchment_id") or geojson_feature.get("id")
@@ -1341,6 +1365,99 @@ class _StreamState:
   arrays: Dict[str, np.ndarray]
   signature: Optional[Tuple[str, int]]
   directory: Optional[Path]
+
+
+
+def streams_to_xarray(
+    arrays: Mapping[str, np.ndarray],
+    stream_info: Mapping[str, Mapping[str, Any]],
+    model_key: str,
+    variables: Optional[Sequence[str]] = None,
+) -> "xr.Dataset":
+  """Converts stored planes to an xarray.Dataset with CF physical units."""
+  if model_key not in SUPPORTED_MODELS:
+    raise ValueError(f"Unknown model '{model_key}'")
+
+  if variables is None:
+    variables = ["precipitation", "temperature", "pressure", "wind_u", "wind_v"]
+
+  info = get_model_data_info_from_streams(stream_info, model_key)
+  if info is None:
+    raise FileNotFoundError(f"Model '{model_key}' has no synced data.")
+    
+  init_time = info["init_time"]
+  leads_h = info["stored_lead_hours"]
+  
+  ds_vars = {}
+  
+  # Helper to fetch physical grid
+  def _get_var(var_key: str) -> Optional[np.ndarray]:
+      if var_key in ("wind_u", "wind_v"):
+          suffix = "u10" if var_key == "wind_u" else "v10"
+          stream_id = f"{model_key}_{suffix}"
+          info = stream_info.get(stream_id)
+          if not info or stream_id not in arrays:
+              return None
+          cube = []
+          for lead in leads_h:
+              file_step = file_step_for_lead(info, lead, is_rate=False)
+              if file_step is None:
+                  arr = np.full((721, 1440), np.nan, dtype=np.float32)
+              else:
+                  arr = sample_stream_grid(arrays, stream_info, stream_id, file_step, GRID_LATS, GRID_LONS)
+              cube.append(arr)
+          return np.stack(cube, axis=0) if cube else None
+
+      cube = []
+      for lead in leads_h:
+          arr = fetch_forecast_grid(
+              arrays, stream_info, model_key, var_key, lead_hours=lead
+          )
+          if arr is None:
+              # Fallback if lead not found (e.g. state variable)
+              arr = np.full((721, 1440), np.nan, dtype=np.float32)
+          cube.append(arr)
+      return np.stack(cube, axis=0) if cube else None
+
+  if "precipitation" in variables:
+      arr = _get_var("precipitation")
+      if arr is not None:
+          ds_vars["precipitation"] = (["lead_time", "latitude", "longitude"], arr.astype(np.float32), {"units": "mm/h", "long_name": "Precipitation rate"})
+  if "accumulated_precip" in variables:
+      arr = _get_var("accumulated_precip")
+      if arr is not None:
+          ds_vars["accumulated_precip"] = (["lead_time", "latitude", "longitude"], arr.astype(np.float32), {"units": "mm", "long_name": "Accumulated precipitation"})
+  if "temperature" in variables:
+      arr = _get_var("temperature")
+      if arr is not None:
+          ds_vars["temperature"] = (["lead_time", "latitude", "longitude"], arr.astype(np.float32), {"units": "degC", "long_name": "2m temperature"})
+  if "pressure" in variables:
+      arr = _get_var("pressure")
+      if arr is not None:
+          ds_vars["pressure"] = (["lead_time", "latitude", "longitude"], arr.astype(np.float32), {"units": "hPa", "long_name": "Mean sea level pressure"})
+  if "wind_u" in variables:
+      arr = _get_var("wind_u")
+      if arr is not None:
+          ds_vars["wind_u"] = (["lead_time", "latitude", "longitude"], arr.astype(np.float32), {"units": "m/s", "long_name": "10m U wind component"})
+  if "wind_v" in variables:
+      arr = _get_var("wind_v")
+      if arr is not None:
+          ds_vars["wind_v"] = (["lead_time", "latitude", "longitude"], arr.astype(np.float32), {"units": "m/s", "long_name": "10m V wind component"})
+
+  lead_time = pd.to_timedelta(leads_h, unit="h")
+  valid_time = pd.Timestamp(init_time) + lead_time
+  
+  ds = xr.Dataset(
+      data_vars=ds_vars,
+      coords={
+          "lead_time": (["lead_time"], lead_time),
+          "valid_time": (["lead_time"], valid_time),
+          "latitude": (["latitude"], GRID_LATS),
+          "longitude": (["longitude"], GRID_LONS),
+      },
+      attrs={"init_time": init_time.isoformat() if hasattr(init_time, 'isoformat') else str(init_time)}
+  )
+  return ds
 
 
 class WeatherDataFetcher:
@@ -1497,7 +1614,8 @@ class WeatherDataFetcher:
       self,
       model_key: str,
       var_key: str,
-      step_idx: int,
+      step_idx: Optional[int] = None,
+      lead_hours: Optional[float] = None,
       lats: Optional[np.ndarray] = None,
       lons: Optional[np.ndarray] = None,
       bilinear: bool = False,
@@ -1510,6 +1628,7 @@ class WeatherDataFetcher:
         model_key=model_key,
         var_key=var_key,
         step_idx=step_idx,
+        lead_hours=lead_hours,
         lats=lats,
         lons=lons,
         bilinear=bilinear,
@@ -1518,7 +1637,9 @@ class WeatherDataFetcher:
   def fetch_wind_grid(
       self,
       model_key: str,
-      step_idx: int = 0,
+      step_idx: Optional[int] = None,
+      lead_hours: Optional[float] = None,
+      resolution_deg: Optional[float] = None,
       subsample: int = 2,
       bbox: Optional[Tuple[float, float, float, float]] = None,
       bilinear: bool = False,
@@ -1530,10 +1651,22 @@ class WeatherDataFetcher:
         stream_info,
         model_key=model_key,
         step_idx=step_idx,
+        lead_hours=lead_hours,
+        resolution_deg=resolution_deg,
         subsample=subsample,
         bbox=bbox,
         bilinear=bilinear,
     )
+
+
+  def to_xarray(
+      self,
+      model_key: str,
+      variables: Optional[Sequence[str]] = None,
+  ) -> "xr.Dataset":
+    """Converts stored planes to an xarray.Dataset with CF physical units."""
+    arrays, stream_info = self.snapshot()
+    return streams_to_xarray(arrays, stream_info, model_key, variables)
 
   def fetch_point_timeseries(
       self,
@@ -1556,8 +1689,9 @@ class WeatherDataFetcher:
   def fetch_catchment_summary(
       self,
       geojson_feature: Mapping[str, Any],
-      step_idx: int,
       model_key: str,
+      step_idx: Optional[int] = None,
+      lead_hours: Optional[float] = None,
   ) -> Dict[str, Any]:
     """Computes area-weighted catchment precipitation/temperature statistics."""
     arrays, stream_info = self.snapshot()
@@ -1565,6 +1699,7 @@ class WeatherDataFetcher:
         arrays,
         stream_info,
         geojson_feature=geojson_feature,
-        step_idx=step_idx,
         model_key=model_key,
+        step_idx=step_idx,
+        lead_hours=lead_hours,
     )

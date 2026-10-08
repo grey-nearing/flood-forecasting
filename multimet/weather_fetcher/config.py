@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Model/variable physical metadata and unit conversions (weather fetcher)."""
+"""Model and variable physical metadata and unit conversions for Weather Data Fetcher."""
 
 from __future__ import annotations
 
 import dataclasses
+from datetime import datetime, timedelta, timezone
+import json
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -26,27 +28,23 @@ N_LAT: int = 721
 N_LON: int = 1440
 GRID_DEG: float = 0.25
 NUM_STEPS: int = 81  # 10 days at 3-hour steps (0, 3, ..., 240 h)
-NUM_HOURS: int = NUM_STEPS  # Alias kept for callers that count viewer steps.
+NUM_HOURS: int = 81
 STEP_HOURS: int = 3
 VIEWER_STEP_HOURS: int = 3
 MAX_LEAD_HOURS: int = (NUM_STEPS - 1) * STEP_HOURS
-SYNC_INTERVAL_HOURS: int = 6
 
 # Metadata and synchronization constants
 STAC_CATALOG_URL: str = "https://stac.dynamical.org/catalog.json"
 RUN_METADATA_FILE: str = "latest_dynamical_meta.json"
 SYNC_STATUS_FILE: str = "sync_status.json"
-SYNC_LOG_FILE: str = "sync.log"
-CHECK_INTERVAL_MINUTES: int = 60
 KEEP_PREVIOUS_RUNS: int = 1
 DEFAULT_MSLP_OFFSET_HPA: float = 1000.0
-MSLP_OFFSET_HPA: float = DEFAULT_MSLP_OFFSET_HPA
-SUBPROCESS_TIMEOUT_S: int = 45 * 60
 
-# Minimum fraction of finite source cells required inside a 0.25 deg target
-# cell when averaging a finer grid (IMERG 0.1 deg, HRRR 3 km) onto the global
-# grid. Target cells below this threshold are stored as NaN.
 MIN_VALID_RESAMPLE_FRACTION: float = 0.8
+MSLP_OFFSET_HPA: float = 1000.0
+
+MIN_VALID_RESAMPLE_FRACTION: float = 0.8
+
 
 # Oldest acceptable last-valid day of a cached NOAA PSL CPC annual NetCDF file
 # before it must be downloaded again, and the maximum age of the cached file.
@@ -54,10 +52,10 @@ CPC_MAX_PUBLICATION_LAG_DAYS: int = 7
 CPC_CACHE_REFRESH_HOURS: float = 6.0
 
 RUN_DATASET_TO_MODEL: Dict[str, str] = {
-    "ecmwf_ifs_hres_0_25_degree": "ecmwf_hres",
     "ecmwf_aifs_single_forecast": "ecmwf_aifs",
     "noaa_gfs_forecast": "noaa_gfs",
     "ecmwf_ifs_ens_forecast_15_day_0_25_degree": "ecmwf_ifs",
+    "ecmwf_ifs_hres_0_25_degree": "ecmwf_hres",
     "noaa_gefs_forecast_35_day": "noaa_gefs",
     "noaa_hrrr_forecast_48_hour": "noaa_hrrr",
     "nasa_imerg_analysis_early": "nasa_imerg",
@@ -67,16 +65,14 @@ RUN_DATASET_TO_MODEL: Dict[str, str] = {
 SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
     "ecmwf_hres": {
         "id": "ecmwf_hres",
-        "name": "ECMWF IFS HRES (0.25° Deterministic)",
-        "badge": "0.25° Physics 10-Day",
+        "name": "ECMWF IFS HRES Operational",
         "type": "physics",
-        "resolution": "0.25° Global",
+        "resolution": "0.25° Global (9km native)",
         "organization": "ECMWF",
     },
     "ecmwf_ifs": {
         "id": "ecmwf_ifs",
-        "name": "ECMWF IFS ENS (control run)",
-        "badge": "0.25° Ensemble 10-Day",
+        "name": "ECMWF IFS (ensemble control run)",
         "type": "physics",
         "resolution": "0.25° Global (9km native)",
         "organization": "ECMWF",
@@ -84,7 +80,6 @@ SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
     "ecmwf_aifs": {
         "id": "ecmwf_aifs",
         "name": "ECMWF AIFS",
-        "badge": "0.25° Global AI 10-Day",
         "type": "ai",
         "resolution": "0.25° Global",
         "organization": "ECMWF",
@@ -92,7 +87,6 @@ SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
     "noaa_gfs": {
         "id": "noaa_gfs",
         "name": "NOAA GFS",
-        "badge": "0.25° Physics 10-Day",
         "type": "physics",
         "resolution": "0.25° Global",
         "organization": "NOAA / NWS",
@@ -100,39 +94,31 @@ SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
     "noaa_gefs": {
         "id": "noaa_gefs",
         "name": "NOAA GEFS (ensemble control run)",
-        "badge": "0.25° Ensemble 10-Day",
         "type": "physics",
         "resolution": "0.25° Global",
         "organization": "NOAA / NWS",
     },
     "noaa_hrrr": {
         "id": "noaa_hrrr",
-        "name": "NOAA HRRR (CONUS)",
-        "badge": "CONUS Physics 48-Hour",
+        "name": "NOAA HRRR (CONUS 3km)",
         "type": "physics",
-        "resolution": "3 km CONUS native, served on the 0.25° grid",
+        "resolution": "3 km CONUS",
         "organization": "NOAA / NWS",
     },
     "nasa_imerg": {
         "id": "nasa_imerg",
-        "name": "NASA GPM IMERG Early (Global Satellite Precip)",
-        "badge": "Satellite Analysis, Last 10 Days",
+        "name": "NASA IMERG Early",
         "type": "observation",
-        "resolution": "0.10° Global native, averaged onto the 0.25° grid",
-        "organization": "NASA GSFC / Dynamical",
+        "resolution": "0.1° Global",
+        "organization": "NASA",
     },
     "noaa_cpc": {
         "id": "noaa_cpc",
-        "name": "NOAA CPC Unified (Global Gauge Precip)",
-        "badge": "Gauge Analysis, Last 10 Days",
+        "name": "NOAA CPC Global Unified Gauge",
         "type": "observation",
-        "resolution": "0.50° Global Land native, served on the 0.25° grid",
-        "organization": "NOAA PSL / CPC",
+        "resolution": "0.5° Global",
+        "organization": "NOAA",
     },
-}
-
-MODEL_LABELS: Dict[str, str] = {
-    key: spec["name"] for key, spec in SUPPORTED_MODELS.items()
 }
 
 SUPPORTED_VARIABLES: Dict[str, Dict[str, Any]] = {
@@ -173,58 +159,6 @@ SUPPORTED_VARIABLES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-
-@dataclasses.dataclass(frozen=True)
-class WeatherModelSpec:
-  """Typed view of one ``SUPPORTED_MODELS`` entry."""
-
-  id: str
-  name: str
-  badge: str
-  type: str
-  resolution: str
-  organization: str
-
-
-@dataclasses.dataclass(frozen=True)
-class WeatherVariableSpec:
-  """Typed view of one ``SUPPORTED_VARIABLES`` entry (display range only)."""
-
-  id: str
-  name: str
-  unit: str
-  min: float
-  max: float
-
-
-MODEL_CATALOG: Dict[str, WeatherModelSpec] = {
-    key: WeatherModelSpec(**spec) for key, spec in SUPPORTED_MODELS.items()
-}
-VARIABLE_CATALOG: Dict[str, WeatherVariableSpec] = {
-    key: WeatherVariableSpec(**spec)
-    for key, spec in SUPPORTED_VARIABLES.items()
-}
-
-
-def get_model_spec(model_key: str) -> WeatherModelSpec:
-  """Returns the catalog entry for ``model_key`` or raises ``KeyError``."""
-  if model_key not in MODEL_CATALOG:
-    raise KeyError(
-        f"Unknown weather model {model_key!r}. Supported: {list(MODEL_CATALOG)}"
-    )
-  return MODEL_CATALOG[model_key]
-
-
-def get_variable_spec(var_key: str) -> WeatherVariableSpec:
-  """Returns the catalog entry for ``var_key`` or raises ``KeyError``."""
-  if var_key not in VARIABLE_CATALOG:
-    raise KeyError(
-        f"Unknown weather variable {var_key!r}. Supported:"
-        f" {list(VARIABLE_CATALOG)}"
-    )
-  return VARIABLE_CATALOG[var_key]
-
-
 # Stream suffix -> dynamical.org variable name
 STREAM_VARIABLES: Dict[str, str] = {
     "precip": "precipitation_surface",
@@ -244,11 +178,6 @@ STREAM_SUFFIX: Dict[str, str] = {
 
 # (stream id, file name, is precipitation)
 STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
-    ("ecmwf_hres_precip", "ecmwf_hres_precip.bin", True),
-    ("ecmwf_hres_temp", "ecmwf_hres_temp.bin", False),
-    ("ecmwf_hres_mslp", "ecmwf_hres_mslp.bin", False),
-    ("ecmwf_hres_u10", "ecmwf_hres_u10.bin", False),
-    ("ecmwf_hres_v10", "ecmwf_hres_v10.bin", False),
     ("ecmwf_ifs_precip", "ecmwf_ifs_precip.bin", True),
     ("ecmwf_ifs_temp", "ecmwf_ifs_temp.bin", False),
     ("ecmwf_ifs_mslp", "ecmwf_ifs_mslp.bin", False),
@@ -259,6 +188,8 @@ STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
     ("ecmwf_aifs_mslp", "ecmwf_aifs_mslp.bin", False),
     ("ecmwf_aifs_u10", "ecmwf_aifs_u10.bin", False),
     ("ecmwf_aifs_v10", "ecmwf_aifs_v10.bin", False),
+    ("graphcast_precip", "graphcast_precip.bin", True),
+    ("graphcast_temp", "graphcast_temp.bin", False),
     ("noaa_gfs_precip", "noaa_gfs_precip.bin", True),
     ("noaa_gfs_temp", "noaa_gfs_temp.bin", False),
     ("noaa_gfs_mslp", "noaa_gfs_mslp.bin", False),
@@ -274,42 +205,24 @@ STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
     ("noaa_hrrr_mslp", "noaa_hrrr_mslp.bin", False),
     ("noaa_hrrr_u10", "noaa_hrrr_u10.bin", False),
     ("noaa_hrrr_v10", "noaa_hrrr_v10.bin", False),
-    ("nasa_imerg_precip", "nasa_imerg_precip.bin", True),
-    ("noaa_cpc_precip", "noaa_cpc_precip.bin", True),
 )
 
 GLOBAL_VARS: List[str] = [
-    "ecmwf_hres_precip",
-    "ecmwf_hres_temp",
-    "ecmwf_hres_u10",
-    "ecmwf_hres_v10",
     "ecmwf_ifs_precip",
     "ecmwf_ifs_temp",
     "ecmwf_ifs_u10",
     "ecmwf_ifs_v10",
     "ecmwf_aifs_precip",
     "ecmwf_aifs_temp",
+    "graphcast_precip",
+    "graphcast_temp",
     "noaa_gfs_precip",
     "noaa_gfs_temp",
-    "noaa_gefs_precip",
-    "noaa_gefs_temp",
-    "noaa_hrrr_precip",
-    "noaa_hrrr_temp",
-    "nasa_imerg_precip",
-    "noaa_cpc_precip",
 ]
 
-# Default operational models synchronized by sync_all_models
-DEFAULT_SYNC_MODELS: Tuple[str, ...] = (
-    "ecmwf_hres",
-    "ecmwf_ifs",
-    "ecmwf_aifs",
-    "noaa_gfs",
-    "noaa_gefs",
-    "noaa_hrrr",
-    "nasa_imerg",
-    "noaa_cpc",
-)
+# Default operational models synchronized from dynamical.org
+DEFAULT_SYNC_MODELS: Tuple[str, ...] = ("ecmwf_ifs", "ecmwf_aifs", "noaa_gfs", "noaa_gefs", "noaa_hrrr", "nasa_imerg", "noaa_cpc")
+
 
 # Human-readable upstream source per ``DYNAMICAL_MODELS[...]["source"]``.
 SOURCE_LABELS: Dict[str, str] = {
@@ -372,9 +285,6 @@ DYNAMICAL_MODELS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# Native upstream lead hours (or analysis offsets) of each model within the
-# 0-240 h viewer horizon. Used to label archived planes when a run's metadata
-# does not carry an explicit ``lead_hours`` list.
 MODEL_NATIVE_LEAD_HOURS: Dict[str, Tuple[int, ...]] = {
     "ecmwf_hres": tuple(list(range(0, 145, 3)) + list(range(150, 241, 6))),
     "ecmwf_ifs": tuple(list(range(0, 145, 3)) + list(range(150, 241, 6))),
@@ -390,7 +300,7 @@ MODEL_NATIVE_LEAD_HOURS: Dict[str, Tuple[int, ...]] = {
 def output_lead_hours(
     in_leads: Sequence[int],
     max_lead: int = MAX_LEAD_HOURS,
-    step: int = VIEWER_STEP_HOURS,
+    step: int = STEP_HOURS,
 ) -> List[int]:
   """Returns stored lead hours: unique model leads on 3-hourly steps."""
   return sorted({
@@ -537,3 +447,34 @@ def from_stored_units(
   if stream == "mslp":
     return arr + float(mslp_offset_hpa)
   return arr
+
+
+def parse_zarr_metadata_time_extent(
+    zmetadata_json: str,
+) -> Optional[Dict[str, Any]]:
+  """Parses CF-compliant time extent from Zarr .zmetadata JSON content."""
+  if not zmetadata_json:
+    return None
+  parsed = json.loads(zmetadata_json)
+  meta = parsed.get("metadata", {})
+  time_arr = meta.get("time/.zarray", {})
+  time_attrs = meta.get("time/.zattrs", {})
+  shape = time_arr.get("shape", [])
+  if not shape:
+    return None
+  n_steps = int(shape[0])
+  units = str(time_attrs.get("units", ""))
+  if "days since " not in units:
+    return None
+  base_str = units.split("days since ")[1].split()[0]
+  base_dt = datetime.strptime(base_str, "%Y-%m-%d")
+  start_date = base_dt.strftime("%Y-%m-%d")
+  end_date = (base_dt + timedelta(days=n_steps - 1)).strftime("%Y-%m-%d")
+  total_years = round(n_steps / 365.25, 1)
+  return {
+      "start_date": start_date,
+      "end_date": end_date,
+      "n_timesteps": n_steps,
+      "total_years": total_years,
+      "is_dynamic": True,
+  }

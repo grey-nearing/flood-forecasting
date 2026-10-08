@@ -262,11 +262,14 @@ What the Fetcher Returns
    * - Method
      - Returns
      - Missing data
-   * - ``fetch_forecast_grid(model_key, var_key, step_idx, lats=None, lons=None, bilinear=False)``
+   * - ``to_xarray(model_key, variables=None)``
+     - ``xarray.Dataset`` containing all stored leads on a ``(lead_time, latitude, longitude)`` physical grid, plus ``valid_time``.
+     - masked cells are ``NaN``. Coordinates and data arrays have standard CF ``units`` and ``long_name`` attrs.
+   * - ``fetch_forecast_grid(model_key, var_key, step_idx=None, lead_hours=None, lats=None, lons=None, bilinear=False)``
      - ``float32`` array, shape ``(721, 1440)`` or ``(len(lats), len(lons))``
      - ``None`` when the lead is beyond the run, or when temperature/pressure
        is not stored at exactly that lead; masked cells are ``NaN``
-   * - ``fetch_wind_grid(model_key, step_idx=0, subsample=2, bbox=None, bilinear=False)``
+   * - ``fetch_wind_grid(model_key, step_idx=None, lead_hours=None, resolution_deg=None, subsample=2, bbox=None, bilinear=False)``
      - ``{"header": {...}, "u": [...], "v": [...]}`` with ``nx * ny`` values
        on a ``1° × subsample`` grid (``subsample`` 1 to 4)
      - masked cells are ``None``; ``header["missing_count"]`` counts them;
@@ -278,7 +281,7 @@ What the Fetcher Returns
        ``stored_lead_hours``, ``init_time``, ``max_lead_hours``
      - ``None`` entries at leads the model did not store, beyond its horizon,
        or over masked cells
-   * - ``fetch_catchment_summary(geojson_feature, step_idx, model_key)``
+   * - ``fetch_catchment_summary(geojson_feature, model_key, step_idx=None, lead_hours=None)``
      - ``catchment_id``, ``area_km2``, ``area_km2_source``,
        ``basin_mean_precip_mmh``, ``basin_max_precip_mmh``,
        ``basin_accumulated_10d_mm``, ``basin_mean_temp_c``,
@@ -323,7 +326,7 @@ stored in the metadata, 1000 hPa), ``u10`` and ``v10`` (m/s).
 What to Watch Out For
 ---------------------
 
-* **``step_idx`` is a 3-hour step.** ``step_idx=2`` means +6 h. The maximum is
+* **``step_idx`` and ``lead_hours``.** ``step_idx`` counts 3-hour steps (e.g., ``step_idx=2`` means +6 h). Or use physical ``lead_hours`` directly. The maximum is
   80 (+240 h). Steps beyond a model's horizon return ``None``.
 * **No lead substitution.** For a 6-hourly model (``ecmwf_aifs``) temperature,
   pressure, and wind are ``None`` at +3 h, +9 h, and so on. Rain rate at +3 h
