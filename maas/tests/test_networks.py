@@ -180,6 +180,65 @@ class TestPyramidSerializationAndSnapping:
             1800000.0
         )
 
+    def test_geoglows_in_memory_snapping_and_floodhub_level_features(
+        self, tmp_path: Path
+    ) -> None:
+        from maas.networks import snap_geoglows_reach_from_network
+
+        gg_net = {
+            'reach_lat': np.array([38.61, 38.63], dtype=np.float32),
+            'reach_lon': np.array([-90.19, -90.18], dtype=np.float32),
+            'reach_lon0': np.array([-90.20, -90.19], dtype=np.float32),
+            'reach_lat0': np.array([38.60, 38.64], dtype=np.float32),
+            'reach_lon1': np.array([-90.18, -90.17], dtype=np.float32),
+            'reach_lat1': np.array([38.62, 38.62], dtype=np.float32),
+            'reach_linkno': np.array([720010510, 720010511], dtype=np.int32),
+            'reach_area': np.array([450.0, 1795000.0], dtype=np.float32),
+        }
+        snapped = snap_geoglows_reach_from_network(
+            gg_net, 38.627, -90.180, target_area_km2=1800000.0
+        )
+        assert snapped is not None
+        assert snapped['river_id'] == 720010511
+        assert snapped['upstream_area_km2'] == pytest.approx(1795000.0)
+
+        fh_level = {
+            'coords': np.array(
+                [[-90.25, 38.60], [-90.20, 38.62], [-90.15, 38.65]],
+                dtype=np.float32,
+            ),
+            'offsets': np.array([0, 3], dtype=np.int64),
+            'bbox': np.array(
+                [[-90.25, 38.60, -90.15, 38.65]], dtype=np.float32
+            ),
+            'amin': np.array([1750000.0], dtype=np.float32),
+            'amax': np.array([1800000.0], dtype=np.float32),
+            'river_id': np.array([71234567], dtype=np.int32),
+            'hybas_l12': np.array([7120012340], dtype=np.int64),
+            'has_forecast': np.array([1], dtype=np.uint8),
+            'stream_order': np.array([8], dtype=np.int8),
+        }
+        sig = 'v1:test'
+        npz_path = tmp_path / 'fh_pyramid.npz'
+        save_network_pyramid(npz_path, [fh_level], sig)
+        loaded = load_network_pyramid(npz_path, sig)
+        assert loaded is not None
+        feats = extract_level_features(
+            loaded['levels'][0],
+            -91.0,
+            38.0,
+            -89.0,
+            39.0,
+            hybas_to_sev={7120012340: 2},
+        )
+        assert len(feats) == 1
+        props = feats[0]['properties']
+        assert props['river_id'] == 'HYRIV_71234567'
+        assert props['gauge_id'] == 'hybas_7120012340'
+        assert props['has_forecast'] is True
+        assert props['severity_rank'] == 2
+        assert props['stream_order'] == 8
+
 
 class TestMainStemTracing:
     """Tests topological main-stem chain tracing across HydroRIVERS reaches."""
