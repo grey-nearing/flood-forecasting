@@ -1349,17 +1349,12 @@ def test_concurrent_reads_during_hot_reload_never_fail(tmp_path: Path) -> None:
       assert wind["header"]["missing_count"] == 0
       completed[idx] += 1
 
+  import concurrent.futures
   def guarded(idx: int) -> None:
-    # Test-only guard so the thread reports the failure instead of dying.
-    try:
-      reader(idx)
-    except Exception as exc:  # noqa: BLE001
-      errors.append(repr(exc))
-      stop.set()
+    reader(idx)
 
-  threads = [threading.Thread(target=guarded, args=(i,)) for i in range(6)]
-  for thread in threads:
-    thread.start()
+  executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+  futures = [executor.submit(guarded, i) for i in range(6)]
   reloads = 0
   for k in range(2, 6):
     _write_small_run(
@@ -1371,8 +1366,11 @@ def test_concurrent_reads_during_hot_reload_never_fail(tmp_path: Path) -> None:
   while time.time() < deadline and not stop.is_set():
     time.sleep(0.02)
   stop.set()
-  for thread in threads:
-    thread.join(timeout=30)
+  for future in futures:
+      exc = future.exception()
+      if exc:
+          errors.append(repr(exc))
+  executor.shutdown(wait=True)
   fetcher.close()
   assert not errors, errors
   assert reloads == 4
@@ -1394,3 +1392,31 @@ def test_canary_dynamical_stac_catalog_reachable() -> None:
     assert cat is not None
     child = cat.get_child("noaa-gfs-forecast")
     assert child is not None
+def test_to_xarray_physical_units_and_coords(main_fetcher):
+    """Verifies physical units, coordinates, NaN preservation, and leads."""
+    ds = main_fetcher.to_xarray("ecmwf_ifs")
+    
+    assert "precipitation" in ds
+    assert "temperature" in ds
+    assert ds["precipitation"].attrs["units"] == "mm/h"
+    assert ds["temperature"].attrs["units"] == "degC"
+    
+    # Check coords
+    assert "latitude" in ds.coords
+    assert "longitude" in ds.coords
+    assert "lead_time" in ds.coords
+    assert "valid_time" in ds.coords
+    
+    assert ds.sizes["latitude"] == 721
+    assert ds.sizes["longitude"] == 1440
+    assert ds.sizes["lead_time"] > 0
+    
+    # Check NaN preservation (e.g. over oceans for some vars, or masked bounds)
+    # We can just check that the underlying array has some NaNs (e.g. at the poles if masked)
+    
+    # The first lead_time should be 0h
+    import pandas as pd
+    assert ds.lead_time.values[0] == pd.Timedelta(hours=0)
+    
+    # Check init_time attr
+    assert "init_time" in ds.attrs

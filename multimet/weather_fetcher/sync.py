@@ -65,7 +65,6 @@ from multimet.utils.cpc import (
 )
 from multimet.utils.http import check_http_url_exists
 from multimet.weather_fetcher.config import (
-    CHECK_INTERVAL_MINUTES,
     CPC_CACHE_REFRESH_HOURS,
     CPC_MAX_PUBLICATION_LAG_DAYS,
     DEFAULT_MSLP_OFFSET_HPA,
@@ -1223,22 +1222,12 @@ def _fetch_single_hres_step(
   Raises:
     KeyError: If the step's index lacks one of the required parameters.
   """
-  from multimet.timeseries_extractors.hres import decode_grib2_message
+  from multimet.timeseries_extractors.hres import decode_grib2_message, parse_ecmwf_index, fetch_byte_range
 
   prefix = _hres_prefix(date_str, cycle, lead_h)
   idx_text = gcs.cat(f"{prefix}.index").decode("utf-8")
   wanted = set(_HRES_STREAM_TO_PARAM.values())
-  byte_ranges: Dict[str, Tuple[int, int]] = {}
-  for line in idx_text.splitlines():
-    line_s = line.strip()
-    if not line_s:
-      continue
-    entry = json.loads(line_s)
-    param = entry.get("param")
-    if param in wanted and entry.get("levtype") == "sfc":
-      offset = int(entry["_offset"])
-      length = int(entry["_length"])
-      byte_ranges[param] = (offset, offset + length)
+  byte_ranges = parse_ecmwf_index(idx_text, wanted)
   missing = sorted(wanted - set(byte_ranges))
   if missing:
     raise KeyError(f"{prefix}.index lacks surface parameters {missing}.")
@@ -1246,7 +1235,7 @@ def _fetch_single_hres_step(
   decoded: Dict[str, np.ndarray] = {}
   grib_path = f"{prefix}.grib2"
   for param, (start_b, end_b) in byte_ranges.items():
-    msg_bytes = gcs.cat_file(grib_path, start=start_b, end=end_b)
+    msg_bytes = fetch_byte_range(gcs, grib_path, start_b, end_b)
     decoded[param] = decode_grib2_message(
         msg_bytes, (N_LAT, N_LON), param=param, context=f"{prefix}.grib2"
     ).astype(np.float32)
@@ -1733,7 +1722,6 @@ def sync_all_models(
   status = read_sync_status(root)
   status.update({
       "last_check_utc": utc_now_str(moment),
-      "check_interval_minutes": CHECK_INTERVAL_MINUTES,
       "source": ", ".join(dict.fromkeys(sources.values())),
       "sources": sources,
   })

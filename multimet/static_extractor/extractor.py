@@ -45,16 +45,12 @@ import xarray as xr
 from multimet.static_extractor.climate import (
     ERA5ClimateLoader,
     ERA5GriddedExtractor,
-    calculate_fao_pm_pet,
     compute_caravan_climate_metrics,
-    depth_to_mm,
-    normalize_era5_pet_sign,
-    pressure_to_kpa,
-    temp_to_celsius,
 )
+from multimet.static_extractor.schema import CatchmentAttributes
 from multimet.static_extractor.config import (
     ADDITIONAL_PROPERTIES,
-    ATTRIBUTE_DEFINITIONS,
+    
     CONTINENT_BBOXES,
     IGNORE_PROPERTIES,
     MAJORITY_PROPERTIES,
@@ -124,7 +120,7 @@ def _get_worker_extractor(
   return _WORKER_EXTRACTOR
 
 
-def _worker_extract_polygon(args: tuple) -> Dict[str, Any]:
+def _worker_extract_polygon(args: tuple) -> CatchmentAttributes:
   if len(args) == 8:
     (
         geom,
@@ -370,6 +366,96 @@ class StaticAttributesExtractor:
     if self.era5_source == "gridded" and self.gridded_extractor is None:
       raise ValueError("gridded_era5_uri must be provided when era5_source='gridded'.")
 
+
+  @property
+  def available_levels(self) -> List[int]:
+    """Returns the HydroATLAS levels available in this extractor."""
+    return (12,)
+
+  def read_subbasins(
+      self, bbox: Tuple[float, float, float, float], level: int = 12, columns: Optional[List[str]] = None
+  ) -> gpd.GeoDataFrame:
+    """Reads sub-basins within bounding box."""
+    if level != 12:
+        if not isinstance(level, int):
+            raise UnsupportedHydroATLASLevelError(f"level {level} is not available")
+        raise UnsupportedHydroATLASLevelError(f"level {level} is not available")
+    
+    if len(bbox) != 4:
+        raise ValueError("bbox must be a tuple of 4 floats")
+    minx, miny, maxx, maxy = bbox
+    if not (isinstance(minx, (int, float)) and isinstance(miny, (int, float)) and isinstance(maxx, (int, float)) and isinstance(maxy, (int, float))):
+        raise ValueError("bbox values must be numbers")
+    import math
+    if math.isnan(minx) or math.isnan(miny) or math.isnan(maxx) or math.isnan(maxy):
+        raise ValueError("bbox values must be finite")
+    if minx >= maxx or miny >= maxy:
+        raise ValueError("bbox must be (minx, miny, maxx, maxy) and have non-zero area")
+    if minx < -180 or maxx > 180 or miny < -90 or maxy > 90:
+        raise ValueError("bbox values out of range")
+
+    climate_cols_requested = []
+    if columns:
+        from multimet.static_extractor.config import CARAVAN_CLIMATE_COLUMNS
+        climate_cols_requested = [c for c in columns if c in CARAVAN_CLIMATE_COLUMNS]
+        hydroatlas_cols = [c for c in columns if c not in CARAVAN_CLIMATE_COLUMNS]
+        missing = [c for c in hydroatlas_cols if c not in self.all_gdb_fields and c != "geometry" and c != "HYBAS_ID"]
+        if missing:
+            raise ValueError(f"Unknown HydroATLAS level 12 column: {missing[0]}")
+            
+    gdf = self._read_subbasins_in_bbox(bbox)
+    if columns:
+        if not gdf.empty:
+            available_cols = [c for c in hydroatlas_cols if c in gdf.columns]
+        else:
+            available_cols = hydroatlas_cols.copy()
+        if "HYBAS_ID" not in available_cols:
+            available_cols.insert(0, "HYBAS_ID")
+        if "geometry" not in available_cols:
+            available_cols.append("geometry")
+        if not gdf.empty:
+            gdf = gdf[available_cols]
+        else:
+            gdf = gpd.GeoDataFrame(columns=available_cols, crs="EPSG:4326")
+            
+        if climate_cols_requested and self.era5_loader is not None:
+            if not gdf.empty:
+                climate_df = self.read_subbasin_climate_indices(gdf["HYBAS_ID"].tolist())
+                climate_cols_to_keep = [c for c in climate_cols_requested if c in climate_df.columns]
+                climate_df = climate_df[climate_cols_to_keep].reset_index()
+                gdf = gdf.merge(climate_df, on="HYBAS_ID", how="left")
+            else:
+                for c in climate_cols_requested:
+                    gdf[c] = pd.Series(dtype='float32')
+    return gdf
+
+  def read_subbasin_climate_indices(self, hybas_ids: List[int]) -> pd.DataFrame:
+    """Reads climate indices for a list of HYBAS_IDs."""
+    if self.era5_loader is None:
+        raise ValueError("StaticAttributesExtractor was not configured with era5_source='hybas' and an era5_cache_dir.")
+    from multimet.static_extractor.config import CARAVAN_CLIMATE_COLUMNS
+    if not hybas_ids:
+        df = pd.DataFrame(columns=list(CARAVAN_CLIMATE_COLUMNS))
+        df.index.name = "HYBAS_ID"
+        return df
+    for c in sorted(self.era5_loader._continents_for(hybas_ids)):
+        self.era5_loader.ensure_continent(c)
+    rows = []
+    for hid in hybas_ids:
+        if hid in self.era5_loader.records:
+            from multimet.static_extractor.climate import expand_caravan_climate_aliases
+            r = expand_caravan_climate_aliases(self.era5_loader.records[hid])
+            r["HYBAS_ID"] = hid
+            rows.append(r)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.set_index("HYBAS_ID")
+        df = df.reindex(hybas_ids)
+    else:
+        df = pd.DataFrame(columns=list(CARAVAN_CLIMATE_COLUMNS))
+        df.index.name = "HYBAS_ID"
+    return df
+
   def _init_hydroatlas_source(self, active_source: str) -> None:
     """Initializes HydroATLAS metadata from a local path or GCS URI."""
     if is_gcs_path(active_source):
@@ -528,7 +614,7 @@ class StaticAttributesExtractor:
         "seasonality_ERA5_LAND",
     )
     gridded = self.gridded_extractor.extract_climate_metrics_for_polygon(
-        geom, baseline_years=baseline_years, include_fao_pm=False
+        geom, baseline_years=baseline_years
     )
     return {k: gridded.get(k, np.nan) for k in keys}
 
@@ -583,43 +669,6 @@ class StaticAttributesExtractor:
       raise ValueError("gridded_era5_uri must be provided when era5_source='gridded'.")
     return source
 
-  def _apply_climate_indices_to_result(
-      self, res: Dict[str, Any], era5_indices: Dict[str, float]
-  ) -> None:
-    """Merges climate indices into a result dictionary."""
-    caravan_attributes = res["caravan_attributes"]
-    processed_attributes = res["processed_attributes"]
-    categories_dict = res["categories"]
-    summary = res["summary"]
-
-    for k, v in era5_indices.items():
-      caravan_attributes[k] = v
-
-    categories_dict["Climate"] = [
-        item for item in categories_dict.get("Climate", []) if item["key"] not in era5_indices
-    ]
-    for attr_key in era5_indices:
-      if attr_key in ATTRIBUTE_DEFINITIONS:
-        defn = ATTRIBUTE_DEFINITIONS[attr_key]
-        raw_val = caravan_attributes[attr_key]
-        scaled_val = np.nan if pd.isna(raw_val) else round(float(raw_val) * defn["scale"], 3)
-        processed_attributes[attr_key] = scaled_val
-        categories_dict[defn["category"]].append({
-            "key": attr_key,
-            "name": defn["name"],
-            "value": scaled_val,
-            "unit": defn["unit"],
-            "description": defn["desc"],
-            "category": defn["category"],
-        })
-
-    summary["era5_p_mean_mm_day"] = processed_attributes.get("p_mean", np.nan)
-    summary["era5_pet_mean_mm_day"] = processed_attributes.get("pet_mean_ERA5_LAND", np.nan)
-    summary["era5_fao_pet_mean_mm_day"] = processed_attributes.get("pet_mean_FAO_PM", np.nan)
-    summary["era5_aridity"] = processed_attributes.get("aridity_ERA5_LAND", np.nan)
-    summary["era5_fao_aridity"] = processed_attributes.get("aridity_FAO_PM", np.nan)
-    summary["era5_frac_snow_pc"] = processed_attributes.get("frac_snow", np.nan)
-
   def extract_attributes_for_polygon(
       self,
       polygon_geojson: Union[Dict, Polygon, MultiPolygon, gpd.GeoSeries, gpd.GeoDataFrame],
@@ -630,7 +679,7 @@ class StaticAttributesExtractor:
       era5_source: Optional[str] = None,
       _batch_mode: bool = False,
       _skip_climate: bool = False,
-  ) -> Dict[str, Any]:
+  ) -> CatchmentAttributes:
     """Calculates Caravan HydroATLAS static attributes for a watershed polygon.
 
     Args:
@@ -648,8 +697,9 @@ class StaticAttributesExtractor:
     Returns:
       Dictionary containing extracted attributes, summary, categories, and area metadata.
     """
-    actual_era5_source = None
-    if (timeseries_df is None or timeseries_df.empty) and not _skip_climate:
+    if timeseries_df is not None and not timeseries_df.empty:
+      actual_era5_source = "timeseries"
+    else:
       actual_era5_source = self._resolve_era5_source(era5_source)
 
     # 1. Parse Input Geometry and Catchment ID
@@ -816,192 +866,19 @@ class StaticAttributesExtractor:
     era5_indices = {}
     if not _skip_climate:
       if timeseries_df is not None and not timeseries_df.empty:
-        ts_df = timeseries_df
-        if baseline_years is not None and isinstance(
-            timeseries_df.index, pd.DatetimeIndex
-        ):
-          sliced = timeseries_df.loc[
-              (timeseries_df.index.year >= baseline_years[0])
-              & (timeseries_df.index.year <= baseline_years[1])
-          ]
-          if not sliced.empty:
-            ts_df = sliced
-
-        p_col = next(
-            (
-                c
-                for c in [
-                    "era5land_total_precipitation",
-                    "total_precipitation_sum",
-                    "total_precipitation",
-                    "prcp",
-                    "precip",
-                    "tp",
-                ]
-                if c in ts_df.columns
-            ),
-            None,
-        )
-        t_col = next(
-            (
-                c
-                for c in [
-                    "era5land_temperature_2m",
-                    "temperature_2m_mean",
-                    "temperature_2m",
-                    "temperature",
-                    "2m_temperature",
-                    "temp",
-                    "t2m",
-                ]
-                if c in ts_df.columns
-            ),
-            None,
-        )
-        pet_era5_col = next(
-            (
-                c
-                for c in [
-                    "era5land_potential_evaporation_DEPRECATED",
-                    "potential_evaporation_sum_ERA5_LAND",
-                    "potential_evaporation_sum",
-                    "potential_evaporation",
-                    "pet_era5",
-                    "pev",
-                ]
-                if c in ts_df.columns
-            ),
-            None,
-        )
-        pet_fao_col = next(
-            (
-                c
-                for c in [
-                    "era5land_potential_evaporation_FAO_PENMAN_MONTEITH",
-                    "potential_evaporation_sum_FAO_PENMAN_MONTEITH",
-                    "pet_fao",
-                    "pet_mean_FAO_PM",
-                    "fao_pet",
-                ]
-                if c in ts_df.columns
-            ),
-            None,
-        )
+        p_col = next((c for c in ["total_precipitation", "prcp", "precip", "tp"] if c in timeseries_df.columns), None)
+        t_col = next((c for c in ["temperature", "2m_temperature", "temp", "t2m"] if c in timeseries_df.columns), None)
+        pet_era5_col = next((c for c in ["potential_evaporation", "pet_era5", "pev"] if c in timeseries_df.columns), None)
+        pet_fao_col = next((c for c in ["pet_fao", "pet_mean_FAO_PM", "fao_pet"] if c in timeseries_df.columns), None)
 
         if not p_col or not t_col:
           raise ValueError(
-              f"timeseries_df is missing required precipitation/temperature columns (found {list(ts_df.columns)})."
+              f"timeseries_df is missing required precipitation/temperature columns (found {list(timeseries_df.columns)})."
           )
-        p_series = depth_to_mm(ts_df[p_col], None, p_col)
-        t_series = temp_to_celsius(ts_df[t_col], None, t_col)
-        pet_era5_series = (
-            normalize_era5_pet_sign(
-                depth_to_mm(ts_df[pet_era5_col], None, pet_era5_col)
-            )
-            if pet_era5_col
-            else None
-        )
-        if pet_fao_col and not ts_df[pet_fao_col].isna().all():
-          pet_fao_series = depth_to_mm(ts_df[pet_fao_col], None, pet_fao_col)
-        else:
-          d2m_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_dewpoint_temperature_2m",
-                      "dewpoint_temperature_2m_mean",
-                      "dewpoint_temperature_2m",
-                      "2m_dewpoint_temperature",
-                      "d2m",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          sp_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_surface_pressure",
-                      "surface_pressure_mean",
-                      "surface_pressure",
-                      "sp",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          ssr_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_surface_net_solar_radiation",
-                      "surface_net_solar_radiation_mean",
-                      "surface_net_solar_radiation",
-                      "ssr",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          str_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_surface_net_thermal_radiation",
-                      "surface_net_thermal_radiation_mean",
-                      "surface_net_thermal_radiation",
-                      "str",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          u10_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_u_component_of_wind_10m",
-                      "u_component_of_wind_10m_mean",
-                      "u_component_of_wind_10m",
-                      "10m_u_component_of_wind",
-                      "u10",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          v10_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_v_component_of_wind_10m",
-                      "v_component_of_wind_10m_mean",
-                      "v_component_of_wind_10m",
-                      "10m_v_component_of_wind",
-                      "v10",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          if all((d2m_col, sp_col, ssr_col, str_col, u10_col, v10_col)):
-            pet_fao_series = calculate_fao_pm_pet(
-                surface_pressure_kpa=pressure_to_kpa(
-                    ts_df[sp_col], None, sp_col
-                ),
-                temperature_2m_c=t_series,
-                dewpoint_temperature_2m_c=temp_to_celsius(
-                    ts_df[d2m_col], None, d2m_col
-                ),
-                u_component_of_wind_10m=ts_df[u10_col],
-                v_component_of_wind_10m=ts_df[v10_col],
-                surface_net_solar_radiation_mean=ts_df[ssr_col],
-                surface_net_thermal_radiation_mean=ts_df[str_col],
-            )
-          else:
-            pet_fao_series = None
-
+        p_series = timeseries_df[p_col]
+        t_series = timeseries_df[t_col]
+        pet_era5_series = timeseries_df[pet_era5_col] if pet_era5_col else None
+        pet_fao_series = timeseries_df[pet_fao_col] if pet_fao_col else None
         era5_indices = compute_caravan_climate_metrics(
             precipitation=p_series,
             temperature=t_series,
@@ -1048,97 +925,21 @@ class StaticAttributesExtractor:
         else 0.0
     )
 
-    # 8. Curated UI Schema Formatting
-    processed_attributes: Dict[str, Any] = {}
-    categories_dict: Dict[str, List[Dict[str, Any]]] = {
-        "Topography": [],
-        "Climate": [],
-        "Soils": [],
-        "Land Cover": [],
-        "Hydrology": [],
-        "Anthropogenic": [],
-    }
-
-    for attr_key, defn in ATTRIBUTE_DEFINITIONS.items():
-      if attr_key in caravan_attributes:
-        raw_val = caravan_attributes[attr_key]
-        if pd.isna(raw_val):
-          scaled_val = np.nan
-        else:
-          scaled_val = round(float(raw_val) * defn["scale"], 3)
-          if defn["unit"] in ["m", "mm/yr", "people", "M m³"]:
-            scaled_val = (
-                round(scaled_val, 1)
-                if defn["unit"] != "people"
-                else int(round(scaled_val))
-            )
-          elif defn["unit"].startswith("class"):
-            scaled_val = int(scaled_val)
-
-        item = {
-            "key": attr_key,
-            "name": defn["name"],
-            "value": scaled_val,
-            "unit": defn["unit"],
-            "description": defn["desc"],
-            "category": defn["category"],
-        }
-        processed_attributes[attr_key] = scaled_val
-        categories_dict[defn["category"]].append(item)
-
-    # 9. Summary Metrics
-    summary = {
-        "catchment_id": catchment_id,
-        "elevation_mean_m": processed_attributes.get("ele_mt_sav", np.nan),
-        "slope_mean_deg": processed_attributes.get("slp_dg_sav", np.nan),
-        "annual_precip_mm": processed_attributes.get("pre_mm_syr", np.nan),
-        "annual_temp_c": processed_attributes.get("tmp_dc_syr", np.nan),
-        "aridity_index": processed_attributes.get("ari_ix_sav", np.nan),
-        "era5_p_mean_mm_day": processed_attributes.get("p_mean", np.nan),
-        "era5_pet_mean_mm_day": processed_attributes.get(
-            "pet_mean_ERA5_LAND", np.nan
-        ),
-        "era5_fao_pet_mean_mm_day": processed_attributes.get(
-            "pet_mean_FAO_PM", np.nan
-        ),
-        "era5_aridity": processed_attributes.get("aridity_ERA5_LAND", np.nan),
-        "era5_fao_aridity": processed_attributes.get("aridity_FAO_PM", np.nan),
-        "era5_frac_snow_pc": processed_attributes.get("frac_snow", np.nan),
-        "forest_fraction_pc": processed_attributes.get("for_pc_sse", np.nan),
-        "cropland_fraction_pc": processed_attributes.get("crp_pc_sse", np.nan),
-        "urban_fraction_pc": processed_attributes.get("urb_pc_sse", np.nan),
-        "dominant_land_cover_class": caravan_attributes.get("glc_cl_smj", np.nan),
-        "soil_clay_pc": processed_attributes.get("cly_pc_sav", np.nan),
-        "soil_sand_pc": processed_attributes.get("snd_pc_sav", np.nan),
-        "soil_silt_pc": processed_attributes.get("slt_pc_sav", np.nan),
-        "groundwater_table_depth_cm": processed_attributes.get(
-            "gwt_cm_sav", np.nan
-        ),
-        "soil_water_content_pc": processed_attributes.get("swc_pc_syr", np.nan),
-        "inundation_max_pc": processed_attributes.get("inu_pc_smx", np.nan),
-        "total_area_km2": round(total_frag_area, 2),
-        "intersected_subbasins": len(gdf_matched),
-        "subbasin_ids": (
-            [int(hid) for hid in gdf_matched["HYBAS_ID"].values]
-            if len(gdf_matched) > 0
-            else []
-        ),
-    }
-
-    return {
-        "catchment_id": catchment_id,
-        "caravan_attributes": caravan_attributes,
-        "raw_attributes": caravan_attributes,
-        "summary": summary,
-        "categories": categories_dict,
-        "processed_attributes": processed_attributes,
-        "intersected_subbasins_count": len(gdf_matched),
-        "total_area_km2": round(total_frag_area, 2),
-    }
+    res = CatchmentAttributes(
+        catchment_id=catchment_id,
+        attributes=caravan_attributes,
+        area_km2=round(float(total_frag_area), 2),
+        area_fraction_used_for_aggregation=float(sum(masked_weights) / total_frag_area) if total_frag_area > 0 and len(masked_weights) > 0 else 0.0,
+        subbasin_ids=tuple([int(hid) for hid in gdf_matched["HYBAS_ID"].values] if len(gdf_matched) > 0 else []),
+        subbasin_weights_km2=tuple([float(w) for w in gdf_matched["intersect_area_km2"].values] if len(gdf_matched) > 0 else []),
+        min_overlap_threshold_km2=min_overlap_threshold,
+        era5_source=actual_era5_source if actual_era5_source else "",
+    )
+    return res
 
   def _populate_gridded_climate_batch(
       self,
-      results: List[Dict[str, Any]],
+      results: List[CatchmentAttributes],
       poly_tasks: List[Tuple[Any, str]],
       baseline_years: Tuple[int, int] = (1981, 2020),
   ) -> None:
@@ -1148,17 +949,17 @@ class StaticAttributesExtractor:
     climate_map = self.gridded_extractor.extract_climate_metrics_for_polygons_batch(
         poly_tasks, baseline_years=baseline_years
     )
-    for r in results:
+    for i, r in enumerate(results):
       if r:
-        cid = r["catchment_id"]
-        self._apply_climate_indices_to_result(r, climate_map[cid])
+        cid = r.catchment_id
+        results[i] = r.with_attributes(climate_map[cid])
 
   def extract_attributes_batch(
       self,
       features: List[Dict[str, Any]],
       min_overlap_threshold: float = 0.0,
       era5_source: Optional[str] = None,
-  ) -> List[Dict[str, Any]]:
+  ) -> List[CatchmentAttributes]:
     """Extracts Caravan attributes for a list of GeoJSON Feature dicts."""
     actual_era5_source = self._resolve_era5_source(era5_source)
     skip_climate = actual_era5_source == "gridded"
@@ -1338,7 +1139,7 @@ class StaticAttributesExtractor:
 
   def export_caravan_csv(
       self,
-      results: Union[List[Dict[str, Any]], pd.DataFrame],
+      results: Union[List[CatchmentAttributes], pd.DataFrame],
       output_csv_path: Optional[Union[str, Path]] = None,
   ) -> pd.DataFrame:
     """Formats and exports Caravan attributes to standard CSV."""
@@ -1348,9 +1149,13 @@ class StaticAttributesExtractor:
       rows = []
       gauge_ids = []
       for r in results:
-        gid = r["catchment_id"]
+        if hasattr(r, "catchment_id"):
+          gid = r.catchment_id
+          rows.append(r.attributes)
+        else:
+          gid = r["catchment_id"]
+          rows.append(r["attributes"])
         gauge_ids.append(gid)
-        rows.append(r["caravan_attributes"])
       df = pd.DataFrame(rows, index=gauge_ids)
       df.index.name = "gauge_id"
 
@@ -1373,9 +1178,9 @@ class StaticAttributesExtractor:
       self,
       master_zarr_path: Union[str, Path],
       basin_id: str,
-      attributes_dict: Optional[Dict[str, Any]] = None,
+      attributes_dict: Optional[Union[Dict[str, Any], CatchmentAttributes]] = None,
       *,
-      attributes: Optional[Dict[str, Any]] = None,
+      attributes: Optional[Union[Dict[str, Any], CatchmentAttributes]] = None,
   ) -> None:
     """Appends static Caravan & HydroATLAS attributes to a master Zarr store along the 'basin' dimension."""
     master_path = Path(master_zarr_path)
@@ -1386,11 +1191,14 @@ class StaticAttributesExtractor:
     if not payload:
       raise ValueError("No attributes dictionary provided to append_attributes_to_zarr.")
 
-    caravan_attrs = (
-        payload["caravan_attributes"]
-        if "caravan_attributes" in payload
-        else payload
-    )
+    if isinstance(payload, CatchmentAttributes):
+      caravan_attrs = payload.attributes
+    else:
+      caravan_attrs = (
+          payload["attributes"]
+          if "attributes" in payload
+          else payload
+      )
     if not caravan_attrs:
       raise ValueError("Provided attributes dictionary is empty.")
 
@@ -1422,3 +1230,6 @@ class StaticAttributesExtractor:
     logger.info(
         "Appended Caravan static attributes for %s to %s", basin_id, master_path
     )
+
+class UnsupportedHydroATLASLevelError(Exception):
+    pass
