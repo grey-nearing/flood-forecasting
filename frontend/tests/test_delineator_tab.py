@@ -381,6 +381,59 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
     finally:
       self._post("/api/profile/logout", {})
 
+  def test_issue86_unified_left_sidebar_across_all_tabs(self):
+    """Verifies Issue #86 unified left-hand vertical sidebar across all 7 tabs with collapse toggle and drag-to-resize."""
+    expected_sidebars = (
+        "maasSidebar",
+        "delineationSidebar",
+        "weatherSidebar",
+        "geoFeaturesSidebar",
+        "trainingSidebar",
+        "forecastingSidebar",
+        "accountSidebar",
+    )
+    for sb_id in expected_sidebars:
+      self.assertIn(sb_id, self.dom.by_id, f"Missing #{sb_id} in DOM")
+      sb_info = self.dom.by_id[sb_id]
+      self.assertEqual(sb_info["tag"], "aside")
+      self.assertIn("unified-left-sidebar", sb_info["classes"])
+
+    # Global toggle button in top navbar and floating expand tab on left edge
+    self.assertIn("globalSidebarToggleBtn", self.dom.by_id)
+    self.assertIn("sidebarExpandFloatingBtn", self.dom.by_id)
+    self.assertIn("accountMainContent", self.dom.by_id)
+
+    # Verify CSS custom properties, classes, and JS persistence keys in index.html
+    for token in (
+        "--sidebar-width: 380px",
+        "--sidebar-min-width: 260px",
+        "--sidebar-max-width: 640px",
+        "body.sidebar-collapsed .unified-left-sidebar",
+        ".sidebar-resizer",
+        '<div class="sidebar-resizer"',
+        'data-action="collapse-sidebar"',
+        "openhydronet.sidebarWidth",
+        "openhydronet.sidebarCollapsed",
+        "initUnifiedSidebar",
+        "notifySidebarLayoutChange",
+    ):
+      self.assertIn(token, self.html_text, f"Missing expected token: {token}")
+    self.assertEqual(
+        self.html_text.count('<div class="sidebar-resizer"'),
+        len(expected_sidebars),
+        "Every unified left sidebar must include a drag-to-resize handle",
+    )
+    self.assertEqual(
+        self.html_text.count(
+            '<button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar"'
+        ),
+        len(expected_sidebars),
+        "Every unified left sidebar header must include a collapse button",
+    )
+
+
+
 
 if __name__ == "__main__":
   unittest.main()
+
