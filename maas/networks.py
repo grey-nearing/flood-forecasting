@@ -403,12 +403,9 @@ def load_network_pyramid(
     signature: str,
 ) -> dict[str, Any] | None:
     """Load a cached river network pyramid if `path` exists and matches `signature`."""
-    if not path.exists():
+    if not path.is_file():
         return None
-    try:
-        cache_key = (str(path.resolve()), signature, path.stat().st_mtime_ns)
-    except OSError:
-        return None
+    cache_key = (str(path.resolve()), signature, path.stat().st_mtime_ns)
     cached = _PYRAMID_LOAD_CACHE.get(cache_key)
     if cached is not None:
         return cached
