@@ -57,6 +57,8 @@ def load_model_weights(
     model: nn.Module,
     checkpoint_path: Path | str,
     device: torch.device | str,
+    *,
+    allow_new_embeddings: bool = False,
 ) -> None:
     """Load a model state_dict while stripping ``_orig_mod.`` prefixes.
 
@@ -68,6 +70,12 @@ def load_model_weights(
         Filesystem path to the saved ``state_dict`` checkpoint file.
     device : torch.device | str
         Target device for ``torch.load(..., map_location=device)``.
+    allow_new_embeddings : bool, optional
+        If True (used during fine-tuning), allows newly added product keys in
+        ``hindcast_embeddings_fc``, ``forecast_embeddings_fc``, or
+        ``shared_embeddings_fc`` to remain at their initial weights and ignores
+        dropped product embedding keys, while enforcing strict matching on all
+        shared core modules.
     """
     state_dict = torch.load(
         str(checkpoint_path), map_location=device, weights_only=True
@@ -76,5 +84,33 @@ def load_model_weights(
         k.removeprefix('_orig_mod.'): v for k, v in state_dict.items()
     }
     target_model = getattr(model, '_orig_mod', model)
-    target_model.load_state_dict(state_dict)
+    if allow_new_embeddings:
+        model_keys = set(target_model.state_dict().keys())
+        embedding_prefixes = (
+            'hindcast_embeddings_fc.',
+            'forecast_embeddings_fc.',
+            'shared_embeddings_fc.',
+        )
+        filtered_state_dict = {
+            k: v
+            for k, v in state_dict.items()
+            if (k in model_keys) or not k.startswith(embedding_prefixes)
+        }
+        incompatible = target_model.load_state_dict(
+            filtered_state_dict, strict=False
+        )
+        bad_missing = [
+            k
+            for k in incompatible.missing_keys
+            if not k.startswith(embedding_prefixes)
+        ]
+        if bad_missing or incompatible.unexpected_keys:
+            cls_name = target_model.__class__.__name__
+            raise RuntimeError(
+                f'Error(s) in loading state_dict for {cls_name}:\n'
+                f'  Missing non-embedding keys: {bad_missing}\n'
+                f'  Unexpected keys: {incompatible.unexpected_keys}'
+            )
+    else:
+        target_model.load_state_dict(state_dict)
 

@@ -54,8 +54,16 @@ class BaseModel(nn.Module):
         self.output_size = len(cfg.target_variables)
         if cfg.head.lower() in ['cmal', 'cmal_deterministic']:
             self.output_size *= 4 * cfg.n_distributions
+        scaler_dir = (
+            cfg.run_dir
+            if (
+                cfg.run_dir is not None
+                and (cfg.run_dir / 'scaler.zarr').exists()
+            )
+            else (cfg.base_run_dir if cfg.is_finetuning else cfg.run_dir)
+        )
         self._scaler = Scaler(
-            scaler_dir=(cfg.base_run_dir if cfg.is_finetuning else cfg.run_dir),
+            scaler_dir=scaler_dir,
             calculate_scaler=False,
         )
         self._preloaded_state = None

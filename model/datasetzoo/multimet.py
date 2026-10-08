@@ -46,6 +46,7 @@ from model.utils.configutils import (
     PRODUCT_ALIASES,
     canonical_product_name as _canonical_product_name,
     flatten_feature_list,
+    group_features_list,
     normalize_product_key as _normalize_product_key,
     product_name_from_feature as _product_name_from_feature,
 )
@@ -194,13 +195,15 @@ class Multimet(Dataset):
 
         # NaN-handling options are required to apply the correct sample validation algorithms.
         self._nan_handling_method = cfg.nan_handling_method
-        self._feature_groups = [
-            self._hindcast_features,
-            self._forecast_features,
-        ]
+        hindcast_is_flat = isinstance(cfg.hindcast_inputs, list) and (
+            not cfg.hindcast_inputs or isinstance(cfg.hindcast_inputs[0], str)
+        )
+        forecast_is_flat = bool(cfg.forecast_inputs) and (
+            isinstance(cfg.forecast_inputs, list)
+            and isinstance(cfg.forecast_inputs[0], str)
+        )
         if (
-            isinstance(self._hindcast_features[0], str)
-            or isinstance(self._forecast_features[0], str)
+            hindcast_is_flat or forecast_is_flat
         ) and self._nan_handling_method in [
             'masked_mean',
             'attention',
@@ -209,6 +212,18 @@ class Multimet(Dataset):
             raise ValueError(
                 f'Feature groups are required for {self._nan_handling_method} NaN-handling.'
             )
+        hindcast_groups = list(
+            group_features_list(cfg.hindcast_inputs).values()
+        )
+        forecast_groups = (
+            list(group_features_list(cfg.forecast_inputs).values())
+            if cfg.forecast_inputs
+            else []
+        )
+        self._feature_groups = [
+            hindcast_groups,
+            forecast_groups,
+        ]
 
         # Validating samples depends on whether we are training or testing.
         self.is_train = is_train
@@ -318,12 +333,43 @@ class Multimet(Dataset):
 
         # Scale the dataset AFTER cropping dates so that we do not calcualte scalers using test or eval data.
         LOGGER.debug('init scaler')
+        if cfg.is_finetuning:
+            if self.is_train:
+                scaler_dir = cfg.base_run_dir
+            else:
+                scaler_dir = (
+                    cfg.run_dir
+                    if (
+                        cfg.run_dir is not None
+                        and (cfg.run_dir / 'scaler.zarr').exists()
+                    )
+                    else cfg.base_run_dir
+                )
+        else:
+            scaler_dir = cfg.run_dir
+
         self.scaler = Scaler(
-            scaler_dir=(cfg.base_run_dir if cfg.is_finetuning else cfg.run_dir),
+            scaler_dir=scaler_dir,
             calculate_scaler=compute_scaler,
             custom_normalization=cfg.custom_normalization,
             dataset=(self._dataset if compute_scaler else None),
         )
+        if (
+            cfg.is_finetuning
+            and self.is_train
+            and isinstance(self.scaler.scaler, xr.Dataset)
+        ):
+            new_vars = [
+                v
+                for v in self._dataset.data_vars
+                if v not in self.scaler.scaler.data_vars
+            ]
+            if new_vars:
+                LOGGER.info(
+                    'Extending base scaler with new fine-tuning features: %s',
+                    new_vars,
+                )
+                self.scaler.calculate(self._dataset[new_vars])
 
         # Note: dep chain to avoid multi passes on all data (lazy mode)
         # scaler computed  1>  scale dataset  2>  create valid masks
@@ -342,8 +388,14 @@ class Multimet(Dataset):
 
         LOGGER.debug('scaler check zero scale')
         self.scaler.check_zero_scale()
-        if compute_scaler:
+        if compute_scaler or (
+            cfg.is_finetuning
+            and self.is_train
+            and cfg.run_dir is not None
+            and isinstance(self.scaler.scaler, xr.Dataset)
+        ):
             LOGGER.debug('scaler save')
+            self.scaler.scaler_dir = cfg.run_dir
             self.scaler.save()
 
         LOGGER.debug('scale data')
@@ -1010,7 +1062,11 @@ def _convert_to_tensor(
     raise ValueError(f'Unrecognized data type: {type(value)}')
 
 
-def _find_single_dynamics_zarr_path(dynamics_path: Path | str) -> Path | None:
+def _find_single_dynamics_zarr_path(
+    dynamics_path: Path | str | list[Path | str],
+) -> Path | None:
+    if isinstance(dynamics_path, list):
+        return None
     path_str = str(dynamics_path)
     if path_str.startswith('gs://') or path_str.startswith('gs:/'):
         if path_str.rstrip('/').endswith('.zarr'):
@@ -1029,17 +1085,34 @@ def _find_single_dynamics_zarr_path(dynamics_path: Path | str) -> Path | None:
     return None
 
 
-def _find_product_zarr_path(dynamics_path: Path | str, product: str) -> Path:
-    path_str = str(dynamics_path)
-    if path_str.startswith('gs://') or path_str.startswith('gs:/'):
-        return Path(f"{path_str.rstrip('/')}/{product}/timeseries.zarr")
-
-    p = Path(dynamics_path)
-    candidate = p / product / 'timeseries.zarr'
-    if candidate.exists():
-        return candidate
+def _find_product_zarr_path(
+    dynamics_path: Path | str | list[Path | str], product: str
+) -> Path:
+    paths = (
+        dynamics_path if isinstance(dynamics_path, list) else [dynamics_path]
+    )
+    checked: list[Path] = []
+    cloud_candidates: list[Path] = []
+    for dp in paths:
+        path_str = str(dp)
+        if path_str.startswith(('gs://', 'gs:/')):
+            cloud_candidates.append(
+                Path(f"{path_str.rstrip('/')}/{product}/timeseries.zarr")
+            )
+            continue
+        p = Path(dp)
+        candidate = p / product / 'timeseries.zarr'
+        checked.append(candidate)
+        if candidate.exists():
+            return candidate
+    if cloud_candidates:
+        return cloud_candidates[0]
+    if len(checked) == 1:
+        raise FileNotFoundError(
+            f"Zarr store for product '{product}' not found at {checked[0]}"
+        )
     raise FileNotFoundError(
-        f"Zarr store for product '{product}' not found at {candidate}"
+        f"Zarr store for product '{product}' not found in {checked}"
     )
 
 
