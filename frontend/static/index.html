@@ -66,6 +66,9 @@
       --fh-border: #dadce0;
       --fh-text: #202124;
       --fh-text-secondary: #5f6368;
+      --sidebar-width: 380px;
+      --sidebar-min-width: 260px;
+      --sidebar-max-width: 640px;
     }
     input[type="date"] {
       color-scheme: light;
@@ -101,6 +104,83 @@
       color: #1a73e8 !important;
       border-bottom-color: #1a73e8 !important;
       background-color: #e8f0fe;
+    }
+
+    /* Unified Left-Hand Vertical Control Panel (shared across all 7 tabs) */
+    .unified-left-sidebar {
+      position: relative;
+      width: var(--sidebar-width);
+      min-width: var(--sidebar-min-width);
+      max-width: var(--sidebar-max-width);
+      flex-shrink: 0;
+      transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.2s cubic-bezier(0.4, 0, 0.2, 1), padding 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-width 0.2s ease, opacity 0.15s ease;
+    }
+    body.sidebar-resizing .unified-left-sidebar {
+      transition: none !important;
+    }
+    body.sidebar-resizing,
+    body.sidebar-resizing * {
+      cursor: col-resize !important;
+      user-select: none !important;
+    }
+    body.sidebar-collapsed .unified-left-sidebar {
+      width: 0px !important;
+      min-width: 0px !important;
+      padding-left: 0px !important;
+      padding-right: 0px !important;
+      border-right-width: 0px !important;
+      overflow: hidden !important;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .sidebar-resizer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 6px;
+      height: 100%;
+      cursor: col-resize;
+      z-index: 40;
+      background: transparent;
+      transition: background-color 0.15s ease;
+    }
+    .sidebar-resizer:hover,
+    body.sidebar-resizing .sidebar-resizer {
+      background-color: rgba(26, 115, 232, 0.35);
+    }
+    .sidebar-header-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 8px;
+      margin-bottom: 4px;
+      border-bottom: 1px solid #e8eaed;
+      flex-shrink: 0;
+    }
+    .sidebar-collapse-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #5f6368;
+      background: #f8f9fa;
+      border: 1px solid #dadce0;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .sidebar-collapse-btn:hover {
+      color: #1a73e8;
+      border-color: #1a73e8;
+      background: #e8f0fe;
+    }
+    #sidebarExpandFloatingBtn {
+      display: none;
+    }
+    body.sidebar-collapsed #sidebarExpandFloatingBtn {
+      display: inline-flex;
     }
 
     /* Weather Viewer: controls sit in #weatherSidebar and the time bar / point forecast sit below
@@ -225,6 +305,9 @@
 
   <!-- Global Navigation Bar -->
   <nav id="mainTabBar" class="bg-white border-b border-[#dadce0] px-6 flex items-center gap-1 z-20 select-none overflow-x-auto shadow-sm">
+    <button id="globalSidebarToggleBtn" type="button" aria-expanded="true" aria-label="Toggle left control panel" title="Toggle left control panel ([)" class="p-1.5 mr-1 rounded-lg text-[#5f6368] hover:text-[#1a73e8] hover:bg-[#e8f0fe] border border-transparent hover:border-[#d2e3fc] transition flex-shrink-0">
+      <i data-lucide="panel-left" class="w-4 h-4"></i>
+    </button>
     <span id="appBrandTitle" class="text-xs font-bold tracking-wide text-[#1a73e8] pr-3 mr-1 border-r border-[#dadce0] flex items-center gap-1.5 flex-shrink-0"><i data-lucide="waves" class="w-4 h-4 text-[#1a73e8]"></i><span>OpenHydroNet</span></span>
     <button data-tab="tab-weather" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="cloud-lightning" class="w-4 h-4"></i>
@@ -259,69 +342,98 @@
   <!-- Main Layout -->
   <main class="flex-1 flex flex-col relative overflow-hidden">
 
+    <!-- Floating Re-open Button when Left Sidebar is Collapsed -->
+    <button id="sidebarExpandFloatingBtn" type="button" aria-expanded="false" aria-label="Expand left control panel" title="Open left control panel ([)" class="absolute left-0 top-3 z-[1200] items-center gap-1.5 pl-2.5 pr-3 py-2 bg-white/95 backdrop-blur border border-l-0 border-[#dadce0] hover:border-[#1a73e8] rounded-r-xl shadow-md text-xs font-semibold text-[#1a73e8] hover:bg-[#e8f0fe] transition">
+      <i data-lucide="panel-left-open" class="w-4 h-4"></i>
+      <span>Controls</span>
+    </button>
+
     <!-- Models-as-a-Service (MaaS) Hub (Tab 4): click a river reach to open its forecast -->
-    <section id="tab-maas" class="tab-content hidden flex-1 flex flex-col overflow-hidden bg-[#f8f9fa] w-full h-full relative">
-      <div id="maasContentArea" class="flex-1 w-full h-full relative overflow-hidden flex flex-row">
+    <section id="tab-maas" class="tab-content hidden flex-1 flex overflow-hidden bg-[#f8f9fa] w-full h-full relative">
+      <!-- Unified Left-Hand Control Panel for MaaS Hub -->
+      <aside id="maasSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-5">
+        <div class="sidebar-header-bar">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
+            <i data-lucide="git-compare" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Models-as-a-Service
+          </span>
+          <button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar" title="Collapse left control panel" aria-label="Collapse left control panel">
+            <i data-lucide="panel-left-close" class="w-3.5 h-3.5"></i>
+            <span>Hide</span>
+          </button>
+        </div>
+
+        <!-- Map-screen model / stream-map selector -->
+        <div id="maasMapModelPicker" class="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-4 flex flex-col gap-3">
+          <div class="text-[10px] font-bold uppercase tracking-wider text-[#5f6368]">Forecast Model &amp; River Network</div>
+          <!-- Single-model mode: model dropdown + network caption -->
+          <div id="maasSingleMapRow" class="flex flex-col gap-1.5">
+            <div class="flex items-center gap-2 bg-white border border-[#dadce0] rounded-lg px-2.5 py-2">
+              <span id="maasMapModelDot" class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:#007b83"></span>
+              <select id="maasMapModelSelect" aria-label="Map model and river network" class="w-full bg-transparent text-xs font-semibold text-[#202124] pr-1 focus:outline-none cursor-pointer">
+                <option value="floodhub">Google FloodHub</option>
+                <option value="glofas" selected>Copernicus GloFAS</option>
+                <option value="geoglows">GEOGLOWS ECMWF</option>
+                <option value="todays_earth">JAXA Today's Earth</option>
+              </select>
+            </div>
+            <div id="maasNetworkCaption" class="text-[11px] text-[#5f6368] leading-tight pl-1">LISFLOOD 0.05° river grid</div>
+          </div>
+          <!-- Multi-model mode: stream map dropdown + multi-select model radio list -->
+          <div id="maasMultiMapPanel" class="hidden flex flex-col gap-2">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-[11px] font-semibold uppercase tracking-wide text-[#5f6368]">Stream map</span>
+              <select id="maasStreamMapSelect" aria-label="Stream map" class="bg-white border border-[#dadce0] rounded-lg px-2 py-1 text-xs font-semibold text-[#202124] focus:outline-none cursor-pointer">
+                <option value="glofas" selected>LISFLOOD</option>
+                <option value="floodhub">HydroSHEDS</option>
+                <option value="todays_earth">CaMa-Flood</option>
+                <option value="geoglows">TDX-Hydro</option>
+              </select>
+            </div>
+            <div id="maasMapMultiModelList" role="group" aria-label="Models to plot" class="flex flex-col gap-1.5 pt-2 border-t border-[#e8eaed]"></div>
+          </div>
+          <!-- Toggle switch between Single-model and Multi-model mode -->
+          <label class="flex items-center justify-between gap-2 pt-2 border-t border-[#e8eaed] cursor-pointer select-none">
+            <span class="text-xs font-medium text-[#3c4043]">Multi-model comparison</span>
+            <span class="relative inline-flex items-center">
+              <input id="maasMapMultiToggle" type="checkbox" class="sr-only peer">
+              <span class="w-7 h-4 bg-[#dadce0] rounded-full peer-checked:bg-[#1a73e8] transition-colors"></span>
+              <span class="absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform peer-checked:translate-x-3"></span>
+            </span>
+          </label>
+        </div>
+
+        <!-- Real-time forecast river color-coding legend + manual refresh -->
+        <div id="maasFlowLegend" class="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-4 text-xs text-[#3c4043] space-y-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <span id="maasFlowLegendTitle" class="font-bold text-[#202124] uppercase tracking-wider text-[10px]">Return-Period Thresholds</span>
+            <div class="flex items-center gap-2">
+              <span id="maasLiveColorBadge" class="text-[10px] font-mono text-[#1e8e3e]">Real-time</span>
+              <button id="maasRefreshLiveBtn" type="button" title="Manually fetch the newest live forecasts from the underlying models" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border border-[#dadce0] bg-white hover:bg-[#e8f0fe] hover:border-[#1a73e8] text-[#1a73e8] font-medium text-[10px] transition">
+                <span id="maasRefreshLiveIcon" class="inline-block leading-none">↻</span>
+                <span>Refresh</span>
+              </button>
+            </div>
+          </div>
+          <div id="maasFlowLegendItems" class="flex flex-col gap-1.5 pt-1 text-[11px]">
+            <span class="flex items-center gap-2"><span class="w-4 h-1.5 rounded-full inline-block" style="background:#1a73e8"></span><span>Normal (&lt;2-yr)</span></span>
+            <span class="flex items-center gap-2"><span class="w-4 h-1.5 rounded-full inline-block" style="background:#eab308"></span><span>≥2-yr Medium</span></span>
+            <span class="flex items-center gap-2"><span class="w-4 h-1.5 rounded-full inline-block" style="background:#dc2626"></span><span>≥5-yr High</span></span>
+            <span class="flex items-center gap-2"><span class="w-4 h-1.5 rounded-full inline-block" style="background:#9333ea"></span><span>≥20-yr Severe</span></span>
+          </div>
+        </div>
+
+        <p class="text-[11px] text-[#5f6368] leading-snug flex gap-1.5">
+          <i data-lucide="mouse-pointer-click" class="w-3.5 h-3.5 text-[#1a73e8] flex-shrink-0 mt-px"></i>
+          <span>Click any river reach or gauge on the map to inspect its operational discharge hydrograph.</span>
+        </p>
+
+        <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
+      </aside>
+
+      <div id="maasContentArea" class="flex-1 min-w-0 h-full relative overflow-hidden flex flex-row">
         <!-- Map view: full width, narrowed to the left while a forecast is open -->
         <div id="maasMapViewContainer" class="w-full h-full relative overflow-hidden flex-shrink-0">
           <div id="maasMapSlot" class="w-full h-full relative"><!-- Leaflet map element gets reparented here --></div>
-          <!-- Map-screen model / stream-map selector -->
-          <div id="maasMapModelPicker" class="absolute top-2.5 right-2.5 z-[500] bg-white/95 backdrop-blur border border-[#dadce0] rounded-lg px-2.5 py-1.5 shadow-md flex flex-col gap-1">
-            <!-- Single-model mode: model dropdown + network caption -->
-            <div id="maasSingleMapRow" class="flex flex-col gap-0.5">
-              <div class="flex items-center gap-1.5">
-                <span id="maasMapModelDot" class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:#007b83"></span>
-                <select id="maasMapModelSelect" aria-label="Map model and river network" class="bg-transparent text-xs font-semibold text-[#202124] pr-1 focus:outline-none cursor-pointer">
-                  <option value="floodhub">Google FloodHub</option>
-                  <option value="glofas" selected>Copernicus GloFAS</option>
-                  <option value="geoglows">GEOGLOWS ECMWF</option>
-                  <option value="todays_earth">JAXA Today's Earth</option>
-                </select>
-              </div>
-              <div id="maasNetworkCaption" class="text-[10px] text-[#5f6368] leading-tight pl-4">LISFLOOD 0.05° river grid</div>
-            </div>
-            <!-- Multi-model mode: stream map dropdown + multi-select model radio list -->
-            <div id="maasMultiMapPanel" class="hidden flex flex-col gap-1.5">
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-[10px] font-semibold uppercase tracking-wide text-[#5f6368]">Stream map</span>
-                <select id="maasStreamMapSelect" aria-label="Stream map" class="bg-[#f8f9fa] border border-[#dadce0] rounded px-1.5 py-0.5 text-xs font-semibold text-[#202124] focus:outline-none cursor-pointer">
-                  <option value="glofas" selected>LISFLOOD</option>
-                  <option value="floodhub">HydroSHEDS</option>
-                  <option value="todays_earth">CaMa-Flood</option>
-                  <option value="geoglows">TDX-Hydro</option>
-                </select>
-              </div>
-              <div id="maasMapMultiModelList" role="group" aria-label="Models to plot" class="flex flex-col gap-1 pt-1 border-t border-[#e8eaed]"></div>
-            </div>
-            <!-- Toggle switch between Single-model and Multi-model mode -->
-            <label class="flex items-center justify-between gap-2 pt-1 border-t border-[#e8eaed] cursor-pointer select-none">
-              <span class="text-[11px] font-medium text-[#5f6368]">Multi-model</span>
-              <span class="relative inline-flex items-center">
-                <input id="maasMapMultiToggle" type="checkbox" class="sr-only peer">
-                <span class="w-7 h-4 bg-[#dadce0] rounded-full peer-checked:bg-[#1a73e8] transition-colors"></span>
-                <span class="absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform peer-checked:translate-x-3"></span>
-              </span>
-            </label>
-          </div>
-          <!-- Real-time forecast river color-coding legend + manual refresh -->
-          <div id="maasFlowLegend" class="absolute bottom-5 left-3 z-[500] bg-white/95 backdrop-blur border border-[#dadce0] rounded-lg px-2.5 py-2 shadow-md text-[10px] text-[#3c4043] space-y-1.5 pointer-events-auto">
-            <div class="flex items-center justify-between gap-2.5">
-              <span id="maasFlowLegendTitle" class="font-semibold text-[#202124] uppercase tracking-wider text-[9.5px]">Return-Period Thresholds</span>
-              <div class="flex items-center gap-2">
-                <span id="maasLiveColorBadge" class="text-[9.5px] font-mono text-[#1e8e3e]">Real-time</span>
-                <button id="maasRefreshLiveBtn" type="button" title="Manually fetch the newest live forecasts from the underlying models" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-[#dadce0] bg-[#f8f9fa] hover:bg-[#e8f0fe] hover:border-[#1a73e8] text-[#1a73e8] font-medium text-[9.5px] transition">
-                  <span id="maasRefreshLiveIcon" class="inline-block leading-none">↻</span>
-                  <span>Refresh</span>
-                </button>
-              </div>
-            </div>
-            <div id="maasFlowLegendItems" class="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5">
-              <span class="flex items-center gap-1"><span class="w-3 h-1 rounded-full inline-block" style="background:#1a73e8"></span><span>Normal (&lt;2-yr)</span></span>
-              <span class="flex items-center gap-1"><span class="w-3 h-1.5 rounded-full inline-block" style="background:#eab308"></span><span>≥2-yr Medium</span></span>
-              <span class="flex items-center gap-1"><span class="w-3 h-1.5 rounded-full inline-block" style="background:#dc2626"></span><span>≥5-yr High</span></span>
-              <span class="flex items-center gap-1"><span class="w-3 h-1.5 rounded-full inline-block" style="background:#9333ea"></span><span>≥20-yr Severe</span></span>
-            </div>
-          </div>
         </div>
         <!-- Forecast view: selected reach, model selector (or multi-model radio list) and hydrograph -->
         <div id="maasForecastViewContainer" class="hidden flex-1 min-w-0 h-full flex flex-col gap-3 p-5 bg-[#f8f9fa] border-l border-[#dadce0]">
@@ -357,7 +469,16 @@
       <div id="tab-environment" class="hidden" aria-hidden="true"></div>
 
     <!-- Left Controls & Data Panel (Sidebar) -->
-    <aside class="w-[490px] bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-5">
+    <aside id="delineationSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-5">
+      <div class="sidebar-header-bar">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
+          <i data-lucide="map-pin" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Basin Delineation
+        </span>
+        <button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar" title="Collapse left control panel" aria-label="Collapse left control panel">
+          <i data-lucide="panel-left-close" class="w-3.5 h-3.5"></i>
+          <span>Hide</span>
+        </button>
+      </div>
 
       <!-- Step 1: Single 1:1 River Network Selection + Map Controls -->
       <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
@@ -526,6 +647,7 @@
         </div>
       </section>
 
+      <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
     </aside>
 
     <!-- Right Interactive Map & Visualizer Area -->
@@ -592,7 +714,16 @@
 
     <!-- Weather Viewer: controls in the left sidebar; time bar and point forecast below the map -->
     <section id="tab-weather" class="tab-content hidden flex-1 overflow-hidden w-full h-full">
-      <aside id="weatherSidebar" class="w-[330px] flex-shrink-0 bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-4 gap-4 text-xs">
+      <aside id="weatherSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-4 gap-4 text-xs">
+        <div class="sidebar-header-bar">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
+            <i data-lucide="cloud-lightning" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Weather Viewer
+          </span>
+          <button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar" title="Collapse left control panel" aria-label="Collapse left control panel">
+            <i data-lucide="panel-left-close" class="w-3.5 h-3.5"></i>
+            <span>Hide</span>
+          </button>
+        </div>
 
         <!-- What the map is showing right now, and whether it is real data -->
         <section id="weatherStatusCard" class="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-3 space-y-1">
@@ -713,6 +844,8 @@
           <i data-lucide="mouse-pointer-click" class="w-3.5 h-3.5 text-[#1a73e8] flex-shrink-0 mt-px"></i>
           <span>Click anywhere on the map for a point forecast from all four models.</span>
         </p>
+
+        <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
       </aside>
 
       <div class="flex-1 min-w-0 flex flex-col h-full">
@@ -776,7 +909,17 @@
     <!-- Tab 4: Geographical Features (HydroATLAS / Caravan Static Attributes Map Viewer) -->
     <section id="tab-geo-features" class="tab-content hidden flex-1 flex overflow-hidden w-full h-full">
       <!-- Left Simple Controls Panel -->
-      <aside class="w-[350px] flex-shrink-0 bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-4 space-y-4">
+      <aside id="geoFeaturesSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-4 space-y-4">
+        <div class="sidebar-header-bar">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
+            <i data-lucide="compass" class="w-3.5 h-3.5 text-[#7627bb]"></i> Geographical Features
+          </span>
+          <button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar" title="Collapse left control panel" aria-label="Collapse left control panel">
+            <i data-lucide="panel-left-close" class="w-3.5 h-3.5"></i>
+            <span>Hide</span>
+          </button>
+        </div>
+
         <!-- Hidden legacy compatibility stubs -->
         <div class="hidden" aria-hidden="true">
           <span id="geoFeaturesBasinName">No Basin Selected</span>
@@ -954,6 +1097,8 @@
             </div>
           </div>
         </section>
+
+        <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
       </aside>
 
       <!-- Right Main Panel: Interactive Map Viewer -->
@@ -991,7 +1136,16 @@
     <!-- Tab 5: Training & Fine Tuning (Historical Meteorological Archives & MTS-LSTM) -->
     <section id="tab-training" class="tab-content hidden flex-1 flex overflow-hidden w-full h-full">
       <!-- Left Controls Panel -->
-      <aside class="w-[420px] bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-5">
+      <aside id="trainingSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-5">
+        <div class="sidebar-header-bar">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
+            <i data-lucide="cpu" class="w-3.5 h-3.5 text-[#b06000]"></i> Training &amp; Fine Tuning
+          </span>
+          <button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar" title="Collapse left control panel" aria-label="Collapse left control panel">
+            <i data-lucide="panel-left-close" class="w-3.5 h-3.5"></i>
+            <span>Hide</span>
+          </button>
+        </div>
         <!-- Active Basin Context -->
         <div class="p-3 bg-[#f8f9fa] rounded-xl border border-[#dadce0] flex items-center justify-between">
           <div>
@@ -1173,6 +1327,8 @@
             </div>
           </div>
         </section>
+
+        <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
       </aside>
 
       <!-- Right Main Panel: Training Configuration & Hyperparameters -->
@@ -1326,7 +1482,17 @@
       <div id="tab-modeling" class="hidden" aria-hidden="true"></div>
 
       <!-- Left Controls Panel (Multi-Catchment Selection, Cold/Hot Start Mode & Execution) -->
-      <aside class="w-[390px] bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-4">
+      <aside id="forecastingSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-4">
+        <div class="sidebar-header-bar">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
+            <i data-lucide="activity" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Forecasting &amp; DA
+          </span>
+          <button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar" title="Collapse left control panel" aria-label="Collapse left control panel">
+            <i data-lucide="panel-left-close" class="w-3.5 h-3.5"></i>
+            <span>Hide</span>
+          </button>
+        </div>
+
         <!-- Multi-Catchment Selector Card -->
         <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
           <div class="flex items-center justify-between">
@@ -1518,6 +1684,8 @@
           <span id="metricTimingDelta"></span>
           <span id="metricVolumeDelta"></span>
         </div>
+
+        <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
       </aside>
 
       <!-- Right Main Panel (Meteorological Input Data Visualization & Streamflow Forecast Hydrograph) -->
@@ -1601,9 +1769,19 @@
       </main>
     </section>
 
-    <!-- Account tab: choose or create an account, then see what data it holds. -->
-    <section id="tab-account" class="tab-content hidden flex-1 flex-col overflow-y-auto w-full h-full bg-[#f8f9fa] p-6 custom-scrollbar">
-      <div class="max-w-3xl mx-auto w-full space-y-10 pt-2 pb-12">
+    <!-- Account tab: choose or create an account in the left sidebar, then see what data it holds on the right. -->
+    <section id="tab-account" class="tab-content hidden flex-1 flex overflow-hidden w-full h-full bg-[#f8f9fa]">
+      <!-- Left Controls Panel: Accounts Switcher & Account Creation -->
+      <aside id="accountSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-5">
+        <div class="sidebar-header-bar">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
+            <i data-lucide="user" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Account Management
+          </span>
+          <button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar" title="Collapse left control panel" aria-label="Collapse left control panel">
+            <i data-lucide="panel-left-close" class="w-3.5 h-3.5"></i>
+            <span>Hide</span>
+          </button>
+        </div>
 
         <!-- Accounts. The list is how you log in: select an account to switch to it. -->
         <section aria-labelledby="accountsHeading" class="space-y-3">
@@ -1626,7 +1804,7 @@
                 <input id="loginTabUsernameInput" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" aria-describedby="accountUsernameHint accountAuthStatus" class="w-full bg-[#f8f9fa] border border-[#dadce0] rounded-lg px-3 py-2 text-sm text-[#202124] focus:outline-none focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] aria-[invalid=true]:border-[#d93025] transition">
                 <p id="accountUsernameHint" class="hidden mt-1 text-xs text-[#5f6368]"></p>
               </div>
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div class="grid grid-cols-1 gap-3">
                 <div>
                   <label for="accountDisplayNameInput" class="block text-xs font-medium text-[#3c4043] mb-1">Display name <span class="font-normal text-[#5f6368]">(optional)</span></label>
                   <input id="accountDisplayNameInput" type="text" autocomplete="name" class="w-full bg-[#f8f9fa] border border-[#dadce0] rounded-lg px-3 py-2 text-sm text-[#202124] focus:outline-none focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] transition">
@@ -1655,74 +1833,82 @@
           <p id="accountLiveRegion" class="sr-only" role="status" aria-live="polite"></p>
         </section>
 
-        <!-- Saved data for the current account -->
-        <section aria-labelledby="accountDataHeading" class="space-y-3">
-          <div>
-            <h2 id="accountDataHeading" class="text-base font-medium text-[#202124]">Saved data</h2>
-            <p id="accountDataSubheading" class="text-sm text-[#5f6368]">For Guest · erased when the server restarts</p>
+        <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
+      </aside>
+
+      <!-- Right Main Panel: Saved Data & Storage KPIs -->
+      <div id="accountMainContent" class="flex-1 min-w-0 h-full overflow-y-auto p-6 bg-[#f8f9fa] custom-scrollbar">
+        <div class="max-w-3xl mx-auto w-full space-y-10 pt-2 pb-12">
+
+          <!-- Saved data for the current account -->
+          <section aria-labelledby="accountDataHeading" class="space-y-3">
+            <div>
+              <h2 id="accountDataHeading" class="text-base font-medium text-[#202124]">Saved data</h2>
+              <p id="accountDataSubheading" class="text-sm text-[#5f6368]">For Guest · erased when the server restarts</p>
+            </div>
+
+            <dl class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div class="bg-white border border-[#dadce0] rounded-xl p-4">
+                <dt class="text-xs text-[#5f6368]">Catchment polygons</dt>
+                <dd id="accountKpiPolygonsCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 basins</dd>
+                <dd id="accountKpiPolygonsSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 km² total area</dd>
+              </div>
+              <div class="bg-white border border-[#dadce0] rounded-xl p-4">
+                <dt class="text-xs text-[#5f6368]">Static attributes</dt>
+                <dd id="accountKpiAttributesCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 basins</dd>
+                <dd id="accountKpiAttributesSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 Caravan variables</dd>
+              </div>
+              <div class="bg-white border border-[#dadce0] rounded-xl p-4">
+                <dt class="text-xs text-[#5f6368]">Historical training data</dt>
+                <dd id="accountKpiHistoricalCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 Zarr stores</dd>
+                <dd id="accountKpiHistoricalSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 basins with forcings</dd>
+              </div>
+              <div class="bg-white border border-[#dadce0] rounded-xl p-4">
+                <dt class="text-xs text-[#5f6368]">Streamflow targets</dt>
+                <dd id="accountKpiTargetsCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 basins</dd>
+                <dd id="accountKpiTargetsSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 target Zarr stores</dd>
+              </div>
+              <div class="bg-white border border-[#dadce0] rounded-xl p-4">
+                <dt class="text-xs text-[#5f6368]">Real-time forecasts</dt>
+                <dd id="accountKpiForecastCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 Zarr stores</dd>
+                <dd id="accountKpiForecastSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 basins · 0 DA stores</dd>
+              </div>
+              <div class="bg-white border border-[#dadce0] rounded-xl p-4">
+                <dt class="text-xs text-[#5f6368]">Models &amp; disk use</dt>
+                <dd id="accountKpiModelsCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 model runs</dd>
+                <dd id="accountKpiStorageSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0.00 MB on disk</dd>
+              </div>
+            </dl>
+          </section>
+
+          <!-- Legacy IDs kept for compatibility, never shown: the old header card, the Switch
+               Account dropdown, the refresh buttons, the old Log In form buttons, and the data
+               containers of the removed Coverage / Files / Details sections (still filled by
+               renderAccountSummaryUI() and loadArchivesList()). -->
+          <div class="hidden" aria-hidden="true">
+            <div id="accountTabAvatar">G</div>
+            <h1 id="accountTabDisplayName">Guest User</h1>
+            <span id="accountTabUsernamePill">@guest</span>
+            <span id="accountTabStatusBadge">Guest Session</span>
+            <p id="accountTabEmailText"></p>
+            <span id="accountTabProfileDir">data/profiles/guest</span>
+            <select id="accountTabProfileSelect" tabindex="-1" aria-label="Switch account">
+              <option value="guest">guest (Guest Session)</option>
+            </select>
+            <button id="accountTabRefreshBtn" type="button" tabindex="-1">Refresh</button>
+            <button id="loginTabSubmitBtn" type="button" tabindex="-1">Log in</button>
+            <button id="loginTabLogoutBtn" type="button" tabindex="-1">Switch to Guest</button>
+            <button id="loginTabSaveCurrentBtn" type="button" tabindex="-1">Save current basins</button>
+            <button id="loginTabRefreshArchivesBtn" type="button" tabindex="-1">Refresh files</button>
+            <span id="accountMatrixBasinBadge"></span>
+            <table><tbody id="accountBasinCoverageTableBody"></tbody></table>
+            <div id="loginTabArchivesList"></div>
+            <div id="accountPolygonsContainer"></div>
+            <a id="accountDownloadAttrCsvLink" href="/api/attributes/csv" download tabindex="-1">Download CSV</a>
+            <div id="accountAttributesContainer"></div>
+            <div id="accountHistoricalContainer"></div>
+            <div id="accountRealtimeAndModelsContainer"></div>
           </div>
-
-          <dl class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <div class="bg-white border border-[#dadce0] rounded-xl p-4">
-              <dt class="text-xs text-[#5f6368]">Catchment polygons</dt>
-              <dd id="accountKpiPolygonsCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 basins</dd>
-              <dd id="accountKpiPolygonsSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 km² total area</dd>
-            </div>
-            <div class="bg-white border border-[#dadce0] rounded-xl p-4">
-              <dt class="text-xs text-[#5f6368]">Static attributes</dt>
-              <dd id="accountKpiAttributesCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 basins</dd>
-              <dd id="accountKpiAttributesSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 Caravan variables</dd>
-            </div>
-            <div class="bg-white border border-[#dadce0] rounded-xl p-4">
-              <dt class="text-xs text-[#5f6368]">Historical training data</dt>
-              <dd id="accountKpiHistoricalCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 Zarr stores</dd>
-              <dd id="accountKpiHistoricalSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 basins with forcings</dd>
-            </div>
-            <div class="bg-white border border-[#dadce0] rounded-xl p-4">
-              <dt class="text-xs text-[#5f6368]">Streamflow targets</dt>
-              <dd id="accountKpiTargetsCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 basins</dd>
-              <dd id="accountKpiTargetsSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 target Zarr stores</dd>
-            </div>
-            <div class="bg-white border border-[#dadce0] rounded-xl p-4">
-              <dt class="text-xs text-[#5f6368]">Real-time forecasts</dt>
-              <dd id="accountKpiForecastCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 Zarr stores</dd>
-              <dd id="accountKpiForecastSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0 basins · 0 DA stores</dd>
-            </div>
-            <div class="bg-white border border-[#dadce0] rounded-xl p-4">
-              <dt class="text-xs text-[#5f6368]">Models &amp; disk use</dt>
-              <dd id="accountKpiModelsCount" class="mt-1 text-xl font-medium text-[#202124] tabular-nums">0 model runs</dd>
-              <dd id="accountKpiStorageSub" class="mt-0.5 text-xs text-[#5f6368] tabular-nums">0.00 MB on disk</dd>
-            </div>
-          </dl>
-        </section>
-
-        <!-- Legacy IDs kept for compatibility, never shown: the old header card, the Switch
-             Account dropdown, the refresh buttons, the old Log In form buttons, and the data
-             containers of the removed Coverage / Files / Details sections (still filled by
-             renderAccountSummaryUI() and loadArchivesList()). -->
-        <div class="hidden" aria-hidden="true">
-          <div id="accountTabAvatar">G</div>
-          <h1 id="accountTabDisplayName">Guest User</h1>
-          <span id="accountTabUsernamePill">@guest</span>
-          <span id="accountTabStatusBadge">Guest Session</span>
-          <p id="accountTabEmailText"></p>
-          <span id="accountTabProfileDir">data/profiles/guest</span>
-          <select id="accountTabProfileSelect" tabindex="-1" aria-label="Switch account">
-            <option value="guest">guest (Guest Session)</option>
-          </select>
-          <button id="accountTabRefreshBtn" type="button" tabindex="-1">Refresh</button>
-          <button id="loginTabSubmitBtn" type="button" tabindex="-1">Log in</button>
-          <button id="loginTabLogoutBtn" type="button" tabindex="-1">Switch to Guest</button>
-          <button id="loginTabSaveCurrentBtn" type="button" tabindex="-1">Save current basins</button>
-          <button id="loginTabRefreshArchivesBtn" type="button" tabindex="-1">Refresh files</button>
-          <span id="accountMatrixBasinBadge"></span>
-          <table><tbody id="accountBasinCoverageTableBody"></tbody></table>
-          <div id="loginTabArchivesList"></div>
-          <div id="accountPolygonsContainer"></div>
-          <a id="accountDownloadAttrCsvLink" href="/api/attributes/csv" download tabindex="-1">Download CSV</a>
-          <div id="accountAttributesContainer"></div>
-          <div id="accountHistoricalContainer"></div>
-          <div id="accountRealtimeAndModelsContainer"></div>
         </div>
       </div>
     </section>
@@ -11120,7 +11306,167 @@
       });
     }
 
-    // Keyboard Shortcuts: Alt+1 to Alt+6
+    // ==========================================
+    // Unified Left-Hand Control Panel Controller
+    // ==========================================
+    const SIDEBAR_WIDTH_STORAGE_KEY = 'openhydronet.sidebarWidth';
+    const SIDEBAR_COLLAPSED_STORAGE_KEY = 'openhydronet.sidebarCollapsed';
+    const SIDEBAR_DEFAULT_WIDTH = 380;
+    const SIDEBAR_MIN_WIDTH = 260;
+    const SIDEBAR_MAX_WIDTH = 640;
+
+    function clampSidebarWidth(px) {
+      const numeric = Math.round(Number(px));
+      if (!Number.isFinite(numeric)) return SIDEBAR_DEFAULT_WIDTH;
+      return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, numeric));
+    }
+
+    function notifySidebarLayoutChange() {
+      if (typeof map !== 'undefined' && map) {
+        map.invalidateSize();
+      }
+      if (typeof resizeWindCanvas === 'function' && currentActiveTabId === 'tab-weather') {
+        resizeWindCanvas();
+      }
+      [
+        typeof maasChart !== 'undefined' ? maasChart : null,
+        typeof weatherMeteogramChart !== 'undefined' ? weatherMeteogramChart : null,
+        typeof whatIfHyetographChart !== 'undefined' ? whatIfHyetographChart : null,
+        typeof masterHydrographChart !== 'undefined' ? masterHydrographChart : null,
+        typeof weatherChart !== 'undefined' ? weatherChart : null
+      ].forEach(chartInstance => {
+        if (chartInstance && typeof chartInstance.resize === 'function') {
+          chartInstance.resize();
+        }
+      });
+    }
+
+    function setSidebarWidth(px, { persist = true, notify = true } = {}) {
+      const clamped = clampSidebarWidth(px);
+      document.documentElement.style.setProperty('--sidebar-width', `${clamped}px`);
+      if (persist && typeof localStorage !== 'undefined') {
+        localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped));
+      }
+      if (notify) {
+        notifySidebarLayoutChange();
+      }
+      return clamped;
+    }
+
+    function setSidebarCollapsed(collapsed, { persist = true, notify = true } = {}) {
+      const isCollapsed = Boolean(collapsed);
+      document.body.classList.toggle('sidebar-collapsed', isCollapsed);
+      const expandedAttr = isCollapsed ? 'false' : 'true';
+      const globalBtn = document.getElementById('globalSidebarToggleBtn');
+      if (globalBtn) {
+        globalBtn.setAttribute('aria-expanded', expandedAttr);
+      }
+      const expandFloatingBtn = document.getElementById('sidebarExpandFloatingBtn');
+      if (expandFloatingBtn) {
+        expandFloatingBtn.setAttribute('aria-expanded', expandedAttr);
+      }
+      document.querySelectorAll('[data-action="collapse-sidebar"]').forEach(btn => {
+        btn.setAttribute('aria-expanded', expandedAttr);
+      });
+      if (persist && typeof localStorage !== 'undefined') {
+        localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, isCollapsed ? 'true' : 'false');
+      }
+      if (notify) {
+        notifySidebarLayoutChange();
+        setTimeout(notifySidebarLayoutChange, 220);
+      }
+      return isCollapsed;
+    }
+
+    function toggleSidebarCollapsed() {
+      return setSidebarCollapsed(!document.body.classList.contains('sidebar-collapsed'));
+    }
+
+    function initUnifiedSidebar() {
+      if (typeof localStorage !== 'undefined') {
+        const savedWidth = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+        if (savedWidth !== null) {
+          setSidebarWidth(Number(savedWidth), { persist: false, notify: false });
+        } else {
+          setSidebarWidth(SIDEBAR_DEFAULT_WIDTH, { persist: false, notify: false });
+        }
+        const savedCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
+        if (savedCollapsed === 'true' || savedCollapsed === 'false') {
+          setSidebarCollapsed(savedCollapsed === 'true', { persist: false, notify: false });
+        }
+      }
+
+      const globalToggleBtn = document.getElementById('globalSidebarToggleBtn');
+      if (globalToggleBtn) {
+        globalToggleBtn.addEventListener('click', () => toggleSidebarCollapsed());
+      }
+      const expandFloatingBtn = document.getElementById('sidebarExpandFloatingBtn');
+      if (expandFloatingBtn) {
+        expandFloatingBtn.addEventListener('click', () => setSidebarCollapsed(false));
+      }
+      document.querySelectorAll('[data-action="collapse-sidebar"]').forEach(btn => {
+        btn.addEventListener('click', () => setSidebarCollapsed(true));
+      });
+
+      let activeResizeSidebar = null;
+      let resizeRafId = null;
+
+      function onPointerMove(clientX) {
+        if (!activeResizeSidebar) return;
+        const rect = activeResizeSidebar.getBoundingClientRect();
+        const nextWidth = clampSidebarWidth(clientX - rect.left);
+        document.documentElement.style.setProperty('--sidebar-width', `${nextWidth}px`);
+        if (!resizeRafId) {
+          resizeRafId = requestAnimationFrame(() => {
+            resizeRafId = null;
+            notifySidebarLayoutChange();
+          });
+        }
+      }
+
+      function stopResizing() {
+        if (!activeResizeSidebar) return;
+        activeResizeSidebar = null;
+        document.body.classList.remove('sidebar-resizing');
+        const currentVar = getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width');
+        const finalWidth = clampSidebarWidth(parseFloat(currentVar) || SIDEBAR_DEFAULT_WIDTH);
+        setSidebarWidth(finalWidth, { persist: true, notify: true });
+      }
+
+      document.querySelectorAll('.sidebar-resizer').forEach(handle => {
+        handle.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          const sidebar = handle.closest('.unified-left-sidebar');
+          if (!sidebar || document.body.classList.contains('sidebar-collapsed')) return;
+          e.preventDefault();
+          activeResizeSidebar = sidebar;
+          document.body.classList.add('sidebar-resizing');
+        });
+        handle.addEventListener('touchstart', (e) => {
+          const sidebar = handle.closest('.unified-left-sidebar');
+          if (!sidebar || document.body.classList.contains('sidebar-collapsed')) return;
+          activeResizeSidebar = sidebar;
+          document.body.classList.add('sidebar-resizing');
+        }, { passive: true });
+        handle.addEventListener('dblclick', () => {
+          setSidebarWidth(SIDEBAR_DEFAULT_WIDTH, { persist: true, notify: true });
+        });
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (activeResizeSidebar) onPointerMove(e.clientX);
+      });
+      window.addEventListener('touchmove', (e) => {
+        if (activeResizeSidebar && e.touches && e.touches[0]) {
+          onPointerMove(e.touches[0].clientX);
+        }
+      }, { passive: true });
+      window.addEventListener('mouseup', stopResizing);
+      window.addEventListener('touchend', stopResizing);
+      window.addEventListener('touchcancel', stopResizing);
+    }
+
+    // Keyboard Shortcuts: Alt+1 to Alt+6, and '[' to toggle left control panel
     document.addEventListener('keydown', (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA')) return;
       if (e.altKey) {
@@ -11130,6 +11476,9 @@
         else if (e.key === '4') { e.preventDefault(); switchTab('tab-geo-features'); }
         else if (e.key === '5') { e.preventDefault(); switchTab('tab-training'); }
         else if (e.key === '6') { e.preventDefault(); switchTab('tab-forecasting'); }
+      } else if (!e.ctrlKey && !e.metaKey && e.key === '[') {
+        e.preventDefault();
+        toggleSidebarCollapsed();
       }
     });
 
@@ -11141,6 +11490,7 @@
     });
 
     // Initialize interactive modules
+    initUnifiedSidebar();
     initWeatherViewerInteractivity();
     initModelingInteractivity();
     updateActiveBasinHeader();
