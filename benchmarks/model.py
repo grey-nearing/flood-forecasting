@@ -1188,11 +1188,13 @@ def benchmark_hot_start(
         model = tester.model
         model.eval()
 
+        # Sample-index basin codes are positions in the dataset's full basin
+        # list, so resolve the basins to evaluate against that list.
         batch_sampler = BasinBatchSampler(
             sample_index=tester.dataset._sample_index,
             batch_size=1,
             basins_indexes=get_samples_indexes(
-                tester.basins, samples=list(tester.basins)
+                tester.dataset._basins, samples=list(tester.basins)
             ),
         )
         loader = MultimetDataLoader(

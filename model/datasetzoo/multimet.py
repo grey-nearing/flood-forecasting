@@ -358,19 +358,9 @@ class Multimet(Dataset):
 
         LOGGER.debug('create valid sample mask and indices plan')
         valid_sample_mask, indices = self._create_valid_sample_mask()
-        LOGGER.debug('compute indices')
-        (indices,) = dask.compute(indices)
-        memory.release()
 
-        LOGGER.debug(f'Dataset size: {sizeof(self._dataset) / 1024**2} MB')
-        LOGGER.debug(f'Dataset on disk: {self._dataset.nbytes / 1024**2} MB')
-        LOGGER.debug(f'Sample index size: {sizeof(indices) / 1024**2} MB')
-
-        # Create sample index lookup table for `__getitem__`.
-        LOGGER.debug('create sample index')
-        self._create_sample_index(valid_sample_mask, indices)
-
-        # Compute stats for NSE-based loss functions.
+        # Compute stats for NSE-based loss functions alongside sample indices so
+        # lazy_load batches do not re-evaluate target .std(dim='date') per batch.
         # TODO (future) :: Find a better way to decide whether to calculate these. At least keep a list of
         # losses that require them somewhere like `training.__init__.py`. Perhaps simply always calculate.
         self._per_basin_target_stds = None
@@ -386,6 +376,20 @@ class Multimet(Dataset):
                 ],
                 skipna=True,
             )
+
+        LOGGER.debug('compute indices')
+        indices, self._per_basin_target_stds = dask.compute(
+            indices, self._per_basin_target_stds
+        )
+        memory.release()
+
+        LOGGER.debug(f'Dataset size: {sizeof(self._dataset) / 1024**2} MB')
+        LOGGER.debug(f'Dataset on disk: {self._dataset.nbytes / 1024**2} MB')
+        LOGGER.debug(f'Sample index size: {sizeof(indices) / 1024**2} MB')
+
+        # Create sample index lookup table for `__getitem__`.
+        LOGGER.debug('create sample index')
+        self._create_sample_index(valid_sample_mask, indices)
 
         self._data_cache: dict[str, xr.DataArray] = {}
 
@@ -1153,17 +1157,22 @@ class SampleIndexer:
 
 
 def _finest_chunks(ds: xr.Dataset, dim: str) -> tuple[int, ...] | None:
-    """Return the finest chunking of `dim` across all chunked variables.
+    """Return the finest multi-element chunking of `dim` across variables.
 
     The result is the union of the chunk boundaries of every dask-backed
-    variable that has `dim`, i.e. the partition that `unify_chunks` would
-    pick. Returns None when no variable is chunked along `dim`.
+    variable that has `dim` with multi-element chunks (ignoring trivial
+    1-element-per-chunk arrays from legacy per-file NetCDF concatenation).
+    Returns None when no variable has multi-element chunks along `dim`.
     """
     boundaries: set[int] = set()
+    dim_size = ds.sizes.get(dim, 0)
     for variable in ds.variables.values():
         if variable.chunks is None or dim not in variable.dims:
             continue
-        boundaries.update(itertools.accumulate(variable.chunksizes[dim]))
+        dim_chunks = variable.chunksizes[dim]
+        if not dim_chunks or (dim_size > 1 and max(dim_chunks) == 1):
+            continue
+        boundaries.update(itertools.accumulate(dim_chunks))
     if not boundaries:
         return None
     edges = np.array([0, *sorted(boundaries)])
