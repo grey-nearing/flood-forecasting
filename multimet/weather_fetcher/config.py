@@ -46,18 +46,29 @@ MSLP_OFFSET_HPA: float = 1000.0
 SUBPROCESS_TIMEOUT_S: int = 45 * 60
 
 RUN_DATASET_TO_MODEL: Dict[str, str] = {
+    "ecmwf_ifs_hres_0_25_degree": "ecmwf_hres",
     "ecmwf_aifs_single_forecast": "ecmwf_aifs",
     "noaa_gfs_forecast": "noaa_gfs",
     "ecmwf_ifs_ens_forecast_15_day_0_25_degree": "ecmwf_ifs",
     "noaa_gefs_forecast_35_day": "noaa_gefs",
     "noaa_hrrr_forecast_48_hour": "noaa_hrrr",
+    "nasa_imerg_analysis_early": "nasa_imerg",
+    "noaa_cpc_unified_gauge_precip": "noaa_cpc",
 }
 
 SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
+    "ecmwf_hres": {
+        "id": "ecmwf_hres",
+        "name": "ECMWF IFS HRES (0.25° Deterministic)",
+        "badge": "0.25° Physics 10-Day",
+        "type": "physics",
+        "resolution": "0.25° Global",
+        "organization": "ECMWF",
+    },
     "ecmwf_ifs": {
         "id": "ecmwf_ifs",
-        "name": "ECMWF IFS (ensemble control run)",
-        "badge": "0.25° Physics 10-Day",
+        "name": "ECMWF IFS ENS (control run)",
+        "badge": "0.25° Ensemble 10-Day",
         "type": "physics",
         "resolution": "0.25° Global (9km native)",
         "organization": "ECMWF",
@@ -69,14 +80,6 @@ SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
         "type": "ai",
         "resolution": "0.25° Global",
         "organization": "ECMWF",
-    },
-    "graphcast": {
-        "id": "graphcast",
-        "name": "Google DeepMind GraphCast",
-        "badge": "0.25° AI 10-Day",
-        "type": "ai",
-        "resolution": "0.25° Global",
-        "organization": "Google DeepMind",
     },
     "noaa_gfs": {
         "id": "noaa_gfs",
@@ -101,6 +104,22 @@ SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
         "type": "physics",
         "resolution": "3 km CONUS",
         "organization": "NOAA / NWS",
+    },
+    "nasa_imerg": {
+        "id": "nasa_imerg",
+        "name": "NASA GPM IMERG (Global Satellite Precip)",
+        "badge": "0.10° Satellite 10-Day",
+        "type": "observation",
+        "resolution": "0.10° Global (resampled 0.25°)",
+        "organization": "NASA GSFC / Dynamical",
+    },
+    "noaa_cpc": {
+        "id": "noaa_cpc",
+        "name": "NOAA CPC Unified (Global Gauge Precip)",
+        "badge": "0.50° Gauge 10-Day",
+        "type": "observation",
+        "resolution": "0.50° Global Land (resampled 0.25°)",
+        "organization": "NOAA PSL / CPC",
     },
 }
 
@@ -161,6 +180,11 @@ STREAM_SUFFIX: Dict[str, str] = {
 
 # (stream id, file name, is precipitation)
 STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
+    ("ecmwf_hres_precip", "ecmwf_hres_precip.bin", True),
+    ("ecmwf_hres_temp", "ecmwf_hres_temp.bin", False),
+    ("ecmwf_hres_mslp", "ecmwf_hres_mslp.bin", False),
+    ("ecmwf_hres_u10", "ecmwf_hres_u10.bin", False),
+    ("ecmwf_hres_v10", "ecmwf_hres_v10.bin", False),
     ("ecmwf_ifs_precip", "ecmwf_ifs_precip.bin", True),
     ("ecmwf_ifs_temp", "ecmwf_ifs_temp.bin", False),
     ("ecmwf_ifs_mslp", "ecmwf_ifs_mslp.bin", False),
@@ -171,8 +195,6 @@ STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
     ("ecmwf_aifs_mslp", "ecmwf_aifs_mslp.bin", False),
     ("ecmwf_aifs_u10", "ecmwf_aifs_u10.bin", False),
     ("ecmwf_aifs_v10", "ecmwf_aifs_v10.bin", False),
-    ("graphcast_precip", "graphcast_precip.bin", True),
-    ("graphcast_temp", "graphcast_temp.bin", False),
     ("noaa_gfs_precip", "noaa_gfs_precip.bin", True),
     ("noaa_gfs_temp", "noaa_gfs_temp.bin", False),
     ("noaa_gfs_mslp", "noaa_gfs_mslp.bin", False),
@@ -188,51 +210,93 @@ STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
     ("noaa_hrrr_mslp", "noaa_hrrr_mslp.bin", False),
     ("noaa_hrrr_u10", "noaa_hrrr_u10.bin", False),
     ("noaa_hrrr_v10", "noaa_hrrr_v10.bin", False),
+    ("nasa_imerg_precip", "nasa_imerg_precip.bin", True),
+    ("noaa_cpc_precip", "noaa_cpc_precip.bin", True),
 )
 
 GLOBAL_VARS: List[str] = [
+    "ecmwf_hres_precip",
+    "ecmwf_hres_temp",
+    "ecmwf_hres_u10",
+    "ecmwf_hres_v10",
     "ecmwf_ifs_precip",
     "ecmwf_ifs_temp",
     "ecmwf_ifs_u10",
     "ecmwf_ifs_v10",
     "ecmwf_aifs_precip",
     "ecmwf_aifs_temp",
-    "graphcast_precip",
-    "graphcast_temp",
     "noaa_gfs_precip",
     "noaa_gfs_temp",
+    "noaa_gefs_precip",
+    "noaa_gefs_temp",
+    "noaa_hrrr_precip",
+    "noaa_hrrr_temp",
+    "nasa_imerg_precip",
+    "noaa_cpc_precip",
 ]
 
-# Default operational models synchronized from dynamical.org
-DEFAULT_SYNC_MODELS: Tuple[str, ...] = ("ecmwf_ifs", "ecmwf_aifs", "noaa_gfs")
+# Default operational models synchronized by sync_all_models
+DEFAULT_SYNC_MODELS: Tuple[str, ...] = (
+    "ecmwf_hres",
+    "ecmwf_ifs",
+    "ecmwf_aifs",
+    "noaa_gfs",
+    "noaa_gefs",
+    "noaa_hrrr",
+    "nasa_imerg",
+    "noaa_cpc",
+)
 
 DYNAMICAL_MODELS: Dict[str, Dict[str, Any]] = {
+    "ecmwf_hres": {
+        "dataset": "ecmwf-ifs-hres-0-25-degree",
+        "title": "ECMWF IFS HRES Operational (0.25°)",
+        "source": "ecmwf_open_data",
+        "streams": ("precip", "temp", "mslp", "u10", "v10"),
+    },
     "ecmwf_ifs": {
         "dataset": "ecmwf-ifs-ens-forecast-15-day-0-25-degree",
         "title": "ECMWF IFS ENS control member (0.25°)",
+        "source": "dynamical",
         "ensemble_member": 0,
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
     "ecmwf_aifs": {
         "dataset": "ecmwf-aifs-single-forecast",
         "title": "ECMWF AIFS Single (0.25°)",
+        "source": "dynamical",
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
     "noaa_gfs": {
         "dataset": "noaa-gfs-forecast",
         "title": "NOAA GFS (0.25°)",
+        "source": "dynamical",
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
     "noaa_gefs": {
         "dataset": "noaa-gefs-forecast-35-day",
         "title": "NOAA GEFS ENS control member (0.25°)",
+        "source": "dynamical",
         "ensemble_member": 0,
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
     },
     "noaa_hrrr": {
         "dataset": "noaa-hrrr-forecast-48-hour",
         "title": "NOAA HRRR CONUS (3 km)",
+        "source": "dynamical",
         "streams": ("precip", "temp", "mslp", "u10", "v10"),
+    },
+    "nasa_imerg": {
+        "dataset": "nasa-imerg-analysis-early",
+        "title": "NASA GPM IMERG Early Analysis (0.10°)",
+        "source": "dynamical_analysis",
+        "streams": ("precip",),
+    },
+    "noaa_cpc": {
+        "dataset": "noaa-cpc-unified-gauge-precip",
+        "title": "NOAA CPC Unified Global Gauge Precip (0.50°)",
+        "source": "noaa_psl_cpc",
+        "streams": ("precip",),
     },
 }
 
@@ -242,16 +306,18 @@ def output_lead_hours(
     max_lead: int = MAX_LEAD_HOURS,
     step: int = VIEWER_STEP_HOURS,
 ) -> List[int]:
-  """Returns stored lead hours: model leads that fall on 3-hourly steps."""
-  return [
+  """Returns stored lead hours: unique model leads that fall on 3-hourly steps."""
+  return sorted({
       int(h) for h in in_leads if 0 <= int(h) <= max_lead and int(h) % step == 0
-  ]
+  })
 
 
 def run_lead_hours(model_key: str, n_steps: int) -> List[int]:
   """Returns default lead hours of each plane in an archived run file."""
   if model_key == "ecmwf_aifs":
     return [6 * i for i in range(n_steps)]
+  if model_key == "noaa_cpc":
+    return [24 * i for i in range(n_steps)]
   if model_key == "noaa_gfs":
     hourly = list(range(min(n_steps, 121)))
     return hourly + [120 + 3 * (i + 1) for i in range(n_steps - len(hourly))]
