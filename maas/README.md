@@ -1,17 +1,16 @@
 # `maas` — Models-as-a-Service Multi-Model Operational Flood Data Fetcher
 
-`maas` is a standalone Python package for querying, harmonizing, and evaluating operational flood forecasts, historical reanalysis, spatial river reaches, and return-period thresholds across four global and continental flood forecasting systems:
+`maas` is a standalone Python package for querying, harmonizing, and evaluating operational flood forecasts, historical reanalysis, spatial river reaches, and return-period thresholds across three global and continental flood forecasting systems:
 
-1. **Google FloodHub** (`maas.floodhub.FloodHubClient`) — Gauge- and site-level AI streamflow forecasts, warning severity levels (`NORMAL`, `WARNING`, `DANGER`, `EXTREME`), and KML inundation polygons via `https://apis.google.com/floodforecasting/v1`.
+1. **Google FloodHub** (`maas.floodhub.FloodHubClient`) — Gauge- and site-level AI streamflow forecasts and warning severity levels (`NORMAL`, `WARNING`, `DANGER`, `EXTREME`) via `https://floodforecasting.googleapis.com/v1`.
 2. **Copernicus GloFAS v4** (`maas.glofas.GloFASClient`) — 51-member ECMWF-forced LISFLOOD global $0.05^\circ$ river discharge ensembles (`p10`, `p25`, `median`, `p75`, `p90`) via the Open-Meteo Flood API (`https://flood-api.open-meteo.com/v1/flood`) and ECMWF CEMS Zarr stores (`s3://geoglows-v2/glofas-v4/`).
 3. **GEOGLOWS ECMWF v2** (`maas.geoglows.GeoGLOWSClient`) — Reach-level vector streamflow forecasts on ~6.8M global TDX-Hydro / HydroRIVERS river reaches (`LINKNO`) via the GEOGLOWS REST API (`https://geoglows.ecmwf.int/api/v2`) and AWS S3 retrospective Zarr archives (`s3://geoglows-v2/retrospective.zarr`).
-4. **JAXA Today's Earth (`CaMa-Flood`)** (`maas.todays_earth.TodaysEarthClient`) — Global/regional hydrodynamic floodplain routing on $0.25^\circ$ (global) and $0.05^\circ$ (Japan) grids (`rivout` river discharge, `flddph` floodplain water depth, `fldfrc` flooded area fraction, and `fldare` inundated area) via JAXA Earth API STAC (`https://data.earth.jaxa.jp/stac/cog/v1/collections`).
 
 ---
 
 ## Architecture & Module Layout (Backend Fetcher vs. Frontend Viewer)
 
-`maas` strictly separates **backend data fetching and hydrological calculation** (`maas/`) from **frontend UI visualization and floodplain geometry rendering** (`frontend/maas_viewer/`):
+`maas` strictly separates **backend data fetching and hydrological calculation** (`maas/`) from **frontend UI visualization** (`frontend/maas_viewer/`):
 
 ```
 maas/
@@ -19,17 +18,16 @@ maas/
 ├── config.py                # MaaSConfig dataclass, provider schemas, unit conversions, finite float parsers
 ├── thresholds.py            # Return-period threshold calculators (delegating to return_periods) & risk classification
 ├── networks.py              # Spatial reach snapping, upstream-area cross-network matching, LOD binary pyramids
-├── floodhub.py              # Google FloodHub REST v1 client + KML geometry parser
+├── floodhub.py              # Google FloodHub REST v1 client
 ├── glofas.py                # Copernicus GloFAS v4 Open-Meteo REST + S3 Zarr client
 ├── geoglows.py              # GEOGLOWS ECMWF v2 REST + S3 retrospective Zarr client
-├── todays_earth.py          # JAXA Today's Earth STAC client + CaMa-Flood binary cell lookup
 ├── fetcher.py               # MaaSDataFetcher, SQLiteCache, and top-level data-fetching functions
 ├── cli.py                   # CLI entry point (fetch-maas-forecast / python -m maas.cli)
 ├── tools/
 │   └── build_network_pyramids.py  # Offline spatial index builder for LOD binary pyramids (.npz)
 └── tests/
     ├── test_networks.py     # Unit tests for spatial grid math, reach snapping, and cross-network matching
-    ├── test_providers.py    # Offline unit tests for all 4 provider parsers and clients
+    ├── test_providers.py    # Offline unit tests for all 3 provider parsers and clients
     ├── test_fetcher.py      # Offline unit tests for MaaSDataFetcher and top-level fetch_* functions
     ├── test_thresholds.py   # Unit tests for return-period fitting (Bulletin 17C EMA, Weibull, Gumbel) & exceedance
     └── test_canary_live.py  # Opt-in live network canary tests (MAAS_LIVE_CANARY=1)
@@ -48,9 +46,9 @@ All return-period exceedance calculations map discharge $Q$ ($\text{m}^3/\text{s
   $$K_T = -\frac{\sqrt{6}}{\pi}\left(\gamma + \ln\left(-\ln\left(1 - \frac{1}{T}\right)\right)\right), \qquad Q_T = \mu_{\text{AMS}} + K_T \, \sigma_{\text{AMS}}$$
 
 ### 2. Cross-Network Upstream-Area Reach Snapping (`maas/networks.py`)
-Because vector reaches (`GEOGLOWS LINKNO`, `HydroRIVERS HYRIV_ID`) and Eulerian raster cells (`GloFAS` $0.05^\circ$, `CaMa-Flood` $0.25^\circ$) frequently diverge by $1\text{--}5\text{ km}$ near river confluences, nearest-distance snapping alone can jump from a main stem ($A \sim 10^5\text{ km}^2$) onto a minor tributary ($A \sim 10^1\text{ km}^2$). `resolve_cross_network_click` minimizes a joint distance-and-scale objective:
+Because vector reaches (`GEOGLOWS LINKNO`, `HydroRIVERS HYRIV_ID`) and Eulerian raster cells (`GloFAS` $0.05^\circ$) frequently diverge by $1\text{--}5\text{ km}$ near river confluences, nearest-distance snapping alone can jump from a main stem ($A \sim 10^5\text{ km}^2$) onto a minor tributary ($A \sim 10^1\text{ km}^2$). `resolve_cross_network_click` minimizes a joint distance-and-scale objective:
 $$J(i) = \frac{d_i}{R_{\max}} + \lambda \left|\log_{10}\!\left(\frac{\max(A_i, 1)}{\max(A_{\text{ref}}, 1)}\right)\right|$$
-so that all four providers lock onto the same hydrological river order across networks.
+so that all three providers lock onto the same hydrological river order across networks.
 
 ---
 
@@ -74,20 +72,20 @@ config = MaaSConfig(
 )
 fetcher = MaaSDataFetcher(config)
 
-# 1. Resolve matching river reaches across GEOGLOWS, GloFAS, CaMa-Flood, and HydroRIVERS
+# 1. Resolve matching river reaches across GEOGLOWS, GloFAS, and HydroRIVERS
 reaches = resolve_reaches(38.6270, -90.1994, config=config)
 
 # 2. Fetch raw multi-model operational forecasts & aligned daily series
 forecasts = fetch_forecasts(
+    config,
     38.6270,
     -90.1994,
-    models=['floodhub', 'glofas', 'geoglows', 'todays_earth'],
-    config=config,
+    models=['floodhub', 'glofas', 'geoglows'],
 )
 
 # 3. Fetch historical reanalysis & return-period thresholds
-historical = fetch_historical(38.6270, -90.1994, river_id=reaches['geoglows_river_id'], config=config)
-return_periods = fetch_return_periods(38.6270, -90.1994, river_id=reaches['geoglows_river_id'], config=config)
+historical = fetch_historical(config, 'geoglows', reach_id=reaches['geoglows']['river_id'])
+return_periods = fetch_return_periods(config, 'geoglows', reach_id=reaches['geoglows']['river_id'])
 ```
 
 ---
@@ -99,7 +97,7 @@ return_periods = fetch_return_periods(38.6270, -90.1994, river_id=reaches['geogl
 python -m maas.cli \
   --lat 38.6270 \
   --lon -90.1994 \
-  --models glofas,geoglows,todays_earth \
+  --models glofas,geoglows \
   --cache-dir ~/.cache/flood_forecasting/maas \
   --river-networks-dir data/river_networks \
   --output forecast_bundle.json

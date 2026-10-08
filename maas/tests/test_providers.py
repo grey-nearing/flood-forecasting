@@ -44,10 +44,6 @@ from maas.glofas import (
     compute_glofas_reanalysis_return_periods,
     parse_glofas_forecast_response,
 )
-from maas.todays_earth import (
-    format_todays_earth_forecast,
-    parse_todays_earth_payload,
-)
 
 
 class TestConfigAndParsers:
@@ -74,9 +70,9 @@ class TestConfigAndParsers:
         assert ft3s == pytest.approx(35.3146667, rel=1e-5)
 
         models = normalize_requested_models(
-            ['floodhub', 'camaflood', 'geoglows']
+            ['google_floodhub', 'copernicus_glofas', 'geoglows']
         )
-        assert models == ['floodhub', 'todays_earth', 'geoglows']
+        assert models == ['floodhub', 'glofas', 'geoglows']
 
 
 class TestFloodHubProvider:
@@ -258,30 +254,3 @@ class TestGloFASAndGeoGLOWSProviders:
         assert retro is not None
         assert retro['years_of_record'] == 12
         assert retro['return_period_100'] > retro['return_period_2']
-
-
-class TestTodaysEarthPayloadParsing:
-    """Tests JAXA Today's Earth payload parsing and forecast formatting."""
-
-    def test_todays_earth_payload_parsing_and_formatting(self) -> None:
-        raw_te = {
-            'timestamps': ['2026-04-01', '2026-04-02'],
-            'rivout': [950.0, 1120.0],
-            'flddph': [0.4, 0.8],
-            'fldfrc': [0.08, 0.14],
-        }
-        parsed_te, err = parse_todays_earth_payload(raw_te)
-        assert err is None
-        assert parsed_te is not None
-        assert len(parsed_te['rivout']) == 2
-        assert parsed_te['fldfrc_pct'] == pytest.approx([8.0, 14.0])
-
-        formatted = format_todays_earth_forecast(
-            38.627,
-            -90.199,
-            parsed_te,
-            live=True,
-        )
-        assert formatted['status'] == 'live'
-        assert formatted['emulated'] is False
-        assert len(formatted['data']) == 2

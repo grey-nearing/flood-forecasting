@@ -26,9 +26,6 @@ from shapely.geometry import LineString
 from maas.networks import (
     GLOFAS_LOD,
     as_linkno,
-    cama_cell_area_km2,
-    cama_cell_id,
-    cama_cell_polygon,
     extract_level_features,
     glofas_cell_center,
     glofas_cell_polygon,
@@ -38,7 +35,6 @@ from maas.networks import (
     pyramid_signature,
     resolve_cross_network_click,
     save_network_pyramid,
-    snap_cama_cell,
     trace_main_stem_chain,
 )
 from maas.networks import (
@@ -47,7 +43,7 @@ from maas.networks import (
 
 
 class TestGridGeometryAndIdentifiers:
-    """Tests GloFAS 0.05 deg and CaMa-Flood 0.25 deg grid geometry and reach ID validation."""
+    """Tests GloFAS 0.05 deg grid geometry and reach ID validation."""
 
     def test_glofas_cell_center_and_polygon_bounds(self) -> None:
         snapped_lat, snapped_lon = glofas_cell_center(38.6270, -90.1994)
@@ -72,28 +68,6 @@ class TestGridGeometryAndIdentifiers:
         lats = [pt[1] for pt in ring]
         assert math.isclose(max(lons) - min(lons), 0.05, abs_tol=1e-4)
         assert math.isclose(max(lats) - min(lats), 0.05, abs_tol=1e-4)
-
-    def test_cama_cell_snapping_and_spherical_area(self) -> None:
-        c_lat, c_lon = snap_cama_cell(35.6895, 139.6917)
-        cid = cama_cell_id(c_lat, c_lon)
-        assert cid.startswith('cama_025_')
-        ring, bbox = cama_cell_polygon(c_lat, c_lon)
-        assert len(ring) == 5
-        assert math.isclose(
-            bbox['max_lon'] - bbox['min_lon'], 0.25, abs_tol=1e-4
-        )
-        assert math.isclose(
-            bbox['max_lat'] - bbox['min_lat'], 0.25, abs_tol=1e-4
-        )
-
-        equator_area = cama_cell_area_km2(0.125)
-        high_lat_area = cama_cell_area_km2(60.125)
-        assert equator_area > 700.0
-        assert math.isclose(
-            high_lat_area / equator_area,
-            math.cos(math.radians(60.125)),
-            rel_tol=1e-2,
-        )
 
     def test_geoglows_river_id_validation(self) -> None:
         assert is_geoglows_river_id(720010511) is True

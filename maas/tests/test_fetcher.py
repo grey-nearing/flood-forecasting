@@ -159,7 +159,6 @@ class TestMaaSDataFetcher:
                     'floodhub',
                     'glofas',
                     'geoglows',
-                    'todays_earth',
                 ],
             )
 
@@ -167,12 +166,10 @@ class TestMaaSDataFetcher:
             'floodhub',
             'glofas',
             'geoglows',
-            'todays_earth',
         }
         assert bundle['models']['floodhub']['status'] == 'unavailable'
         assert bundle['models']['glofas']['status'] == 'live'
         assert bundle['models']['geoglows']['status'] == 'live'
-        assert bundle['models']['todays_earth']['status'] == 'unavailable'
         assert bundle['thresholds']['warning_2yr'] == pytest.approx(1800.0)
         assert bundle['virtual_station']['geoglows_reach']['river_id'] == 720010511
         # Verify pure backend bundle does NOT include frontend UI keys
@@ -188,7 +185,7 @@ class TestMaaSDataFetcher:
         )
         reaches = resolve_reaches(38.6270, -90.1994, config=config)
         assert 'glofas' in reaches
-        assert 'todays_earth' in reaches
+        assert 'geoglows' in reaches
 
         gauges = fetch_gauges(config, (38.0, -91.0, 39.0, -90.0))
         assert gauges == []
