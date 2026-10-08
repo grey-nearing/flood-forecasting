@@ -14,11 +14,10 @@
 
 """Spatial river-network indexing and upstream-area snapping for `maas`.
 
-Supports four model river networks:
+Supports three model river networks:
   1. HydroSHEDS HydroRIVERS (`floodhub`)
   2. LISFLOOD 0.05° river grid (`glofas`)
   3. TDX-Hydro streams (`geoglows`)
-  4. CaMa-Flood 0.25° unit-catchment network (`todays_earth`)
 """
 
 import logging
@@ -35,8 +34,6 @@ import xarray as xr
 from shapely.geometry import Point, mapping
 
 from maas.config import (
-    CAMA_GRID_RES_DEG,
-    EARTH_RADIUS_KM,
     GEOGLOWS_MIN_AREA_KM2,
     GLOFAS_MIN_AREA_KM2,
     GLOFAS_NLAT,
@@ -44,8 +41,6 @@ from maas.config import (
     GLOFAS_RES_DEG,
     NETWORK_LABELS,
     PROVIDERS,
-    TE_BLOCK,
-    TE_MIN_AREA_KM2,
     parse_finite_float,
     parse_int,
 )
@@ -64,16 +59,6 @@ GLOFAS_LOD: list[tuple[int, float, float]] = [
     (9, 500, 0.0),
     (10, 250, 0.0),
     (99, 100, 0.0),
-]
-
-TE_LOD: list[tuple[int, float, float]] = [
-    (3, 25000, 0.08),
-    (4, 15000, 0.04),
-    (5, 10000, 0.02),
-    (6, 5000, 0.0),
-    (7, 2500, 0.0),
-    (8, 1000, 0.0),
-    (99, 500, 0.0),
 ]
 
 GEOGLOWS_LOD: list[tuple[int, float, float | None]] = [
@@ -189,54 +174,6 @@ def glofas_cell_polygon(
             },
         },
     }
-
-
-def snap_cama_cell(
-    lat: float,
-    lon: float,
-    res: float = CAMA_GRID_RES_DEG,
-) -> tuple[float, float]:
-    """Center of the CaMa-Flood regular grid cell that contains `(lat, lon)`."""
-    clat = min(max(float(lat), -89.9999), 89.9999)
-    clon = ((float(lon) + 180.0) % 360.0) - 180.0
-    return (
-        round(math.floor(clat / res) * res + res / 2.0, 4),
-        round(math.floor(clon / res) * res + res / 2.0, 4),
-    )
-
-
-def cama_cell_id(cell_lat: float, cell_lon: float) -> str:
-    """Canonical CaMa-Flood 0.25° grid cell identifier."""
-    return f'cama_025_{cell_lat:.3f}_{cell_lon:.3f}'
-
-
-def cama_cell_polygon(
-    cell_lat: float,
-    cell_lon: float,
-    res: float = CAMA_GRID_RES_DEG,
-) -> tuple[list[list[float]], dict[str, float]]:
-    """Closed GeoJSON ring and bbox of a `res x res` cell centered at `(cell_lat, cell_lon)`."""
-    half = res / 2.0
-    w, e = round(cell_lon - half, 5), round(cell_lon + half, 5)
-    s, n = round(cell_lat - half, 5), round(cell_lat + half, 5)
-    ring = [[w, s], [e, s], [e, n], [w, n], [w, s]]
-    return ring, {'min_lon': w, 'min_lat': s, 'max_lon': e, 'max_lat': n}
-
-
-def cama_cell_area_km2(
-    cell_lat: float,
-    res: float = CAMA_GRID_RES_DEG,
-) -> float:
-    """Exact spherical area (km²) of a `res x res` degree cell centered at `cell_lat`."""
-    phi1 = math.radians(max(cell_lat - res / 2.0, -90.0))
-    phi2 = math.radians(min(cell_lat + res / 2.0, 90.0))
-    return round(
-        EARTH_RADIUS_KM
-        * EARTH_RADIUS_KM
-        * math.radians(res)
-        * abs(math.sin(phi2) - math.sin(phi1)),
-        2,
-    )
 
 
 def is_geoglows_river_id(value: Any) -> bool:
@@ -403,9 +340,12 @@ def load_network_pyramid(
     signature: str,
 ) -> dict[str, Any] | None:
     """Load a cached river network pyramid if `path` exists and matches `signature`."""
-    if not path.is_file():
+    if not path.exists():
         return None
-    cache_key = (str(path.resolve()), signature, path.stat().st_mtime_ns)
+    try:
+        cache_key = (str(path.resolve()), signature, path.stat().st_mtime_ns)
+    except OSError:
+        return None
     cached = _PYRAMID_LOAD_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -506,10 +446,10 @@ def _index_of(sorted_keys: np.ndarray, keys: np.ndarray) -> np.ndarray:
     return np.where(sorted_keys[pos] == keys, pos, -1)
 
 
-def build_glofas_and_te_pyramids(
+def build_glofas_pyramid(
     glofas_dir: Path,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Build both the GloFAS 0.05° and Today's Earth 0.25° pyramids from rasters."""
+) -> dict[str, Any]:
+    """Build the GloFAS 0.05° pyramid from rasters."""
     t0 = time.time()
     up, ldd = _read_glofas_rasters(glofas_dir)
 
@@ -523,46 +463,12 @@ def build_glofas_and_te_pyramids(
         'cell_lin': lin.astype(np.int64),
         'cell_area': area.astype(np.float32),
     }
-
-    b = TE_BLOCK
-    blocks = (
-        up.reshape(GLOFAS_NLAT // b, b, GLOFAS_NLON // b, b)
-        .transpose(0, 2, 1, 3)
-        .reshape(GLOFAS_NLAT // b, GLOFAS_NLON // b, b * b)
-    )
-    k = blocks.argmax(axis=2)
-    kmax = np.take_along_axis(blocks, k[..., None], axis=2)[..., 0]
-    bi, bj = np.nonzero(kmax >= TE_MIN_AREA_KM2)
-    kk = k[bi, bj]
-    orow, ocol = bi * b + kk // b, bj * b + kk % b
-    olin = orow * GLOFAS_NLON + ocol
-    order = np.argsort(olin)
-    olin_sorted = olin[order]
-    te_down = np.full(len(olin), -1, dtype=np.int64)
-    r, c = orow.copy(), ocol.copy()
-    active = np.arange(len(olin))
-    for _ in range(1000):
-        if not active.size:
-            break
-        r2, c2, ok = _step(r[active], c[active], ldd)
-        active, r2, c2 = active[ok], r2[ok], c2[ok]
-        r[active], c[active] = r2, c2
-        pos = _index_of(olin_sorted, r2 * GLOFAS_NLON + c2)
-        hit = pos >= 0
-        te_down[active[hit]] = order[pos[hit]]
-        active = active[~hit]
-    te = {
-        'levels': _point_levels(
-            _cell_xy(orow, ocol), kmax[bi, bj], te_down, TE_LOD
-        )
-    }
     logger.info(
-        "Built GloFAS (%d cells) and Today's Earth (%d units) networks in %.1f s",
+        'Built GloFAS (%d cells) network in %.1f s',
         len(lin),
-        len(olin),
         time.time() - t0,
     )
-    return glofas, te
+    return glofas
 
 
 def load_geoglows_lookup(
@@ -1219,13 +1125,13 @@ def resolve_cross_network_click(  # noqa: PLR0913, PLR0917
         out['glofas'] = snap_glofas_fn(
             lat, lon, out['target_area_km2'], radius_cells=4
         )
-    elif network in ('glofas', 'todays_earth'):
+    elif network == 'glofas':
         out['glofas'] = snap_glofas_fn(
             lat,
             lon,
             area,
             area_range=rng,
-            radius_cells=5 if network == 'todays_earth' else 3,
+            radius_cells=3,
         )
         gg_lat, gg_lon = lat, lon
         if out['glofas']:
@@ -1345,14 +1251,10 @@ __all__ = [
     'GLOFAS_LOD',
     'MODELS',
     'NETWORK_LABELS',
-    'TE_LOD',
     'as_linkno',
     'build_floodhub_pyramid',
     'build_geoglows_pyramid',
-    'build_glofas_and_te_pyramids',
-    'cama_cell_area_km2',
-    'cama_cell_id',
-    'cama_cell_polygon',
+    'build_glofas_pyramid',
     'extract_level_features',
     'glofas_cell_center',
     'glofas_cell_polygon',
@@ -1365,7 +1267,6 @@ __all__ = [
     'query_hydrorivers_reaches',
     'resolve_cross_network_click',
     'save_network_pyramid',
-    'snap_cama_cell',
     'snap_geoglows_reach_from_gpkg',
     'snap_geoglows_reach_from_network',
     'snap_glofas_cell_from_network',

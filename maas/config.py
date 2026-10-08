@@ -25,7 +25,6 @@ PROVIDERS: tuple[str, ...] = (
     'floodhub',
     'glofas',
     'geoglows',
-    'todays_earth',
 )
 
 DEFAULT_MAAS_MODELS: tuple[str, ...] = PROVIDERS
@@ -34,7 +33,6 @@ MAAS_MODEL_NAMES: dict[str, str] = {
     'floodhub': 'Google FloodHub',
     'glofas': 'Copernicus GloFAS v4',
     'geoglows': 'GEOGLOWS ECMWF v2',
-    'todays_earth': "JAXA Today's Earth (CaMa-Flood)",
 }
 
 MODEL_ALIASES: dict[str, str] = {
@@ -43,41 +41,23 @@ MODEL_ALIASES: dict[str, str] = {
     'glofas': 'glofas',
     'copernicus_glofas': 'glofas',
     'geoglows': 'geoglows',
-    'todays_earth': 'todays_earth',
-    'todaysearth': 'todays_earth',
-    'te': 'todays_earth',
-    'jaxa': 'todays_earth',
-    'jaxa_todays_earth': 'todays_earth',
-    'camaflood': 'todays_earth',
 }
 
 NETWORK_LABELS: dict[str, str] = {
     'floodhub': 'HydroSHEDS HydroRIVERS reaches',
     'glofas': 'GloFAS v4 LISFLOOD 0.05° river grid',
     'geoglows': 'GEOGLOWS v2 TDX-Hydro streams',
-    'todays_earth': (
-        'CaMa-Flood-style 0.25° unit catchments (upscaled from the GloFAS grid)'
-    ),
 }
 
 FLOODHUB_BASE_URL = 'https://floodforecasting.googleapis.com/v1'
 GEOGLOWS_BASE_URL = 'https://geoglows.ecmwf.int/api/v2'
 GLOFAS_BASE_URL = 'https://flood-api.open-meteo.com/v1/flood'
-JAXA_STAC_CATALOG_URL = 'https://data.earth.jaxa.jp/stac/cog/v1/catalog.json'
 OPEN_METEO_ELEVATION_URL = 'https://api.open-meteo.com/v1/elevation'
-
-TODAYS_EARTH_API_URL_ENV = 'TODAYS_EARTH_API_URL'
-TODAYS_EARTH_TIMEOUT_S = 6
-TODAYS_EARTH_SOURCE = "JAXA Today's Earth (TE-Global CaMa-Flood)"
 
 GLOFAS_RES_DEG = 0.05
 GLOFAS_NLAT = 3600
 GLOFAS_NLON = 7200
 GLOFAS_MIN_AREA_KM2 = 100.0
-
-CAMA_GRID_RES_DEG = 0.25
-TE_BLOCK = 5
-TE_MIN_AREA_KM2 = 500.0
 GEOGLOWS_MIN_AREA_KM2 = 100.0
 
 EARTH_RADIUS_KM = 6371.0088
@@ -133,27 +113,6 @@ PROVIDER_SCHEMAS: dict[str, Mapping[str, Any]] = {
         ),
         'default_unit': 'm3/s',
     },
-    'todays_earth': {
-        'id': 'todays_earth',
-        'model_key': 'jaxa_todays_earth',
-        'name': "JAXA Today's Earth (CaMa-Flood)",
-        'network': 'CaMa-Flood 0.25° unit grid',
-        'horizon_days': 6,
-        'central_field': 'discharge_mean',
-        'quantiles': (
-            'discharge_min',
-            'discharge_p25',
-            'discharge_mean',
-            'discharge_p75',
-            'discharge_max',
-            'rivout',
-            'fldout',
-            'flddph_m',
-            'fldfrc_pct',
-            'sfcelv_m',
-        ),
-        'default_unit': 'm3/s',
-    },
 }
 
 _FLOAT_RE = re.compile(r'^[+-]?(?:(?:\d+\.?\d*)|(?:\.\d+))(?:[eE][+-]?\d+)?$')
@@ -168,7 +127,6 @@ class MaaSConfig:
         cache_dir: Directory for SQLite caches and derived indices.
         river_networks_dir: Directory containing static river network datasets.
         floodhub_api_key: API key for Google FloodHub v1 REST endpoints.
-        todays_earth_api_url: Optional operational JAXA Today's Earth endpoint.
         floodhub_base_url: Base URL for Google FloodHub API.
         geoglows_base_url: Base URL for GEOGLOWS v2 REST API.
         glofas_base_url: Base URL for Open-Meteo GloFAS flood API.
@@ -178,7 +136,6 @@ class MaaSConfig:
     cache_dir: Path
     river_networks_dir: Path
     floodhub_api_key: str = ''
-    todays_earth_api_url: str = ''
     floodhub_base_url: str = FLOODHUB_BASE_URL
     geoglows_base_url: str = GEOGLOWS_BASE_URL
     glofas_base_url: str = GLOFAS_BASE_URL

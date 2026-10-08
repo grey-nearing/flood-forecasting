@@ -23,9 +23,8 @@ from maas.networks import (
     CACHE_VERSION,
     GEOGLOWS_LOD,
     GLOFAS_LOD,
-    TE_LOD,
     build_geoglows_pyramid,
-    build_glofas_and_te_pyramids,
+    build_glofas_pyramid,
     pyramid_signature,
     save_network_pyramid,
 )
@@ -34,7 +33,7 @@ from maas.networks import (
 def build_all_pyramids(
     river_networks_dir: Path,
     output_dir: Path | None = None,
-    models: Sequence[str] = ('glofas', 'todays_earth', 'geoglows'),
+    models: Sequence[str] = ('glofas', 'geoglows'),
 ) -> dict[str, list[int]]:
     """Build and persist zoom-stratified river network pyramids for `models`.
 
@@ -43,7 +42,7 @@ def build_all_pyramids(
         output_dir: Optional output directory for `.npz` pyramids (defaults to
             each model's subdirectory under `river_networks_dir`).
         models: Sequence of model identifiers to build (`'glofas'`,
-            `'todays_earth'`, `'geoglows'`).
+            `'geoglows'`).
 
     Returns:
         Mapping from model name to list of polyline counts per zoom level.
@@ -56,35 +55,21 @@ def build_all_pyramids(
     geoglows_dir = river_networks_dir / 'geoglows_v2'
 
     out_counts: dict[str, list[int]] = {}
-    need_glofas = 'glofas' in models or 'todays_earth' in models
-    if need_glofas:
-        glofas_net, te_net = build_glofas_and_te_pyramids(glofas_dir)
+    if 'glofas' in models:
+        glofas_net = build_glofas_pyramid(glofas_dir)
         glofas_out = (
             output_dir if output_dir is not None else glofas_dir
         ) / f'glofas_network_v{CACHE_VERSION}.npz'
-        te_out = (
-            output_dir if output_dir is not None else glofas_dir
-        ) / f'todays_earth_network_v{CACHE_VERSION}.npz'
-        if 'glofas' in models:
-            save_network_pyramid(
-                glofas_out,
-                glofas_net['levels'],
-                pyramid_signature(GLOFAS_LOD),
-                cell_lin=glofas_net['cell_lin'],
-                cell_area=glofas_net['cell_area'],
-            )
-            out_counts['glofas'] = [
-                len(lvl['offsets']) - 1 for lvl in glofas_net['levels']
-            ]
-        if 'todays_earth' in models:
-            save_network_pyramid(
-                te_out,
-                te_net['levels'],
-                pyramid_signature(TE_LOD),
-            )
-            out_counts['todays_earth'] = [
-                len(lvl['offsets']) - 1 for lvl in te_net['levels']
-            ]
+        save_network_pyramid(
+            glofas_out,
+            glofas_net['levels'],
+            pyramid_signature(GLOFAS_LOD),
+            cell_lin=glofas_net['cell_lin'],
+            cell_area=glofas_net['cell_area'],
+        )
+        out_counts['glofas'] = [
+            len(lvl['offsets']) - 1 for lvl in glofas_net['levels']
+        ]
 
     if 'geoglows' in models:
         gg_net = build_geoglows_pyramid(geoglows_dir)
@@ -122,7 +107,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--models',
         type=str,
-        default='glofas,todays_earth,geoglows',
+        default='glofas,geoglows',
         help='Comma-separated list of models to build.',
     )
     return parser.parse_args(argv)
