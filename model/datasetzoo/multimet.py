@@ -1047,9 +1047,12 @@ def _open_zarr(path: Path) -> xr.Dataset:
     else:
         store = str_path
     is_cloud = str_path.startswith(('gs:', 'gs/'))
+    # `chunks={}` keeps the on-disk Zarr chunks (e.g. `basin=128` in
+    # Caravan-MultiMet) so that lazily loaded samples only read the chunk of
+    # their own basin.
     return xr.open_zarr(
         store=store,
-        chunks='auto',
+        chunks={},
         decode_timedelta=True,
         consolidated=True if is_cloud else False,
     )
@@ -1148,5 +1151,39 @@ class SampleIndexer:
     def get_column(self, dim: str):
         return next(v for (k, v) in self._aligned_indices if k == dim)
 
-def rechunk(ds: xr.Dataset | xr.DataTree) -> xr.Dataset:
-    return ds.chunk('auto').unify_chunks()
+
+def _finest_chunks(ds: xr.Dataset, dim: str) -> tuple[int, ...] | None:
+    """Return the finest chunking of `dim` across all chunked variables.
+
+    The result is the union of the chunk boundaries of every dask-backed
+    variable that has `dim`, i.e. the partition that `unify_chunks` would
+    pick. Returns None when no variable is chunked along `dim`.
+    """
+    boundaries: set[int] = set()
+    for variable in ds.variables.values():
+        if variable.chunks is None or dim not in variable.dims:
+            continue
+        boundaries.update(itertools.accumulate(variable.chunksizes[dim]))
+    if not boundaries:
+        return None
+    edges = np.array([0, *sorted(boundaries)])
+    return tuple(int(size) for size in np.diff(edges))
+
+
+def rechunk(ds: xr.Dataset) -> xr.Dataset:
+    """Return `ds` with dask-backed variables and consistent chunks.
+
+    Every variable is coerced to a dask array. The `basin` dimension keeps the
+    finest chunking already present in `ds` (the on-disk Zarr chunks, e.g.
+    `basin=128` in Caravan-MultiMet), so that a lazily loaded sample only reads
+    the chunk of its own basin. All other dimensions are chunked with dask's
+    `'auto'` heuristic, which would otherwise also merge all basins of a small
+    dataset into a single chunk.
+    """
+    chunks: dict[Hashable, str | tuple[int, ...]] = dict.fromkeys(
+        ds.dims, 'auto'
+    )
+    basin_chunks = _finest_chunks(ds, 'basin')
+    if basin_chunks is not None:
+        chunks['basin'] = basin_chunks
+    return ds.chunk(chunks).unify_chunks()
