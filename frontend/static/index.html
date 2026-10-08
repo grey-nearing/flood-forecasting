@@ -817,8 +817,17 @@
           </div>
         </section>
 
-        <!-- Selected basin (from Basin Delineation) -->
-        <section id="weatherActiveBasinBadge" class="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-3 space-y-2">
+        <!-- Simple toggle button to show or hide all of the user's catchments on the weather map -->
+        <button id="weatherCatchmentsToggleBtn" type="button" aria-pressed="true" class="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border border-[#1a73e8] bg-[#e8f0fe] text-[#174ea6] font-semibold text-xs transition hover:bg-[#d2e3fc]">
+          <span class="flex items-center gap-2">
+            <i data-lucide="map-pin" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
+            <span id="weatherCatchmentsToggleLabel">Show Catchments</span>
+          </span>
+          <span id="weatherCatchmentsToggleState" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-[#1a73e8] border border-[#d2e3fc]">ON</span>
+        </button>
+
+        <!-- Legacy single-basin card (hidden; preserved in DOM for backwards compatibility) -->
+        <section id="weatherActiveBasinBadge" class="hidden" aria-hidden="true">
           <div class="flex items-start justify-between gap-2">
             <span class="flex items-start gap-1.5 min-w-0">
               <i data-lucide="map-pin" class="w-3.5 h-3.5 text-[#1a73e8] flex-shrink-0 mt-0.5"></i>
@@ -4313,6 +4322,7 @@
 
       if (totalCount === 0) {
         container.classList.add('hidden');
+        if (typeof syncActiveCatchmentWeather === 'function') syncActiveCatchmentWeather();
         return;
       }
 
@@ -4374,6 +4384,7 @@
       });
 
       badge.innerText = `${totalCount} Basins (${Math.round(totalArea).toLocaleString()} km²)`;
+      if (typeof syncActiveCatchmentWeather === 'function') syncActiveCatchmentWeather();
       lucide.createIcons();
     }
 
@@ -6905,6 +6916,7 @@
     let weatherWindDebounce = null;
     let weatherOutlineCatchmentId = null;
     let weatherSvgRenderer = null;
+    let showWeatherCatchments = true;
 
     // Smooth playback and forecast freshness (see updateWeatherRasterLayer and below).
     const WEATHER_FRAME_FPS = 4;  // Pictures per second when playing at 1x.
@@ -7233,14 +7245,34 @@
         stepForwardBtn.addEventListener('click', () => setWeatherStep(weatherAdjacentFrameStep(1), { immediate: true, fade: true }));
       }
 
-      // 6. Basin card
+      // 6. Catchments visibility toggle button (and legacy basin card stubs)
+      try {
+        const savedCatchmentsPref = window.localStorage.getItem('openhydronet.weatherShowCatchments');
+        if (savedCatchmentsPref !== null) {
+          showWeatherCatchments = savedCatchmentsPref === '1' || savedCatchmentsPref === 'true';
+        }
+      } catch (_e) {
+        // Ignore storage errors
+      }
+      const catchmentsToggleBtn = document.getElementById('weatherCatchmentsToggleBtn');
+      if (catchmentsToggleBtn) {
+        catchmentsToggleBtn.addEventListener('click', () => {
+          showWeatherCatchments = !showWeatherCatchments;
+          try {
+            window.localStorage.setItem('openhydronet.weatherShowCatchments', showWeatherCatchments ? '1' : '0');
+          } catch (_e) {
+            // Ignore storage errors
+          }
+          syncActiveCatchmentWeather();
+        });
+      }
       const zoomBtn = document.getElementById('zoomToWeatherBasinBtn');
       if (zoomBtn) {
         zoomBtn.addEventListener('click', () => {
-          if (!map || !activeCatchmentId) return;
+          if (!map) return;
           const layer = (activeWeatherCatchmentLayer && activeWeatherCatchmentLayer.getBounds)
             ? activeWeatherCatchmentLayer
-            : watershedLayersMap[activeCatchmentId];
+            : (activeCatchmentId ? watershedLayersMap[activeCatchmentId] : null);
           if (layer && layer.getBounds) map.fitBounds(layer.getBounds(), { padding: [40, 40] });
         });
       }
@@ -8768,8 +8800,32 @@
       weatherMeteogramChart.$zeroIdx = zeroIdx;
     }
 
-    // Selected basin: outline on the map plus rain numbers in the sidebar card.
+    // Show or hide all of the user's catchments on the Weather Viewer map.
     function syncActiveCatchmentWeather() {
+      const toggleBtn = document.getElementById('weatherCatchmentsToggleBtn');
+      const toggleLabel = document.getElementById('weatherCatchmentsToggleLabel');
+      const toggleState = document.getElementById('weatherCatchmentsToggleState');
+      const allFeatures = Array.isArray(activeWatersheds)
+        ? activeWatersheds.filter(f => f && f.geometry && /Polygon/.test(f.geometry.type))
+        : [];
+      const count = allFeatures.length;
+
+      if (toggleLabel) {
+        toggleLabel.innerText = count > 0 ? `Show Catchments (${count})` : 'Show Catchments';
+      }
+      if (toggleState) {
+        toggleState.innerText = showWeatherCatchments ? 'ON' : 'OFF';
+        toggleState.className = showWeatherCatchments
+          ? 'text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-[#1a73e8] border border-[#d2e3fc]'
+          : 'text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-[#5f6368] border border-[#dadce0]';
+      }
+      if (toggleBtn) {
+        toggleBtn.setAttribute('aria-pressed', showWeatherCatchments ? 'true' : 'false');
+        toggleBtn.className = showWeatherCatchments
+          ? 'w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border border-[#1a73e8] bg-[#e8f0fe] text-[#174ea6] font-semibold text-xs transition hover:bg-[#d2e3fc]'
+          : 'w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border border-[#dadce0] bg-[#f8f9fa] text-[#5f6368] font-semibold text-xs transition hover:border-[#bdc1c6] hover:text-[#202124]';
+      }
+
       const titleEl = document.getElementById('weatherBasinTitle');
       const statsEl = document.getElementById('weatherBasinStats');
       const subtextEl = document.getElementById('weatherBasinSubtext');
@@ -8777,55 +8833,60 @@
       const selectBtn = document.getElementById('weatherSelectBasinBtn');
       const card = document.getElementById('weatherActiveBasinBadge');
       const id = activeCatchmentId;
-      const layer = id ? watershedLayersMap[id] : null;
       const feat = id ? activeWatersheds.find(f => f.properties && f.properties.catchment_id === id) : null;
 
-      if (!id || (!layer && !feat)) {
+      if (feat) {
+        const p = feat.properties || {};
+        const name = p.name || id;
+        const area = p.area_km2 ? `${Number(p.area_km2).toLocaleString(undefined, { maximumFractionDigits: 0 })} km²` : '';
+        if (titleEl) titleEl.innerText = area ? `${name} · ${area}` : name;
+        if (statsEl) statsEl.classList.remove('hidden');
+        if (zoomBtn) zoomBtn.classList.remove('hidden');
+        if (selectBtn) selectBtn.classList.add('hidden');
+        if (card) card.classList.remove('cursor-pointer');
+      } else {
         if (titleEl) titleEl.innerText = 'No basin selected';
         if (statsEl) statsEl.classList.add('hidden');
         if (subtextEl) subtextEl.innerText = 'Pick or delineate a basin in Basin Delineation to see its rain here.';
         if (zoomBtn) zoomBtn.classList.add('hidden');
         if (selectBtn) selectBtn.classList.remove('hidden');
         if (card) card.classList.add('cursor-pointer');
-        if (activeWeatherCatchmentLayer && map && map.hasLayer(activeWeatherCatchmentLayer)) map.removeLayer(activeWeatherCatchmentLayer);
+      }
+
+      if (!showWeatherCatchments || count === 0) {
+        if (activeWeatherCatchmentLayer && map && map.hasLayer(activeWeatherCatchmentLayer)) {
+          map.removeLayer(activeWeatherCatchmentLayer);
+        }
         activeWeatherCatchmentLayer = null;
         weatherOutlineCatchmentId = null;
         return;
       }
 
-      const p = (feat && feat.properties) || {};
-      const name = p.name || id;
-      const area = p.area_km2 ? `${Number(p.area_km2).toLocaleString(undefined, { maximumFractionDigits: 0 })} km²` : '';
-      if (titleEl) titleEl.innerText = area ? `${name} · ${area}` : name;
-      if (statsEl) statsEl.classList.remove('hidden');
-      if (zoomBtn) zoomBtn.classList.remove('hidden');
-      if (selectBtn) selectBtn.classList.add('hidden');
-      if (card) card.classList.remove('cursor-pointer');
-
       if (map && currentActiveTabId === 'tab-weather') {
-        if (weatherOutlineCatchmentId !== id || !activeWeatherCatchmentLayer) {
-          if (activeWeatherCatchmentLayer && map.hasLayer(activeWeatherCatchmentLayer)) map.removeLayer(activeWeatherCatchmentLayer);
-          activeWeatherCatchmentLayer = null;
-          const geo = (feat && feat.geometry) ? feat : (layer && layer.toGeoJSON ? layer.toGeoJSON() : null);
-          if (geo) {
-            // SVG, not the shared canvas (hidden on this tab), and not clickable so clicks reach the map.
-            if (!weatherSvgRenderer) weatherSvgRenderer = L.svg({ padding: 0.5 });
-            const opts = style => ({
-              renderer: weatherSvgRenderer,
-              interactive: false,
-              filter: f => !!(f.geometry && /Polygon/.test(f.geometry.type)),
-              style
-            });
-            activeWeatherCatchmentLayer = L.featureGroup([
-              L.geoJSON(geo, opts({ color: '#8ab4f8', weight: 9, opacity: 0.35, fill: false })),
-              L.geoJSON(geo, opts({ color: '#1a73e8', weight: 2.5, opacity: 1, fill: false, className: 'neon-catchment' }))
-            ]);
-            weatherOutlineCatchmentId = id;
+        const sig = allFeatures.map(f => (f.properties && f.properties.catchment_id) || '').join('|') + '#' + count;
+        if (weatherOutlineCatchmentId !== sig || !activeWeatherCatchmentLayer) {
+          if (activeWeatherCatchmentLayer && map.hasLayer(activeWeatherCatchmentLayer)) {
+            map.removeLayer(activeWeatherCatchmentLayer);
           }
+          activeWeatherCatchmentLayer = null;
+          if (!weatherSvgRenderer) weatherSvgRenderer = L.svg({ padding: 0.5 });
+          const fc = { type: 'FeatureCollection', features: allFeatures };
+          const opts = style => ({
+            renderer: weatherSvgRenderer,
+            interactive: false,
+            filter: f => !!(f.geometry && /Polygon/.test(f.geometry.type)),
+            style
+          });
+          activeWeatherCatchmentLayer = L.featureGroup([
+            L.geoJSON(fc, opts({ color: '#8ab4f8', weight: 9, opacity: 0.35, fill: false })),
+            L.geoJSON(fc, opts({ color: '#1a73e8', weight: 2.5, opacity: 1, fill: false, className: 'neon-catchment' }))
+          ]);
+          weatherOutlineCatchmentId = sig;
         }
-        if (activeWeatherCatchmentLayer && !map.hasLayer(activeWeatherCatchmentLayer)) activeWeatherCatchmentLayer.addTo(map);
+        if (activeWeatherCatchmentLayer && !map.hasLayer(activeWeatherCatchmentLayer)) {
+          activeWeatherCatchmentLayer.addTo(map);
+        }
       }
-      scheduleWeatherSummary();
     }
 
     function scheduleWeatherSummary() {
