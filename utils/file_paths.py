@@ -118,9 +118,13 @@ DEFAULT_CHIRPS_GEFS_V3_URL = (
 DEFAULT_ECMWF_FORECASTS_URL = 'https://data.ecmwf.int/forecasts/'
 
 DYNAMICAL_STAC_CATALOG_URL = 'https://stac.dynamical.org/catalog.json'
+MERIT_HYDRO_EE_ASSET = 'MERIT/Hydro/v1_0_1'
 GEE_HIGHVOLUME_ASSETS_URL = (
     'https://earthengine-highvolume.googleapis.com/v1/'
     'projects/earthengine-public/assets/'
+)
+EE_MERIT_GET_PIXELS_URL = (
+    f'{GEE_HIGHVOLUME_ASSETS_URL}{MERIT_HYDRO_EE_ASSET}:getPixels'
 )
 
 FLOODHUB_BASE_URL = 'https://floodforecasting.googleapis.com/v1'
@@ -180,6 +184,7 @@ __all__ = [
     'DOCS_URL',
     'DYNAMICAL_STAC_CATALOG_URL',
     'ECMWF_OPEN_DATA_BUCKET',
+    'EE_MERIT_GET_PIXELS_URL',
     'FLOODHUB_BASE_URL',
     'FORECAST_LATEST_ZARR_NAME',
     'GEE_HIGHVOLUME_ASSETS_URL',
@@ -197,6 +202,7 @@ __all__ = [
     'HYDROSHEDS_TILES_5DEG_GCS_URI',
     'HYDRO_ATLAS_LEV12_PARQUET_NAME',
     'JAXA_STAC_CATALOG_URL',
+    'MERIT_HYDRO_EE_ASSET',
     'NASA_CMR_GRANULES_URL',
     'NASA_GESDISC_IMERG_DAILY_URL',
     'NOAA_PSL_CPC_URL_TEMPLATE',
@@ -218,3 +224,4 @@ __all__ = [
     'TIMESERIES_ZARR_NAME',
     'WEATHERBENCH2_HRES_ZARR_URI',
 ]
+
