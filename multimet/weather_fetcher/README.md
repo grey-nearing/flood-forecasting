@@ -9,7 +9,7 @@ catchment (river basin) averages.
 > If you only want to train or evaluate flood-forecasting models with the
 > published MultiMet dataset, **you do not need this package**. Point
 > `dynamics_data_dir` in your training configuration to
-> `gs://caravan-multimet/v1.1`.
+> `gs://open-multimet/caravan-multimet/v1.1`.
 >
 > Use `multimet.weather_fetcher` when you need live gridded forecasts from
 > operational weather models.

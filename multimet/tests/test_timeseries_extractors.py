@@ -22,22 +22,16 @@ import pytest
 import xarray as xr
 import zarr
 
-from multimet.timeseries_extractors.config import (
-    PRODUCT_BANDS,
-    Product,
-)
 from multimet.timeseries_extractors.cpc import CPCExtractor
 from multimet.timeseries_extractors.era5_land import ERA5LandExtractor
 from multimet.utils.geometry import load_basin_geometries
 from multimet.timeseries_extractors.hres import (
     HRESExtractor,
     _extract_accumulated_lead,
-    _extract_instantaneous_lead,
 )
 from multimet.timeseries_extractors.imerg import IMERGExtractor
-from multimet.utils.climate import calculate_fao56_penman_monteith_pet
+from multimet.utils.climate import calculate_fao_pm_pet
 from multimet.timeseries_extractors.runner import extract_multimet_serial
-from multimet.timeseries_extractors.zarr_writer import MultiMetZarrWriter
 
 
 pytestmark = pytest.mark.unit
@@ -55,22 +49,30 @@ def basins_gdf():
   return load_basin_geometries(path)
 
 
-def test_fao56_penman_monteith_pet():
-  """Tests FAO-56 Penman-Monteith potential evapotranspiration formula."""
-  t2m = np.array([293.15, 303.15], dtype=np.float32)  # 20 C, 30 C
-  d2m = np.array([288.15, 293.15], dtype=np.float32)  # 15 C, 20 C
-  sp = np.array([101325.0, 101325.0], dtype=np.float32)
-  ssr = np.array([1.5e7, 2.0e7], dtype=np.float32)  # J/m^2
-  str_flux = np.array([-4.0e6, -5.0e6], dtype=np.float32)
+def test_fao_pm_pet_ndarray():
+  """Tests FAO-56 Penman-Monteith potential evapotranspiration formula on numpy arrays."""
+  t2m_c = np.array([20.0, 30.0], dtype=np.float32)
+  d2m_c = np.array([15.0, 20.0], dtype=np.float32)
+  sp_kpa = np.array([101.325, 101.325], dtype=np.float32)
+  ssr_jm2 = np.array([1.5e7, 2.0e7], dtype=np.float32)
+  str_jm2 = np.array([-4.0e6, -5.0e6], dtype=np.float32)
   u10 = np.array([2.0, 3.0], dtype=np.float32)
   v10 = np.array([1.0, 2.0], dtype=np.float32)
 
-  pet = calculate_fao56_penman_monteith_pet(
-      t2m, d2m, sp, ssr, str_flux, u10, v10
+  pet = calculate_fao_pm_pet(
+      surface_pressure_kpa=sp_kpa,
+      temperature_2m_c=t2m_c,
+      dewpoint_temperature_2m_c=d2m_c,
+      u_component_of_wind_10m=u10,
+      v_component_of_wind_10m=v10,
+      surface_net_solar_radiation_mean=ssr_jm2,
+      surface_net_thermal_radiation_mean=str_jm2,
+      radiation_units="J/m^2/day",
   )
+  assert isinstance(pet, np.ndarray)
   assert pet.shape == (2,)
   assert np.all(pet > 0.0)
-  assert pet[1] > pet[0]  # Warmer, higher radiation -> higher PET
+  assert pet[1] > pet[0]
 
 
 def test_cpc_extractor_binary_parsing(tmp_path):

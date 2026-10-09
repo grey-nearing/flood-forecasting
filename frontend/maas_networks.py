@@ -21,8 +21,6 @@ from maas.config import (
     GLOFAS_NLON,
     GLOFAS_RES_DEG as GLOFAS_RES,
     NETWORK_LABELS,
-    TE_BLOCK,
-    TE_MIN_AREA_KM2,
 )
 from maas.networks import (
     CACHE_VERSION as _CACHE_VERSION,
@@ -35,7 +33,6 @@ from maas.networks import (
     LDD_DROW as _LDD_DROW,
     MODELS,
     RANGE_SLACK as _RANGE_SLACK,
-    TE_LOD,
     _choose,
     _gather_ranges,
     _index_of,
@@ -45,7 +42,7 @@ from maas.networks import (
     as_linkno as _as_linkno,
     build_floodhub_pyramid,
     build_geoglows_pyramid,
-    build_glofas_and_te_pyramids,
+    build_glofas_pyramid,
     extract_level_features as _level_features,
     load_geoglows_lookup,
     load_network_pyramid as _load_levels,
@@ -77,8 +74,8 @@ _NETWORKS: Dict[str, Dict[str, Any]] = {}
 _GEOGLOWS_LOOKUP: Optional[Tuple[np.ndarray, np.ndarray]] = None
 
 
-def _build_glofas_and_te() -> Tuple[Dict[str, Any], Dict[str, Any]]:
-  return build_glofas_and_te_pyramids(GLOFAS_DIR)
+def _build_glofas() -> Dict[str, Any]:
+  return build_glofas_pyramid(GLOFAS_DIR)
 
 
 def _geoglows_lookup() -> Tuple[np.ndarray, np.ndarray]:
@@ -134,13 +131,12 @@ def _cache_path(model: str) -> Path:
 
 
 def _network(model: str) -> Optional[Dict[str, Any]]:
-  """Loads (building and caching on first use) the gridded/merged network for floodhub, glofas, todays_earth or geoglows."""
+  """Loads (building and caching on first use) the gridded/merged network for floodhub, glofas, or geoglows."""
   if model in _NETWORKS:
     return _NETWORKS[model]
   table = {
       "floodhub": FLOODHUB_PYRAMID_LOD,
       "glofas": GLOFAS_LOD,
-      "todays_earth": TE_LOD,
       "geoglows": GEOGLOWS_LOD,
   }[model]
   with _LOCK:
@@ -158,11 +154,10 @@ def _network(model: str) -> Optional[Dict[str, Any]]:
           extra = {k: v for k, v in net.items() if k != "levels"}
           _save_levels(_cache_path(model), net["levels"], _signature(table), **extra)
         else:
-          glofas, te = _build_glofas_and_te()
+          glofas = _build_glofas()
           _save_levels(_cache_path("glofas"), glofas["levels"], _signature(GLOFAS_LOD),
                        cell_lin=glofas["cell_lin"], cell_area=glofas["cell_area"])
-          _save_levels(_cache_path("todays_earth"), te["levels"], _signature(TE_LOD))
-          _NETWORKS["glofas"], _NETWORKS["todays_earth"] = glofas, te
+          _NETWORKS["glofas"] = glofas
           net = _NETWORKS[model]
       except (OSError, ValueError, KeyError, ImportError) as e:
         _LOG.warning("River network for %s unavailable: %s", model, e)
@@ -314,7 +309,7 @@ def _promote_active_flood_features(
     return
   if model in ("floodhub", "geoglows") and not active_keys:
     return
-  if model in ("glofas", "todays_earth") and ows_grid is None and not active_keys:
+  if model == "glofas" and ows_grid is None and not active_keys:
     return
   net = _network(model)
   if net is None or not net.get("levels"):
@@ -385,7 +380,7 @@ def _promote_active_flood_features(
   hit = hit[:250]
 
   existing_end_keys: set[tuple[int, int]] = set()
-  if model in ("glofas", "todays_earth"):
+  if model == "glofas":
     for f in feats:
       fc = (f.get("geometry") or {}).get("coordinates") or []
       if fc:
@@ -458,7 +453,7 @@ def get_model_network(model: str, min_lon: float, min_lat: float, max_lon: float
         min_lon, min_lat, max_lon, max_lat, zoom
     )
   else:
-    table = {"glofas": GLOFAS_LOD, "todays_earth": TE_LOD, "geoglows": GEOGLOWS_LOD}[model]
+    table = {"glofas": GLOFAS_LOD, "geoglows": GEOGLOWS_LOD}[model]
     row = _lod(table, zoom)
     props["min_area_km2"] = row[1]
     try:
@@ -487,7 +482,7 @@ def get_model_network(model: str, min_lon: float, min_lat: float, max_lon: float
         clear_live_status_cache(model)
       elif zoom < 8:
         active_keys = get_active_flood_keys(model)
-        ows_grid = get_glofas_ows_grid() if model in ("glofas", "todays_earth") else None
+        ows_grid = get_glofas_ows_grid() if model == "glofas" else None
         if active_keys or ows_grid is not None:
           _promote_active_flood_features(
               model, feats, min_lon, min_lat, max_lon, max_lat, zoom, active_keys, ows_grid=ows_grid
@@ -569,7 +564,7 @@ def resolve_click(lat: float, lon: float, upstream_area_km2: Any, area_min_km2: 
 
 def build_all() -> None:
   """Builds every derived network cache (run once after downloading the data)."""
-  for model in ("glofas", "todays_earth", "geoglows", "floodhub"):
+  for model in ("glofas", "geoglows", "floodhub"):
     t = time.time()
     net = _network(model)
     sizes = [len(lvl["offsets"]) - 1 for lvl in net["levels"]] if net else None

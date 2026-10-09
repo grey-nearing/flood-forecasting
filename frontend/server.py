@@ -16,12 +16,12 @@ import urllib.request
 import sys
 import numpy as np
 
-# Ensure openhydronet is importable when run directly via python3
+# Ensure workspace root is importable when run directly via python3
 _ws_root = str(Path(__file__).resolve().parents[1])
 if _ws_root not in sys.path:
   sys.path.insert(0, _ws_root)
 
-from frontend.zarr_importer import CNSZarrImporter
+from utils.file_paths import RAINVIEWER_MAPS_URL
 from frontend.config import (
     ARCHIVES_DIR,
     ATTRIBUTES_DIR,
@@ -113,7 +113,17 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
   ):
     self.send_response(status)
     self.send_header("Content-Type", content_type)
-    self.send_header("Access-Control-Allow-Origin", "*")
+    origin = self.headers.get("Origin", "")
+
+    if origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1") or origin.startswith("https://localhost") or origin.startswith("https://127.0.0.1"):
+
+      allowed_origin = origin
+
+    else:
+
+      allowed_origin = "http://localhost:8080"
+
+    self.send_header("Access-Control-Allow-Origin", allowed_origin)
     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
     self.send_header(
         "Access-Control-Allow-Headers", "Content-Type, Authorization"
@@ -124,7 +134,17 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
     self.send_response(status)
     self.send_header("Content-Type", "image/png")
     self.send_header("Content-Length", str(len(tile_bytes)))
-    self.send_header("Access-Control-Allow-Origin", "*")
+    origin = self.headers.get("Origin", "")
+
+    if origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1") or origin.startswith("https://localhost") or origin.startswith("https://127.0.0.1"):
+
+      allowed_origin = origin
+
+    else:
+
+      allowed_origin = "http://localhost:8080"
+
+    self.send_header("Access-Control-Allow-Origin", allowed_origin)
     self.send_header("Cache-Control", "public, max-age=300")
     self.end_headers()
     self.wfile.write(tile_bytes)
@@ -140,7 +160,17 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(compressed)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+
+        if origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1") or origin.startswith("https://localhost") or origin.startswith("https://127.0.0.1"):
+
+          allowed_origin = origin
+
+        else:
+
+          allowed_origin = "http://localhost:8080"
+
+        self.send_header("Access-Control-Allow-Origin", allowed_origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers", "Content-Type, Authorization"
@@ -151,7 +181,17 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+
+        if origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1") or origin.startswith("https://localhost") or origin.startswith("https://127.0.0.1"):
+
+          allowed_origin = origin
+
+        else:
+
+          allowed_origin = "http://localhost:8080"
+
+        self.send_header("Access-Control-Allow-Origin", allowed_origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers", "Content-Type, Authorization"
@@ -412,7 +452,17 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
       self.send_response(200)
       self.send_header("Content-Type", "image/png")
       self.send_header("Content-Length", str(len(png)))
-      self.send_header("Access-Control-Allow-Origin", "*")
+      origin = self.headers.get("Origin", "")
+
+      if origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1") or origin.startswith("https://localhost") or origin.startswith("https://127.0.0.1"):
+
+        allowed_origin = origin
+
+      else:
+
+        allowed_origin = "http://localhost:8080"
+
+      self.send_header("Access-Control-Allow-Origin", allowed_origin)
       # The viewer puts the run time and frame version in the URL (?v=...).
       self.send_header("Cache-Control", "public, max-age=86400")
       self.end_headers()
@@ -502,7 +552,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
     if path == "/api/weather/radar-times":
       try:
         req = urllib.request.Request(
-            "https://api.rainviewer.com/public/weather-maps.json",
+            RAINVIEWER_MAPS_URL,
             headers={"User-Agent": "EarthkitHydro/1.0"},
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -533,17 +583,11 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
 
     # API: MaaS Supported Models & Status (/api/maas/models)
     if path == "/api/maas/models":
-      try:
-        from frontend.maas_engine import todays_earth_service_status
-      except ImportError:
-        from maas_engine import todays_earth_service_status
-
       models_info = {
           "models": [
               {"id": "floodhub", "name": "Google FloodHub", "type": "AI / Physics", "horizon_days": 7, "units": "m³/s", "status": "operational"},
               {"id": "glofas", "name": "Copernicus GloFAS", "type": "30-Day Ensemble (CEMS)", "horizon_days": 15, "units": "m³/s", "status": "operational"},
               {"id": "geoglows", "name": "GEOGLOWS ECMWF", "type": "15-Day 51-Member Ensemble", "horizon_days": 15, "units": "m³/s", "status": "operational"},
-              {"id": "todays_earth", "name": "JAXA Today's Earth (CaMa-Flood)", "type": "MATSIRO + CaMa-Flood", "horizon_days": 15, "units": "m³/s", "status": todays_earth_service_status()},
           ]
       }
       self._send_json(models_info)
@@ -601,7 +645,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         self._send_error(f"Failed to query MaaS river network: {e}", status=400)
         return
 
-    # API: Unified 4-Provider Streamflow & Flood Forecast Probe (/api/maas/forecast)
+    # API: Unified 3-Provider Streamflow & Flood Forecast Probe (/api/maas/forecast)
     if path == "/api/maas/forecast":
       try:
         lat = float(query.get("lat", [32.756])[0])
@@ -615,7 +659,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         upstream_area_km2 = query.get("upstream_area_km2", [None])[0]
         area_min_km2 = query.get("area_min_km2", [None])[0]
         network = query.get("network", [None])[0] or None
-        models_str = query.get("models", ["floodhub,glofas,geoglows,todays_earth"])[0]
+        models_str = query.get("models", ["floodhub,glofas,geoglows"])[0]
         requested_models = [m.strip().lower() for m in models_str.split(",") if m.strip()]
 
         try:
@@ -972,7 +1016,17 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
             "Content-Disposition", 'attachment; filename="attributes.csv"'
         )
         self.send_header("Content-Length", str(len(content)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+
+        if origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1") or origin.startswith("https://localhost") or origin.startswith("https://127.0.0.1"):
+
+          allowed_origin = origin
+
+        else:
+
+          allowed_origin = "http://localhost:8080"
+
+        self.send_header("Access-Control-Allow-Origin", allowed_origin)
         self.end_headers()
         self.wfile.write(content)
         return
@@ -1017,7 +1071,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
       if (
           file_path.exists()
           and file_path.is_file()
-          and str(file_path).startswith(str(STATIC_DIR))
+          and file_path.resolve().is_relative_to(STATIC_DIR.resolve())
       ):
         mime, _ = mimetypes.guess_type(str(file_path))
         self._set_cors_headers(200, mime or "application/octet-stream")
@@ -1791,63 +1845,6 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         self._send_error(f"Failed to fetch forecast: {str(e)}", status=500)
         return
 
-    # API: Direct CNS Zarr Import (Dev Bypass)
-    if path in ["/api/archives/import_cns", "/api/weather/historical/import_cns"]:
-      user = self._get_request_username(data)
-      cns_path = (data.get("cns_path") or data.get("path") or "").strip()
-      dest_filename = (
-          data.get("dest_filename")
-          or data.get("filename")
-          or "historical_training_master.zarr"
-      )
-      notify_email = (data.get("notify_email") or "").strip()
-
-      if not cns_path:
-        self._send_error(
-            "Missing 'cns_path' parameter (e.g. gs://open-multimet/data).", status=400
-        )
-        return
-
-      if not cns_path.startswith("gs://open-multimet/data"):
-        self._send_error(
-            f"Invalid CNS path '{cns_path}'. Path must begin with gs://open-multimet/data",
-            status=400,
-        )
-        return
-
-      importer = CNSZarrImporter(
-          output_dir=get_profile_manager().get_historical_dir(user)
-      )
-      job_mgr = get_job_manager()
-      host = self.headers.get("Host", "localhost:8080")
-      server_url = f"http://{host}"
-
-      job_id = job_mgr.submit_job(
-          job_type="cns_zarr_import",
-          task_fn=importer.import_zarr_from_cns,
-          cns_path=cns_path,
-          dest_filename=dest_filename,
-          notify_email=notify_email,
-          server_url=server_url,
-          metadata={
-              "cns_path": cns_path,
-              "dest_filename": dest_filename,
-              "weather_source": "CNS Zarr Import",
-          },
-      )
-
-      self._send_json({
-          "status": "queued",
-          "job_id": job_id,
-          "cns_path": cns_path,
-          "dest_filename": dest_filename,
-          "notify_email": notify_email,
-          "message": (
-              f"CNS Zarr import queued in background from {cns_path} to {dest_filename}."
-              + (f" Notification will be sent to {notify_email}." if notify_email else "")
-          ),
-      })
-      return
 
     # 5. API: Extract Static Catchment Attributes (HydroATLAS / Caravan)
     if path == "/api/attributes/extract":
@@ -2200,7 +2197,7 @@ def _start_maas_warmup() -> None:
       except ImportError:
         import maas_networks  # pylint: disable=g-import-not-at-top
       from maas.geoglows import lookup_cached_geoglows_return_periods  # pylint: disable=g-import-not-at-top
-      for m in ("glofas", "todays_earth", "geoglows", "floodhub"):
+      for m in ("glofas", "geoglows", "floodhub"):
         maas_networks._network(m)
         maas_networks.get_model_network(m, -180.0, -85.0, 180.0, 85.0, 3)
       lookup_cached_geoglows_return_periods(760069805)

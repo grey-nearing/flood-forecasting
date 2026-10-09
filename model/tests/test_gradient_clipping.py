@@ -15,8 +15,6 @@
 """Regression tests for gradient clipping diagnostics and training behavior."""
 
 import logging
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -27,27 +25,43 @@ from tensorboard.backend.event_processing.event_accumulator import (
 
 from model.training.basetrainer import BaseTrainer
 from model.training.logger import Logger
+from model.utils.config import Config
 
 pytestmark = pytest.mark.unit
 
 
+class _RecordingWriter:
+    """In-memory TensorBoard scalar recorder for unit tests."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, float, int]] = []
+
+    def add_scalar(self, tag: str, value: float, step: int):
+        self.calls.append((tag, value, step))
+
+    def reset(self):
+        self.calls.clear()
+
+
 @pytest.fixture
-def logger(tmp_path):
-    """Create the real experiment logger without dataset configuration."""
-    cfg = MagicMock(
-        log_interval=1,
-        run_dir=tmp_path,
-        img_log_dir=tmp_path,
-        save_git_diff=False,
+def logger(minimal_config, tmp_path):
+    """Create the real experiment logger using minimal_config."""
+    minimal_config.update_config(
+        {
+            'log_interval': 1,
+            'run_dir': tmp_path,
+            'img_log_dir': tmp_path,
+            'save_git_diff': False,
+        }
     )
-    return Logger(cfg)
+    return Logger(minimal_config)
 
 
-def _scalars(writer):
+def _scalars(writer: _RecordingWriter) -> dict[str, float]:
     return {
-        call.args[0].removeprefix('train/gradient_clipping/'): call.args[1]
-        for call in writer.add_scalar.call_args_list
-        if call.args[0].startswith('train/gradient_clipping/')
+        tag.removeprefix('train/gradient_clipping/'): value
+        for tag, value, _ in writer.calls
+        if tag.startswith('train/gradient_clipping/')
     }
 
 
@@ -55,7 +69,7 @@ def _scalars(writer):
 def test_summary_counts_preclip_norms_and_percentiles(
     logger, caplog, tensorboard
 ):
-    logger.writer = MagicMock() if tensorboard else None
+    logger.writer = _RecordingWriter() if tensorboard else None
     logger.log_step(loss=2.0)
     norms = np.array([0.0, 0.5, 1.0, 2.0, 4.0])
     with caplog.at_level(logging.INFO):
@@ -79,16 +93,16 @@ def test_summary_counts_preclip_norms_and_percentiles(
         assert stats['norm_p90'] == pytest.approx(3.2)
         assert stats['norm_p99'] == pytest.approx(3.92)
         gradient_calls = [
-            call
-            for call in logger.writer.add_scalar.call_args_list
-            if call.args[0].startswith('train/gradient_clipping/')
+            (tag, val, step)
+            for tag, val, step in logger.writer.calls
+            if tag.startswith('train/gradient_clipping/')
         ]
-        assert all(call.args[2] == 7 for call in gradient_calls)
+        assert all(step == 7 for _, _, step in gradient_calls)
 
 
 @pytest.mark.parametrize('norms', [[], [np.nan, np.inf, -np.inf]])
 def test_no_finite_norms_do_not_report_zero_percent(logger, caplog, norms):
-    logger.writer = MagicMock()
+    logger.writer = _RecordingWriter()
     with caplog.at_level(logging.INFO):
         logger.log_gradient_norms(np.array(norms), 1.0, epoch=1)
     assert 'no finite gradient norms' in caplog.text
@@ -102,7 +116,7 @@ def test_no_finite_norms_do_not_report_zero_percent(logger, caplog, norms):
 
 
 def test_nonfinite_norms_are_reported_separately(logger, caplog):
-    logger.writer = MagicMock()
+    logger.writer = _RecordingWriter()
     with caplog.at_level(logging.INFO):
         logger.log_gradient_norms(
             np.array([0.5, 2.0, np.nan, np.inf, -np.inf]), 1.0, epoch=1
@@ -146,12 +160,23 @@ class _LinearModel(torch.nn.Module):
         return torch.dot(self.weight, data['gradient'])
 
 
-def _make_trainer(logger, gradients, threshold=1.0, scaled=False):
+def _make_trainer(
+    logger,
+    minimal_config: Config,
+    gradients,
+    threshold=1.0,
+    scaled=False,
+):
     """Exercise the actual epoch loop with analytically known gradients."""
     trainer = BaseTrainer.__new__(BaseTrainer)
-    trainer.cfg = SimpleNamespace(
-        clip_gradient_norm=threshold, log_loss_every_nth_update=100
+    cfg = Config(minimal_config.as_dict())
+    cfg.update_config(
+        {
+            'clip_gradient_norm': threshold,
+            'log_loss_every_nth_update': 100,
+        }
     )
+    trainer.cfg = cfg
     trainer.device = torch.device('cpu')
     trainer.model = _LinearModel()
     trainer.optimizer = torch.optim.SGD(trainer.model.parameters(), lr=0.1)
@@ -175,11 +200,13 @@ def _make_trainer(logger, gradients, threshold=1.0, scaled=False):
 @pytest.mark.parametrize('scaled', [False, True])
 @pytest.mark.parametrize('threshold', [None, 0.0, 1.0, 100.0])
 def test_epoch_diagnostics_preserve_optimizer_updates(
-    logger, caplog, threshold, scaled
+    logger, minimal_config, caplog, threshold, scaled
 ):
     gradients = [[0.0, 0.0], [0.3, 0.4], [3.0, 4.0], [0.0, 1.0]]
-    trainer = _make_trainer(logger, gradients, threshold, scaled)
-    logger.writer = MagicMock()
+    trainer = _make_trainer(
+        logger, minimal_config, gradients, threshold, scaled
+    )
+    logger.writer = _RecordingWriter()
 
     reference = _LinearModel()
     optimizer = torch.optim.SGD(reference.parameters(), lr=0.1)
@@ -207,44 +234,54 @@ def test_epoch_diagnostics_preserve_optimizer_updates(
         assert stats['norm_median'] == pytest.approx(0.75)
 
 
-def test_epoch_counters_reset_and_nan_losses_are_not_checked(logger):
-    trainer = _make_trainer(logger, [[0.0, 2.0], [float('nan'), 0.0]])
-    logger.writer = MagicMock()
+def test_epoch_counters_reset_and_nan_losses_are_not_checked(
+    logger, minimal_config
+):
+    trainer = _make_trainer(
+        logger, minimal_config, [[0.0, 2.0], [float('nan'), 0.0]]
+    )
+    logger.writer = _RecordingWriter()
     trainer._train_epoch(epoch=1)
     assert _scalars(logger.writer)['checked_steps'] == 1
     assert _scalars(logger.writer)['clipped_fraction'] == 1.0
     trainer.loader = [{'gradient': torch.tensor([0.0, 0.5])}]
-    logger.writer.reset_mock()
+    logger.writer.reset()
     trainer._train_epoch(epoch=2)
     assert _scalars(logger.writer)['checked_steps'] == 1
     assert _scalars(logger.writer)['clipped_fraction'] == 0.0
 
 
 @pytest.mark.parametrize('gradients', [[], [[float('nan'), 0.0]]])
-def test_epoch_without_checked_steps(logger, caplog, gradients):
-    trainer = _make_trainer(logger, gradients)
+def test_epoch_without_checked_steps(
+    logger, minimal_config, caplog, gradients
+):
+    trainer = _make_trainer(logger, minimal_config, gradients)
     with caplog.at_level(logging.INFO):
         trainer._train_epoch(epoch=1)
     assert 'no finite gradient norms' in caplog.text
 
 
-def test_epoch_respects_update_limit(logger):
-    trainer = _make_trainer(logger, [[0.0, 0.5], [0.0, 2.0], [0.0, 4.0]])
+def test_epoch_respects_update_limit(logger, minimal_config):
+    trainer = _make_trainer(
+        logger, minimal_config, [[0.0, 0.5], [0.0, 2.0], [0.0, 4.0]]
+    )
     trainer._max_updates_per_epoch = 2
-    logger.writer = MagicMock()
+    logger.writer = _RecordingWriter()
     trainer._train_epoch(epoch=1)
     stats = _scalars(logger.writer)
     assert stats['checked_steps'] == 2
     assert stats['clipped_fraction'] == 0.5
 
 
-def test_double_precision_norms_are_not_rounded_before_comparison(logger):
-    trainer = _make_trainer(logger, [])
+def test_double_precision_norms_are_not_rounded_before_comparison(
+    logger, minimal_config
+):
+    trainer = _make_trainer(logger, minimal_config, [])
     trainer.model.double()
     trainer.loader = [
         {'gradient': torch.tensor([0.0, 1.0 + 1e-10], dtype=torch.float64)}
     ]
-    logger.writer = MagicMock()
+    logger.writer = _RecordingWriter()
     trainer._train_epoch(epoch=1)
     stats = _scalars(logger.writer)
     assert stats['clipped_steps'] == 1
@@ -268,11 +305,13 @@ class _MultipleParametersModel(torch.nn.Module):
         )
 
 
-def test_norm_combines_all_parameters_and_ignores_missing_gradients(logger):
-    trainer = _make_trainer(logger, [[3.0, 4.0]])
+def test_norm_combines_all_parameters_and_ignores_missing_gradients(
+    logger, minimal_config
+):
+    trainer = _make_trainer(logger, minimal_config, [[3.0, 4.0]])
     trainer.model = _MultipleParametersModel()
     trainer.optimizer = torch.optim.SGD(trainer.model.parameters(), lr=0.1)
-    logger.writer = MagicMock()
+    logger.writer = _RecordingWriter()
     trainer._train_epoch(epoch=1)
     stats = _scalars(logger.writer)
     assert stats['norm_median'] == 5.0
@@ -285,13 +324,13 @@ def test_norm_combines_all_parameters_and_ignores_missing_gradients(logger):
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA is unavailable')
-def test_cuda_unscale_and_preclip_norm_collection(logger):
-    trainer = _make_trainer(logger, [[0.3, 0.4], [3.0, 4.0]])
+def test_cuda_unscale_and_preclip_norm_collection(logger, minimal_config):
+    trainer = _make_trainer(logger, minimal_config, [[0.3, 0.4], [3.0, 4.0]])
     trainer.device = torch.device('cuda')
     trainer.model.to(trainer.device)
     trainer.optimizer = torch.optim.SGD(trainer.model.parameters(), lr=0.1)
     trainer.scaler = torch.amp.GradScaler('cuda', init_scale=8.0)
-    logger.writer = MagicMock()
+    logger.writer = _RecordingWriter()
     trainer._train_epoch(epoch=1)
     stats = _scalars(logger.writer)
     assert stats['checked_steps'] == 2
@@ -315,14 +354,16 @@ class _NonfiniteGradient(torch.autograd.Function):
 
 @pytest.mark.parametrize('gradient', [float('inf'), float('nan')])
 def test_grad_scaler_overflow_is_separate_from_finite_clipping(
-    logger, gradient
+    logger, minimal_config, gradient
 ):
-    trainer = _make_trainer(logger, [[0.0, 2.0]], scaled=True)
+    trainer = _make_trainer(
+        logger, minimal_config, [[0.0, 2.0]], scaled=True
+    )
     trainer.loss_obj = lambda prediction, data: (
         _NonfiniteGradient.apply(prediction, gradient),
         {'loss': prediction},
     )
-    logger.writer = MagicMock()
+    logger.writer = _RecordingWriter()
     trainer._train_epoch(epoch=1)
     torch.testing.assert_close(trainer.model.weight, torch.zeros(2))
     assert trainer.scaler.get_scale() == 4.0

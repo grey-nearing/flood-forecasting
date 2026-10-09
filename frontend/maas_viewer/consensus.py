@@ -14,12 +14,9 @@
 
 """Frontend multi-model consensus badges, flood summary cards, and chart timeline formatting."""
 
-import math
 from typing import Any
 
-import numpy as np
-
-from maas.config import MAAS_MODEL_NAMES, parse_finite_float
+from maas.config import MAAS_MODEL_NAMES
 from maas.fetcher import align_daily_series, daily_series, window_peak
 from maas.thresholds import (
     EXCEEDANCE_CLASSES,
@@ -28,104 +25,7 @@ from maas.thresholds import (
     UNASSESSED_LABEL,
     classify_exceedance,
     estimate_return_period_years,
-    gumbel_quantile_from_return_periods,
 )
-from maas.todays_earth import CAMA_FLDOUT_SHARE, CAMA_FLOODPLAIN_K
-
-
-def route_floodplain_excess(
-    series: list[float],
-    q_bankfull: float,
-    k: float = CAMA_FLOODPLAIN_K,
-) -> list[float]:
-    """Linear-reservoir routing of above-bankfull flow (daily explicit scheme)."""
-    routed: list[float] = []
-    state: float | None = None
-    for q in series:
-        excess = max(q - q_bankfull, 0.0)
-        state = excess if state is None else state + k * (excess - state)
-        routed.append(state)
-    return routed
-
-
-def emulate_camaflood_physics(
-    glofas_records: list[dict[str, Any]],
-    rps: dict[str, Any],
-    elev: float = 80.0,
-    elev_source: str = 'Open-Meteo DEM',
-) -> dict[str, Any]:
-    """Deterministic CaMa-Flood-style streamflow routing emulation from GloFAS v4."""
-    records = (glofas_records or [])[:6]
-
-    def _col(name: str, fallback: str = 'discharge_mean') -> list[float]:
-        out: list[float] = []
-        for r in records:
-            v = parse_finite_float(r.get(name))
-            if v is None:
-                v = parse_finite_float(r.get(fallback))
-            out.append(max(v or 0.0, 0.0))
-        return out
-
-    central = _col('discharge_median')
-    med_val = float(np.median(central)) if central else 1.0
-    q_clim = parse_finite_float((rps or {}).get('mean_flow')) or med_val or 1.0
-    q_clim = max(q_clim, 0.05)
-    width = max(0.40 * q_clim**0.75, 10.0)
-    depth = max(0.10 * q_clim**0.5, 1.0)
-    q_bf = max(
-        gumbel_quantile_from_return_periods(rps or {}, 1.5) or 0.0,
-        1.2 * q_clim,
-        0.5,
-    )
-    elev_c = min(max(float(elev), 0.0), 1500.0)
-    depth_scale = 1.0 + elev_c / 150.0
-    f_max = (0.02 + 0.08 * math.log10(1.0 + q_clim / 10.0)) * (
-        1.0 + 1.5 * math.exp(-elev_c / 30.0)
-    )
-    f_max = min(max(f_max, 0.02), 0.6)
-
-    def _cama(
-        series: list[float],
-    ) -> tuple[list[float], list[float], list[float]]:
-        routed = route_floodplain_excess(series, q_bf)
-        total = [min(q, q_bf) + r for q, r in zip(series, routed)]
-        fld = [CAMA_FLDOUT_SHARE * r for r in routed]
-        return total, [t - f for t, f in zip(total, fld)], fld
-
-    total, rivout, fldout = _cama(central)
-    stage = [depth * (max(r, 0.0) / q_bf) ** 0.6 for r in rivout]
-    flddph = [max(h - depth, 0.0) for h in stage]
-    fldfrc = [100.0 * f_max * (1.0 - math.exp(-d / depth_scale)) for d in flddph]
-    sfcelv = [max(max(float(elev), 0.0) - depth + h, 0.0) for h in stage]
-    r2 = lambda xs: [round(x, 2) for x in xs]
-    return {
-        'series': {
-            'timestamps': [
-                f"{str(r.get('time'))[:10]}T00:00:00Z" for r in records
-            ],
-            'mean': r2(total),
-            'rivout': r2(rivout),
-            'fldout': r2(fldout),
-            'p25': r2(_cama(_col('discharge_p25'))[0]),
-            'p75': r2(_cama(_col('discharge_p75'))[0]),
-            'max': r2(_cama(_col('discharge_max'))[0]),
-            'min': r2(_cama(_col('discharge_min'))[0]),
-            'flddph_m': [round(d, 3) for d in flddph],
-            'fldfrc_pct': r2(fldfrc),
-            'sfcelv_m': r2(sfcelv),
-        },
-        'channel_params': {
-            'mean_flow_m3s': round(q_clim, 3),
-            'bankfull_discharge_m3s': round(q_bf, 2),
-            'channel_width_m': round(width, 1),
-            'channel_depth_m': round(depth, 2),
-            'ground_elevation_m': float(elev),
-            'elevation_source': elev_source,
-            'max_flooded_fraction_ceiling_pct': round(100.0 * f_max, 1),
-        },
-        'forcing_status': 'live',
-        'return_period_status': (rps or {}).get('status'),
-    }
 
 
 def spread_confidence(
@@ -250,7 +150,6 @@ def reach_exceedance_summary(
 
 def build_flood_summary(
     consensus: list[dict[str, Any]],
-    te: dict[str, Any] | None,
     fh_fc: dict[str, Any] | None,
     fh_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -282,8 +181,6 @@ def build_flood_summary(
     agreement = (
         f'{n_exceed} of {len(independent)} independent models forecast ≥ 2-yr exceedance'
     )
-    if te and te.get('emulated'):
-        agreement += " (Today's Earth is emulated from GloFAS and excluded)"
     if excluded:
         agreement += f"; offline fallback excluded: {', '.join(excluded)}"
     fh_meta = fh_status or fh_fc or {}
@@ -313,7 +210,6 @@ def build_aligned_timeline(
     fh_is_q: bool,
     gl_fc: dict[str, Any] | None,
     gg_fc: dict[str, Any] | None,
-    te_fc: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Build a date-aligned daily timeline for multi-model hydrograph charting."""
     fh_daily = (
@@ -355,26 +251,7 @@ def build_aligned_timeline(
     gg_min_d = (
         daily_series((gg_fc or {}).get('data'), 'flow_min') if gg_fc else {}
     )
-    te_daily = (
-        daily_series((te_fc or {}).get('data'), 'discharge_mean') if te_fc else {}
-    )
-    te_p25_d = (
-        daily_series((te_fc or {}).get('data'), 'discharge_p25') if te_fc else {}
-    )
-    te_p75_d = (
-        daily_series((te_fc or {}).get('data'), 'discharge_p75') if te_fc else {}
-    )
-    te_riv_d = daily_series((te_fc or {}).get('data'), 'rivout') if te_fc else {}
-    te_fld_d = daily_series((te_fc or {}).get('data'), 'fldout') if te_fc else {}
-    te_dph_d = (
-        daily_series((te_fc or {}).get('data'), 'flddph_m') if te_fc else {}
-    )
-    te_frc_d = (
-        daily_series((te_fc or {}).get('data'), 'fldfrc_pct') if te_fc else {}
-    )
-    dates = sorted(
-        set(fh_daily) | set(gl_daily) | set(gg_daily) | set(te_daily)
-    )
+    dates = sorted(set(fh_daily) | set(gl_daily) | set(gg_daily))
     timeline_series: dict[str, Any] = {}
     if 'floodhub' in models and fh_daily:
         fh_aligned = align_daily_series(fh_daily, dates)
@@ -404,18 +281,6 @@ def build_aligned_timeline(
             'max': align_daily_series(gg_max_d, dates),
             'min': align_daily_series(gg_min_d, dates),
         }
-    if 'todays_earth' in models and te_daily:
-        te_aligned = align_daily_series(te_daily, dates)
-        timeline_series['todays_earth'] = {
-            'central': te_aligned,
-            'mean': te_aligned,
-            'p25': align_daily_series(te_p25_d, dates),
-            'p75': align_daily_series(te_p75_d, dates),
-            'rivout': align_daily_series(te_riv_d, dates),
-            'fldout': align_daily_series(te_fld_d, dates),
-            'flddph_m': align_daily_series(te_dph_d, dates, 3),
-            'fldfrc_pct': align_daily_series(te_frc_d, dates),
-        }
     return {
         'dates': dates,
         'unit': 'm³/s',
@@ -424,10 +289,5 @@ def build_aligned_timeline(
             'floodhub': (fh_fc or {}).get('status') if fh_fc else None,
             'glofas': (gl_fc or {}).get('status') if gl_fc else None,
             'geoglows': (gg_fc or {}).get('status') if gg_fc else None,
-            'todays_earth': (
-                ('emulated' if te_fc.get('emulated') else te_fc.get('status'))
-                if te_fc
-                else None
-            ),
         },
     }

@@ -17,6 +17,7 @@ If you are working with your own watersheds, the :doc:`static attribute extracto
 The :doc:`gridded weather archives <usage/gridded_archives>` guide explains how to download and build daily gridded precipitation archives from NOAA CPC and NASA GPM IMERG.
 The :doc:`gridded weather forecasts <usage/weather_fetcher>` guide explains how to download the latest operational forecast runs and read them as grids, point meteograms, wind fields, and catchment averages.
 The :doc:`return periods guide <usage/return_periods>` explains how to compute flood frequency quantiles and return periods using the USGS Bulletin 17C algorithm.
+The :doc:`canonical benchmarks guide <usage/benchmarks>` explains how to run the six end-to-end verification benchmarks across all core components.
 Finally, the :doc:`API docs <api/model>` show in-depth information on all modules, classes, and functions within OpenHydroNet.
 
 You might also be interested in our `team's webpage <https://sites.research.google/gr/floodforecasting/>`_.
@@ -33,6 +34,7 @@ You might also be interested in our `team's webpage <https://sites.research.goog
    usage/multimet_extractor
    usage/weather_fetcher
    usage/return_periods
+   usage/benchmarks
    tutorial/tutorial
    usage/config
    api/modules

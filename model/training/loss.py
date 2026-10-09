@@ -347,13 +347,8 @@ class MaskedRMSELoss(BaseLoss):
         mask = ~torch.isnan(ground_truth['y'])
         if not torch.any(mask):
             return prediction['y_hat'].sum() * 0.0
-        loss = torch.sqrt(
-            0.5
-            * torch.mean(
-                (prediction['y_hat'][mask] - ground_truth['y'][mask]) ** 2
-            )
-        )
-        return loss
+        diff = prediction['y_hat'][mask] - ground_truth['y'][mask]
+        return torch.linalg.vector_norm(diff) / (2.0 * diff.numel()) ** 0.5
 
 
 class MaskedNSELoss(BaseLoss):
@@ -475,6 +470,7 @@ class MaskedCMALLoss(BaseLoss):
             per_sequence=per_sequence,
         )
         self.eps = eps  # stability epsilon
+        self._eps = 1e-5
 
     def _get_loss(
         self,
@@ -482,28 +478,31 @@ class MaskedCMALLoss(BaseLoss):
         ground_truth: dict[str, torch.Tensor],
         **kwargs,
     ):
-        y = ground_truth['y'].squeeze(-1)
-        mask = ~torch.isnan(y)
-        if not torch.any(mask):
-            return prediction['mu'].sum() * 0.0
+        with torch.amp.autocast(
+            device_type=prediction['mu'].device.type, enabled=False
+        ):
+            y = ground_truth['y'].squeeze(-1)
+            mask = ~torch.isnan(y)
+            if not torch.any(mask):
+                return prediction['mu'].float().sum() * 0.0
 
-        if self._per_sequence:
-            nll = -self._log_likelihood(
-                _fill_masked(y, mask).unsqueeze(-1),
-                prediction['mu'],
-                prediction['b'],
-                prediction['tau'],
-                prediction['pi'],
-            )
-            return _per_sequence_mean(nll, mask)
+            if self._per_sequence:
+                nll = -self._log_likelihood(
+                    _fill_masked(y, mask).unsqueeze(-1),
+                    prediction['mu'],
+                    prediction['b'],
+                    prediction['tau'],
+                    prediction['pi'],
+                )
+                return _per_sequence_mean(nll, mask)
 
-        y = y[mask].unsqueeze(-1)
-        m = prediction['mu'][mask]
-        b = prediction['b'][mask]
-        t = prediction['tau'][mask]
-        p = prediction['pi'][mask]
+            y = y[mask].unsqueeze(-1)
+            m = prediction['mu'][mask]
+            b = prediction['b'][mask]
+            t = prediction['tau'][mask]
+            p = prediction['pi'][mask]
 
-        return -torch.mean(self._log_likelihood(y, m, b, t, p))
+            return -torch.mean(self._log_likelihood(y, m, b, t, p))
 
     def _log_likelihood(
         self,
@@ -514,6 +513,16 @@ class MaskedCMALLoss(BaseLoss):
         p: torch.Tensor,
     ) -> torch.Tensor:
         """Log-likelihood of ``y`` under the mixture, mixture dim reduced."""
+        y = y.float()
+        m = m.float()
+        b = torch.clamp(b.float(), min=self._eps)
+        t = torch.clamp(
+            t.float(),
+            min=self._eps,
+            max=1.0 - self._eps,
+        )
+        p = p.float()
+
         error = y - m
         log_like = (
             torch.log(t)

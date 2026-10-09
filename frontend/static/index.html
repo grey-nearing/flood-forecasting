@@ -362,44 +362,14 @@
           </button>
         </div>
 
-        <!-- Map-screen model / stream-map selector -->
-        <div id="maasMapModelPicker" class="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-4 flex flex-col gap-3">
-          <div class="text-[10px] font-bold uppercase tracking-wider text-[#5f6368]">Forecast Model &amp; River Network</div>
-          <!-- Single-model mode: model dropdown + network caption -->
-          <div id="maasSingleMapRow" class="flex flex-col gap-1.5">
-            <div class="flex items-center gap-2 bg-white border border-[#dadce0] rounded-lg px-2.5 py-2">
-              <span id="maasMapModelDot" class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:#007b83"></span>
-              <select id="maasMapModelSelect" aria-label="Map model and river network" class="w-full bg-transparent text-xs font-semibold text-[#202124] pr-1 focus:outline-none cursor-pointer">
-                <option value="floodhub">Google FloodHub</option>
-                <option value="glofas" selected>Copernicus GloFAS</option>
-                <option value="geoglows">GEOGLOWS ECMWF</option>
-                <option value="todays_earth">JAXA Today's Earth</option>
-              </select>
-            </div>
-            <div id="maasNetworkCaption" class="text-[11px] text-[#5f6368] leading-tight pl-1">LISFLOOD 0.05° river grid</div>
+        <!-- Map-screen model & river network selector (single-select pill buttons) -->
+        <div id="maasMapModelPicker" class="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-4 flex flex-col gap-2.5">
+          <div class="text-[10px] font-bold uppercase tracking-wider text-[#5f6368]">Map River Network &amp; Live Alerts</div>
+          <div id="maasMapMultiModelList" role="radiogroup" aria-label="Map model and river network" class="flex items-center gap-1.5 flex-wrap"></div>
+          <div class="flex items-center gap-1.5 pt-1 border-t border-[#e8eaed] pl-0.5">
+            <span id="maasMapModelDot" class="w-2 h-2 rounded-full flex-shrink-0" style="background:#007b83"></span>
+            <div id="maasNetworkCaption" class="text-[11px] font-medium text-[#5f6368] leading-tight">LISFLOOD 0.05° river grid</div>
           </div>
-          <!-- Multi-model mode: stream map dropdown + multi-select model radio list -->
-          <div id="maasMultiMapPanel" class="hidden flex flex-col gap-2">
-            <div class="flex items-center justify-between gap-2">
-              <span class="text-[11px] font-semibold uppercase tracking-wide text-[#5f6368]">Stream map</span>
-              <select id="maasStreamMapSelect" aria-label="Stream map" class="bg-white border border-[#dadce0] rounded-lg px-2 py-1 text-xs font-semibold text-[#202124] focus:outline-none cursor-pointer">
-                <option value="glofas" selected>LISFLOOD</option>
-                <option value="floodhub">HydroSHEDS</option>
-                <option value="todays_earth">CaMa-Flood</option>
-                <option value="geoglows">TDX-Hydro</option>
-              </select>
-            </div>
-            <div id="maasMapMultiModelList" role="group" aria-label="Models to plot" class="flex flex-col gap-1.5 pt-2 border-t border-[#e8eaed]"></div>
-          </div>
-          <!-- Toggle switch between Single-model and Multi-model mode -->
-          <label class="flex items-center justify-between gap-2 pt-2 border-t border-[#e8eaed] cursor-pointer select-none">
-            <span class="text-xs font-medium text-[#3c4043]">Multi-model comparison</span>
-            <span class="relative inline-flex items-center">
-              <input id="maasMapMultiToggle" type="checkbox" class="sr-only peer">
-              <span class="w-7 h-4 bg-[#dadce0] rounded-full peer-checked:bg-[#1a73e8] transition-colors"></span>
-              <span class="absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform peer-checked:translate-x-3"></span>
-            </span>
-          </label>
         </div>
 
         <!-- Real-time forecast river color-coding legend + manual refresh -->
@@ -435,25 +405,11 @@
         <div id="maasMapViewContainer" class="w-full h-full relative overflow-hidden flex-shrink-0">
           <div id="maasMapSlot" class="w-full h-full relative"><!-- Leaflet map element gets reparented here --></div>
         </div>
-        <!-- Forecast view: selected reach, model selector (or multi-model radio list) and hydrograph -->
+        <!-- Forecast view: selected reach, multi-select model pill buttons, and hydrograph -->
         <div id="maasForecastViewContainer" class="hidden flex-1 min-w-0 h-full flex flex-col gap-3 p-5 bg-[#f8f9fa] border-l border-[#dadce0]">
           <div class="flex items-center gap-3 flex-wrap">
             <h2 id="maasStationTitle" class="flex-1 min-w-[180px] truncate text-sm font-semibold text-[#202124]"></h2>
-            <select id="maasModelSelect" aria-label="Forecast model" class="bg-white border border-[#dadce0] text-xs rounded px-2.5 py-1.5 text-[#202124]">
-              <option value="floodhub">Google FloodHub</option>
-              <option value="glofas" selected>Copernicus GloFAS</option>
-              <option value="geoglows">GEOGLOWS ECMWF</option>
-              <option value="todays_earth">JAXA Today's Earth</option>
-            </select>
-            <div id="maasForecastMultiModelList" role="group" aria-label="Models in ensemble" class="hidden flex items-center gap-2 flex-wrap"></div>
-            <label class="flex items-center gap-1.5 text-xs text-[#3c4043] cursor-pointer select-none">
-              <span>Multi-model</span>
-              <span class="relative inline-flex items-center">
-                <input id="maasForecastMultiToggle" type="checkbox" class="sr-only peer">
-                <span class="w-7 h-4 bg-[#e8eaed] rounded-full peer-checked:bg-[#1a73e8] transition-colors"></span>
-                <span class="absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform peer-checked:translate-x-3"></span>
-              </span>
-            </label>
+            <div id="maasForecastMultiModelList" role="group" aria-label="Forecast models to plot (click one or multiple)" class="flex items-center gap-1.5 flex-wrap"></div>
             <button id="maasCloseForecastBtn" type="button" title="Close forecast (Esc)" aria-label="Close forecast" class="p-1.5 rounded-md text-[#5f6368] hover:text-[#202124] hover:bg-[#f1f3f4] transition">
               <i data-lucide="x" class="w-4 h-4"></i>
             </button>
@@ -817,8 +773,17 @@
           </div>
         </section>
 
-        <!-- Selected basin (from Basin Delineation) -->
-        <section id="weatherActiveBasinBadge" class="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-3 space-y-2">
+        <!-- Simple toggle button to show or hide all of the user's catchments on the weather map -->
+        <button id="weatherCatchmentsToggleBtn" type="button" aria-pressed="true" class="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border border-[#1a73e8] bg-[#e8f0fe] text-[#174ea6] font-semibold text-xs transition hover:bg-[#d2e3fc]">
+          <span class="flex items-center gap-2">
+            <i data-lucide="map-pin" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
+            <span id="weatherCatchmentsToggleLabel">Show Catchments</span>
+          </span>
+          <span id="weatherCatchmentsToggleState" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-[#1a73e8] border border-[#d2e3fc]">ON</span>
+        </button>
+
+        <!-- Legacy single-basin card (hidden; preserved in DOM for backwards compatibility) -->
+        <section id="weatherActiveBasinBadge" class="hidden" aria-hidden="true">
           <div class="flex items-start justify-between gap-2">
             <span class="flex items-start gap-1.5 min-w-0">
               <i data-lucide="map-pin" class="w-3.5 h-3.5 text-[#1a73e8] flex-shrink-0 mt-0.5"></i>
@@ -839,6 +804,7 @@
           <p id="weatherBasinSubtext" class="text-[10.5px] text-[#5f6368] leading-snug">Pick or delineate a basin in Basin Delineation to see its rain here.</p>
           <button id="weatherSelectBasinBtn" type="button" class="w-full py-1.5 rounded-lg border border-[#dadce0] hover:border-[#1a73e8] text-[#1a73e8] font-semibold transition">Select a basin →</button>
         </section>
+
 
         <p class="text-[11px] text-[#5f6368] leading-snug flex gap-1.5">
           <i data-lucide="mouse-pointer-click" class="w-3.5 h-3.5 text-[#1a73e8] flex-shrink-0 mt-px"></i>
@@ -1266,66 +1232,6 @@
             <div class="text-[#b06000] text-[11px] font-semibold" id="histBasinCount">---</div>
             <div class="text-[#5f6368] text-[11px]" id="histMeta">---</div>
           </div>
-
-          <!-- Dev Bypass: Direct CNS Zarr Import Accordion -->
-          <div class="border-t border-[#e8eaed] pt-2.5">
-            <div class="flex items-center justify-between cursor-pointer py-1 select-none" id="toggleCnsImportHeader">
-              <span class="text-[11px] font-bold text-[#1a73e8] flex items-center gap-1.5">
-                <i data-lucide="folder-symlink" class="w-3.5 h-3.5"></i> Direct CNS Zarr Import (Dev Bypass)
-              </span>
-              <span class="text-[10px] text-[#5f6368] flex items-center gap-1">
-                <span id="cnsImportToggleLabel">Show</span>
-                <i data-lucide="chevron-down" id="cnsImportChevron" class="w-3.5 h-3.5 transition-transform"></i>
-              </span>
-            </div>
-
-            <div id="cnsImportBody" class="hidden mt-2 space-y-2 bg-white p-3 rounded-lg border border-[#d2e3fc]">
-              <p class="text-[10px] text-[#5f6368] leading-tight">
-                Skip on-demand gridded extraction during development by pointing directly to an existing pre-extracted Zarr store on CNS to download and register locally.
-              </p>
-
-              <!-- Quick Presets for Dev -->
-              <div>
-                <span class="text-[10px] text-[#5f6368] block mb-1 font-medium">Quick Path Presets:</span>
-                <div class="flex flex-wrap gap-1">
-                  <button type="button" class="cns-preset-btn text-[10px] bg-[#f1f3f4] hover:bg-[#e8eaed] text-[#174ea6] border border-[#dadce0] px-2 py-0.5 rounded font-mono transition" data-path="gs://open-multimet/data">
-                    MTS-LSTM Zarrs
-                  </button>
-                  <button type="button" class="cns-preset-btn text-[10px] bg-[#f1f3f4] hover:bg-[#e8eaed] text-[#174ea6] border border-[#dadce0] px-2 py-0.5 rounded font-mono transition" data-path="gs://open-multimet/data">
-                    Wabash Multimet
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label class="text-[11px] text-[#3c4043] block mb-1 font-medium">CNS Zarr Store URI</label>
-                <input id="cnsZarrPathInput" type="text" placeholder="gs://open-multimet/data" class="w-full bg-[#f8f9fa] border border-[#dadce0] focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] text-xs rounded px-2.5 py-1.5 text-[#202124] font-mono transition">
-              </div>
-
-              <div class="grid grid-cols-2 gap-2">
-                <div>
-                  <label class="text-[11px] text-[#3c4043] block mb-1 font-medium">Destination Name</label>
-                  <input id="cnsDestFilenameInput" type="text" value="historical_training_master.zarr" placeholder="historical_training_master.zarr" class="w-full bg-[#f8f9fa] border border-[#dadce0] focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] text-xs rounded px-2.5 py-1.5 text-[#202124] font-mono transition">
-                </div>
-                <div>
-                  <label class="text-[11px] text-[#3c4043] block mb-1 font-medium">Notification Email (opt)</label>
-                  <input id="cnsNotifyEmailInput" type="email" placeholder="user@example.com" class="w-full bg-[#f8f9fa] border border-[#dadce0] focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] text-xs rounded px-2.5 py-1.5 text-[#202124] font-mono transition">
-                </div>
-              </div>
-
-              <button id="importCnsZarrBtn" class="w-full bg-[#1a73e8] hover:bg-[#1557b0] text-white font-medium text-xs py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition shadow-md shadow-sky-700/20">
-                <i data-lucide="cloud-download" class="w-4 h-4"></i> Download & Sync Zarr from CNS
-              </button>
-
-              <div id="cnsImportResult" class="hidden p-2.5 bg-[#f8f9fa] border border-[#d2e3fc] rounded text-xs space-y-1 text-[#3c4043]">
-                <div class="text-[#1a73e8] font-semibold flex items-center gap-1" id="cnsImportStatusTitle">
-                  <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> CNS Import Complete
-                </div>
-                <div class="font-mono text-[11px] text-[#3c4043] truncate" id="cnsImportPath">---</div>
-                <div class="text-[#174ea6] text-[11px] font-semibold" id="cnsImportMeta">---</div>
-              </div>
-            </div>
-          </div>
         </section>
 
         <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
@@ -1497,8 +1403,8 @@
         <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
           <div class="flex items-center justify-between">
             <div>
-              <span class="text-[10px] text-[#5f6368] uppercase tracking-wider block font-semibold">Custom Catchments to Forecast</span>
-              <span id="modelingActiveBasinDisplay" class="font-mono text-[#1e8e3e] font-bold text-xs">No Basin Selected</span>
+              <span class="text-[10px] text-[#5f6368] uppercase tracking-wider block font-semibold">1. Custom Catchments (Batch Execution)</span>
+              <span class="text-[11px] text-[#3c4043]">Check catchments to fetch &amp; forecast</span>
             </div>
             <div class="flex items-center gap-1">
               <span id="fcSelectedCatchmentCountBadge" class="text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2 py-0.5 rounded font-mono font-semibold">0 selected</span>
@@ -1509,7 +1415,7 @@
           </div>
 
           <div class="flex items-center justify-between gap-1.5 text-[11px]">
-            <span class="text-[#5f6368]">Select basins for batch fetch &amp; forecast:</span>
+            <span class="text-[#5f6368]">Batch selection:</span>
             <div class="flex items-center gap-1">
               <button id="fcSelectAllBasinsBtn" type="button" class="px-2 py-0.5 rounded bg-white hover:bg-[#e8f0fe] text-[#1a73e8] border border-[#dadce0] font-medium transition">All</button>
               <button id="fcSelectNoneBasinsBtn" type="button" class="px-2 py-0.5 rounded bg-white hover:bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0] font-medium transition">None</button>
@@ -1517,16 +1423,10 @@
           </div>
 
           <!-- Multi-Catchment Checklist with Per-Basin Yesterday-State Badges -->
-          <div id="fcCatchmentSelectorList" class="max-h-44 overflow-y-auto custom-scrollbar space-y-1.5 bg-white p-2 rounded-lg border border-[#dadce0]">
+          <div id="fcCatchmentSelectorList" class="max-h-48 overflow-y-auto custom-scrollbar space-y-1.5 bg-white p-2 rounded-lg border border-[#dadce0]">
             <div class="text-[11px] text-[#5f6368] italic py-2 text-center">
               No custom catchments delineated or uploaded yet.
             </div>
-          </div>
-
-          <!-- Active Viewing Catchment Dropdown (syncs with chart inspection) -->
-          <div class="flex items-center justify-between gap-2 pt-1">
-            <label for="fcBasinSelect" class="text-[10px] font-semibold uppercase tracking-wider text-[#5f6368] whitespace-nowrap">Viewing Basin:</label>
-            <select id="fcBasinSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2.5 py-1.5 text-[#202124] focus:outline-none focus:border-[#1e8e3e]"></select>
           </div>
         </div>
 
@@ -1651,6 +1551,8 @@
 
         <!-- Hidden Legacy DOM Elements for 100% Backwards-Compatibility with Existing Listeners/Tests -->
         <div class="hidden" aria-hidden="true">
+          <span id="modelingActiveBasinDisplay">No Basin Selected</span>
+          <div id="fcHydroCatchmentTabs"></div>
           <div id="forecastServerBadge"><span id="forecastIssueLabel"></span></div>
           <select id="forecastScopeSelect"><option value="selected" selected>Selected</option><option value="all">All</option></select>
           <select id="forecastHorizonSelect"><option value="10" selected>10</option></select>
@@ -1683,6 +1585,9 @@
           <span id="metricPeakFlowPct"></span>
           <span id="metricTimingDelta"></span>
           <span id="metricVolumeDelta"></span>
+          <select id="fcForecastProductSelect"><option value="none">No forecast fetched</option></select>
+          <select id="fcForecastVariableSelect"><option value="precip_and_temp" selected>Precipitation (Bars) + Temperature (Lines)</option></select>
+          <select id="fcNowcastProductSelect"><option value="none">No nowcast fetched</option></select>
         </div>
 
         <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
@@ -1696,33 +1601,34 @@
             <div>
               <h3 id="fcForcingChartTitle" class="text-xs font-bold text-[#202124] flex items-center gap-2">
                 <i data-lucide="cloud-rain" class="w-4 h-4 text-[#1a73e8]"></i>
-                Input Forcing Visualization: Issue Date (t₀) &amp; All Forecast Lead Times
+                Input Forcing Visualization: All Precip (Bars) &amp; 2m Temp (Lines) Products
               </h3>
               <p id="fcForcingSubtitle" class="text-[11px] text-[#5f6368] mt-0.5">
-                Defaults to Precipitation (bars) &amp; 2m Temperature (lines) for any selected product; missing latency days shown as gaps (NaN)
+                Click and drag any forecast (≥ t₀) precipitation bar (including 0 mm bars) or temperature point up/down to test What-If scenarios
               </p>
             </div>
 
-            <!-- Menus for Forecast Product, Forecast Variable, and Nowcast Stream -->
-            <div class="flex flex-wrap items-center gap-2.5 text-xs">
-              <div class="flex items-center gap-1.5">
-                <label for="fcForecastProductSelect" class="text-[11px] text-[#202124] font-semibold">Forecast Product:</label>
-                <select id="fcForecastProductSelect" class="bg-[#f8f9fa] border border-[#dadce0] text-xs rounded-lg px-2.5 py-1 text-[#202124] font-medium focus:outline-none focus:border-[#1a73e8]">
-                  <option value="none">No forecast fetched</option>
-                </select>
+            <!-- Catchment Viewing Selector + Interactive What-If Scenario Controls -->
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+              <div class="flex items-center gap-1.5 bg-[#e8f0fe]/60 border border-[#d2e3fc] rounded-lg px-2 py-1">
+                <label for="fcBasinSelect" class="text-[11px] text-[#174ea6] font-bold flex items-center gap-1">
+                  <i data-lucide="eye" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Catchment:
+                </label>
+                <select id="fcBasinSelect" class="bg-white border border-[#1a73e8]/60 text-xs rounded-md px-2 py-0.5 text-[#202124] font-semibold focus:outline-none focus:border-[#1a73e8] max-w-[260px]"></select>
               </div>
-              <div class="flex items-center gap-1.5">
-                <label for="fcForecastVariableSelect" class="text-[11px] text-[#202124] font-semibold">Forecast Variable:</label>
-                <select id="fcForecastVariableSelect" class="bg-[#f8f9fa] border border-[#dadce0] text-xs rounded-lg px-2.5 py-1 text-[#202124] font-medium focus:outline-none focus:border-[#1a73e8]">
-                  <option value="precip_and_temp" selected>Precipitation (Bars) + Temperature (Lines)</option>
-                </select>
-              </div>
-              <div class="flex items-center gap-1.5">
-                <label for="fcNowcastProductSelect" class="text-[11px] text-[#5f6368] font-medium">Nowcast Spin-Up:</label>
-                <select id="fcNowcastProductSelect" class="bg-[#f8f9fa] border border-[#dadce0] text-xs rounded-lg px-2.5 py-1 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
-                  <option value="none">No nowcast fetched</option>
-                </select>
-              </div>
+
+              <span id="fcWhatIfEditsBadge" class="text-[11px] font-mono bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0] px-2.5 py-1 rounded-lg">
+                Drag forecast bars/points to edit
+              </span>
+
+              <button id="fcResetWhatIfInputsBtn" type="button" disabled class="px-2.5 py-1 rounded-lg border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[#3c4043] text-[11px] font-medium transition disabled:opacity-40 disabled:cursor-not-allowed">
+                Reset Inputs
+              </button>
+
+              <button id="fcRunWhatIfBtn" type="button" disabled class="px-3 py-1 rounded-lg bg-[#7c3aed] hover:bg-[#6d28d9] text-white text-[11px] font-semibold shadow-sm transition flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
+                <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                <span id="fcRunWhatIfBtnLabel">Run What-If Forecast</span>
+              </button>
             </div>
           </div>
 
@@ -1755,11 +1661,24 @@
               </p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
-              <div id="fcHydroCatchmentTabs" class="hidden flex flex-wrap items-center gap-1"></div>
               <span id="fcHydroPeakBadge" class="hidden text-xs font-mono bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2.5 py-1 rounded-lg">
                 Peak: — m³/s
               </span>
             </div>
+          </div>
+
+          <!-- What-If Scenario Manager Toolbar (Enable/Disable or Delete each What-If trajectory) -->
+          <div id="fcWhatIfScenariosBar" class="hidden bg-[#f8f9fa] border border-[#dadce0] rounded-lg px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+            <div class="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+              <span class="text-[10px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1 flex-shrink-0">
+                <i data-lucide="git-branch" class="w-3.5 h-3.5 text-[#7c3aed]"></i>
+                What-If Scenarios:
+              </span>
+              <div id="fcWhatIfScenariosList" class="flex flex-wrap items-center gap-1.5"></div>
+            </div>
+            <button id="fcClearAllWhatIfsBtn" type="button" class="text-[10px] font-semibold text-[#c5221f] hover:underline px-1.5 py-0.5 flex-shrink-0">
+              Delete All What-Ifs
+            </button>
           </div>
 
           <div class="flex-1 relative min-h-[250px]">
@@ -2175,6 +2094,7 @@
       email: '',
       is_guest: true
     };
+    let loadedWatershedsUsername = null;
 
     async function fetchCurrentProfile() {
       try {
@@ -2184,6 +2104,10 @@
         activeProfileInfo = data.profile || { username: 'guest', is_guest: true };
         updateProfileHeaderUI();
         updateProfileModalUI(data.available_profiles || []);
+        const currentUsername = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+        if (loadedWatershedsUsername !== currentUsername) {
+          await loadWatershedsFromServer(loadedWatershedsUsername === null);
+        }
         if (typeof loadAccountSummary === 'function') {
           loadAccountSummary();
         }
@@ -2731,9 +2655,13 @@
     // Reloads everything that depends on the active account.
     async function refreshAfterAccountChange() {
       closeProfileModal();
-      // Automatically load profile's watersheds onto map
-      await loadWatershedsFromServer(true);
+      loadedWatershedsUsername = null;
       await fetchCurrentProfile();
+      // Ensure profile's watersheds are loaded onto map if fetchCurrentProfile didn't already trigger it
+      const currentUsername = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+      if (loadedWatershedsUsername !== currentUsername) {
+        await loadWatershedsFromServer(true);
+      }
       if (typeof loadArchivesList === 'function') {
         loadArchivesList();
       }
@@ -3350,26 +3278,50 @@
         if (!resp.ok) return;
         const data = await resp.json();
         const feats = data.features || [];
+        loadedWatershedsUsername = u;
 
-        // Clear existing map layers
+        // Clear existing map layers and per-profile watershed state
         if (watershedsLayerGroup) watershedsLayerGroup.clearLayers();
         if (outletsLayerGroup) outletsLayerGroup.clearLayers();
         activeWatersheds = [];
         watershedLayersMap = {};
         outletMarkersMap = {};
+        activeCatchmentId = null;
 
-        feats.forEach((f, idx) => {
-          addOrUpdateWatershed(f, idx === 0);
+        if (typeof fcKnownCatchmentIds !== 'undefined' && fcKnownCatchmentIds) fcKnownCatchmentIds.clear();
+        if (typeof fcSelectedCatchmentIds !== 'undefined' && fcSelectedCatchmentIds) fcSelectedCatchmentIds.clear();
+        if (typeof fcModelResultsByBasin !== 'undefined') fcModelResultsByBasin = {};
+        if (typeof fcStatusData !== 'undefined') fcStatusData = null;
+        if (typeof geoKnownCatchmentIds !== 'undefined' && geoKnownCatchmentIds) geoKnownCatchmentIds.clear();
+        if (typeof geoCheckedCatchmentIds !== 'undefined' && geoCheckedCatchmentIds) geoCheckedCatchmentIds.clear();
+        if (typeof extractedAttributesById !== 'undefined') extractedAttributesById = {};
+
+        feats.forEach((f) => {
+          addOrUpdateWatershed(f, false);
         });
 
-        if (feats.length > 0 && zoomToFit && map && Object.keys(watershedLayersMap).length > 0) {
-          const group = new L.featureGroup(Object.values(watershedLayersMap));
-          map.fitBounds(group.getBounds(), { padding: [40, 40], maxZoom: 11 });
+        if (activeWatersheds.length > 0) {
+          const firstCid = activeWatersheds[0].properties.catchment_id;
+          selectWatershed(firstCid, false);
+        } else {
+          const cardEl = document.getElementById('catchmentCard');
+          const noticeEl = document.getElementById('noCatchmentNotice');
+          if (cardEl) cardEl.classList.add('hidden');
+          if (noticeEl) noticeEl.classList.remove('hidden');
         }
-        updateWatershedListUI();
+
+        if (feats.length > 0 && zoomToFit && map && Object.keys(watershedLayersMap).length > 0) {
+          try {
+            const group = new L.featureGroup(Object.values(watershedLayersMap));
+            map.fitBounds(group.getBounds(), { padding: [40, 40], maxZoom: 11 });
+          } catch (_) {}
+        }
+        renderWatershedsList();
+        updateExtractionButtonsState();
         updateActiveBasinHeader();
         if (typeof renderGeoCatchmentSelector === 'function') renderGeoCatchmentSelector();
-        if (typeof loadPersistedExtractedAttributes === 'function') loadPersistedExtractedAttributes();
+        if (typeof loadPersistedExtractedAttributes === 'function') await loadPersistedExtractedAttributes();
+        if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();
       } catch (err) {
         console.error('Error loading watersheds from server:', err);
       }
@@ -3408,7 +3360,10 @@
         });
       }
       if (accountRefreshBtn) {
-        accountRefreshBtn.addEventListener('click', () => loadAccountSummary());
+        accountRefreshBtn.addEventListener('click', async () => {
+          await loadWatershedsFromServer(false);
+          await loadAccountSummary();
+        });
       }
 
       if (modal) {
@@ -3771,8 +3726,13 @@
       updateLegend(document.getElementById('datasetSelect').value);
       initWeatherSources();
       initProfileEventListeners();
-      fetchCurrentProfile();
-      loadWatershedsFromServer(true);
+      (async () => {
+        await fetchCurrentProfile();
+        const currentUsername = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+        if (loadedWatershedsUsername !== currentUsername) {
+          await loadWatershedsFromServer(true);
+        }
+      })();
       fetchAndRenderRivers();
 
       setTimeout(() => {
@@ -4028,10 +3988,19 @@
     function addOrUpdateWatershed(feature, selectIt = true) {
       if (!feature || !feature.geometry) return;
       const props = feature.properties || {};
-      const cid = String(props.catchment_id || ('basin_' + (activeWatersheds.length + 1)));
+      feature.properties = props;
+      const rawCid = props.catchment_id || props.id || props.basin_id || feature.id || props.HYBAS_ID || props.hybas_id || props.gauge_id;
+      const cid = String(rawCid || ('basin_' + (activeWatersheds.length + 1)));
       props.catchment_id = cid;
+      if (props.area_km2 === undefined || props.area_km2 === null) {
+        if (props.AREA !== undefined && props.AREA !== null) props.area_km2 = Number(props.AREA);
+        else if (props.area !== undefined && props.area !== null) props.area_km2 = Number(props.area);
+        else if (props.SUB_AREA !== undefined && props.SUB_AREA !== null) props.area_km2 = Number(props.SUB_AREA);
+      }
 
-      const isDelineated = (props.source === 'delineated' || props.delineation_method !== 'User GeoJSON Polygon');
+      const isDelineated = props.source === 'uploaded'
+        ? false
+        : (props.source === 'delineated' || props.delineation_method !== 'User GeoJSON Polygon');
       props.source = isDelineated ? 'delineated' : 'uploaded';
       if (!props.name) {
         props.name = isDelineated ? `Delineated Catchment (${cid})` : `Uploaded Watershed (${cid})`;
@@ -4313,6 +4282,7 @@
 
       if (totalCount === 0) {
         container.classList.add('hidden');
+        if (typeof syncActiveCatchmentWeather === 'function') syncActiveCatchmentWeather();
         return;
       }
 
@@ -4374,8 +4344,10 @@
       });
 
       badge.innerText = `${totalCount} Basins (${Math.round(totalArea).toLocaleString()} km²)`;
+      if (typeof syncActiveCatchmentWeather === 'function') syncActiveCatchmentWeather();
       lucide.createIcons();
     }
+
 
     // Dynamic Historical & Attribute Buttons Label & Scope Synchronizer
     function updateExtractionButtonsState() {
@@ -4562,15 +4534,24 @@
 
           const parsedData = await resp.json();
           if (parsedData.type === 'FeatureCollection' && parsedData.features && parsedData.features.length) {
-            parsedData.features.forEach((feat, idx) => {
-              addOrUpdateWatershed(feat, (idx === 0));
+            parsedData.features.forEach((feat) => {
+              addOrUpdateWatershed(feat, false);
             });
+            const firstUploaded = parsedData.features[0];
+            if (firstUploaded && firstUploaded.properties && firstUploaded.properties.catchment_id) {
+              selectWatershed(firstUploaded.properties.catchment_id, false);
+            }
+            updateActiveBasinHeader();
+            if (typeof renderGeoCatchmentSelector === 'function') renderGeoCatchmentSelector();
+            if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();
             if (parsedData.bbox) {
               const [minx, miny, maxx, maxy] = parsedData.bbox;
               map.fitBounds([[miny, minx], [maxy, maxx]], { padding: [60, 60] });
             }
           } else {
             addOrUpdateWatershed(parsedData, true);
+            if (typeof renderGeoCatchmentSelector === 'function') renderGeoCatchmentSelector();
+            if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();
           }
         } catch (err) {
           console.error(err);
@@ -4890,155 +4871,6 @@
         updateExtractionButtonsState();
       }
     });
-
-    // Toggle CNS Import Collapsible
-    const toggleCnsHeader = document.getElementById('toggleCnsImportHeader');
-    const cnsImportBody = document.getElementById('cnsImportBody');
-    const cnsChevron = document.getElementById('cnsImportChevron');
-    const cnsLabel = document.getElementById('cnsImportToggleLabel');
-    if (toggleCnsHeader) {
-      toggleCnsHeader.addEventListener('click', () => {
-        const isHidden = cnsImportBody.classList.contains('hidden');
-        if (isHidden) {
-          cnsImportBody.classList.remove('hidden');
-          cnsChevron.classList.add('rotate-180');
-          cnsLabel.innerText = 'Hide';
-        } else {
-          cnsImportBody.classList.add('hidden');
-          cnsChevron.classList.remove('rotate-180');
-          cnsLabel.innerText = 'Show';
-        }
-      });
-    }
-
-    // CNS Presets Click
-    document.querySelectorAll('.cns-preset-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const p = btn.getAttribute('data-path');
-        const input = document.getElementById('cnsZarrPathInput');
-        if (input) input.value = p;
-      });
-    });
-
-    // Import Zarr from CNS Handler (Background Job + Email Notification)
-    let currentCnsImportPollInterval = null;
-    const importCnsBtn = document.getElementById('importCnsZarrBtn');
-    if (importCnsBtn) {
-      importCnsBtn.addEventListener('click', async () => {
-        const cnsPath = (document.getElementById('cnsZarrPathInput') ? document.getElementById('cnsZarrPathInput').value.trim() : '');
-        if (!cnsPath || !cnsPath.startsWith('gs://open-multimet/data')) {
-          alert('Please enter a valid CNS path starting with gs://open-multimet/data (e.g. gs://open-multimet/data).');
-          return;
-        }
-        const destName = (document.getElementById('cnsDestFilenameInput') ? document.getElementById('cnsDestFilenameInput').value.trim() : 'historical_training_master.zarr');
-        const notifyEmail = (document.getElementById('cnsNotifyEmailInput') ? document.getElementById('cnsNotifyEmailInput').value.trim() : '');
-
-        importCnsBtn.disabled = true;
-        importCnsBtn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Submitting CNS Download Job...`;
-        lucide.createIcons();
-
-        try {
-          const resp = await fetch('/api/archives/import_cns', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-User-Profile': activeProfileInfo.username || 'guest'
-            },
-            body: JSON.stringify({
-              cns_path: cnsPath,
-              dest_filename: destName,
-              notify_email: notifyEmail,
-              username: activeProfileInfo.username || 'guest'
-            })
-          });
-
-          const res = await resp.json();
-          if (!resp.ok) {
-            alert('CNS Import submission failed: ' + (res.detail || res.error || 'Error'));
-            importCnsBtn.disabled = false;
-            importCnsBtn.innerHTML = `<i data-lucide="cloud-download" class="w-4 h-4"></i> Download & Sync Zarr from CNS`;
-            lucide.createIcons();
-            return;
-          }
-
-          const jobId = res.job_id;
-          const resultCard = document.getElementById('cnsImportResult');
-          resultCard.classList.remove('hidden');
-          document.getElementById('cnsImportStatusTitle').innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Downloading from CNS (Background)`;
-          document.getElementById('cnsImportPath').innerText = `Job ID: ${jobId} | Source: ${cnsPath}`;
-          document.getElementById('cnsImportMeta').innerText = notifyEmail
-            ? `Downloading chunks... Notification will be sent to ${notifyEmail}`
-            : `Downloading chunks to local storage...`;
-          lucide.createIcons();
-
-          importCnsBtn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Downloading from CNS...`;
-          lucide.createIcons();
-
-          if (currentCnsImportPollInterval) clearInterval(currentCnsImportPollInterval);
-          currentCnsImportPollInterval = setInterval(async () => {
-            try {
-              const jResp = await fetch(`/api/jobs/${jobId}`);
-              if (!jResp.ok) return;
-              const jData = await jResp.json();
-
-              if (jData.status === 'completed') {
-                clearInterval(currentCnsImportPollInterval);
-                currentCnsImportPollInterval = null;
-                importCnsBtn.disabled = false;
-                importCnsBtn.innerHTML = `<i data-lucide="cloud-download" class="w-4 h-4"></i> Download & Sync Zarr from CNS`;
-                lucide.createIcons();
-
-                const r = jData.result || {};
-                document.getElementById('cnsImportStatusTitle').innerHTML = `<i data-lucide="check-circle" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> ✓ CNS Zarr Downloaded & Synced`;
-                document.getElementById('cnsImportPath').innerText = r.local_path || r.filename;
-                
-                const emailMsg = jData.email_sent ? ` (✓ Email sent to ${jData.notify_email})` : '';
-                document.getElementById('cnsImportMeta').innerText = `✓ Total Basins: ${r.total_basins} | Size: ${r.size_mb} MB | Date Extent: ${r.start_date} to ${r.end_date} (${r.n_timesteps} days)${emailMsg}`;
-                lucide.createIcons();
-
-                // Refresh archives list
-                if (typeof loadArchivesList === 'function') {
-                  loadArchivesList();
-                }
-
-                // Render Chart Preview if available
-                if (r.preview && r.preview.timestamps && r.preview.timestamps.length > 0) {
-                  const pName = r.preview.primary_var_name || "Precipitation";
-                  const pVals = r.preview.primary_var_values || [];
-                  const sVals = r.preview.secondary_var_values || [];
-                  renderWeatherChart(
-                    `CNS Imported (${r.preview.sample_basin_id || r.filename})`,
-                    r.preview.timestamps,
-                    pVals,
-                    sVals,
-                    `${pName.replace(/_/g, ' ').toUpperCase()}`
-                  );
-                }
-              } else if (jData.status === 'failed') {
-                clearInterval(currentCnsImportPollInterval);
-                currentCnsImportPollInterval = null;
-                importCnsBtn.disabled = false;
-                importCnsBtn.innerHTML = `<i data-lucide="cloud-download" class="w-4 h-4"></i> Download & Sync Zarr from CNS`;
-                lucide.createIcons();
-                alert(`CNS Zarr download failed: ${jData.error || 'Unknown error'}`);
-                document.getElementById('cnsImportStatusTitle').innerHTML = `<i data-lucide="alert-circle" class="w-3.5 h-3.5 text-[#d93025]"></i> Download Failed`;
-                document.getElementById('cnsImportMeta').innerText = `Error: ${jData.error}`;
-                lucide.createIcons();
-              }
-            } catch (err) {
-              console.error('CNS import poll error:', err);
-            }
-          }, 2000);
-
-        } catch (err) {
-          console.error(err);
-          alert('CNS import request error.');
-          importCnsBtn.disabled = false;
-          importCnsBtn.innerHTML = `<i data-lucide="cloud-download" class="w-4 h-4"></i> Download & Sync Zarr from CNS`;
-          lucide.createIcons();
-        }
-      });
-    }
 
     // Load Real-Time Forecast Model Info & Latest Issue Time
     async function loadForecastServerInfo() {
@@ -6905,6 +6737,8 @@
     let weatherWindDebounce = null;
     let weatherOutlineCatchmentId = null;
     let weatherSvgRenderer = null;
+    let showWeatherCatchments = true;
+
 
     // Smooth playback and forecast freshness (see updateWeatherRasterLayer and below).
     const WEATHER_FRAME_FPS = 4;  // Pictures per second when playing at 1x.
@@ -7233,14 +7067,34 @@
         stepForwardBtn.addEventListener('click', () => setWeatherStep(weatherAdjacentFrameStep(1), { immediate: true, fade: true }));
       }
 
-      // 6. Basin card
+      // 6. Catchments visibility toggle button (and legacy basin card stubs)
+      try {
+        const savedCatchmentsPref = window.localStorage.getItem('openhydronet.weatherShowCatchments');
+        if (savedCatchmentsPref !== null) {
+          showWeatherCatchments = savedCatchmentsPref === '1' || savedCatchmentsPref === 'true';
+        }
+      } catch (_e) {
+        // Ignore storage errors
+      }
+      const catchmentsToggleBtn = document.getElementById('weatherCatchmentsToggleBtn');
+      if (catchmentsToggleBtn) {
+        catchmentsToggleBtn.addEventListener('click', () => {
+          showWeatherCatchments = !showWeatherCatchments;
+          try {
+            window.localStorage.setItem('openhydronet.weatherShowCatchments', showWeatherCatchments ? '1' : '0');
+          } catch (_e) {
+            // Ignore storage errors
+          }
+          syncActiveCatchmentWeather();
+        });
+      }
       const zoomBtn = document.getElementById('zoomToWeatherBasinBtn');
       if (zoomBtn) {
         zoomBtn.addEventListener('click', () => {
-          if (!map || !activeCatchmentId) return;
+          if (!map) return;
           const layer = (activeWeatherCatchmentLayer && activeWeatherCatchmentLayer.getBounds)
             ? activeWeatherCatchmentLayer
-            : watershedLayersMap[activeCatchmentId];
+            : (activeCatchmentId ? watershedLayersMap[activeCatchmentId] : null);
           if (layer && layer.getBounds) map.fitBounds(layer.getBounds(), { padding: [40, 40] });
         });
       }
@@ -7254,6 +7108,7 @@
           if (!activeCatchmentId && !e.target.closest('button')) switchTab('tab-delineation');
         });
       }
+
 
       // 7. Point-forecast panel
       const closeMeteoBtn = document.getElementById('closeMeteogramDrawerBtn');
@@ -8768,8 +8623,32 @@
       weatherMeteogramChart.$zeroIdx = zeroIdx;
     }
 
-    // Selected basin: outline on the map plus rain numbers in the sidebar card.
+    // Show or hide all of the user's catchments on the Weather Viewer map.
     function syncActiveCatchmentWeather() {
+      const toggleBtn = document.getElementById('weatherCatchmentsToggleBtn');
+      const toggleLabel = document.getElementById('weatherCatchmentsToggleLabel');
+      const toggleState = document.getElementById('weatherCatchmentsToggleState');
+      const allFeatures = Array.isArray(activeWatersheds)
+        ? activeWatersheds.filter(f => f && f.geometry && /Polygon/.test(f.geometry.type))
+        : [];
+      const count = allFeatures.length;
+
+      if (toggleLabel) {
+        toggleLabel.innerText = count > 0 ? `Show Catchments (${count})` : 'Show Catchments';
+      }
+      if (toggleState) {
+        toggleState.innerText = showWeatherCatchments ? 'ON' : 'OFF';
+        toggleState.className = showWeatherCatchments
+          ? 'text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-[#1a73e8] border border-[#d2e3fc]'
+          : 'text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-[#5f6368] border border-[#dadce0]';
+      }
+      if (toggleBtn) {
+        toggleBtn.setAttribute('aria-pressed', showWeatherCatchments ? 'true' : 'false');
+        toggleBtn.className = showWeatherCatchments
+          ? 'w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border border-[#1a73e8] bg-[#e8f0fe] text-[#174ea6] font-semibold text-xs transition hover:bg-[#d2e3fc]'
+          : 'w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border border-[#dadce0] bg-[#f8f9fa] text-[#5f6368] font-semibold text-xs transition hover:border-[#bdc1c6] hover:text-[#202124]';
+      }
+
       const titleEl = document.getElementById('weatherBasinTitle');
       const statsEl = document.getElementById('weatherBasinStats');
       const subtextEl = document.getElementById('weatherBasinSubtext');
@@ -8777,56 +8656,62 @@
       const selectBtn = document.getElementById('weatherSelectBasinBtn');
       const card = document.getElementById('weatherActiveBasinBadge');
       const id = activeCatchmentId;
-      const layer = id ? watershedLayersMap[id] : null;
       const feat = id ? activeWatersheds.find(f => f.properties && f.properties.catchment_id === id) : null;
 
-      if (!id || (!layer && !feat)) {
+      if (feat) {
+        const p = feat.properties || {};
+        const name = p.name || id;
+        const area = p.area_km2 ? `${Number(p.area_km2).toLocaleString(undefined, { maximumFractionDigits: 0 })} km²` : '';
+        if (titleEl) titleEl.innerText = area ? `${name} · ${area}` : name;
+        if (statsEl) statsEl.classList.remove('hidden');
+        if (zoomBtn) zoomBtn.classList.remove('hidden');
+        if (selectBtn) selectBtn.classList.add('hidden');
+        if (card) card.classList.remove('cursor-pointer');
+      } else {
         if (titleEl) titleEl.innerText = 'No basin selected';
         if (statsEl) statsEl.classList.add('hidden');
         if (subtextEl) subtextEl.innerText = 'Pick or delineate a basin in Basin Delineation to see its rain here.';
         if (zoomBtn) zoomBtn.classList.add('hidden');
         if (selectBtn) selectBtn.classList.remove('hidden');
         if (card) card.classList.add('cursor-pointer');
-        if (activeWeatherCatchmentLayer && map && map.hasLayer(activeWeatherCatchmentLayer)) map.removeLayer(activeWeatherCatchmentLayer);
+      }
+
+      if (!showWeatherCatchments || count === 0) {
+        if (activeWeatherCatchmentLayer && map && map.hasLayer(activeWeatherCatchmentLayer)) {
+          map.removeLayer(activeWeatherCatchmentLayer);
+        }
         activeWeatherCatchmentLayer = null;
         weatherOutlineCatchmentId = null;
         return;
       }
 
-      const p = (feat && feat.properties) || {};
-      const name = p.name || id;
-      const area = p.area_km2 ? `${Number(p.area_km2).toLocaleString(undefined, { maximumFractionDigits: 0 })} km²` : '';
-      if (titleEl) titleEl.innerText = area ? `${name} · ${area}` : name;
-      if (statsEl) statsEl.classList.remove('hidden');
-      if (zoomBtn) zoomBtn.classList.remove('hidden');
-      if (selectBtn) selectBtn.classList.add('hidden');
-      if (card) card.classList.remove('cursor-pointer');
-
       if (map && currentActiveTabId === 'tab-weather') {
-        if (weatherOutlineCatchmentId !== id || !activeWeatherCatchmentLayer) {
-          if (activeWeatherCatchmentLayer && map.hasLayer(activeWeatherCatchmentLayer)) map.removeLayer(activeWeatherCatchmentLayer);
-          activeWeatherCatchmentLayer = null;
-          const geo = (feat && feat.geometry) ? feat : (layer && layer.toGeoJSON ? layer.toGeoJSON() : null);
-          if (geo) {
-            // SVG, not the shared canvas (hidden on this tab), and not clickable so clicks reach the map.
-            if (!weatherSvgRenderer) weatherSvgRenderer = L.svg({ padding: 0.5 });
-            const opts = style => ({
-              renderer: weatherSvgRenderer,
-              interactive: false,
-              filter: f => !!(f.geometry && /Polygon/.test(f.geometry.type)),
-              style
-            });
-            activeWeatherCatchmentLayer = L.featureGroup([
-              L.geoJSON(geo, opts({ color: '#8ab4f8', weight: 9, opacity: 0.35, fill: false })),
-              L.geoJSON(geo, opts({ color: '#1a73e8', weight: 2.5, opacity: 1, fill: false, className: 'neon-catchment' }))
-            ]);
-            weatherOutlineCatchmentId = id;
+        const sig = allFeatures.map(f => (f.properties && f.properties.catchment_id) || '').join('|') + '#' + count;
+        if (weatherOutlineCatchmentId !== sig || !activeWeatherCatchmentLayer) {
+          if (activeWeatherCatchmentLayer && map.hasLayer(activeWeatherCatchmentLayer)) {
+            map.removeLayer(activeWeatherCatchmentLayer);
           }
+          activeWeatherCatchmentLayer = null;
+          if (!weatherSvgRenderer) weatherSvgRenderer = L.svg({ padding: 0.5 });
+          const fc = { type: 'FeatureCollection', features: allFeatures };
+          const opts = style => ({
+            renderer: weatherSvgRenderer,
+            interactive: false,
+            filter: f => !!(f.geometry && /Polygon/.test(f.geometry.type)),
+            style
+          });
+          activeWeatherCatchmentLayer = L.featureGroup([
+            L.geoJSON(fc, opts({ color: '#8ab4f8', weight: 9, opacity: 0.35, fill: false })),
+            L.geoJSON(fc, opts({ color: '#1a73e8', weight: 2.5, opacity: 1, fill: false, className: 'neon-catchment' }))
+          ]);
+          weatherOutlineCatchmentId = sig;
         }
-        if (activeWeatherCatchmentLayer && !map.hasLayer(activeWeatherCatchmentLayer)) activeWeatherCatchmentLayer.addTo(map);
+        if (activeWeatherCatchmentLayer && !map.hasLayer(activeWeatherCatchmentLayer)) {
+          activeWeatherCatchmentLayer.addTo(map);
+        }
       }
-      scheduleWeatherSummary();
     }
+
 
     function scheduleWeatherSummary() {
       clearTimeout(weatherSummaryDebounce);
@@ -8989,7 +8874,6 @@
       container.innerHTML = '';
       basins.forEach(b => {
         const isChecked = fcSelectedCatchmentIds.has(b.id);
-        const isViewing = b.id === currentViewId;
         const cs = statusMap[b.id] || (fcStatusData && fcStatusData.catchment_id === b.id ? fcStatusData : null);
         const st = (cs && cs.saved_state) || {};
         const isYesterdayState = Boolean(
@@ -9009,10 +8893,10 @@
           stateBadgeHtml = `<span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0]" title="No saved state file — Cold Start required">Cold Only</span>`;
         }
 
-        const row = document.createElement('div');
-        row.className = `flex items-center justify-between gap-2 px-2 py-1.5 rounded-md border text-xs transition ${
-          isViewing
-            ? 'bg-[#e8f0fe]/60 border-[#1a73e8]'
+        const row = document.createElement('label');
+        row.className = `flex items-center justify-between gap-2 px-2 py-1.5 rounded-md border text-xs transition cursor-pointer ${
+          isChecked
+            ? 'bg-[#e6f4ea]/40 border-[#ceead6]'
             : 'bg-[#f8f9fa] border-transparent hover:border-[#dadce0]'
         }`;
 
@@ -9035,24 +8919,16 @@
           updateForecastControlsUI();
         });
 
-        const textBtn = document.createElement('button');
-        textBtn.type = 'button';
-        textBtn.className = 'text-left truncate flex-1 focus:outline-none';
-        textBtn.title = `Click to inspect input forcings & forecast for ${b.name} (${b.id})`;
+        const textWrap = document.createElement('div');
+        textWrap.className = 'text-left truncate flex-1';
         const areaStr = b.area_km2 ? ` · ${Number(b.area_km2).toLocaleString()} km²` : '';
-        textBtn.innerHTML = `
+        textWrap.innerHTML = `
           <div class="font-semibold text-[#202124] truncate text-[11px]">${b.name}</div>
           <div class="font-mono text-[10px] text-[#5f6368] truncate">${b.id}${areaStr}</div>
         `;
-        textBtn.addEventListener('click', () => {
-          activeCatchmentId = b.id;
-          const sel = document.getElementById('fcBasinSelect');
-          if (sel) sel.value = b.id;
-          syncForecastTabBasin();
-        });
 
         leftLabel.appendChild(cb);
-        leftLabel.appendChild(textBtn);
+        leftLabel.appendChild(textWrap);
 
         const rightDiv = document.createElement('div');
         rightDiv.className = 'flex items-center gap-1 flex-shrink-0';
@@ -9119,15 +8995,205 @@
       }
     }
 
+    // Custom Chart.js plugin to shade Hindcast (< t₀) vs Forecast (≥ t₀) zones
+    // and draw a vertical dashed divider + badge at the Issue Date (t₀) handoff.
+    const fcIssueDateBoundaryPlugin = {
+      id: 'fcIssueDateBoundary',
+      beforeDatasetsDraw(chart) {
+        const meta = chart.$fcTimelineMeta;
+        if (!meta || typeof meta.t0Index !== 'number' || meta.t0Index < 0) return;
+        const xScale = chart.scales && chart.scales.x;
+        const area = chart.chartArea;
+        if (!xScale || !area) return;
+
+        const t0Idx = meta.t0Index;
+        const xT0 = xScale.getPixelForValue(t0Idx);
+        if (!Number.isFinite(xT0)) return;
+        const xPrev = t0Idx > 0 ? xScale.getPixelForValue(t0Idx - 1) : area.left;
+        const xMid = t0Idx > 0 ? (xPrev + xT0) / 2 : area.left;
+        const clampedMid = Math.max(area.left, Math.min(area.right, xMid));
+
+        const ctx = chart.ctx;
+        ctx.save();
+        // Cool cyan tint for Spin-Up Hindcast (< t₀)
+        if (clampedMid > area.left) {
+          ctx.fillStyle = 'rgba(8, 145, 178, 0.055)';
+          ctx.fillRect(area.left, area.top, clampedMid - area.left, area.bottom - area.top);
+        }
+        // Warm amber-orange tint for Forecast Horizon (≥ t₀)
+        if (area.right > clampedMid) {
+          ctx.fillStyle = 'rgba(234, 88, 12, 0.065)';
+          ctx.fillRect(clampedMid, area.top, area.right - clampedMid, area.bottom - area.top);
+        }
+        ctx.restore();
+      },
+      afterDatasetsDraw(chart) {
+        const meta = chart.$fcTimelineMeta;
+        if (!meta || typeof meta.t0Index !== 'number' || meta.t0Index <= 0) return;
+        const xScale = chart.scales && chart.scales.x;
+        const area = chart.chartArea;
+        if (!xScale || !area) return;
+
+        const t0Idx = meta.t0Index;
+        const xT0 = xScale.getPixelForValue(t0Idx);
+        const xPrev = xScale.getPixelForValue(t0Idx - 1);
+        if (!Number.isFinite(xT0) || !Number.isFinite(xPrev)) return;
+        const xMid = (xPrev + xT0) / 2;
+        if (xMid < area.left || xMid > area.right) return;
+
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.beginPath();
+        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 1.75;
+        ctx.strokeStyle = '#9a3412';
+        ctx.moveTo(xMid, area.top);
+        ctx.lineTo(xMid, area.bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Header badge at t₀ divider
+        const badgeText = meta.issueDate ? `◀ HINDCAST | ISSUE t₀ (${meta.issueDate}) · FORECAST ▶` : '◀ HINDCAST | ISSUE t₀ · FORECAST ▶';
+        ctx.font = '600 9px Inter, system-ui, sans-serif';
+        const textWidth = ctx.measureText(badgeText).width;
+        const padX = 6;
+        const pillW = textWidth + padX * 2;
+        const pillH = 15;
+        const pillX = Math.max(area.left + 4, Math.min(area.right - pillW - 4, xMid - pillW / 2));
+        const pillY = area.top + 4;
+
+        ctx.fillStyle = 'rgba(255, 247, 237, 0.94)';
+        ctx.strokeStyle = '#ea580c';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === 'function') {
+          ctx.roundRect(pillX, pillY, pillW, pillH, 4);
+        } else {
+          ctx.rect(pillX, pillY, pillW, pillH);
+        }
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#9a3412';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, pillX + padX, pillY + pillH / 2);
+        ctx.restore();
+      }
+    };
+
+    // Build a single shared timeline (allDates, labels, issueDate, t0Index) so
+    // the top Input Forcing chart and bottom Streamflow Forecast chart share
+    // identical X-axis categories and pixel coordinates.
+    function buildSharedForecastTimeline(modelResult) {
+      const nowcastProducts = (fcStatusData && fcStatusData.nowcast_products) || {};
+      const forecastProducts = (fcStatusData && fcStatusData.forecast_products) || {};
+
+      const nowcastObj = fcSelectedNowcast ? nowcastProducts[fcSelectedNowcast] : null;
+      const prodObj = getActiveProductObject();
+      const isSelectedProdForecast = Boolean(prodObj && (prodObj.kind === 'forecast' || forecastProducts[fcSelectedForecast]));
+      const forecastObj = isSelectedProdForecast ? prodObj : null;
+      const activeNowcastObj = isSelectedProdForecast ? nowcastObj : (prodObj || nowcastObj);
+
+      const nowcastSeries = (activeNowcastObj && Array.isArray(activeNowcastObj.series)) ? activeNowcastObj.series : [];
+      const forecastSeries = (forecastObj && Array.isArray(forecastObj.series)) ? forecastObj.series : [];
+      const forecastHindcastSeries = (forecastObj && Array.isArray(forecastObj.hindcast_series)) ? forecastObj.hindcast_series : [];
+
+      const activeId = getActiveForecastBasinId();
+      const targetResult = modelResult || (activeId && fcModelResultsByBasin[activeId]) || null;
+      const hydroHindcast = (targetResult && Array.isArray(targetResult.hindcast_tail)) ? targetResult.hindcast_tail : [];
+      const hydroForecast = (targetResult && Array.isArray(targetResult.forecast)) ? targetResult.forecast : [];
+
+      const dateSet = new Set();
+      nowcastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+      forecastHindcastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+      forecastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+      hydroHindcast.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+      hydroForecast.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+
+      const allDates = Array.from(dateSet).sort();
+
+      const forecastLeadByDate = {};
+      forecastSeries.forEach(pt => {
+        if (pt && pt.date && pt.lead_time_days) forecastLeadByDate[pt.date] = pt.lead_time_days;
+      });
+      hydroForecast.forEach(pt => {
+        if (pt && pt.date && pt.lead_time_days && !forecastLeadByDate[pt.date]) {
+          forecastLeadByDate[pt.date] = pt.lead_time_days;
+        }
+      });
+
+      const issueDate = (forecastObj && forecastObj.issue_date) ||
+        (targetResult && targetResult.issue_date) ||
+        (fcStatusData && fcStatusData.issue_date) ||
+        null;
+
+      let t0Index = -1;
+      if (issueDate) {
+        t0Index = allDates.findIndex(d => d >= issueDate);
+      }
+
+      const labels = allDates.map(d => {
+        const leadDays = forecastLeadByDate[d];
+        if (leadDays) {
+          if (leadDays === 1 || d === issueDate) {
+            return `${d} (t₀ · +1d)`;
+          }
+          return `${d} (+${leadDays}d)`;
+        }
+        if (d === issueDate) return `${d} (t₀)`;
+        return d;
+      });
+
+      return {
+        allDates,
+        labels,
+        issueDate,
+        t0Index,
+        nowcastObj,
+        prodObj,
+        isSelectedProdForecast,
+        forecastObj,
+        activeNowcastObj,
+        nowcastSeries,
+        forecastSeries,
+        forecastHindcastSeries
+      };
+    }
+
+    // Bridge the 1-day visual handoff between Hindcast (ending at t₀ − 1d) and
+    // Forecast (starting at t₀) when t₀ − 1d has a valid non-null value.
+    // Never fabricates data across true missing/NaN gaps.
+    function bridgeHandoffAtT0(hindcastArr, forecastArr, t0Index) {
+      let bridgedIndex = -1;
+      if (
+        typeof t0Index === 'number' &&
+        t0Index > 0 &&
+        hindcastArr[t0Index - 1] !== null &&
+        hindcastArr[t0Index - 1] !== undefined &&
+        forecastArr[t0Index] !== null &&
+        forecastArr[t0Index] !== undefined &&
+        (forecastArr[t0Index - 1] === null || forecastArr[t0Index - 1] === undefined)
+      ) {
+        forecastArr[t0Index - 1] = hindcastArr[t0Index - 1];
+        bridgedIndex = t0Index - 1;
+      }
+      return bridgedIndex;
+    }
+
     function initModelingCharts() {
       const hyetoCanvas = document.getElementById('whatIfHyetographCanvas');
       const hydroCanvas = document.getElementById('masterHydrographCanvas');
       if (!hyetoCanvas || !hydroCanvas) return;
 
+      const LEFT_AXIS_WIDTH = 66;
+      const RIGHT_AXIS_WIDTH = 62;
+
       if (!hyetographChart) {
         const ctx = hyetoCanvas.getContext('2d');
         hyetographChart = new Chart(ctx, {
           type: 'bar',
+          plugins: [fcIssueDateBoundaryPlugin],
           data: {
             labels: [],
             datasets: []
@@ -9135,17 +9201,20 @@
           options: {
             responsive: true,
             maintainAspectRatio: false,
+            layout: { padding: { left: 0, right: 0, top: 4, bottom: 0 } },
             interaction: { mode: 'index', intersect: false },
             scales: {
               x: {
-                ticks: { color: '#5f6368', font: { size: 10 }, maxRotation: 45 },
+                offset: true,
+                ticks: { color: '#5f6368', font: { size: 10 }, maxRotation: 45, minRotation: 0, autoSkip: true, maxTicksLimit: 14 },
                 grid: { color: '#e8eaed' }
               },
               yPrecip: {
                 type: 'linear',
                 position: 'left',
                 beginAtZero: true,
-                title: { display: true, text: 'Precipitation (mm/day)', color: '#1a73e8', font: { size: 10 } },
+                afterFit: (axis) => { axis.width = LEFT_AXIS_WIDTH; },
+                title: { display: true, text: 'Precipitation (mm/day)', color: '#0e7490', font: { size: 10 } },
                 ticks: { color: '#5f6368' },
                 grid: { color: '#e8eaed' }
               },
@@ -9153,13 +9222,23 @@
                 type: 'linear',
                 position: 'right',
                 display: true,
-                title: { display: true, text: '2m Temperature (°C)', color: '#e8710a', font: { size: 10 } },
-                ticks: { color: '#e8710a' },
+                afterFit: (axis) => { axis.width = RIGHT_AXIS_WIDTH; },
+                title: { display: true, text: '2m Temperature (°C)', color: '#dc2626', font: { size: 10 } },
+                ticks: { color: '#dc2626' },
                 grid: { drawOnChartArea: false }
               }
             },
             plugins: {
-              legend: { labels: { color: '#202124', font: { size: 10 }, boxWidth: 12 } }
+              legend: { labels: { color: '#202124', font: { size: 10 }, boxWidth: 12 } },
+              tooltip: {
+                filter: (item) => {
+                  const ds = item.dataset;
+                  if (ds && typeof ds.$bridgedIndex === 'number' && item.dataIndex === ds.$bridgedIndex) {
+                    return false;
+                  }
+                  return true;
+                }
+              }
             }
           }
         });
@@ -9171,51 +9250,53 @@
         const ctx = hydroCanvas.getContext('2d');
         masterHydroChart = new Chart(ctx, {
           type: 'line',
+          plugins: [fcIssueDateBoundaryPlugin],
           data: {
             labels: [],
-            datasets: [
-              {
-                label: 'Spin-Up Hindcast Streamflow (m³/s)',
-                data: [],
-                borderColor: '#1a73e8',
-                backgroundColor: 'rgba(26, 115, 232, 0.1)',
-                borderWidth: 2,
-                pointRadius: 2,
-                tension: 0.3,
-                spanGaps: false,
-                fill: true
-              },
-              {
-                label: 'Forecast Streamflow (m³/s)',
-                data: [],
-                borderColor: '#1e8e3e',
-                backgroundColor: 'rgba(30, 142, 62, 0.15)',
-                borderWidth: 2.5,
-                pointRadius: 3,
-                tension: 0.3,
-                spanGaps: false,
-                fill: true
-              }
-            ]
+            datasets: []
           },
           options: {
             responsive: true,
             maintainAspectRatio: false,
+            layout: { padding: { left: 0, right: 0, top: 4, bottom: 0 } },
             interaction: { mode: 'index', intersect: false },
             scales: {
               x: {
-                ticks: { color: '#5f6368', font: { size: 10 }, maxRotation: 45 },
+                offset: true,
+                ticks: { color: '#5f6368', font: { size: 10 }, maxRotation: 45, minRotation: 0, autoSkip: true, maxTicksLimit: 14 },
                 grid: { color: '#e8eaed' }
               },
               y: {
+                type: 'linear',
+                position: 'left',
                 beginAtZero: true,
-                title: { display: true, text: 'Streamflow Discharge (m³/s)', color: '#5f6368', font: { size: 11 } },
+                afterFit: (axis) => { axis.width = LEFT_AXIS_WIDTH; },
+                title: { display: true, text: 'Streamflow Discharge (m³/s)', color: '#0284c7', font: { size: 11 } },
                 ticks: { color: '#5f6368' },
                 grid: { color: '#e8eaed' }
+              },
+              yRightAlign: {
+                type: 'linear',
+                position: 'right',
+                display: true,
+                afterFit: (axis) => { axis.width = RIGHT_AXIS_WIDTH; },
+                title: { display: false },
+                ticks: { display: false },
+                border: { display: false },
+                grid: { drawOnChartArea: false, drawTicks: false }
               }
             },
             plugins: {
-              legend: { labels: { color: '#202124', font: { size: 10 }, boxWidth: 14 } }
+              legend: { labels: { color: '#202124', font: { size: 10 }, boxWidth: 14 } },
+              tooltip: {
+                filter: (item) => {
+                  const ds = item.dataset;
+                  if (ds && typeof ds.$bridgedIndex === 'number' && item.dataIndex === ds.$bridgedIndex) {
+                    return false;
+                  }
+                  return true;
+                }
+              }
             }
           }
         });
@@ -9223,6 +9304,7 @@
         masterHydroChart.resize();
       }
 
+      syncForecastTabBasin();
       refreshForecastTabStatus();
     }
 
@@ -9629,7 +9711,7 @@
         const isT0 = Boolean(pt.is_issue_date || pt.date === issueDate || pt.lead_time_days === 1);
         card.className = `flex-shrink-0 px-2.5 py-1.5 rounded-lg border ${
           isT0
-            ? 'bg-[#e8f0fe]/70 border-[#1a73e8]'
+            ? 'bg-[#fff7ed] border-[#ea580c]'
             : 'bg-[#f8f9fa] border-[#dadce0]'
         }`;
 
@@ -9645,21 +9727,21 @@
           const valStr = (rawVal !== null && rawVal !== undefined)
             ? `${Number(rawVal).toFixed(2)} ${selectedVarMeta.unit || ''}`
             : 'NaN (Gap)';
-          valuesHtml = `<div class="font-mono font-semibold text-[#1a73e8] mt-0.5">${valStr}</div>`;
+          valuesHtml = `<div class="font-mono font-semibold text-[#1d4ed8] mt-0.5">${valStr}</div>`;
         } else if (fcSelectedVariableMode === 'precip_only') {
           const pStr = (pt.precip_mm !== null && pt.precip_mm !== undefined) ? `${Number(pt.precip_mm).toFixed(1)} mm` : 'NaN';
-          valuesHtml = `<div class="font-mono font-semibold text-[#1a73e8] mt-0.5">P: ${pStr}</div>`;
+          valuesHtml = `<div class="font-mono font-semibold text-[#1d4ed8] mt-0.5">P: ${pStr}</div>`;
         } else if (fcSelectedVariableMode === 'temp_only') {
           const tVal = pt.temperature_c !== undefined ? pt.temperature_c : pt.temp_c;
           const tStr = (tVal !== null && tVal !== undefined) ? `${Number(tVal).toFixed(1)} °C` : 'NaN';
-          valuesHtml = `<div class="font-mono font-semibold text-[#e8710a] mt-0.5">T: ${tStr}</div>`;
+          valuesHtml = `<div class="font-mono font-semibold text-[#dc2626] mt-0.5">T: ${tStr}</div>`;
         } else {
           const pStr = (pt.precip_mm !== null && pt.precip_mm !== undefined) ? `${Number(pt.precip_mm).toFixed(1)} mm` : 'NaN';
           const tVal = pt.temperature_c !== undefined ? pt.temperature_c : pt.temp_c;
           const tStr = (tVal !== null && tVal !== undefined) ? `${Number(tVal).toFixed(1)} °C` : '—';
           valuesHtml = `
-            <div class="font-mono font-semibold text-[#1a73e8] mt-0.5">P: ${pStr}</div>
-            <div class="font-mono text-[#e8710a]">T: ${tStr}</div>
+            <div class="font-mono font-semibold text-[#1d4ed8] mt-0.5">P: ${pStr}</div>
+            <div class="font-mono text-[#dc2626]">T: ${tStr}</div>
           `;
         }
 
@@ -9677,13 +9759,24 @@
       const subtitleEl = document.getElementById('fcForcingSubtitle');
       const titleEl = document.getElementById('fcForcingChartTitle');
 
-      const nowcastProducts = (fcStatusData && fcStatusData.nowcast_products) || {};
-      const forecastProducts = (fcStatusData && fcStatusData.forecast_products) || {};
+      const timeline = buildSharedForecastTimeline();
+      const {
+        allDates,
+        labels,
+        issueDate,
+        t0Index,
+        nowcastObj,
+        prodObj,
+        isSelectedProdForecast,
+        forecastObj,
+        activeNowcastObj,
+        nowcastSeries,
+        forecastSeries,
+        forecastHindcastSeries
+      } = timeline;
 
-      const nowcastObj = fcSelectedNowcast ? nowcastProducts[fcSelectedNowcast] : null;
-      const prodObj = getActiveProductObject();
-
-      if (!nowcastObj && !prodObj) {
+      if ((!nowcastObj && !prodObj) || allDates.length === 0) {
+        hyetographChart.$fcTimelineMeta = null;
         hyetographChart.data.labels = [];
         hyetographChart.data.datasets = [];
         hyetographChart.update();
@@ -9694,19 +9787,7 @@
         return;
       }
 
-      const isSelectedProdForecast = Boolean(prodObj && (prodObj.kind === 'forecast' || forecastProducts[fcSelectedForecast]));
-      const forecastObj = isSelectedProdForecast ? prodObj : null;
-      const activeNowcastObj = isSelectedProdForecast ? nowcastObj : (prodObj || nowcastObj);
-
-      const nowcastSeries = (activeNowcastObj && Array.isArray(activeNowcastObj.series)) ? activeNowcastObj.series : [];
-      const forecastSeries = (forecastObj && Array.isArray(forecastObj.series)) ? forecastObj.series : [];
-      const forecastHindcastSeries = (forecastObj && Array.isArray(forecastObj.hindcast_series)) ? forecastObj.hindcast_series : [];
-
-      const dateSet = new Set();
-      nowcastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-      forecastHindcastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-      forecastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-      const allDates = Array.from(dateSet).sort();
+      hyetographChart.$fcTimelineMeta = { issueDate, t0Index };
 
       const nowcastByDate = {};
       nowcastSeries.forEach(pt => { if (pt && pt.date) nowcastByDate[pt.date] = pt; });
@@ -9714,21 +9795,6 @@
       forecastHindcastSeries.forEach(pt => { if (pt && pt.date) fcHindcastByDate[pt.date] = pt; });
       const forecastByDate = {};
       forecastSeries.forEach(pt => { if (pt && pt.date) forecastByDate[pt.date] = pt; });
-
-      const issueDate = (forecastObj && forecastObj.issue_date) || (fcStatusData && fcStatusData.issue_date) || null;
-
-      // Format labels so issue date t₀ and every forecast lead time (+1d .. +Ld) are clearly labeled
-      const labels = allDates.map(d => {
-        const fcPt = forecastByDate[d];
-        if (fcPt && fcPt.lead_time_days) {
-          if (fcPt.lead_time_days === 1 || d === issueDate) {
-            return `${d} (t₀ · +1d)`;
-          }
-          return `${d} (+${fcPt.lead_time_days}d)`;
-        }
-        if (d === issueDate) return `${d} (t₀)`;
-        return d;
-      });
 
       const varsMeta = (prodObj && Array.isArray(prodObj.variables)) ? prodObj.variables : [];
       const specificVarMeta = varsMeta.find(v => v.name === fcSelectedVariableMode) || null;
@@ -9759,17 +9825,23 @@
           return null;
         });
 
+        let bridgedIdx = -1;
+        if (!isBar && isSelectedProdForecast) {
+          bridgedIdx = bridgeHandoffAtT0(spinupData, fcData, t0Index);
+        }
+
         if (spinupData.some(v => v !== null)) {
           datasets.push({
             type: isBar ? 'bar' : 'line',
-            label: `${(prodObj && prodObj.product) || 'Spin-Up'} ${specificVarMeta.short_name} (Spin-Up / Nowcast)`,
+            label: `HINDCAST (< t₀): ${(prodObj && prodObj.product) || 'Spin-Up'} ${specificVarMeta.short_name}`,
             data: spinupData,
             yAxisID: 'yPrecip',
-            backgroundColor: isBar ? 'rgba(66, 133, 244, 0.72)' : 'rgba(66, 133, 244, 0.15)',
-            borderColor: '#4285f4',
-            borderWidth: isBar ? 1 : 2,
+            backgroundColor: isBar ? 'rgba(8, 145, 178, 0.72)' : 'rgba(217, 119, 6, 0.14)',
+            borderColor: isBar ? '#0e7490' : '#d97706',
+            borderWidth: isBar ? 1 : 2.2,
             borderRadius: isBar ? 3 : 0,
-            pointRadius: isBar ? 0 : 2.5,
+            pointRadius: isBar ? 0 : 2.8,
+            pointBackgroundColor: '#d97706',
             tension: 0.25,
             spanGaps: false
           });
@@ -9778,15 +9850,19 @@
         if (isSelectedProdForecast) {
           datasets.push({
             type: isBar ? 'bar' : 'line',
-            label: `${prodObj.product} ${specificVarMeta.short_name} (Issue t₀ & Lead +1d…+${forecastSeries.length}d)`,
+            label: `FORECAST (≥ t₀): ${prodObj.product} ${specificVarMeta.short_name} (Lead +1d…+${forecastSeries.length}d)`,
             data: fcData,
+            $bridgedIndex: bridgedIdx,
             yAxisID: 'yPrecip',
-            backgroundColor: isBar ? 'rgba(26, 115, 232, 0.88)' : 'rgba(232, 113, 10, 0.18)',
-            borderColor: isBar ? '#1a73e8' : '#e8710a',
-            borderWidth: isBar ? 1 : 2.5,
-            borderDash: isBar ? [] : [5, 3],
+            backgroundColor: isBar ? 'rgba(29, 78, 216, 0.94)' : 'rgba(220, 38, 38, 0.16)',
+            borderColor: isBar ? '#1e3a8a' : '#dc2626',
+            borderWidth: isBar ? 1.2 : 2.8,
+            borderDash: isBar ? [] : [6, 3],
             borderRadius: isBar ? 3 : 0,
-            pointRadius: isBar ? 0 : 3,
+            pointRadius: isBar ? 0 : (ctx) => (ctx.dataIndex === bridgedIdx ? 0 : 3.6),
+            pointBackgroundColor: '#ffffff',
+            pointBorderColor: '#dc2626',
+            pointBorderWidth: 2,
             tension: 0.25,
             spanGaps: false
           });
@@ -9794,8 +9870,12 @@
 
         yPrecipScale.beginAtZero = isBar;
         yPrecipScale.title.text = unitLabel;
-        yPrecipScale.title.color = isBar ? '#1a73e8' : '#e8710a';
-        yTempScale.display = false;
+        yPrecipScale.title.color = isBar ? '#0e7490' : '#dc2626';
+        // Keep right axis reserved at fixed width so top & bottom X-axes stay aligned
+        yTempScale.display = true;
+        yTempScale.title.display = false;
+        yTempScale.ticks.display = false;
+        yTempScale.border = { display: false };
         if (titleEl) {
           titleEl.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4 text-[#1a73e8]"></i> Input Forcing Visualization: ${prodObj ? prodObj.product : ''} · ${specificVarMeta.label}`;
         }
@@ -9833,17 +9913,22 @@
             : (pt.temp_c !== undefined ? pt.temp_c : null);
         });
 
+        let bridgedTempIdx = -1;
+        if (showTemp && isSelectedProdForecast) {
+          bridgedTempIdx = bridgeHandoffAtT0(nowcastTemp, forecastTemp, t0Index);
+        }
+
         const ncLabelName = (activeNowcastObj && (activeNowcastObj.product || activeNowcastObj.id)) || fcSelectedNowcast || 'Nowcast';
         const fcLabelName = (forecastObj && (forecastObj.product || forecastObj.id)) || fcSelectedForecast || 'Forecast';
 
         if (showPrecip) {
           datasets.push({
             type: 'bar',
-            label: `${ncLabelName} Precip (mm/day)`,
+            label: `HINDCAST (< t₀): ${ncLabelName} Precip (mm/day)`,
             data: nowcastPrecip,
             yAxisID: 'yPrecip',
-            backgroundColor: 'rgba(66, 133, 244, 0.75)',
-            borderColor: '#4285f4',
+            backgroundColor: 'rgba(8, 145, 178, 0.72)',
+            borderColor: '#0e7490',
             borderWidth: 1,
             borderRadius: 3,
             order: 2
@@ -9851,12 +9936,12 @@
           if (isSelectedProdForecast) {
             datasets.push({
               type: 'bar',
-              label: `${fcLabelName} Forecast Precip (mm/day · t₀…+${forecastSeries.length}d)`,
+              label: `FORECAST (≥ t₀): ${fcLabelName} Precip (mm/day · t₀…+${forecastSeries.length}d)`,
               data: forecastPrecip,
               yAxisID: 'yPrecip',
-              backgroundColor: 'rgba(26, 115, 232, 0.88)',
-              borderColor: '#1a73e8',
-              borderWidth: 1,
+              backgroundColor: 'rgba(29, 78, 216, 0.94)',
+              borderColor: '#1e3a8a',
+              borderWidth: 1.2,
               borderRadius: 3,
               order: 2
             });
@@ -9866,17 +9951,19 @@
         if (showTemp) {
           const tempAxisId = showPrecip ? 'yTemp' : 'yPrecip';
           const spinupTempLabel = (activeNowcastObj && activeNowcastObj.has_temp)
-            ? `${ncLabelName} 2m Temp (°C)`
-            : `${fcLabelName} Day-1 Hindcast 2m Temp (°C)`;
+            ? `HINDCAST (< t₀): ${ncLabelName} 2m Temp (°C)`
+            : `HINDCAST (< t₀): ${fcLabelName} Day-1 2m Temp (°C)`;
           datasets.push({
             type: 'line',
             label: spinupTempLabel,
             data: nowcastTemp,
             yAxisID: tempAxisId,
-            borderColor: '#f9ab00',
-            backgroundColor: 'rgba(249, 171, 0, 0.15)',
-            borderWidth: 2,
-            pointRadius: 2.5,
+            borderColor: '#d97706',
+            backgroundColor: 'rgba(217, 119, 6, 0.14)',
+            borderWidth: 2.2,
+            pointRadius: 2.8,
+            pointBackgroundColor: '#d97706',
+            pointBorderColor: '#b45309',
             tension: 0.25,
             spanGaps: false,
             order: 1
@@ -9884,14 +9971,18 @@
           if (isSelectedProdForecast) {
             datasets.push({
               type: 'line',
-              label: `${fcLabelName} Forecast 2m Temp (°C · t₀…+${forecastSeries.length}d)`,
+              label: `FORECAST (≥ t₀): ${fcLabelName} 2m Temp (°C · t₀…+${forecastSeries.length}d)`,
               data: forecastTemp,
+              $bridgedIndex: bridgedTempIdx,
               yAxisID: tempAxisId,
-              borderColor: '#e8710a',
-              backgroundColor: 'rgba(232, 113, 10, 0.15)',
-              borderWidth: 2.5,
-              borderDash: [5, 3],
-              pointRadius: 3,
+              borderColor: '#dc2626',
+              backgroundColor: 'rgba(220, 38, 38, 0.16)',
+              borderWidth: 2.8,
+              borderDash: [6, 3],
+              pointRadius: (ctx) => (ctx.dataIndex === bridgedTempIdx ? 0 : 3.6),
+              pointBackgroundColor: '#ffffff',
+              pointBorderColor: '#dc2626',
+              pointBorderWidth: 2,
               tension: 0.25,
               spanGaps: false,
               order: 1
@@ -9902,20 +9993,29 @@
         if (showPrecip && showTemp) {
           yPrecipScale.beginAtZero = true;
           yPrecipScale.title.text = 'Precipitation (mm/day)';
-          yPrecipScale.title.color = '#1a73e8';
+          yPrecipScale.title.color = '#0e7490';
           yTempScale.display = true;
+          yTempScale.title.display = true;
           yTempScale.title.text = '2m Temperature (°C)';
-          yTempScale.title.color = '#e8710a';
+          yTempScale.title.color = '#dc2626';
+          yTempScale.ticks.display = true;
+          yTempScale.border = { display: true };
         } else if (showPrecip) {
           yPrecipScale.beginAtZero = true;
           yPrecipScale.title.text = 'Precipitation (mm/day)';
-          yPrecipScale.title.color = '#1a73e8';
-          yTempScale.display = false;
+          yPrecipScale.title.color = '#0e7490';
+          yTempScale.display = true;
+          yTempScale.title.display = false;
+          yTempScale.ticks.display = false;
+          yTempScale.border = { display: false };
         } else {
           yPrecipScale.beginAtZero = false;
           yPrecipScale.title.text = '2m Temperature (°C)';
-          yPrecipScale.title.color = '#e8710a';
-          yTempScale.display = false;
+          yPrecipScale.title.color = '#dc2626';
+          yTempScale.display = true;
+          yTempScale.title.display = false;
+          yTempScale.ticks.display = false;
+          yTempScale.border = { display: false };
         }
 
         if (titleEl) {
@@ -9935,59 +10035,16 @@
           ? `${forecastObj.product || forecastObj.id} (Issue Date t₀ = ${forecastObj.issue_date || issueDate}, Lead +1d…+${forecastSeries.length}d)`
           : 'None';
         const basinId = getActiveForecastBasinId();
-        subtitleEl.innerText = `Basin: ${basinId} · Nowcast: ${ncName} · Forecast: ${fcName} · Missing latency days rendered as true gaps (NaN)`;
+        subtitleEl.innerText = `Viewing Basin: ${basinId} · Hindcast (< t₀): ${ncName} · Forecast (≥ t₀): ${fcName}`;
       }
     }
 
     function renderHydroCatchmentTabs() {
       const tabsEl = document.getElementById('fcHydroCatchmentTabs');
       if (!tabsEl) return;
-
-      const basinKeys = Object.keys(fcModelResultsByBasin || {});
-      if (basinKeys.length <= 1) {
-        tabsEl.classList.add('hidden');
-        tabsEl.innerHTML = '';
-        return;
-      }
-
-      tabsEl.classList.remove('hidden');
+      // Catchment viewing selection is controlled solely by #fcBasinSelect in the left-hand panel.
+      tabsEl.classList.add('hidden');
       tabsEl.innerHTML = '';
-      const activeId = getActiveForecastBasinId();
-
-      basinKeys.forEach(cid => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        const isActive = !fcHydroOverlayAll && cid === activeId;
-        btn.className = `px-2 py-0.5 rounded text-[10px] font-mono border transition ${
-          isActive
-            ? 'bg-[#1e8e3e] text-white border-[#1e8e3e] font-semibold'
-            : 'bg-[#f8f9fa] text-[#3c4043] border-[#dadce0] hover:bg-[#e8f0fe]'
-        }`;
-        btn.textContent = cid;
-        btn.addEventListener('click', () => {
-          fcHydroOverlayAll = false;
-          activeCatchmentId = cid;
-          const sel = document.getElementById('fcBasinSelect');
-          if (sel) sel.value = cid;
-          syncForecastTabBasin();
-          renderHydrographChart(fcModelResultsByBasin[cid]);
-        });
-        tabsEl.appendChild(btn);
-      });
-
-      const allBtn = document.createElement('button');
-      allBtn.type = 'button';
-      allBtn.className = `px-2 py-0.5 rounded text-[10px] font-semibold border transition ${
-        fcHydroOverlayAll
-          ? 'bg-[#1a73e8] text-white border-[#1a73e8]'
-          : 'bg-[#f8f9fa] text-[#1a73e8] border-[#dadce0] hover:bg-[#e8f0fe]'
-      }`;
-      allBtn.textContent = `Compare All (${basinKeys.length})`;
-      allBtn.addEventListener('click', () => {
-        fcHydroOverlayAll = !fcHydroOverlayAll;
-        renderHydrographChart(fcModelResultsByBasin[getActiveForecastBasinId()] || fcLastModelResult);
-      });
-      tabsEl.appendChild(allBtn);
     }
 
     function renderHydrographChart(modelResult) {
@@ -9997,89 +10054,53 @@
 
       renderHydroCatchmentTabs();
 
-      const basinKeys = Object.keys(fcModelResultsByBasin || {});
-      if (fcHydroOverlayAll && basinKeys.length > 1) {
-        const palette = ['#1e8e3e', '#1a73e8', '#e8710a', '#9334e6', '#d93025', '#007b83'];
-        const dateSet = new Set();
-        let issueDate = null;
-        basinKeys.forEach(cid => {
-          const r = fcModelResultsByBasin[cid];
-          if (!r) return;
-          if (!issueDate && r.issue_date) issueDate = r.issue_date;
-          (r.hindcast_tail || []).forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-          (r.forecast || []).forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-        });
-        const allDates = Array.from(dateSet).sort();
-        const labels = allDates.map(d => (d === issueDate ? `${d} (t₀)` : d));
-
-        const datasets = [];
-        basinKeys.forEach((cid, idx) => {
-          const r = fcModelResultsByBasin[cid];
-          if (!r) return;
-          const color = palette[idx % palette.length];
-          const hcMap = {};
-          (r.hindcast_tail || []).forEach(pt => { if (pt && pt.date) hcMap[pt.date] = pt.discharge_cms; });
-          const fcMap = {};
-          (r.forecast || []).forEach(pt => { if (pt && pt.date) fcMap[pt.date] = pt.discharge_cms; });
-
-          datasets.push({
-            label: `${cid} Forecast (${r.mode === 'hotstart' ? 'Hot' : 'Cold'} · Peak ${Number(r.peak_discharge_cms || 0).toFixed(1)} m³/s)`,
-            data: allDates.map(d => (fcMap[d] !== undefined ? fcMap[d] : (hcMap[d] !== undefined ? hcMap[d] : null))),
-            borderColor: color,
-            backgroundColor: 'transparent',
-            borderWidth: 2.2,
-            pointRadius: 2.5,
-            tension: 0.3,
-            spanGaps: false,
-            fill: false
-          });
-        });
-
-        masterHydroChart.data.labels = labels;
-        masterHydroChart.data.datasets = datasets;
-        masterHydroChart.update();
-
-        if (subtitleEl) {
-          subtitleEl.innerText = `Multi-catchment forecast comparison across ${basinKeys.length} catchments · Issue date t₀ = ${issueDate || 'latest'}`;
-        }
-        return;
-      }
-
       const activeId = getActiveForecastBasinId();
       const targetResult = (activeId && fcModelResultsByBasin[activeId]) ? fcModelResultsByBasin[activeId] : modelResult;
 
+      const timeline = buildSharedForecastTimeline(targetResult);
+      const { allDates, labels, issueDate, t0Index } = timeline;
+      masterHydroChart.$fcTimelineMeta = allDates.length > 0 ? { issueDate, t0Index } : null;
+
       if (!targetResult || !Array.isArray(targetResult.forecast) || targetResult.forecast.length === 0) {
-        masterHydroChart.data.labels = [];
-        masterHydroChart.data.datasets = [];
+        // Keep the bottom chart's X-axis aligned with the top chart's timeline even before model execution
+        masterHydroChart.data.labels = labels;
+        masterHydroChart.data.datasets = allDates.length > 0
+          ? [
+              {
+                label: 'HINDCAST (< t₀): Spin-Up Streamflow (m³/s)',
+                data: allDates.map(() => null),
+                borderColor: '#0284c7',
+                backgroundColor: 'rgba(2, 132, 199, 0.14)',
+                borderWidth: 2.2
+              },
+              {
+                label: 'FORECAST (≥ t₀): Streamflow Horizon (m³/s)',
+                data: allDates.map(() => null),
+                borderColor: '#15803d',
+                backgroundColor: 'rgba(21, 128, 61, 0.20)',
+                borderWidth: 2.8,
+                borderDash: [6, 3]
+              }
+            ]
+          : [];
         masterHydroChart.update();
         if (peakBadge) peakBadge.classList.add('hidden');
         if (subtitleEl) {
-          subtitleEl.innerText = 'Click "2. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
+          subtitleEl.innerText = activeId
+            ? `Viewing Basin: ${activeId} · Click "2. Make Forecasts" after fetching real-time data to generate the discharge forecast.`
+            : 'Click "2. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
         }
         return;
       }
 
       const hindcastTail = Array.isArray(targetResult.hindcast_tail) ? targetResult.hindcast_tail : [];
       const forecastSeries = targetResult.forecast;
-      const issueDate = targetResult.issue_date;
-
-      const dateSet = new Set();
-      hindcastTail.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-      forecastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-      const allDates = Array.from(dateSet).sort();
 
       const hindcastByDate = {};
       hindcastTail.forEach(pt => { if (pt && pt.date) hindcastByDate[pt.date] = pt; });
       const forecastByDate = {};
       forecastSeries.forEach(pt => { if (pt && pt.date) forecastByDate[pt.date] = pt; });
 
-      const labels = allDates.map(d => {
-        const fcPt = forecastByDate[d];
-        if (fcPt && fcPt.lead_time_days) {
-          return fcPt.lead_time_days === 1 ? `${d} (t₀ · +1d)` : `${d} (+${fcPt.lead_time_days}d)`;
-        }
-        return d === issueDate ? `${d} (t₀)` : d;
-      });
       const hindcastData = allDates.map(d => {
         const pt = hindcastByDate[d];
         return (pt && pt.discharge_cms !== undefined && pt.discharge_cms !== null) ? pt.discharge_cms : null;
@@ -10089,26 +10110,35 @@
         return (pt && pt.discharge_cms !== undefined && pt.discharge_cms !== null) ? pt.discharge_cms : null;
       });
 
+      const bridgedHydroIdx = bridgeHandoffAtT0(hindcastData, forecastData, t0Index);
+
       masterHydroChart.data.labels = labels;
       masterHydroChart.data.datasets = [
         {
-          label: `${targetResult.basin_id} Spin-Up Hindcast Streamflow (m³/s)`,
+          label: `HINDCAST (< t₀): ${targetResult.basin_id} Spin-Up Streamflow (m³/s)`,
           data: hindcastData,
-          borderColor: '#1a73e8',
-          backgroundColor: 'rgba(26, 115, 232, 0.1)',
-          borderWidth: 2,
-          pointRadius: 2,
+          borderColor: '#0284c7',
+          backgroundColor: 'rgba(2, 132, 199, 0.15)',
+          borderWidth: 2.3,
+          pointRadius: 2.8,
+          pointBackgroundColor: '#0284c7',
+          pointBorderColor: '#0369a1',
           tension: 0.3,
           spanGaps: false,
           fill: true
         },
         {
-          label: `${targetResult.basin_id} Forecast Streamflow (${targetResult.mode === 'hotstart' ? 'Hot Start' : 'Cold Start'}, m³/s)`,
+          label: `FORECAST (≥ t₀): ${targetResult.basin_id} Streamflow (${targetResult.mode === 'hotstart' ? 'Hot Start' : 'Cold Start'}, m³/s)`,
           data: forecastData,
-          borderColor: '#1e8e3e',
-          backgroundColor: 'rgba(30, 142, 62, 0.15)',
-          borderWidth: 2.5,
-          pointRadius: 3,
+          $bridgedIndex: bridgedHydroIdx,
+          borderColor: '#15803d',
+          backgroundColor: 'rgba(21, 128, 61, 0.22)',
+          borderWidth: 2.8,
+          borderDash: [6, 3],
+          pointRadius: (ctx) => (ctx.dataIndex === bridgedHydroIdx ? 0 : 3.6),
+          pointBackgroundColor: '#ffffff',
+          pointBorderColor: '#15803d',
+          pointBorderWidth: 2,
           tension: 0.3,
           spanGaps: false,
           fill: true
@@ -10130,7 +10160,7 @@
         const stateNote = targetResult.saved_state && targetResult.saved_state.state_date
           ? `Saved state at ${targetResult.saved_state.state_date}`
           : '';
-        subtitleEl.innerText = `${modeText} forecast for catchment ${targetResult.basin_id} · Issue date t₀ = ${targetResult.issue_date} · ${stateNote}`;
+        subtitleEl.innerText = `Viewing Basin: ${targetResult.basin_id} · ${modeText} forecast · Issue date t₀ = ${targetResult.issue_date} · ${stateNote}`;
       }
     }
 
@@ -10143,12 +10173,16 @@
         populateProductDropdowns();
         renderForecastCatchmentChecklist();
         renderForcingChart();
+        renderHydrographChart(null);
         return;
       }
 
       try {
+        const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
         const cidsParam = selectedIds.length > 0 ? `&catchment_ids=${encodeURIComponent(selectedIds.join(','))}` : '';
-        const res = await fetch(`/api/forecast/status?catchment_id=${encodeURIComponent(basinId)}${cidsParam}`);
+        const res = await fetch(`/api/forecast/status?catchment_id=${encodeURIComponent(basinId)}${cidsParam}&username=${encodeURIComponent(u)}`, {
+          headers: { 'X-User-Profile': u }
+        });
         const data = await res.json();
         if (res.ok && data.status === 'success') {
           fcStatusData = data;
@@ -10156,9 +10190,7 @@
           populateProductDropdowns();
           updateForecastControlsUI();
           renderForcingChart();
-          if (fcModelResultsByBasin[basinId]) {
-            renderHydrographChart(fcModelResultsByBasin[basinId]);
-          }
+          renderHydrographChart(fcModelResultsByBasin[basinId] || null);
         }
       } catch (err) {
         console.warn('Could not fetch forecast status:', err);
@@ -10214,18 +10246,21 @@
       if (basinSel) {
         basinSel.addEventListener('change', (e) => {
           const newId = e.target.value;
+          fcHydroOverlayAll = false;
           if (newId && typeof selectWatershed === 'function') {
             selectWatershed(newId);
           } else {
             activeCatchmentId = newId;
             syncForecastTabBasin();
           }
+          renderHydrographChart(fcModelResultsByBasin[newId] || null);
         });
       }
       if (nowcastSel) {
         nowcastSel.addEventListener('change', (e) => {
           fcSelectedNowcast = e.target.value !== 'none' ? e.target.value : null;
           renderForcingChart();
+          renderHydrographChart(fcModelResultsByBasin[getActiveForecastBasinId()] || null);
         });
       }
       if (forecastSel) {
@@ -10234,6 +10269,7 @@
           // Default to showing precipitation (as bars) and temperature (as lines) for any chosen product
           populateForecastVariableDropdown(true);
           renderForcingChart();
+          renderHydrographChart(fcModelResultsByBasin[getActiveForecastBasinId()] || null);
         });
       }
       if (variableSel) {
@@ -10263,15 +10299,20 @@
           if (fetchProductsList) fetchProductsList.innerText = '';
 
           try {
+            const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
             const res = await fetch('/api/forecast/fetch-realtime', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                'X-User-Profile': u
+              },
               body: JSON.stringify({
                 catchment_id: basinId || targetIds[0],
                 catchment_ids: targetIds,
                 mode: fcCurrentMode,
                 products: getSelectedFetchProducts(),
-                reference_date: 'latest'
+                reference_date: 'latest',
+                username: u
               })
             });
             const data = await res.json();
@@ -10283,6 +10324,7 @@
             renderForecastCatchmentChecklist();
             populateProductDropdowns();
             renderForcingChart();
+            renderHydrographChart(fcModelResultsByBasin[getActiveForecastBasinId()] || null);
 
             if (fetchStatusText) {
               fetchStatusText.className = 'font-medium text-[#1e8e3e]';
@@ -10323,13 +10365,18 @@
           }
 
           try {
+            const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
             const res = await fetch('/api/forecast/run-model', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                'X-User-Profile': u
+              },
               body: JSON.stringify({
                 catchment_id: basinId || targetIds[0],
                 catchment_ids: targetIds,
-                mode: fcCurrentMode
+                mode: fcCurrentMode,
+                username: u
               })
             });
             const data = await res.json();
@@ -10347,6 +10394,7 @@
               fcStatusData = data.post_run_status;
             }
             renderForecastCatchmentChecklist();
+            renderForcingChart();
             renderHydrographChart(data);
           } catch (err) {
             if (blockedReasonEl) {
@@ -10366,7 +10414,7 @@
     // map; the model selector (on both the map and the forecast panel) switches the active model
     // and draws that model's own river network on the map. Esc or X closes the forecast view.
     // =========================================================================
-    const MAAS_MODEL_ORDER = ['glofas', 'floodhub', 'geoglows', 'todays_earth'];
+    const MAAS_MODEL_ORDER = ['glofas', 'floodhub', 'geoglows'];
     const MAAS_MODELS = {
       floodhub: {
         name: 'Google FloodHub', shortName: 'FloodHub', streamMap: 'HydroSHEDS',
@@ -10382,22 +10430,15 @@
         name: 'GEOGLOWS ECMWF', shortName: 'GEOGLOWS', streamMap: 'TDX-Hydro',
         color: '#1e8e3e', band: 'rgba(30, 142, 62, 0.25)',
         networkLabel: 'TDX-Hydro streams', reachLabel: 'TDX-Hydro stream'
-      },
-      todays_earth: {
-        name: "JAXA Today's Earth", shortName: "Today's Earth", streamMap: 'CaMa-Flood',
-        color: '#9334e6', band: 'rgba(147, 52, 230, 0.25)',
-        networkLabel: '0.25° unit catchments (approx.)', reachLabel: "Today's Earth 0.25° unit"
       }
     };
     // Shown above the chart whenever the selected model is not a live forecast.
     const MAAS_STATUS_NOTES = {
-      emulated: "Emulated: no operational Today's Earth feed is configured, so this is a CaMa-Flood emulation forced by the GloFAS median.",
       severity_only: 'FloodHub reports a flood status for this gauge but publishes no forecast hydrograph.',
       unavailable: 'No forecast from this model at this location.'
     };
     let currentMaaSModel = 'glofas';
-    let maasMultiMode = false;
-    const selectedMaaSModels = new Set(MAAS_MODEL_ORDER);
+    const selectedMaaSModels = new Set(['glofas']);
     let currentMaaSView = 'map'; // 'map' | 'forecast'
     let currentMaaSProbe = null; // { lat, lon, gaugeId, riverId, label, meta } of the selected reach
     let currentMaaSForecastData = null; // /api/maas/forecast payload for currentMaaSProbe
@@ -10416,7 +10457,6 @@
     //   * Google FloodHub: Orange (Warning >=2-yr), Red (Danger >=5-yr), Dark Red (Extreme >=20-yr)
     //   * Copernicus GloFAS: Yellow (Medium >=2-yr), Red (High >=5-yr), Purple (Severe >=20-yr)
     //   * GEOGLOWS ECMWF: Yellow (>=2-yr), Orange (>=10-yr), Red (>=25-yr), Purple (>=50-yr)
-    //   * JAXA Today's Earth: Yellow (>=2-yr), Red (>=5-yr), Purple (>=20-yr)
     const MAAS_NORMAL_BLUE = '#1a73e8';
     const MAAS_PROVIDER_PALETTES = {
       floodhub: {
@@ -10453,17 +10493,6 @@
           { color: '#fa4343', label: '≥25-yr', bold: true },
           { color: '#ba25f5', label: '≥50-yr', bold: true }
         ]
-      },
-      todays_earth: {
-        title: "Today's Earth Return Periods",
-        colors: [MAAS_NORMAL_BLUE, '#eab308', '#dc2626', '#9333ea', '#9333ea'],
-        labels: ['Normal (<2-yr)', '≥2-yr Warning', '≥5-yr Danger', '≥20-yr Extreme', '≥20-yr Extreme'],
-        legend: [
-          { color: MAAS_NORMAL_BLUE, label: 'Normal (<2-yr)' },
-          { color: '#eab308', label: '≥2-yr Warn', bold: true },
-          { color: '#dc2626', label: '≥5-yr Danger', bold: true },
-          { color: '#9333ea', label: '≥20-yr Extr', bold: true }
-        ]
       }
     };
 
@@ -10493,61 +10522,43 @@
       return MAAS_NORMAL_BLUE;
     }
 
+    function maasModelPillButtonHtml(attrName, key, isSelected) {
+      const m = MAAS_MODELS[key];
+      const role = attrName === 'data-maas-map-model' ? 'radio' : 'checkbox';
+      const btnCls = isSelected
+        ? 'bg-[#e8f0fe] border-[#d2e3fc] text-[#174ea6] font-medium shadow-[0_1px_2px_rgba(26,115,232,0.08)]'
+        : 'bg-[#f8f9fa] border-[#dadce0] text-[#5f6368] hover:bg-[#f1f3f4]';
+      return `<button type="button" ${attrName}="${key}" role="${role}" aria-checked="${isSelected}" class="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition ${btnCls}">
+        <span class="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0" style="border-color:${isSelected ? m.color : '#80868b'}">
+          ${isSelected ? `<span class="w-1.5 h-1.5 rounded-full" style="background:${m.color}"></span>` : ''}
+        </span>
+        <span class="truncate">${maasEscapeHtml(m.shortName)}</span>
+      </button>`;
+    }
+
     function renderMaaSMultiModelLists() {
       const mapList = document.getElementById('maasMapMultiModelList');
       if (mapList) {
-        mapList.innerHTML = MAAS_MODEL_ORDER.map(k => {
-          const m = MAAS_MODELS[k];
-          const on = selectedMaaSModels.has(k);
-          return `<button type="button" data-maas-multi-model="${k}" role="checkbox" aria-checked="${on}" class="flex items-center gap-1.5 text-left text-[11px] py-0.5 px-1 rounded hover:bg-[#f1f3f4] transition ${on ? 'font-semibold text-[#202124]' : 'text-[#5f6368]'}">
-            <span class="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0" style="border-color:${on ? m.color : '#80868b'}">
-              ${on ? `<span class="w-1.5 h-1.5 rounded-full" style="background:${m.color}"></span>` : ''}
-            </span>
-            <span>${maasEscapeHtml(m.name)}</span>
-          </button>`;
-        }).join('');
+        mapList.innerHTML = MAAS_MODEL_ORDER.map(k =>
+          maasModelPillButtonHtml('data-maas-map-model', k, k === currentMaaSModel)
+        ).join('');
       }
       const fcList = document.getElementById('maasForecastMultiModelList');
       if (fcList) {
-        fcList.innerHTML = MAAS_MODEL_ORDER.map(k => {
-          const m = MAAS_MODELS[k];
-          const on = selectedMaaSModels.has(k);
-          return `<button type="button" data-maas-multi-model="${k}" role="checkbox" aria-checked="${on}" class="flex items-center gap-1.5 text-xs px-2 py-1 rounded border transition ${on ? 'bg-[#e8f0fe] border-[#d2e3fc] text-[#174ea6] font-medium' : 'bg-[#f8f9fa] border-[#dadce0] text-[#5f6368]'}">
-            <span class="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0" style="border-color:${on ? m.color : '#80868b'}">
-              ${on ? `<span class="w-1.5 h-1.5 rounded-full" style="background:${m.color}"></span>` : ''}
-            </span>
-            <span>${maasEscapeHtml(m.shortName)}</span>
-          </button>`;
-        }).join('');
+        fcList.innerHTML = MAAS_MODEL_ORDER.map(k =>
+          maasModelPillButtonHtml('data-maas-forecast-model', k, selectedMaaSModels.has(k))
+        ).join('');
       }
     }
 
     function toggleMaaSMultiModel(key) {
       if (!MAAS_MODELS[key]) return;
       if (selectedMaaSModels.has(key)) {
-        if (selectedMaaSModels.size <= 1) return; // keep at least one model selected
+        if (selectedMaaSModels.size <= 1) return; // keep at least one model selected in forecast view
         selectedMaaSModels.delete(key);
       } else {
         selectedMaaSModels.add(key);
       }
-      renderMaaSMultiModelLists();
-      if (currentMaaSView === 'forecast') renderMaaSForecast();
-    }
-
-    function setMaaSMultiMode(enabled) {
-      maasMultiMode = Boolean(enabled);
-      ['maasMapMultiToggle', 'maasForecastMultiToggle'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el && el.checked !== maasMultiMode) el.checked = maasMultiMode;
-      });
-      const singleRow = document.getElementById('maasSingleMapRow');
-      if (singleRow) singleRow.classList.toggle('hidden', maasMultiMode);
-      const multiPanel = document.getElementById('maasMultiMapPanel');
-      if (multiPanel) multiPanel.classList.toggle('hidden', !maasMultiMode);
-      const modelSelect = document.getElementById('maasModelSelect');
-      if (modelSelect) modelSelect.classList.toggle('hidden', maasMultiMode);
-      const fcMultiList = document.getElementById('maasForecastMultiModelList');
-      if (fcMultiList) fcMultiList.classList.toggle('hidden', !maasMultiMode);
       renderMaaSMultiModelLists();
       if (currentMaaSView === 'forecast') renderMaaSForecast();
     }
@@ -10557,14 +10568,11 @@
       const changed = key !== currentMaaSModel;
       currentMaaSModel = key;
       const meta = MAAS_MODELS[key];
-      ['maasMapModelSelect', 'maasModelSelect', 'maasStreamMapSelect'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el && el.value !== key) el.value = key;
-      });
       const dot = document.getElementById('maasMapModelDot');
       if (dot) dot.style.background = meta.color;
       const caption = document.getElementById('maasNetworkCaption');
       if (caption) caption.textContent = meta.networkLabel;
+      renderMaaSMultiModelLists();
       renderMaaSFlowLegend(key);
       if (changed) {
         clearTimeout(maasLiveRefreshTimer);
@@ -10572,7 +10580,6 @@
         maasRiversLoaded = null;
         if (currentActiveTabId === 'tab-maas') fetchMaaSViewportRivers(false);
       }
-      if (currentMaaSView === 'forecast') renderMaaSForecast();
     }
 
     function initMaaSMapLayers() {
@@ -10658,8 +10665,7 @@
     // Matches the backend's zoom thresholds in maas.networks / maas_networks.py so zooming into a finer level of detail
     // fetches new reaches while staying within the same level reuses the drawn layer.
     function maasLodKey(model, zoom) {
-      const z = model === 'todays_earth' ? Math.min(Math.max(zoom, 3), 9)
-        : Math.min(Math.max(zoom, 3), 11);
+      const z = Math.min(Math.max(zoom, 3), 11);
       return `${model}:${z}`;
     }
 
@@ -10754,15 +10760,7 @@
         const gProps = geojson.properties || {};
         const captionEl = document.getElementById('maasNetworkCaption');
         if (captionEl) {
-          if (model === 'floodhub') {
-            const fcCnt = Number(gProps.forecast_feature_count);
-            const totalCnt = geojson.features.length;
-            captionEl.textContent = isFinite(fcCnt)
-              ? `Blue/Alert = FloodHub forecast (${fcCnt.toLocaleString()} / ${totalCnt.toLocaleString()} in view) · Grey = no FloodHub forecast`
-              : `${modelMeta.networkLabel} · Blue/Alert = FloodHub forecast · Grey = no forecast`;
-          } else {
-            captionEl.textContent = modelMeta.networkLabel;
-          }
+          captionEl.textContent = modelMeta.networkLabel;
         }
         const liveColored = Number(gProps.live_colored_count || 0);
         const livePending = Number(gProps.live_pending_count || 0);
@@ -10871,7 +10869,7 @@
     }
 
     // Opens the forecast view for a clicked reach and fetches every model once via /api/maas/forecast;
-    // the dropdown then switches between models without refetching.
+    // the forecast model buttons then toggle models without refetching.
     function probeMaaSPoint(lat, lon, gaugeId = null, riverId = null, label = null, meta = null) {
       currentMaaSProbe = { lat, lon, gaugeId, riverId, label, meta };
       currentMaaSForecastData = null;
@@ -10899,15 +10897,16 @@
       if (meta && meta.areaMinKm2) url += `&area_min_km2=${encodeURIComponent(meta.areaMinKm2)}`;
       if (meta && meta.network) url += `&network=${encodeURIComponent(meta.network)}`;
       try {
-        if (!maasMultiMode && currentMaaSModel) {
-          const fastResp = await fetch(`${url}&models=${encodeURIComponent(currentMaaSModel)}`);
+        if (selectedMaaSModels.size === 1) {
+          const [onlyModel] = selectedMaaSModels;
+          const fastResp = await fetch(`${url}&models=${encodeURIComponent(onlyModel)}`);
           if (!fastResp.ok) throw new Error(`HTTP ${fastResp.status}`);
           const fastData = await fastResp.json();
           if (requestSeq !== maasForecastRequestSeq) return;
           currentMaaSForecastData = fastData;
           currentMaaSForecastNote = null;
           renderMaaSForecast();
-          // Prefetch all models in the background so switching models or toggling multi-model mode is instant.
+          // Prefetch all models in the background so selecting additional models in Forecast View is instant.
           fetch(url).then(r => r.ok ? r.json() : null).then(fullData => {
             if (!fullData || requestSeq !== maasForecastRequestSeq) return;
             currentMaaSForecastData = fullData;
@@ -10986,11 +10985,11 @@
       const rps = (data && data.return_periods) || {};
       const fh = key === 'floodhub';
       const pal = MAAS_PROVIDER_PALETTES[key] || MAAS_PROVIDER_PALETTES.glofas;
-      const src = (fh ? m.thresholds : (m.return_periods || rps[key] || (key === 'todays_earth' ? rps.glofas : null))) || {};
+      const src = (fh ? m.thresholds : (m.return_periods || rps[key])) || {};
       return [
-        [fh ? 'Warning level' : '2-yr return period', fh ? src.warning_2yr : src.return_period_2, pal.tiers[1] ? pal.tiers[1].color : '#eab308'],
-        [fh ? 'Danger level' : '5-yr return period', fh ? src.danger_5yr : src.return_period_5, pal.tiers[2] ? pal.tiers[2].color : '#dc2626'],
-        [fh ? 'Extreme danger level' : '20-yr return period', fh ? src.extreme_20yr : src.return_period_20, pal.tiers[3] ? pal.tiers[3].color : '#9333ea']
+        [fh ? 'Warning level' : '2-yr return period', fh ? src.warning_2yr : src.return_period_2, (pal.colors && pal.colors[1]) || '#eab308'],
+        [fh ? 'Danger level' : '5-yr return period', fh ? src.danger_5yr : src.return_period_5, (pal.colors && pal.colors[2]) || '#dc2626'],
+        [fh ? 'Extreme danger level' : '20-yr return period', fh ? src.extreme_20yr : src.return_period_20, (pal.colors && pal.colors[3]) || '#9333ea']
       ].filter(([, v]) => v !== null && v !== undefined && isFinite(v) && Number(v) > 0)
         .map(([label, v, color]) => ({ label, value: Number(v), color }));
     }
@@ -11021,7 +11020,6 @@
       const gl = reaches.glofas || vs.glofas_cell;
       const fh = reaches.floodhub || vs.floodhub_gauge;
       const gg = reaches.geoglows || vs.geoglows_reach;
-      const te = reaches.todays_earth || vs.todays_earth_cell;
       const probe = reaches.probe || vs.probe;
       const parts = [];
       for (const k of keys) {
@@ -11031,8 +11029,6 @@
           parts.push(`HydroSHEDS ${fh.gauge_id}`);
         } else if (k === 'geoglows' && gg && gg.river_id) {
           parts.push(`TDX-Hydro #${gg.river_id}`);
-        } else if (k === 'todays_earth' && te && te.cell_center_lat !== undefined) {
-          parts.push(`CaMa-Flood (${Number(te.cell_center_lat).toFixed(2)}°, ${Number(te.cell_center_lon).toFixed(2)}°)`);
         }
       }
       const targetArea = probe && Number(probe.upstream_area_km2) > 0
@@ -11041,7 +11037,8 @@
       return parts.length ? `Matched stream reaches${targetArea}: ${parts.join(' · ')}` : null;
     }
 
-    // Draws either the single selected model or the multi-model ensemble from the cached `maas` payload.
+    // Draws either the single selected model (when 1 model is selected in Forecast View)
+    // or the multi-model ensemble (when 2+ models are selected in Forecast View).
     function renderMaaSForecast() {
       initMaasCharts();
       const data = currentMaaSForecastData;
@@ -11055,7 +11052,7 @@
 
       if (!data) {
         note = currentMaaSForecastNote;
-      } else if (maasMultiMode) {
+      } else if (selectedMaaSModels.size >= 2) {
         const activeKeys = MAAS_MODEL_ORDER.filter(k => selectedMaaSModels.has(k));
         const usable = [];
         const skipped = [];
@@ -11112,11 +11109,10 @@
           }
           for (const k of usable) {
             const m = MAAS_MODELS[k];
-            const st = (timeline.status || {})[k] || null;
             datasets.push({
-              label: m.name + (st === 'emulated' ? ' (emulated)' : ''),
+              label: m.name,
               data: sliced[k], unit: 'm³/s', borderColor: m.color, backgroundColor: m.color,
-              borderWidth: 2.5, borderDash: st === 'emulated' ? [6, 3] : [], pointRadius: 2,
+              borderWidth: 2.5, pointRadius: 2,
               tension: 0.3, spanGaps: true, order: 1
             });
           }
@@ -11125,8 +11121,8 @@
           note = [reachNote, agreementNote, skipped.length ? `Skipped: ${skipped.join(', ')}` : null].filter(Boolean).join(' · ') || null;
         }
       } else {
-        const select = document.getElementById('maasModelSelect');
-        const key = (select && MAAS_MODELS[select.value] ? select.value : null) || currentMaaSModel || 'glofas';
+        const [selectedKey] = selectedMaaSModels;
+        const key = (selectedKey && MAAS_MODELS[selectedKey]) ? selectedKey : (currentMaaSModel || 'glofas');
         const style = MAAS_MODELS[key];
         const series = (timeline.series || {})[key];
         const status = (timeline.status || {})[key] || null;
@@ -11158,7 +11154,7 @@
           }
           datasets.push({
             label: hasBand ? 'Median' : (isStage ? 'Stage' : 'Discharge'), data: central, unit,
-            borderColor: style.color, backgroundColor: style.color, borderWidth: 2.5, borderDash: status === 'emulated' ? [6, 3] : [],
+            borderColor: style.color, backgroundColor: style.color, borderWidth: 2.5,
             pointRadius: 2, tension: 0.3, spanGaps: true, order: 0
           });
           maasModelThresholds(data, key).forEach(t => datasets.push({
@@ -11186,23 +11182,20 @@
     }
 
     {
-      ['maasMapModelSelect', 'maasModelSelect', 'maasStreamMapSelect'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener('change', (e) => setMaaSModel(e.target.value));
-      });
-      ['maasMapMultiToggle', 'maasForecastMultiToggle'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener('change', (e) => setMaaSMultiMode(e.target.checked));
-      });
-      ['maasMapMultiModelList', 'maasForecastMultiModelList'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) {
-          el.addEventListener('click', (e) => {
-            const btn = e.target.closest('[data-maas-multi-model]');
-            if (btn) toggleMaaSMultiModel(btn.getAttribute('data-maas-multi-model'));
-          });
-        }
-      });
+      const mapList = document.getElementById('maasMapMultiModelList');
+      if (mapList) {
+        mapList.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-maas-map-model]');
+          if (btn) setMaaSModel(btn.getAttribute('data-maas-map-model'));
+        });
+      }
+      const fcList = document.getElementById('maasForecastMultiModelList');
+      if (fcList) {
+        fcList.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-maas-forecast-model]');
+          if (btn) toggleMaaSMultiModel(btn.getAttribute('data-maas-forecast-model'));
+        });
+      }
       renderMaaSMultiModelLists();
       renderMaaSFlowLegend(currentMaaSModel);
       const refreshBtn = document.getElementById('maasRefreshLiveBtn');

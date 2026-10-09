@@ -7,7 +7,7 @@ except ImportError:
   import unittest as absltest
 
 from frontend.jobs import JobManager, get_job_manager
-from frontend.notifier import find_smtp_mailer_binary, format_extraction_email, send_email_notification
+from frontend.notifier import format_extraction_email, send_email_notification
 
 
 class JobsAndNotifierTest(absltest.TestCase):
@@ -28,7 +28,7 @@ class JobsAndNotifierTest(absltest.TestCase):
         "n_timesteps": 16608,
         "start_date": "1979-01-01",
         "end_date": "2024-06-20",
-        "master_zarr_path": "/tmp/openhydronet",
+        "master_zarr_path": "/tmp/test/historical_training_master.zarr",
         "master_size_mb": 12.45,
     }
 
@@ -37,7 +37,7 @@ class JobsAndNotifierTest(absltest.TestCase):
     self.assertIn("Historical Extraction SUCCESS", subject)
     self.assertIn("NOAA CPC Global Precipitation", subject)
     self.assertIn("job_test_12345", text_body)
-    self.assertIn("/tmp/openhydronet", text_body)
+    self.assertIn("/tmp/test/historical_training_master.zarr", text_body)
     self.assertIn("1979-01-01 to 2024-06-20", text_body)
     self.assertIn("12.45 MB", text_body)
     self.assertIn("job_test_12345", html_body)
@@ -47,23 +47,23 @@ class JobsAndNotifierTest(absltest.TestCase):
     """Verifies that invalid or empty email addresses safely return False."""
     self.assertFalse(send_email_notification("", {}, {}))
     self.assertFalse(send_email_notification("not-an-email", {}, {}))
-
-  @mock.patch("frontend.notifier.find_smtp_mailer_binary")
-  @mock.patch("subprocess.run")
-  def test_send_email_notification_via_smtp_mailer(self, mock_run, mock_find):
-    """Verifies send_email_notification invokes smtp_mailer with expected flags."""
-    mock_find.return_value = "/usr/sbin/sendmail"
-    mock_run.return_value = mock.MagicMock(returncode=0, stderr="")
+  @mock.patch("smtplib.SMTP")
+  @mock.patch("os.environ.get")
+  def test_send_email_notification_via_smtp(self, mock_env, mock_smtp):
+    """Verifies send_email_notification invokes SMTP with expected fields."""
+    mock_env.return_value = "smtp.example.com"
+    mock_smtp_instance = mock.MagicMock()
+    mock_smtp.return_value.__enter__.return_value = mock_smtp_instance
 
     job_info = {"job_id": "job_123"}
     result = {"status": "success", "weather_source": "era5"}
     success = send_email_notification("user@example.com", job_info, result)
 
     self.assertTrue(success)
-    mock_run.assert_called_once()
-    args = mock_run.call_args[0][0]
-    self.assertEqual(args[0], "/usr/sbin/sendmail")
-    self.assertIn("-to=user@example.com", args)
+    mock_smtp_instance.sendmail.assert_called_once()
+    args = mock_smtp_instance.sendmail.call_args[0]
+    self.assertEqual(args[1], ["user@example.com"])
+
 
   def test_job_manager_async_execution(self):
     """Verifies JobManager submits, executes asynchronously, and tracks completion."""

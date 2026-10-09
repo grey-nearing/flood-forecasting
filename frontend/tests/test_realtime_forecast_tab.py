@@ -314,9 +314,27 @@ class RealtimeForecastTabTest(unittest.TestCase):
         "fetchForecastBtn",
         "executionModeSelect",
         "modelCheckpointSelect",
+        "fcBasinSelect",
     ]
     for dom_id in required_ids:
       self.assertIn(f'id="{dom_id}"', html, f"Missing DOM ID: {dom_id}")
+
+    # Verify x-axis alignment, t0 boundary plugin, and handoff bridge helpers exist
+    for expected_token in [
+        'for="fcBasinSelect"',
+        "fcIssueDateBoundaryPlugin",
+        "buildSharedForecastTimeline",
+        "bridgeHandoffAtT0",
+        "LEFT_AXIS_WIDTH",
+        "RIGHT_AXIS_WIDTH",
+        "yRightAlign",
+    ]:
+      self.assertIn(expected_token, html, f"Missing expected UI token: {expected_token}")
+
+    # Verify #fcBasinSelect is placed on the plots area (after </aside>), not inside #forecastingSidebar
+    sidebar_end = html.index("</aside>", html.index('id="forecastingSidebar"'))
+    basin_select_pos = html.index('id="fcBasinSelect"')
+    self.assertGreater(basin_select_pos, sidebar_end)
 
   def test_multi_stream_discovery_and_strict_no_fake_data_nan_preservation(self):
     """Verifies IMERG/CPC/HRES/ECMWF_AIFS/NOAA_GFS discovery, all-variable extraction, and strict NaN preservation."""
@@ -665,6 +683,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
 
   def test_load_multimet_realtime_reload_preserves_product_enum_identity(self):
     """Regression test: reloading multimet modules must never cause KeyError(<Product.HRES: 'HRES'>)."""
+    from multimet.timeseries_extractors import base as mm_base
     from multimet.timeseries_extractors import dynamical as mm_dynamical
     from multimet.timeseries_extractors import hres as mm_hres
     from multimet.timeseries_extractors import zarr_writer as mm_zw
@@ -673,17 +692,63 @@ class RealtimeForecastTabTest(unittest.TestCase):
         reload_modules=True
     )
     self.assertIs(mm_realtime.Product, mm_config.Product)
+    self.assertIs(mm_realtime.Product, mm_base.Product)
     self.assertIs(mm_realtime.Product, mm_zw.Product)
     self.assertIs(mm_realtime.Product, mm_hres.Product)
     self.assertIs(mm_realtime.Product, mm_dynamical.Product)
 
     for prod_name in ("HRES", "AIFS", "GFS", "GEFS", "IFS_ENS", "IMERG", "CPC"):
       prod_enum = mm_realtime.Product[prod_name]
+      self.assertIn(prod_enum, mm_base.PRODUCT_TYPES)
       self.assertIn(prod_enum, mm_zw.PRODUCT_TYPES)
       self.assertIn(prod_enum, mm_zw.PRODUCT_BANDS)
+
+  def test_profile_watershed_hydration_across_tabs(self):
+    """Regression test: all profile basins (delineated + uploaded with id) hydrate across all tabs."""
+    uploaded_feature_only_id = {
+        "type": "Feature",
+        "properties": {
+            "id": "us_03338780",
+            "source": "uploaded",
+            "AREA": 43.2,
+        },
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [-86.9, 40.3],
+                [-86.8, 40.3],
+                [-86.8, 40.4],
+                [-86.9, 40.4],
+                [-86.9, 40.3],
+            ]],
+        },
+    }
+    self.pm.save_watersheds(
+        [TEST_WATERSHED_FEATURE, TEST_WATERSHED_FEATURE_2, uploaded_feature_only_id],
+        username=TEST_USER,
+    )
+    loaded = self.pm.load_watersheds(username=TEST_USER)
+    self.assertEqual(len(loaded), 3)
+    cids = [f["properties"].get("catchment_id") for f in loaded]
+    self.assertEqual(cids, [TEST_BASIN, TEST_BASIN_2, "us_03338780"])
+
+    code, ws_resp = self._request("GET", f"/api/watersheds?username={TEST_USER}")
+    self.assertEqual(code, 200)
+    self.assertEqual(
+        [f["properties"].get("catchment_id") for f in ws_resp["features"]],
+        [TEST_BASIN, TEST_BASIN_2, "us_03338780"],
+    )
+
+    html_path = (
+        Path(__file__).resolve().parent.parent / "static" / "index.html"
+    )
+    html = html_path.read_text(encoding="utf-8")
+    self.assertNotIn("updateWatershedListUI", html)
+    self.assertIn("await fetchCurrentProfile();", html)
+    self.assertIn("if (typeof renderGeoCatchmentSelector === 'function') renderGeoCatchmentSelector();", html)
+    self.assertIn("if (typeof loadPersistedExtractedAttributes === 'function') await loadPersistedExtractedAttributes();", html)
+    self.assertIn("if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();", html)
 
 
 if __name__ == "__main__":
   unittest.main()
-
-

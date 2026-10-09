@@ -52,11 +52,13 @@ RIVER_NETWORKS_DIR = BASE_LAYERS_DIR / "river_networks"
 HYDRO_BASINS_DIR = BASE_LAYERS_DIR / "hydro_basins"
 CLIMATOLOGY_DIR = BASE_LAYERS_DIR / "climatology"
 
+from utils.file_paths import OPENHYDRONET_CACHE_ROOT
+
 # External Permanent Storage & Cache Locations
 HOME_DIR = Path.home()
 PERM_DATA_DIR = HOME_DIR / "data"
 PERM_POLYGONS_DIR = PERM_DATA_DIR / "input" / "polygons"
-CACHE_DIR = HOME_DIR / ".cache" / "openhydronet" / "data"
+CACHE_DIR = OPENHYDRONET_CACHE_ROOT / "data"
 
 STATIC_DIR = BASE_DIR / "static"
 

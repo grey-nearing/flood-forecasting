@@ -55,22 +55,29 @@ LEVEL_SIMPLIFY_TOL: Dict[int, float] = {
     10: 0.0005, 11: 0.0005, 12: 0.0005
 }
 
+from utils.file_paths import (
+    OPENHYDRONET_DATA_CACHE_DIR,
+    OPENHYDRONET_ERA5_CLIMATE_CACHE_DIR,
+    OPENHYDRONET_HYDROATLAS_CACHE_DIR,
+)
+
+
 def resolve_app_static_extractor_paths() -> Dict[str, Any]:
   # Use frontend.config logic
   repo_root = Path(__file__).resolve().parents[1]
-  
+
   resolved_gdb = None
   if os.environ.get("HYDROATLAS_GDB_PATH"):
     resolved_gdb = Path(os.environ["HYDROATLAS_GDB_PATH"])
   else:
     gdb_candidates = [
-      Path.home() / ".cache" / "googlehydrology" / "hydroatlas" / "BasinATLAS_v10.gdb",
-      Path.home() / ".cache" / "googlehydrology" / "hydroatlas",
+      OPENHYDRONET_HYDROATLAS_CACHE_DIR / "BasinATLAS_v10.gdb",
+      OPENHYDRONET_HYDROATLAS_CACHE_DIR,
+      OPENHYDRONET_DATA_CACHE_DIR / "basin_atlas" / "BasinATLAS_v10.gdb",
+      OPENHYDRONET_DATA_CACHE_DIR / "basin_atlas",
       repo_root / "frontend" / "data" / "shared" / "hydroatlas" / "BasinATLAS_v10.gdb",
       repo_root / "frontend" / "data" / "shared" / "hydroatlas",
       repo_root / "frontend" / "data" / "base_layers" / "hydro_basins" / "basin_atlas" / "BasinATLAS_v10.gdb",
-      Path.home() / ".cache" / "openhydronet" / "data" / "basin_atlas" / "BasinATLAS_v10.gdb",
-      Path.home() / ".cache" / "openhydronet" / "hydroatlas" / "BasinATLAS_v10.gdb",
     ]
     for cand in gdb_candidates:
       if not cand.exists():
@@ -89,10 +96,8 @@ def resolve_app_static_extractor_paths() -> Dict[str, Any]:
     resolved_era5 = Path(os.environ["ERA5_CLIMATE_CACHE_DIR"])
   else:
     era5_candidates = [
-      Path.home() / ".cache" / "googlehydrology" / "era5_climate",
+      OPENHYDRONET_ERA5_CLIMATE_CACHE_DIR,
       repo_root / "frontend" / "data" / "shared" / "hydroatlas" / "era5_climate",
-      Path.home() / ".cache" / "openhydronet" / "data" / "era5_climate",
-      Path.home() / ".cache" / "openhydronet" / "era5_climate",
     ]
     for cand in era5_candidates:
       if cand.exists() and any(cand.glob("*_climate_indices.txt")):
@@ -102,7 +107,7 @@ def resolve_app_static_extractor_paths() -> Dict[str, Any]:
       resolved_era5 = era5_candidates[0]
 
   resolved_gridded = os.environ.get("ERA5_GRIDDED_ZARR_URI") or None
-  
+
   return {
     "gdb_path": resolved_gdb,
     "era5_cache_dir": resolved_era5,

@@ -17,11 +17,20 @@ This skill defines the package layout, subpackage boundaries, helper-tool placem
 
 ## 1. Top-Level Repository Layout
 
-The repository is organized into self-contained top-level Python packages (`model/`, `multimet/`, `return_periods/`) plus shared documentation, environment specifications, agent skills, and CI workflows:
+The repository is organized into self-contained top-level Python packages (`model/`, `multimet/`, `return_periods/`, `utils/`, `benchmarks/`) plus shared documentation, environment specifications, agent skills, and CI workflows:
 
 ```text
 flood-forecasting/
 ├── .github/workflows/             # All GitHub Actions CI workflows (root-only)
+├── benchmarks/                    # Standalone canonical benchmark suite across all core components
+│   ├── catchment_delineation.py   # Global 90m D8 watershed polygon accuracy benchmark (benchmark-catchment)
+│   ├── static_extractor.py        # HydroATLAS & Caravan static attribute benchmark (benchmark-static-extractor)
+│   ├── gridded_archive_builders.py# Gridded Zarr archive parity benchmark (benchmark-gridded-archive)
+│   ├── timeseries_extractors.py   # MultiMet catchment timeseries reconstruction benchmark (benchmark-timeseries-extractor)
+│   ├── return_periods.py          # Caravan USGS R (MGBT) + Fortran (peakfq) benchmark (benchmark-return-periods)
+│   ├── model.py                   # Core forecasting model, forcing & hot-start benchmark (benchmark-model)
+│   ├── tools/                     # Benchmark cohort dataset builders (build_benchmark_dataset.py)
+│   └── tests/                     # Co-located unit tests for all benchmark harnesses
 ├── model/                         # Core deep-learning hydrological modeling package
 │   ├── datasetzoo/                # Dataset loaders (Caravan, MultiMet, CAMELS, ...)
 │   ├── datautils/                 # Scalers, normalization, climate/unit utilities
@@ -35,15 +44,17 @@ flood-forecasting/
 │   └── tests/                     # Co-located hydrology model unit & integration tests
 ├── multimet/                      # Multi-source meteorological, static & spatial data pipelines
 │   ├── catchment_delineation/     # Global DEM flow routing & watershed polygon delineation
-│   │   └── tools/                 # DEM tile slicing & benchmark dataset builder scripts
+│   │   └── tools/                 # DEM tile slicing scripts (slice_continental_dems.py)
 │   ├── gridded_archive_builders/  # Upstream gridded Zarr builders (CPC, IMERG)
 │   ├── timeseries_extractors/     # Catchment area-weighted zonal timeseries extractors
 │   ├── static_extractor/          # HydroATLAS & Caravan climate static attribute extractor
 │   ├── utils/                     # Shared storage, HTTP/Earthdata, Zarr, GCS, spatial & zonal helpers
 │   └── tests/                     # Co-located unit, integration, and canary tests for all of multimet
 ├── return_periods/                # USGS Bulletin 17C flood frequency (MGBT + EMA) calculator
-│   ├── benchmark/                 # Caravan USGS R + Fortran peakfq benchmark suite & report
-│   └── tests/                     # Co-located unit & USGS Bulletin 17C benchmark tests
+│   └── tests/                     # Co-located unit & USGS Bulletin 17C verification tests
+├── utils/                         # Global cross-package utilities
+│   ├── file_paths.py              # Single source of truth for all GCS URIs, external API URLs & canonical file names
+│   └── tests/                     # Unit tests for global utilities
 ├── docs/                          # Sphinx ReadTheDocs documentation (source/usage/ and source/api/)
 ├── environments/                  # Conda (conda.yml, environment_cpu.yml) & RTD requirements
 ├── skills/                        # Project-level AI agent skills
@@ -56,18 +67,18 @@ flood-forecasting/
 ## 2. Package-Scoped `tools/` Directories (No Root `scripts/` or `tools/`)
 
 - **Never create top-level `scripts/` or `tools/` folders at the repository root.**
-- Any auxiliary scripts or data-preparation utilities must live inside the package or subpackage they belong to, using the harmonized directory name **`tools/`** (e.g., `multimet/catchment_delineation/tools/` for `slice_continental_dems.py` and `build_benchmark_dataset.py`).
-- If a script is a primary user-facing workflow, expose it as an installed CLI entry point in `setup.py` (`console_scripts`) rather than requiring users to invoke a standalone script path.
+- Any auxiliary scripts or data-preparation utilities must live inside the package or subpackage they belong to, using the harmonized directory name **`tools/`** (e.g., `multimet/catchment_delineation/tools/slice_continental_dems.py` and `benchmarks/tools/build_benchmark_dataset.py`).
+- If a script is a primary user-facing workflow or canonical benchmark, expose it as an installed CLI entry point in `setup.py` (`console_scripts`) rather than requiring users to invoke a standalone script path.
 
 ---
 
 ## 3. `multimet/` Subpackage Boundaries & Shared Utilities
 
 1. **One Subpackage per Distinct Workflow:**
-   - `multimet/catchment_delineation/`: High-resolution (`90m` / 3-arcsec) D8 flow-direction watershed delineation (`delineate-catchment`) and global polygon accuracy benchmarking (`benchmark-catchment`).
-   - `multimet/gridded_archive_builders/`: CLI builders and incremental extenders (`build-cpc-archive`, `build-imerg-archive`) that download native-resolution daily precipitation grids from NOAA PSL and NASA GES DISC and write standardized `(time, latitude, longitude)` Zarr stores.
-   - `multimet/timeseries_extractors/`: Catchment-polygon zonal averaging extractors (`CPC`, `IMERG`, `ERA5-Land`, and `HRES`) with serial and Dask runners (`extract-multimet`, `extract-multimet-dask`).
-   - `multimet/static_extractor/`: Static catchment attribute extractor (`extract-caravan-static`, `extract-static-attributes`, `extract-caravan-static-batch`, `benchmark-static-extractor`) computing HydroATLAS Level 12 summaries and long-term Caravan climate signatures.
+   - `multimet/catchment_delineation/`: High-resolution (`90m` / 3-arcsec) D8 flow-direction watershed delineation (`delineate-catchment`); benchmarked via `benchmarks/catchment_delineation.py` (`benchmark-catchment`).
+   - `multimet/gridded_archive_builders/`: CLI builders and incremental extenders (`build-cpc-archive`, `build-imerg-archive`) that download native-resolution daily precipitation grids from NOAA PSL and NASA GES DISC and write standardized `(time, latitude, longitude)` Zarr stores; benchmarked via `benchmarks/gridded_archive_builders.py` (`benchmark-gridded-archive`).
+   - `multimet/timeseries_extractors/`: Catchment-polygon zonal averaging extractors (`CPC`, `IMERG`, `ERA5-Land`, and `HRES`) with serial and Dask runners (`extract-multimet`, `extract-multimet-dask`); benchmarked via `benchmarks/timeseries_extractors.py` (`benchmark-timeseries-extractor`).
+   - `multimet/static_extractor/`: Static catchment attribute extractor (`extract-caravan-static`, `extract-static-attributes`, `extract-caravan-static-batch`) computing HydroATLAS Level 12 summaries and long-term Caravan climate signatures; benchmarked via `benchmarks/static_extractor.py` (`benchmark-static-extractor`).
 
 2. **`multimet/utils/` is the Single Source of Truth for Shared Helpers:**
    - Any utility needed by more than one subpackage **must** live in `multimet/utils/`.
@@ -79,12 +90,24 @@ flood-forecasting/
 
 ---
 
-## 4. CI Workflows, Packaging & Dependencies
+## 4. Mandatory Comprehensive Benchmark Suite (`benchmarks/`) for All Submodules
+
+1. **Dual Verification Requirement (`<package>/tests/` + `benchmarks/`):**
+   - All canonical benchmark harnesses live in the dedicated root-level **`benchmarks/`** package (`benchmarks/<component>.py`, with unit tests in `benchmarks/tests/`). Do not scatter `benchmark.py` files inside individual subpackages.
+   - Every new top-level package, subpackage, or major algorithmic component added to the repository **must** include **both**:
+     1. Automated unit and integration tests in `<package>/tests/` (run automatically in CI), **and**
+     2. A manual, comprehensive canonical benchmark in `benchmarks/<component>.py` (registered as a `benchmark-<component>` CLI entry point in `setup.py`, covered by unit tests in `benchmarks/tests/`, and documented in `benchmarks/README.md` and [`skills/benchmarking.md`](./benchmarking.md)) that evaluates the component at scale against canonical reference data with zero `NaN` masking, zero imputation, zero fallback to reference data, and full lower-tail (`[Min, P1, P5, P10, P25, P50]`) / failure-rate reporting.
+2. **Exemption for Non-Benchmarkable Features (e.g., UI / Visualization):**
+   - Certain new features or submodules—such as user interfaces (UI), interactive web/notebook frontends, plotting/visualization helpers, or pure configuration/devops utilities—may be added where quantitative canonical benchmarking does not make sense or is not possible. Such features are exempt from adding a `benchmarks/` harness (though they must still include unit/integration tests in `<package>/tests/` and note the exemption in the PR description).
+
+---
+
+## 5. CI Workflows, Packaging & Dependencies
 
 1. **Root-Only GitHub Actions Workflows:**
    - GitHub Actions only discovers workflows in the root `.github/workflows/` directory. Never place `.github/workflows/` inside subpackages.
 2. **Keep Packaging Synchronized:**
-   - Whenever adding, renaming, or moving a subpackage, CLI command, or test directory, update:
+   - Whenever adding, renaming, or moving a subpackage, benchmark module, CLI command, or test directory, update:
      - `setup.py` (`packages=[...]` and `entry_points['console_scripts']`)
      - `environments/conda.yml`, `environments/environment_cpu.yml`, and `environments/rtd_requirements.txt`
      - `pyproject.toml` (`[tool.pytest.ini_options] testpaths`)

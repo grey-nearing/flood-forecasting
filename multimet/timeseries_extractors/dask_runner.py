@@ -15,7 +15,7 @@
 """Massively parallel Dask runner for MultiMet meteorological forcing extraction.
 
 Enables distributed extraction across time (days or temporal batches) for all core
-MultiMet products (ERA5-Land, CPC, IMERG, HRES, AIFS) on Dask clusters
+MultiMet products (ERA5-Land, CPC, IMERG, HRES) on Dask clusters
 (Google Cloud, Kubernetes, or local multi-core machines).
 
 Uses lock-free direct chunk writing to pre-allocated Zarr stores, eliminating
@@ -28,11 +28,9 @@ import argparse
 import gc
 import logging
 import os
-import random
-import shutil
 import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import dask
 import distributed
@@ -47,14 +45,13 @@ import zarr
 
 from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import (
-    FORECAST_LEAD_DAYS,
-    PRODUCT_BANDS,
-    PRODUCT_TYPES,
+    DYNAMICAL_PRODUCTS,
+    ENSEMBLE_MEMBER_COUNTS,
     Product,
-    ProductType,
 )
 from multimet.timeseries_extractors.cpc import CPCExtractor
 from multimet.timeseries_extractors.dynamical import (
+    AIFSEnsExtractor,
     AIFSExtractor,
     DynamicalIMERGExtractor,
     GEFSExtractor,
@@ -78,6 +75,7 @@ PRODUCT_MAP: Dict[str, Tuple[Product, type[BaseExtractor]]] = {
     "IMERG": (Product.IMERG, IMERGExtractor),
     "HRES": (Product.HRES, HRESExtractor),
     "AIFS": (Product.AIFS, AIFSExtractor),
+    "AIFS_ENS": (Product.AIFS_ENS, AIFSEnsExtractor),
     "GFS": (Product.GFS, GFSExtractor),
     "GEFS": (Product.GEFS, GEFSExtractor),
     "IFS_ENS": (Product.IFS_ENS, IFSEnsExtractor),
@@ -108,7 +106,12 @@ def init_dask_client(
     logger.info("Connecting to remote Dask scheduler at %s", scheduler_address)
     return distributed.Client(scheduler_address)
 
-  if distributed.worker._global_clients:
+  global_clients = getattr(
+      distributed.client,
+      "_global_clients",
+      getattr(distributed.worker, "_global_clients", None),
+  )
+  if global_clients:
     existing_client = distributed.get_client()
     logger.info("Reusing existing active Dask client: %s", existing_client)
     return existing_client
@@ -206,7 +209,7 @@ def _extract_and_write_chunk_task(
   if gcp_project or store_path.startswith(("gs://", "gcs://")):
     configure_gcp_project(gcp_project)
 
-  prod_enum = Product[product_name]
+  _ = Product[product_name]
   extractor = extractor_cls(**extractor_kwargs)
 
   with dask.config.set(scheduler="threads"):
@@ -230,11 +233,15 @@ def _extract_and_write_chunk_task(
         z_root[band][:, start_idx] = vals[:, 0]
       elif vals.ndim == 3:
         z_root[band][:, start_idx, :] = vals[:, 0, :]
+      elif vals.ndim == 4:
+        z_root[band][:, start_idx, :, :] = vals[:, 0, :, :]
     else:
       if vals.ndim == 2:
         z_root[band][:, start_idx:end_idx] = vals
       elif vals.ndim == 3:
         z_root[band][:, start_idx:end_idx, :] = vals
+      elif vals.ndim == 4:
+        z_root[band][:, start_idx:end_idx, :, :] = vals
 
   del ds
   gc.collect()
@@ -259,7 +266,7 @@ def extract_product_dask(
     client: Optional[distributed.Client] = None,
     num_workers: Optional[int] = None,
     dask_scheduler: Optional[str] = None,
-    batch_days: int = 1,
+    batch_days: Optional[int] = None,
     memory_limit: Union[str, int, float, None] = "auto",
     source: str = "public",
     id_column: Optional[str] = None,
@@ -274,6 +281,7 @@ def extract_product_dask(
     netrc_path: Optional[str] = None,
     gcp_project: Optional[str] = None,
     show_progress: bool = True,
+    include_ensemble_members: bool = False,
     **extractor_extra_kwargs: Any,
 ) -> str:
   """Extracts a single meteorological product in parallel across days using Dask.
@@ -287,7 +295,8 @@ def extract_product_dask(
     client: Optional existing Dask Client. If None, one will be created or retrieved.
     num_workers: Number of workers if creating a LocalCluster.
     dask_scheduler: Address of remote Dask scheduler if applicable.
-    batch_days: Number of consecutive days per worker task (default 1).
+    batch_days: Number of consecutive days per worker task (defaults to 30 for
+      DYNAMICAL_IMERG aligned to Icechunk boundaries, and 1 for all other products).
     source: Data source mode ('public', 'local', etc.).
     id_column: Optional basin identifier column name in geometry source.
     overwrite: If True, deletes existing destination store before extraction.
@@ -302,6 +311,8 @@ def extract_product_dask(
     netrc_path: Optional custom .netrc path.
     gcp_project: Optional Google Cloud project ID for GCS quota/billing.
     show_progress: Whether to display a tqdm progress bar.
+    include_ensemble_members: Whether to emit 4D per-member variables alongside
+      3D ensemble summary statistics for ensemble products.
     **extractor_extra_kwargs: Additional arguments passed to extractor constructor.
 
   Returns:
@@ -314,6 +325,15 @@ def extract_product_dask(
     )
 
   prod_enum, extractor_cls = PRODUCT_MAP[prod_name]
+  effective_batch_days = (
+      int(batch_days)
+      if batch_days is not None
+      else (
+          DynamicalIMERGExtractor.DEFAULT_BATCH_DAYS
+          if prod_name == "DYNAMICAL_IMERG"
+          else 1
+      )
+  )
   basins_gdf = load_basin_geometries(basins, id_column=id_column)
   basin_ids = list(basins_gdf.index)
 
@@ -353,7 +373,7 @@ def extract_product_dask(
           "or archive_stores['ERA5_LAND']."
       )
   elif source_lower in ("archive", "gridded_archive", "zarr_archive"):
-    if prod_name in ("AIFS", "GFS", "GEFS", "IFS_ENS", "DYNAMICAL_IMERG"):
+    if prod_name in DYNAMICAL_PRODUCTS:
       raise ValueError(
           f"Product {prod_name} reads from the dynamical.org Icechunk "
           "catalog and does not support source='archive'."
@@ -372,22 +392,18 @@ def extract_product_dask(
     )
     extractor_kwargs["source"] = src
   elif prod_name == "IMERG":
-    if source_lower in ("dynamical", "icechunk", "catalog"):
-      extractor_cls = DynamicalIMERGExtractor
-      extractor_kwargs["source"] = source_lower
-    else:
-      src = (
-          "gesdisc"
-          if source_lower in ("public", "auto", "upstream")
-          else ("h5" if source_lower == "local" else source_lower)
-      )
-      extractor_kwargs.update({
-          "source": src,
-          "username": earthdata_username,
-          "password": earthdata_password,
-          "token": earthdata_token,
-          "netrc_path": netrc_path,
-      })
+    src = (
+        "gesdisc"
+        if source_lower in ("public", "auto", "upstream")
+        else ("h5" if source_lower == "local" else source_lower)
+    )
+    extractor_kwargs.update({
+        "source": src,
+        "username": earthdata_username,
+        "password": earthdata_password,
+        "token": earthdata_token,
+        "netrc_path": netrc_path,
+    })
   elif prod_name == "HRES":
     src = (
         "wb2"
@@ -395,8 +411,30 @@ def extract_product_dask(
         else ("local" if source_lower == "local" else source_lower)
     )
     extractor_kwargs["source"] = src
-  elif prod_name in ("AIFS", "GFS", "GEFS", "IFS_ENS", "DYNAMICAL_IMERG"):
-    extractor_kwargs["source"] = source_lower
+  elif prod_name in DYNAMICAL_PRODUCTS:
+    extractor_kwargs["source"] = "dynamical"
+    if prod_enum in ENSEMBLE_MEMBER_COUNTS:
+      extractor_kwargs.setdefault(
+          "include_ensemble_members", include_ensemble_members
+      )
+
+  inc_ens = bool(extractor_kwargs.get("include_ensemble_members", False))
+  sample_extractor: Optional[BaseExtractor] = None
+
+  def _get_sample_extractor() -> BaseExtractor:
+    nonlocal sample_extractor
+    if sample_extractor is None:
+      sample_extractor = extractor_cls(**extractor_kwargs)
+    return sample_extractor
+
+  def _resolve_ensemble_members() -> Optional[Sequence[int]]:
+    if not inc_ens or prod_enum not in ENSEMBLE_MEMBER_COUNTS:
+      return None
+    ext = _get_sample_extractor()
+    loader = getattr(ext, "loader", None)
+    if loader is not None and "ensemble_member" in loader.ds.coords:
+      return [int(x) for x in loader.ds["ensemble_member"].values]
+    return None
 
   from multimet.timeseries_extractors.zarr_writer import check_zarr_store_exists
 
@@ -446,7 +484,12 @@ def extract_product_dask(
   if not store_already_exists:
     logger.info("Initializing skeleton Zarr store for %s at %s...", prod_name, store_path)
     writer.initialize_zarr_store(
-        prod_enum, basin_ids, all_dates, extra_attrs=provenance_attrs
+        prod_enum,
+        basin_ids,
+        all_dates,
+        extra_attrs=provenance_attrs,
+        include_ensemble_members=inc_ens,
+        ensemble_members=_resolve_ensemble_members(),
     )
     missing_indices = list(range(total_days))
   else:
@@ -504,6 +547,7 @@ def extract_product_dask(
             netrc_path=netrc_path,
             gcp_project=gcp_project,
             show_progress=show_progress,
+            include_ensemble_members=inc_ens,
             **extractor_extra_kwargs,
         )
         tmp_writer = MultiMetZarrWriter(tmp_output_dir)
@@ -549,7 +593,12 @@ def extract_product_dask(
           )
     else:
       writer.initialize_zarr_store(
-          prod_enum, basin_ids, all_dates, extra_attrs=provenance_attrs
+          prod_enum,
+          basin_ids,
+          all_dates,
+          extra_attrs=provenance_attrs,
+          include_ensemble_members=inc_ens,
+          ensemble_members=_resolve_ensemble_members(),
       )
       missing_indices = list(range(total_days))
 
@@ -564,7 +613,7 @@ def extract_product_dask(
     weights_matrix = ZonalWeightMatrix.load(weights_cache)
     logger.info("Loaded precomputed weights matrix from %s", weights_cache)
 
-  sample_extractor = extractor_cls(**extractor_kwargs)
+  sample_extractor = _get_sample_extractor()
   if weights_matrix is None and hasattr(sample_extractor, "lats") and sample_extractor.lats is not None:
     w_workers = max(16, int(num_workers or 16))
     if use_bounding_box:
@@ -597,6 +646,11 @@ def extract_product_dask(
       logger.info("Saved computed weights matrix to %s", weights_cache)
 
   # Partition missing dates into contiguous tasks
+  imerg_anchor = (
+      sample_extractor._chunk_anchor()
+      if hasattr(sample_extractor, "_chunk_anchor")
+      else DynamicalIMERGExtractor._ICECHUNK_EPOCH
+  )
   batches: List[Tuple[int, int]] = []
   i = 0
   while i < len(missing_indices):
@@ -604,8 +658,17 @@ def extract_product_dask(
     while (
         i + 1 < len(missing_indices)
         and missing_indices[i + 1] == missing_indices[i] + 1
-        and (i + 1 - start_pos) < batch_days
+        and (i + 1 - start_pos) < effective_batch_days
     ):
+      if prod_name == "DYNAMICAL_IMERG":
+        c_curr = (
+            all_dates[missing_indices[i]] - imerg_anchor
+        ).days // DynamicalIMERGExtractor.DEFAULT_BATCH_DAYS
+        c_next = (
+            all_dates[missing_indices[i + 1]] - imerg_anchor
+        ).days // DynamicalIMERGExtractor.DEFAULT_BATCH_DAYS
+        if c_next != c_curr:
+          break
       i += 1
     batches.append((missing_indices[start_pos], missing_indices[i] + 1))
     i += 1
@@ -730,7 +793,7 @@ def extract_multimet_dask(
     end_date: Optional[Union[str, pd.Timestamp]] = None,
     dask_scheduler: Optional[str] = None,
     num_workers: Optional[int] = None,
-    batch_days: int = 1,
+    batch_days: Optional[int] = None,
     memory_limit: Union[str, int, float, None] = "auto",
     source: str = "public",
     archive_stores: Optional[Mapping[str, str]] = None,
@@ -746,6 +809,7 @@ def extract_multimet_dask(
     earthdata_token: Optional[str] = None,
     netrc_path: Optional[str] = None,
     gcp_project: Optional[str] = None,
+    include_ensemble_members: bool = False,
 ) -> Dict[str, str]:
   """Runs massively parallel Dask extraction across requested products."""
   if start_date is None or end_date is None:
@@ -827,6 +891,7 @@ def extract_multimet_dask(
         earthdata_token=earthdata_token,
         netrc_path=netrc_path,
         gcp_project=gcp_project,
+        include_ensemble_members=include_ensemble_members,
         **extra_kw,
     )
     output_stores[prod_name] = store_path
@@ -901,8 +966,11 @@ def _build_parser() -> argparse.ArgumentParser:
       "--batch_days",
       dest="batch_days",
       type=int,
-      default=1,
-      help="Number of consecutive days per worker task.",
+      default=None,
+      help=(
+          "Number of consecutive days per worker task (defaults to 30 for "
+          "DYNAMICAL_IMERG and 1 for all other products)."
+      ),
   )
   parser.add_argument(
       "--memory-limit",
@@ -1015,6 +1083,17 @@ def _build_parser() -> argparse.ArgumentParser:
       default=None,
       help="Optional Google Cloud project ID for GCS quota/billing. Auto-detected if omitted.",
   )
+  parser.add_argument(
+      "--include-ensemble-members",
+      "--include_ensemble_members",
+      dest="include_ensemble_members",
+      action="store_true",
+      default=False,
+      help=(
+          "Include 4D per-member variables alongside 3D ensemble summary "
+          "statistics for ensemble products (GEFS, IFS_ENS, AIFS_ENS)."
+      ),
+  )
   return parser
 
 
@@ -1055,6 +1134,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
       earthdata_token=args.earthdata_token,
       netrc_path=args.netrc_path,
       gcp_project=args.gcp_project,
+      include_ensemble_members=args.include_ensemble_members,
   )
   print(
       f"\n✓ Completed extraction of {len(stores)} products in"

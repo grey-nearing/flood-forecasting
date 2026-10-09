@@ -138,6 +138,7 @@ _MULTIMET_RELOAD_ORDER: Tuple[str, ...] = (
     "multimet.utils.climate",
     "multimet.utils.storage",
     "multimet.timeseries_extractors.config",
+    "multimet.timeseries_extractors.base",
     "multimet.timeseries_extractors.zarr_writer",
     "multimet.timeseries_extractors.cpc",
     "multimet.timeseries_extractors.imerg",
@@ -148,20 +149,58 @@ _MULTIMET_RELOAD_ORDER: Tuple[str, ...] = (
 )
 
 
+_MULTIMET_MTIMES: Dict[str, float] = {}
+
+
 def _load_multimet_realtime(reload_modules: bool = False):
   """Imports `multimet.timeseries_extractors.config` and `realtime` from the repository."""
   ensure_flood_forecasting_on_sys_path()
   extend_multimet_package_path()
+  from multimet.timeseries_extractors import base as mm_base  # pylint: disable=g-import-not-at-top
   from multimet.timeseries_extractors import config as mm_config  # pylint: disable=g-import-not-at-top
+  from multimet.timeseries_extractors import dynamical as mm_dynamical  # pylint: disable=g-import-not-at-top
+  from multimet.timeseries_extractors import hres as mm_hres  # pylint: disable=g-import-not-at-top
   from multimet.timeseries_extractors import realtime as mm_realtime  # pylint: disable=g-import-not-at-top
+  from multimet.timeseries_extractors import zarr_writer as mm_zw  # pylint: disable=g-import-not-at-top
 
-  if reload_modules:
+  need_reload = reload_modules
+  if not need_reload:
+    if (
+        getattr(mm_base, "Product", None) is not mm_config.Product
+        or getattr(mm_zw, "Product", None) is not mm_config.Product
+        or getattr(mm_hres, "Product", None) is not mm_config.Product
+        or getattr(mm_dynamical, "Product", None) is not mm_config.Product
+        or getattr(mm_realtime, "Product", None) is not mm_config.Product
+        or mm_config.Product.HRES not in getattr(mm_base, "PRODUCT_TYPES", {})
+        or mm_config.Product.HRES not in getattr(mm_zw, "PRODUCT_TYPES", {})
+    ):
+      need_reload = True
+
+  if not need_reload:
+    for mod_name in _MULTIMET_RELOAD_ORDER:
+      mod = sys.modules.get(mod_name)
+      mod_file = getattr(mod, "__file__", None) if mod is not None else None
+      if mod_file and Path(mod_file).exists():
+        mtime = Path(mod_file).stat().st_mtime
+        prev = _MULTIMET_MTIMES.get(mod_name)
+        if prev is not None and mtime > prev:
+          need_reload = True
+          break
+
+  if need_reload:
     for mod_name in _MULTIMET_RELOAD_ORDER:
       mod = sys.modules.get(mod_name)
       if mod is not None:
         importlib.reload(mod)
     mm_config = sys.modules["multimet.timeseries_extractors.config"]
     mm_realtime = sys.modules["multimet.timeseries_extractors.realtime"]
+
+  for mod_name in _MULTIMET_RELOAD_ORDER:
+    mod = sys.modules.get(mod_name)
+    mod_file = getattr(mod, "__file__", None) if mod is not None else None
+    if mod_file and Path(mod_file).exists():
+      _MULTIMET_MTIMES[mod_name] = Path(mod_file).stat().st_mtime
+
   return mm_config, mm_realtime
 
 

@@ -5,7 +5,7 @@ The library never picks directories, never swallows exceptions and never
 fabricates data. This module adds what the long-running OpenHydroNet server
 needs on top of it:
 
-* the frontend data-directory convention (``$EARTHKIT_WEATHER_DATA_DIR`` or
+* the frontend data-directory convention (``$OPENHYDRONET_WEATHER_DATA_DIR`` or
   ``~/.cache/openhydronet/weather``);
 * an advisory ``sync.lock`` so two server instances on one host never run the
   same synchronisation twice;
@@ -89,17 +89,20 @@ _SYNC_PYTHON_PROBE = "import icechunk, numpy, pystac, scipy, xarray"
 _SYNC_PYTHON_PROBE_TIMEOUT_S = 120
 
 
+from utils.file_paths import OPENHYDRONET_WEATHER_CACHE_DIR
+
+
 def weather_data_root() -> str:
   """Local-disk root of downloaded runs used by the frontend server.
 
-  ``$EARTHKIT_WEATHER_DATA_DIR`` overrides the default of
+  ``$OPENHYDRONET_WEATHER_DATA_DIR`` overrides the default of
   ``~/.cache/openhydronet/weather``. The library itself takes the
   directory explicitly; this convention exists only for the server process.
   """
-  env = os.environ.get("EARTHKIT_WEATHER_DATA_DIR", "").strip()
+  env = os.environ.get("OPENHYDRONET_WEATHER_DATA_DIR", "").strip()
   if env:
     return str(Path(env).expanduser().resolve())
-  return str(Path.home() / ".cache" / "openhydronet" / "weather")
+  return str(OPENHYDRONET_WEATHER_CACHE_DIR)
 
 
 def current_run_dir(root: Optional[str] = None) -> Optional[str]:
@@ -446,7 +449,7 @@ def _build_parser() -> argparse.ArgumentParser:
       default=None,
       help=(
           "Root directory for downloaded runs (default:"
-          " $EARTHKIT_WEATHER_DATA_DIR or ~/.cache/openhydronet/weather)."
+          " $OPENHYDRONET_WEATHER_DATA_DIR or ~/.cache/openhydronet/weather)."
       ),
   )
   parser.add_argument(

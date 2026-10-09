@@ -43,6 +43,7 @@ from multimet.utils.http import check_http_url_exists, download_http_file
 import numpy as np
 import pandas as pd
 import tqdm
+from utils.file_paths import NOAA_PSL_CPC_URL_TEMPLATE
 import xarray as xr
 
 # NOAA PSL publishes CPC Global Unified Precipitation from 1979 onwards.
@@ -64,9 +65,7 @@ EXPECTED_PSL_LONS = np.linspace(0.25, 359.75, 720, dtype=np.float32)
 # Name of the single data variable written to the archive.
 CPC_VARIABLE = "cpc_precipitation"
 
-NOAA_PSL_URL_TEMPLATE = (
-    "https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/precip.{year}.nc"
-)
+NOAA_PSL_URL_TEMPLATE = NOAA_PSL_CPC_URL_TEMPLATE
 
 
 def _is_cached_cpc_netcdf_usable(
@@ -163,6 +162,7 @@ def process_cpc_netcdf_to_dataset(
 
   Validates input coordinates, dimensions, calendar year bounds, and daily data
   completeness before performing spatial transformation:
+
   1. Verifies ``lat`` is descending ``[89.75 .. -89.75]`` and ``lon`` is
      ascending ``[0.25 .. 359.75]``.
   2. Inverts latitude axis (PSL: ``[89.75 .. -89.75]`` -> ``[-89.75 .. 89.75]``).

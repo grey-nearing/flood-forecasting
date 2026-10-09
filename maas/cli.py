@@ -31,8 +31,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         prog='fetch-maas-forecast',
         description=(
             'Fetch and compare operational streamflow forecasts across '
-            'Google FloodHub, Copernicus GloFAS, GEOGLOWS ECMWF, and '
-            "JAXA Today's Earth (CaMa-Flood)."
+            'Google FloodHub, Copernicus GloFAS, and GEOGLOWS ECMWF.'
         ),
     )
     parser.add_argument(
@@ -65,10 +64,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--models',
         type=str,
-        default='floodhub,glofas,geoglows,todays_earth',
+        default='floodhub,glofas,geoglows',
         help=(
             'Comma-separated list of providers to query '
-            '(floodhub, glofas, geoglows, todays_earth).'
+            '(floodhub, glofas, geoglows).'
         ),
     )
     parser.add_argument(
@@ -94,15 +93,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=str,
         default=None,
         help='Google FloodHub API key (defaults to $FLOODHUB_API_KEY).',
-    )
-    parser.add_argument(
-        '--todays-earth-api-url',
-        type=str,
-        default=None,
-        help=(
-            "Operational JAXA Today's Earth endpoint URL "
-            '(defaults to $TODAYS_EARTH_API_URL).'
-        ),
     )
     parser.add_argument(
         '--timeout',
@@ -138,17 +128,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.floodhub_api_key is not None
         else os.environ.get('FLOODHUB_API_KEY', '')
     )
-    te_url = (
-        args.todays_earth_api_url
-        if args.todays_earth_api_url is not None
-        else os.environ.get('TODAYS_EARTH_API_URL', '')
-    )
 
     config = MaaSConfig(
         cache_dir=cache_dir,
         river_networks_dir=river_networks_dir,
         floodhub_api_key=api_key,
-        todays_earth_api_url=te_url,
         http_timeout_s=args.timeout,
     )
     fetcher = MaaSDataFetcher(config)

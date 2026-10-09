@@ -16,7 +16,7 @@
 
 Delegates all backend provider HTTP queries, Zarr extraction, reach snapping,
 and return-period calculations to `maas` (`MaaSConfig`, `MaaSDataFetcher`,
-`maas.floodhub`, `maas.glofas`, `maas.geoglows`, `maas.todays_earth`,
+`maas.floodhub`, `maas.glofas`, `maas.geoglows`,
 `maas.networks`, `maas.thresholds`), and all UI presentation, multi-model
 consensus rows, aligned chart timelines, and watershed polygons to
 `frontend.maas_viewer` (`MaaSViewer`).
@@ -49,19 +49,16 @@ from frontend.maas_viewer import (
     build_aligned_timeline,
     build_consensus_row,
     build_flood_summary,
-    emulate_camaflood_physics,
     reach_exceedance_summary,
     spread_confidence,
 )
 from maas.config import (
-    CAMA_GRID_RES_DEG,
     DEFAULT_MAAS_MODELS,
     FLOODHUB_BASE_URL,
     GEOGLOWS_BASE_URL,
     GLOFAS_BASE_URL,
     MAAS_MODEL_NAMES,
     RETURN_PERIOD_YEARS,
-    TODAYS_EARTH_SOURCE,
     MaaSConfig,
     convert_discharge_units,
     normalize_requested_models,
@@ -83,13 +80,9 @@ from maas.fetcher import (
 )
 from maas.floodhub import haversine_km
 from maas.networks import (
-    cama_cell_area_km2,
-    cama_cell_id,
-    cama_cell_polygon,
     glofas_cell_center,
     glofas_cell_polygon,
     is_geoglows_river_id,
-    snap_cama_cell,
 )
 from maas.thresholds import (
     CANONICAL_RETURN_PERIODS,
@@ -106,14 +99,14 @@ from maas.thresholds import (
     gumbel_quantile_from_return_periods,
     thresholds_from_return_periods,
 )
-from maas.todays_earth import format_todays_earth_forecast
+from utils.file_paths import FLOODHUB_API_KEY_FILE
 
 
 def _load_default_floodhub_key() -> str:
     env_key = os.environ.get('FLOODHUB_API_KEY', '').strip()
     if env_key:
         return env_key
-    key_file = Path.home() / '.config' / 'earthkit' / 'floodhub_api_key'
+    key_file = FLOODHUB_API_KEY_FILE
     if key_file.is_file():
         return key_file.read_text(encoding='utf-8').strip()
     return ''
@@ -125,7 +118,6 @@ DEFAULT_FLOODHUB_KEY = _load_default_floodhub_key()
 def get_maas_config() -> MaaSConfig:
     """Build an explicit `MaaSConfig` from `frontend.config` and environment overrides."""
     fh_key = os.environ.get('FLOODHUB_API_KEY', DEFAULT_FLOODHUB_KEY).strip()
-    te_url = os.environ.get('TODAYS_EARTH_API_URL', '').strip()
     return MaaSConfig(
         river_networks_dir=Path(_DEFAULT_RIVER_DIR),
         cache_dir=Path(_DEFAULT_CACHE_DIR),
@@ -133,7 +125,6 @@ def get_maas_config() -> MaaSConfig:
         floodhub_base_url=FLOODHUB_BASE_URL,
         glofas_base_url=GLOFAS_BASE_URL,
         geoglows_base_url=GEOGLOWS_BASE_URL,
-        todays_earth_api_url=te_url,
     )
 
 
@@ -145,11 +136,6 @@ def get_maas_fetcher() -> MaaSDataFetcher:
 def get_maas_viewer() -> MaaSViewer:
     """Return a `MaaSViewer` bound to the current `MaaSConfig`."""
     return MaaSViewer(get_maas_config())
-
-
-def todays_earth_service_status() -> str:
-    """Return `'operational'` when `TODAYS_EARTH_API_URL` is configured, else `'emulated'`."""
-    return get_maas_viewer().todays_earth_service_status()
 
 
 def fetch_floodhub_gauges_bbox(
@@ -239,30 +225,6 @@ def fetch_geoglows_return_periods(
     )
 
 
-def fetch_todays_earth_forecast(
-    lat: float,
-    lon: float,
-    reach_id: str | None = None,
-) -> dict[str, Any]:
-    """Fetch Today's Earth forecast via `maas` (or run CaMa-Flood emulation via `MaaSViewer`)."""
-    lat, lon = float(lat), float(lon)
-    fetcher = get_maas_fetcher()
-    if fetcher.config.todays_earth_api_url.strip():
-        return fetcher.todays_earth.fetch_forecast(lat, lon, reach_id=reach_id)
-    gl_fc = fetcher.glofas.fetch_forecast(lat, lon, forecast_days=15)
-    gl_rp = fetcher.fetch_return_periods('glofas', lat=lat, lon=lon) or {}
-    emu = emulate_camaflood_physics(gl_fc.get('data') or [], gl_rp)
-    return format_todays_earth_forecast(
-        lat,
-        lon,
-        emu['series'],
-        reach_id=reach_id,
-        live=False,
-        channel_params=emu['channel_params'],
-        forcing_status=gl_fc.get('status'),
-    )
-
-
 def aggregate_maas_forecast(
     lat: float,
     lon: float,
@@ -289,7 +251,7 @@ def get_unified_maas_forecast(  # noqa: PLR0913
     area_min_km2: Any = None,
     network: str | None = None,
 ) -> dict[str, Any]:
-    """Render unified 4-provider MaaS forecast view via `MaaSViewer.render_forecast_view`."""
+    """Render unified 3-provider MaaS forecast view via `MaaSViewer.render_forecast_view`."""
     return get_maas_viewer().render_forecast_view(
         float(lat),
         float(lon),
@@ -324,7 +286,6 @@ def get_maas_watershed_polygon(  # noqa: PLR0913
 
 __all__ = [
     'CANONICAL_RETURN_PERIODS',
-    'CAMA_GRID_RES_DEG',
     'DEFAULT_MAAS_MODELS',
     'EXCEEDANCE_CLASSES',
     'MAAS_MODEL_NAMES',
@@ -334,7 +295,6 @@ __all__ = [
     'RETURN_PERIOD_YEARS',
     'RISK_RANK',
     'SQLiteCache',
-    'TODAYS_EARTH_SOURCE',
     'UNASSESSED_COLOR',
     'UNASSESSED_LABEL',
     'aggregate_maas_forecast',
@@ -342,16 +302,12 @@ __all__ = [
     'build_aligned_timeline',
     'build_consensus_row',
     'build_flood_summary',
-    'cama_cell_area_km2',
-    'cama_cell_id',
-    'cama_cell_polygon',
     'classify_exceedance',
     'compute_empirical_weibull_return_periods',
     'compute_gumbel_return_periods',
     'compute_return_periods',
     'convert_discharge_units',
     'daily_series',
-    'emulate_camaflood_physics',
     'estimate_return_period_years',
     'extract_annual_maxima',
     'fetch_floodhub_forecast',
@@ -365,7 +321,6 @@ __all__ = [
     'fetch_glofas_return_periods',
     'fetch_historical',
     'fetch_return_periods',
-    'fetch_todays_earth_forecast',
     'get_maas_config',
     'get_maas_fetcher',
     'get_maas_viewer',
@@ -382,9 +337,7 @@ __all__ = [
     'parse_int',
     'reach_exceedance_summary',
     'resolve_reaches',
-    'snap_cama_cell',
     'spread_confidence',
     'thresholds_from_return_periods',
-    'todays_earth_service_status',
     'window_peak',
 ]

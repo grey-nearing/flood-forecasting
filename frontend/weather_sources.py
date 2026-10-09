@@ -2,13 +2,13 @@
 
 This module is frontend-only: it describes the archival datasets that
 ``frontend.historical_zarr`` can extract from (ERA5, CPC, IMERG, ...), where
-they live on CNS, and which date range they cover. It is independent of
+they live on cloud storage, and which date range they cover. It is independent of
 ``multimet.weather_fetcher``, which only deals with real-time forecast feeds.
 
 Temporal coverage is resolved in two ways:
 
-* Stores with a ``cns_zarr_path`` are probed once per process via
-  ``fsspec cat <store>/.zmetadata`` and the consolidated metadata is parsed
+* Stores with a ``zarr_path`` are probed once per process via
+  reading the store metadata and the consolidated metadata is parsed
   with :func:`parse_zarr_metadata_time_extent`.
 * Otherwise the statically declared ``available_start`` / ``fixed_end`` /
   ``latency_days`` values are used.
@@ -21,18 +21,21 @@ import datetime as dt
 import json
 import logging
 import os
-import subprocess
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from utils.file_paths import (
+    DEFAULT_GCS_CPC_ARCHIVE_URI,
+    DEFAULT_GCS_GRIDDED_ERA5_URI as DEFAULT_GCS_ERA5_ARCHIVE_URI,
+    DEFAULT_GCS_IMERG_ARCHIVE_URI,
+)
 
 logger = logging.getLogger(__name__)
 
-_CNS_ROOT = "gs://open-multimet/gridded-data-archives"
-_METADATA_TIMEOUT_S = 5.0
-
 # Successful .zmetadata lookups, keyed by store path (process lifetime).
-_CNS_EXTENT_CACHE: Dict[str, Dict[str, Any]] = {}
+_ZARR_EXTENT_CACHE: Dict[str, Dict[str, Any]] = {}
 # Store paths whose lookup failure has already been logged.
-_CNS_EXTENT_WARNED: set[str] = set()
+_ZARR_EXTENT_WARNED: set[str] = set()
 
 
 def parse_zarr_metadata_time_extent(
@@ -84,16 +87,16 @@ def parse_zarr_metadata_time_extent(
   }
 
 
-def query_cns_zarr_extent(zarr_path: str) -> Optional[Dict[str, Any]]:
-  """Reads the time extent of a CNS Zarr store from its ``.zmetadata``.
+def query_zarr_extent(zarr_path: str) -> Optional[Dict[str, Any]]:
+  """Reads the time extent of a Zarr store from its ``.zmetadata``.
 
   Successful lookups are cached for the lifetime of the process. Failures
-  (``fsspec`` missing, CNS unreachable, unparsable metadata) are logged once
+  (unavailable, unparsable metadata) are logged once
   per store and reported as ``None`` so callers fall back to the declared
   static coverage; they are not cached so a later call can recover.
 
   Args:
-    zarr_path: Absolute ``gs://open-multimet/data`` path of the Zarr store.
+    zarr_path: Path or URI of the Zarr store.
 
   Returns:
     The parsed extent (see :func:`parse_zarr_metadata_time_extent`) or
@@ -101,38 +104,22 @@ def query_cns_zarr_extent(zarr_path: str) -> Optional[Dict[str, Any]]:
   """
   if not zarr_path:
     return None
-  cached = _CNS_EXTENT_CACHE.get(zarr_path)
+  cached = _ZARR_EXTENT_CACHE.get(zarr_path)
   if cached is not None:
     return cached
   if os.environ.get("OPENHYDRONET_OFFLINE_TESTS") == "1":
     return None
 
-  cmd = ["fsspec", "cat", f"{zarr_path}/.zmetadata"]
-  try:
-    res = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=_METADATA_TIMEOUT_S,
-        check=True,
-    )
-    extent = parse_zarr_metadata_time_extent(res.stdout)
-  except (OSError, subprocess.SubprocessError, ValueError) as exc:
-    # json.JSONDecodeError is a ValueError subclass.
-    if zarr_path not in _CNS_EXTENT_WARNED:
-      _CNS_EXTENT_WARNED.add(zarr_path)
-      logger.warning(
-          "Could not read CNS Zarr time extent for %s (%s: %s); using the"
-          " declared static coverage instead.",
-          zarr_path,
-          type(exc).__name__,
-          exc,
+  if not zarr_path.startswith("gs://"):
+    meta_file = Path(zarr_path) / ".zmetadata"
+    if meta_file.is_file():
+      extent = parse_zarr_metadata_time_extent(
+          meta_file.read_text(encoding="utf-8")
       )
-    return None
-
-  if extent is not None:
-    _CNS_EXTENT_CACHE[zarr_path] = extent
-  return extent
+      if extent is not None:
+        _ZARR_EXTENT_CACHE[zarr_path] = extent
+      return extent
+  return None
 
 
 @dataclasses.dataclass
@@ -150,7 +137,7 @@ class WeatherSource:
     latency_days: Publication delay used to estimate the last available date
       when no live extent is known.
     fixed_end: Last date of a closed archive (``YYYY-MM-DD``), if any.
-    cns_zarr_path: CNS Zarr store probed for the live time extent, if any.
+    zarr_path: Zarr store probed for the live time extent, if any.
     default_variables: Variables extracted when the caller does not pick any.
     citation: Reference to cite for the dataset.
   """
@@ -164,18 +151,18 @@ class WeatherSource:
   available_start: str
   latency_days: int = 5
   fixed_end: Optional[str] = None
-  cns_zarr_path: Optional[str] = None
+  zarr_path: Optional[str] = None
   default_variables: List[str] = dataclasses.field(default_factory=list)
   citation: str = ""
 
   def get_time_range(
-      self, cns_extent: Optional[Dict[str, Any]] = None
+      self, zarr_extent: Optional[Dict[str, Any]] = None
   ) -> Dict[str, Any]:
     """Returns the available date range of this dataset.
 
     Args:
-      cns_extent: Pre-fetched extent (as returned by
-        :func:`query_cns_zarr_extent`). When omitted and ``cns_zarr_path`` is
+      zarr_extent: Pre-fetched extent (as returned by
+        :func:`query_zarr_extent`). When omitted and ``zarr_path`` is
         set, the store is queried; if that fails the declared static coverage
         is used.
 
@@ -184,14 +171,14 @@ class WeatherSource:
       "is_dynamic"}``. ``is_dynamic`` is ``True`` when the end date moves
       with time (live extent or latency-based estimate).
     """
-    if cns_extent is None and self.cns_zarr_path:
-      cns_extent = query_cns_zarr_extent(self.cns_zarr_path)
-    if cns_extent is not None:
+    if zarr_extent is None and self.zarr_path:
+      zarr_extent = query_zarr_extent(self.zarr_path)
+    if zarr_extent is not None:
       return {
-          "start_date": cns_extent["start_date"],
-          "end_date": cns_extent["end_date"],
+          "start_date": zarr_extent["start_date"],
+          "end_date": zarr_extent["end_date"],
           "latency_days": 0,
-          "total_years": cns_extent["total_years"],
+          "total_years": zarr_extent["total_years"],
           "is_dynamic": True,
       }
 
@@ -213,10 +200,10 @@ class WeatherSource:
     }
 
   def to_dict(
-      self, cns_extent: Optional[Dict[str, Any]] = None
+      self, zarr_extent: Optional[Dict[str, Any]] = None
   ) -> Dict[str, Any]:
     """Serialises the source metadata together with its time range."""
-    time_range = self.get_time_range(cns_extent=cns_extent)
+    time_range = self.get_time_range(zarr_extent=zarr_extent)
     return {
         "id": self.id,
         "name": self.name,
@@ -229,7 +216,7 @@ class WeatherSource:
         "latency_days": time_range["latency_days"],
         "total_years": time_range["total_years"],
         "is_dynamic": time_range["is_dynamic"],
-        "cns_zarr_path": self.cns_zarr_path or "",
+        "zarr_path": self.zarr_path or "",
         "default_variables": list(self.default_variables),
         "citation": self.citation,
     }
@@ -247,7 +234,7 @@ WEATHER_SOURCES: Dict[str, WeatherSource] = {
         resolution="0.50° (~55 km)",
         temporal_resolution="Daily (1D)",
         available_start="1979-01-01",
-        cns_zarr_path=f"{_CNS_ROOT}/cpc/precip.zarr",
+        zarr_path=DEFAULT_GCS_CPC_ARCHIVE_URI,
         default_variables=["cpc_precipitation"],
         citation="Xie et al. (2007), J. Hydrometeorology",
     ),
@@ -262,7 +249,7 @@ WEATHER_SOURCES: Dict[str, WeatherSource] = {
         resolution="0.10° (~10 km)",
         temporal_resolution="Daily (1D) / Half-Hourly",
         available_start="2000-06-01",
-        cns_zarr_path=f"{_CNS_ROOT}/imerg/precip.zarr",
+        zarr_path=DEFAULT_GCS_IMERG_ARCHIVE_URI,
         default_variables=["imerg_precipitation"],
         citation="Huffman et al. (2020), NASA GSFC",
     ),
@@ -277,7 +264,7 @@ WEATHER_SOURCES: Dict[str, WeatherSource] = {
         resolution="0.25° (~31 km)",
         temporal_resolution="Daily (1D) / Hourly",
         available_start="1950-01-01",
-        cns_zarr_path=f"{_CNS_ROOT}/era5/tp.zarr",
+        zarr_path=DEFAULT_GCS_ERA5_ARCHIVE_URI,
         default_variables=[
             "total_precipitation",
             "2m_temperature",
