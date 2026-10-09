@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Model zoo factory and checkpoint weight loading utilities."""
+
+from pathlib import Path
+
 import torch
-import torch.nn as nn
+from torch import nn
 
 from model.modelzoo.handoff_forecast_lstm import HandoffForecastLSTM
 from model.modelzoo.mean_embedding_forecast_lstm import (
@@ -47,3 +51,30 @@ def get_model(cfg: Config) -> nn.Module:
     if cfg.compile:
         return torch.compile(model, mode='max-autotune')
     return model
+
+
+def load_model_weights(
+    model: nn.Module,
+    checkpoint_path: Path | str,
+    device: torch.device | str,
+) -> None:
+    """Load a model state_dict while stripping ``_orig_mod.`` prefixes.
+
+    Parameters
+    ----------
+    model : nn.Module
+        Target model instance (compiled or uncompiled) to load weights into.
+    checkpoint_path : Path | str
+        Filesystem path to the saved ``state_dict`` checkpoint file.
+    device : torch.device | str
+        Target device for ``torch.load(..., map_location=device)``.
+    """
+    state_dict = torch.load(
+        str(checkpoint_path), map_location=device, weights_only=True
+    )
+    state_dict = {
+        k.removeprefix('_orig_mod.'): v for k, v in state_dict.items()
+    }
+    target_model = getattr(model, '_orig_mod', model)
+    target_model.load_state_dict(state_dict)
+

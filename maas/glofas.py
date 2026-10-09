@@ -73,13 +73,26 @@ def parse_glofas_forecast_response(
         payload.get('daily'), Mapping
     ):
         daily = payload['daily']
-        times = daily.get('time') or []
-        means = daily.get('river_discharge_mean') or []
-        meds = daily.get('river_discharge_median') or []
-        maxs = daily.get('river_discharge_max') or []
-        mins = daily.get('river_discharge_min') or []
-        p25s = daily.get('river_discharge_p25') or []
-        p75s = daily.get('river_discharge_p75') or []
+        for required_key in (
+            'time',
+            'river_discharge_mean',
+            'river_discharge_median',
+            'river_discharge_max',
+            'river_discharge_min',
+            'river_discharge_p25',
+            'river_discharge_p75',
+        ):
+            if required_key not in daily:
+                raise KeyError(
+                    f'Missing required key {required_key!r} in GloFAS daily forecast payload'
+                )
+        times = daily['time']
+        means = daily['river_discharge_mean']
+        meds = daily['river_discharge_median']
+        maxs = daily['river_discharge_max']
+        mins = daily['river_discharge_min']
+        p25s = daily['river_discharge_p25']
+        p75s = daily['river_discharge_p75']
         for i, raw_t in enumerate(times):
             records.append(
                 {

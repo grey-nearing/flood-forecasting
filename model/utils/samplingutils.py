@@ -12,13 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
 
 from model.datautils.scaler import Scaler
 from model.utils import cmal_deterministic
 from model.utils.config import Config
+
+if TYPE_CHECKING:
+    from model.modelzoo.basemodel import BaseModel
 
 
 def sample_pointpredictions(
@@ -108,8 +111,18 @@ def _handle_negative_values(
 ) -> torch.Tensor:
     """Handle negative samples that arise while sampling from the uncertainty estimates.
 
-    Currently supports (a) 'clip' for directly clipping values at zero and (b) 'truncate' for resampling values
-    that are below zero.
+    Currently supports (a) 'clip' for directly clipping values at physical zero
+    (``normalized_zero``), (b) 'truncate' for resampling values that are below zero,
+    and (c) 'none' (or ``None`` / omitted) to leave CMAL draws and summary statistics
+    completely unclipped.
+
+    When ``negative_sample_handling: 'clip'`` is configured, clamping at physical zero
+    (``normalized_zero``) is applied inside ``model.sample()`` (``sample_cmal`` and
+    ``sample_cmal_deterministic``). Therefore, during evaluation
+    (``BaseTester.evaluate``), evaluation metrics (``NSE``, ``KGE``, etc.) are
+    computed after clipping and sample reduction (``tester_sample_reduction``),
+    whereas losses (``cmalloss``) are computed on the raw distribution parameters
+    before sampling or clipping.
 
     Parameters
     ----------
@@ -198,6 +211,15 @@ def sample_cmal_deterministic(
 ) -> dict[str, torch.Tensor]:
     """Sample 10 point predictions with the Countable Mixture of Asymmetric Laplacians (CMAL) head.
 
+    Setting ``negative_sample_handling: 'none'`` (or omitting it / ``None``) leaves
+    CMAL summary statistics completely unclipped. When ``negative_sample_handling: 'clip'``
+    is configured, clamping at physical zero (``normalized_zero``) is applied inside
+    ``model.sample()`` (``sample_cmal`` and ``sample_cmal_deterministic``). Therefore,
+    during evaluation (``BaseTester.evaluate``), evaluation metrics (``NSE``, ``KGE``,
+    etc.) are computed after clipping and sample reduction (``tester_sample_reduction``),
+    whereas losses (``cmalloss``) are computed on the raw distribution parameters
+    before sampling or clipping.
+
     Parameters
     ----------
     model : BaseModel
@@ -249,7 +271,7 @@ def sample_cmal_deterministic(
             values,
             # Unused: 'clip' never resamples, and a summary statistic
             # cannot be redrawn.
-            sample_values=lambda _: values,
+            sample_values=lambda _, vals=values: vals,
             # generate_predictions collapses every target into a single
             # mixture, so values only ever holds target 0.
             normalized_zero=normalized_zeros[0],
@@ -394,8 +416,13 @@ def sample_cmal(
         b_sub = torch.gather(b_exp, dim=3, index=choices).squeeze(-1)
         t_sub = torch.gather(t_exp, dim=3, index=choices).squeeze(-1)
 
-        def sample_values(ids: torch.Tensor) -> torch.Tensor:
-            return _sample_asymmetric_laplacians(ids, m_sub, b_sub, t_sub)
+        def sample_values(
+            ids: torch.Tensor,
+            m_s: torch.Tensor = m_sub,
+            b_s: torch.Tensor = b_sub,
+            t_s: torch.Tensor = t_sub,
+        ) -> torch.Tensor:
+            return _sample_asymmetric_laplacians(ids, m_s, b_s, t_s)
 
         # Generate an initial value for every single pos via a mask of all `True`s,
         # with the _sample_asymmetric_laplacians helper.

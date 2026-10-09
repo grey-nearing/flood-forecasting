@@ -14,6 +14,7 @@
 
 """High-level frontend viewer combining `maas.MaaSDataFetcher` with UI presentation layers."""
 
+import math
 from typing import Any
 
 from shapely.geometry import mapping
@@ -22,13 +23,10 @@ from frontend.maas_viewer.consensus import (
     build_aligned_timeline,
     build_consensus_row,
     build_flood_summary,
-    emulate_camaflood_physics,
     reach_exceedance_summary,
     spread_confidence,
 )
 from maas.config import (
-    CAMA_GRID_RES_DEG,
-    TODAYS_EARTH_SOURCE,
     MaaSConfig,
     normalize_requested_models,
 )
@@ -38,15 +36,8 @@ from maas.floodhub import (
     FH_SEVERITY_RANK,
     FH_SEVERITY_TO_RISK,
 )
-from maas.networks import (
-    cama_cell_area_km2,
-    cama_cell_id,
-    cama_cell_polygon,
-    glofas_cell_polygon,
-    snap_cama_cell,
-)
+from maas.networks import glofas_cell_polygon
 from maas.thresholds import thresholds_from_return_periods
-from maas.todays_earth import format_todays_earth_forecast
 
 
 class MaaSViewer:
@@ -59,14 +50,6 @@ class MaaSViewer:
     ) -> None:
         self.config = config
         self.fetcher = fetcher if fetcher is not None else MaaSDataFetcher(config)
-
-    def todays_earth_service_status(self) -> str:
-        """Return `'operational'` if `todays_earth_api_url` is configured, else `'emulated'`."""
-        return (
-            'operational'
-            if self.config.todays_earth_api_url.strip()
-            else 'emulated'
-        )
 
     def render_forecast_view(  # noqa: PLR0913
         self,
@@ -99,38 +82,12 @@ class MaaSViewer:
         gl_fc = models_out.get('glofas')
         gg_fc = models_out.get('geoglows')
         fh_fc = models_out.get('floodhub')
-        te_fc = models_out.get('todays_earth')
         gl_rp = (gl_fc or {}).get('return_periods') or raw_bundle[
             'return_periods'
         ].get('glofas')
         gg_rp = (gg_fc or {}).get('return_periods') or raw_bundle[
             'return_periods'
         ].get('geoglows')
-
-        # If Today's Earth live STAC data was unavailable, run visual CaMa-Flood emulation
-        if (
-            'todays_earth' in models
-            and (not te_fc or not te_fc.get('available'))
-            and gl_fc
-            and gl_fc.get('data')
-        ):
-            gl_cell = raw_bundle['reaches']['glofas']
-            emu_lat = float(gl_cell.get('cell_center_lat') or lat)
-            emu_lon = float(gl_cell.get('cell_center_lon') or lon)
-            emu = emulate_camaflood_physics(
-                gl_fc.get('data') or [],
-                gl_rp or {},
-            )
-            te_fc = format_todays_earth_forecast(
-                emu_lat,
-                emu_lon,
-                emu['series'],
-                reach_id=reach_id,
-                live=False,
-                channel_params=emu['channel_params'],
-                forcing_status=gl_fc.get('status'),
-            )
-            models_out['todays_earth'] = te_fc
 
         fh_is_q = (
             str((fh_fc or {}).get('unit') or 'CUBIC_METERS_PER_SECOND').upper()
@@ -282,69 +239,10 @@ class MaaSViewer:
                     )
                 )
 
-        te_ff = (te_fc or {}).get('flood_forecast') or {}
-        if 'todays_earth' in models:
-            if te_fc and te_fc.get('available'):
-                te_daily = daily_series(te_fc.get('data'), 'discharge_mean')
-                peak, when = window_peak(te_daily)
-                consensus.append(
-                    build_consensus_row(
-                        'todays_earth',
-                        True,
-                        'emulated'
-                        if te_fc.get('emulated')
-                        else te_fc.get('status'),
-                        peak,
-                        when,
-                        gl_rp,
-                        'GloFAS v4 reanalysis EV1',
-                        'Low' if te_fc.get('emulated') else 'Medium',
-                        independent=not bool(te_fc.get('emulated')),
-                        emulated=bool(te_fc.get('emulated')),
-                        peak_flood_depth_m=te_ff.get('max_flood_depth_m'),
-                        peak_flood_fraction_pct=te_ff.get(
-                            'max_flooded_fraction_pct'
-                        ),
-                        peak_sfcelv_m=te_ff.get('max_sfcelv_m'),
-                    )
-                )
-            else:
-                consensus.append(
-                    build_consensus_row(
-                        'todays_earth',
-                        False,
-                        'unavailable',
-                        None,
-                        None,
-                        None,
-                        None,
-                        'N/A',
-                    )
-                )
-
-        timeline = build_aligned_timeline(
-            models, fh_fc, fh_is_q, gl_fc, gg_fc, te_fc
-        )
-        flood_summary = build_flood_summary(consensus, te_fc, fh_fc, fh_fc)
+        timeline = build_aligned_timeline(models, fh_fc, fh_is_q, gl_fc, gg_fc)
+        flood_summary = build_flood_summary(consensus, fh_fc, fh_fc)
         exceedance = reach_exceedance_summary(gl_fc, gl_rp, gg_fc, gg_rp)
-
         vs = dict(raw_bundle['virtual_station'])
-        if te_fc and te_fc.get('available'):
-            vs['todays_earth_cell'] = {
-                **vs.get('todays_earth_cell', {}),
-                'grid_cell_id': te_fc.get('grid_cell_id'),
-                'cell_center_lat': te_fc.get('cell_center_lat'),
-                'cell_center_lon': te_fc.get('cell_center_lon'),
-                'resolution_deg': CAMA_GRID_RES_DEG,
-                'area_km2': te_fc.get('cell_area_km2'),
-                'status': te_fc.get('status'),
-                'emulated': te_fc.get('emulated'),
-                'label': (
-                    f"CaMa 0.25° [{float(te_fc.get('cell_center_lat') or 0.0):.3f}, "
-                    f"{float(te_fc.get('cell_center_lon') or 0.0):.3f}]"
-                ),
-                'model_chain': 'MATSIRO + CaMa-Flood',
-            }
 
         thresholds_by_model = {
             'floodhub': (
@@ -366,19 +264,6 @@ class MaaSViewer:
                 if gg_rp
                 else None
             ),
-            'todays_earth': (
-                thresholds_from_return_periods(
-                    gl_rp,
-                    'GloFAS v4 reanalysis EV1 (emulator climatology)',
-                )
-                if (te_fc and gl_rp)
-                else None
-            ),
-        }
-
-        meta = {
-            **raw_bundle['meta'],
-            'todays_earth_service': self.todays_earth_service_status(),
         }
 
         return {
@@ -390,7 +275,7 @@ class MaaSViewer:
             'consensus': consensus,
             'flood_summary': flood_summary,
             'reach_exceedance': exceedance,
-            'meta': meta,
+            'meta': dict(raw_bundle['meta']),
         }
 
     def render_watershed_polygon(  # noqa: PLR0913
@@ -405,30 +290,6 @@ class MaaSViewer:
         """Resolve the watershed polygon corresponding to the selected hydrofabric."""
         lat, lon = float(lat), float(lon)
         eff_fabric = (geofabric or fabric or 'hydroatlas_full').strip().lower()
-
-        if eff_fabric == 'camaflood_unit':
-            cell_lat, cell_lon = snap_cama_cell(lat, lon)
-            ring, bbox = cama_cell_polygon(cell_lat, cell_lon)
-            label = "Today's Earth CaMa-Flood Unit Grid (0.25°)"
-            return {
-                'type': 'Feature',
-                'geometry': {'type': 'Polygon', 'coordinates': [ring]},
-                'properties': {
-                    'fabric': 'camaflood_unit',
-                    'fabric_name': label,
-                    'geofabric': 'camaflood_unit',
-                    'geofabric_label': label,
-                    'model': "JAXA Today's Earth (MATSIRO + CaMa-Flood)",
-                    'source': f'{TODAYS_EARTH_SOURCE} unit-catchment grid',
-                    'service_status': self.todays_earth_service_status(),
-                    'grid_cell_id': cama_cell_id(cell_lat, cell_lon),
-                    'cell_center_lat': cell_lat,
-                    'cell_center_lon': cell_lon,
-                    'area_km2': cama_cell_area_km2(cell_lat),
-                    'resolution': '0.25° (~28 km)',
-                    'bbox': bbox,
-                },
-            }
 
         if eff_fabric == 'glofas_cell':
             return glofas_cell_polygon(lat, lon)

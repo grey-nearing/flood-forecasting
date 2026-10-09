@@ -17,11 +17,9 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-import random
 import shutil
-import tarfile
 import time
-from typing import Dict, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -31,6 +29,9 @@ import zarr
 from multimet.timeseries_extractors.config import (
     DEFAULT_CHUNKS_FORECAST,
     DEFAULT_CHUNKS_NOWCAST,
+    ENSEMBLE_MEMBER_BANDS,
+    ENSEMBLE_MEMBER_COUNTS,
+    ENSEMBLE_MISSING_FRACTION_VAR,
     FORECAST_LEAD_DAYS,
     MISSING_FRACTION_VAR,
     PRODUCT_BANDS,
@@ -144,7 +145,7 @@ class MultiMetZarrWriter:
   def _ensure_companion_variables(
       self, ds: xr.Dataset, product: Product
   ) -> xr.Dataset:
-    """Ensures optional secondary bands and the companion missing_fraction band exist."""
+    """Ensures optional secondary bands and companion missing_fraction bands exist."""
     prod_type = PRODUCT_TYPES[product]
     expected_dims = (
         ["basin", "date"]
@@ -177,6 +178,27 @@ class MultiMetZarrWriter:
           expected_dims,
           np.isnan(out[primary_band].values).astype(np.float32),
       )
+
+    ens_missing_var = ENSEMBLE_MISSING_FRACTION_VAR.get(product)
+    if (
+        ens_missing_var
+        and "ensemble_member" in out.dims
+        and ens_missing_var not in out.data_vars
+    ):
+      ens_dims = ["basin", "date", "ensemble_member", "lead_time"]
+      ens_bands = ENSEMBLE_MEMBER_BANDS.get(product, ())
+      primary_ens = next((b for b in ens_bands if b in out.data_vars), None)
+      if primary_ens is not None:
+        out[ens_missing_var] = (
+            ens_dims,
+            np.isnan(out[primary_ens].values).astype(np.float32),
+        )
+      else:
+        ens_shape = tuple(len(out[d]) for d in ens_dims)
+        out[ens_missing_var] = (
+            ens_dims,
+            np.ones(ens_shape, dtype=np.float32),
+        )
     return out
 
   def validate_dataset_schema(self, ds: xr.Dataset, product: Product) -> None:
@@ -256,8 +278,10 @@ class MultiMetZarrWriter:
       basin_ids: List[str],
       dates: List[pd.Timestamp],
       extra_attrs: Optional[Mapping[str, Any]] = None,
+      include_ensemble_members: bool = False,
+      ensemble_members: Optional[Sequence[Any]] = None,
   ) -> str:
-    """Initializes the skeleton of a Zarr store on CNS or local disk.
+    """Initializes the skeleton of a Zarr store on GCS or local disk.
 
     Creates .zgroup, .zattrs, coordinate chunks (basin, date, [lead_time]),
     and .zarray descriptors with chunk layout chunks=(num_basins, 1) or
@@ -269,6 +293,9 @@ class MultiMetZarrWriter:
       dates: List of pandas Timestamps or date strings.
       extra_attrs: Optional additional global attributes (e.g. upstream archive
         store URI, shapefile path, extracted date range).
+      include_ensemble_members: Whether to initialize 4D ``*_ensemble`` and
+        ``*_missing_fraction_ensemble`` variables for ensemble forecast products.
+      ensemble_members: Optional explicit coordinate values for ``ensemble_member``.
 
     Returns:
       Store path initialized.
@@ -277,7 +304,7 @@ class MultiMetZarrWriter:
     prod_type = PRODUCT_TYPES[product]
     is_forecast = prod_type == ProductType.FORECAST
 
-    coords = {
+    coords: Dict[str, Any] = {
         "basin": np.array(basin_ids, dtype="<U22"),
         "date": pd.to_datetime(dates).values,
     }
@@ -301,7 +328,7 @@ class MultiMetZarrWriter:
     if missing_var and missing_var not in all_store_vars:
       all_store_vars.append(missing_var)
 
-    data_vars = {}
+    data_vars: Dict[str, Any] = {}
     for band in all_store_vars:
       var_attrs = {}
       if band in (
@@ -320,6 +347,41 @@ class MultiMetZarrWriter:
           np.full(shape, np.nan, dtype=np.float32),
           var_attrs,
       )
+
+    if (
+        is_forecast
+        and include_ensemble_members
+        and product in ENSEMBLE_MEMBER_BANDS
+    ):
+      lead_steps = FORECAST_LEAD_DAYS[product]
+      if ensemble_members is not None:
+        ens_coord_vals = np.asarray(ensemble_members)
+      else:
+        ens_coord_vals = np.arange(
+            ENSEMBLE_MEMBER_COUNTS[product], dtype=np.int64
+        )
+      coords["ensemble_member"] = ens_coord_vals
+      chunk_spec["ensemble_member"] = len(ens_coord_vals)
+      ens_dims = ["basin", "date", "ensemble_member", "lead_time"]
+      ens_shape = (
+          len(basin_ids),
+          len(dates),
+          len(ens_coord_vals),
+          lead_steps,
+      )
+      for ens_band in ENSEMBLE_MEMBER_BANDS[product]:
+        data_vars[ens_band] = (
+            ens_dims,
+            np.full(ens_shape, np.nan, dtype=np.float32),
+            {},
+        )
+      ens_missing_var = ENSEMBLE_MISSING_FRACTION_VAR.get(product)
+      if ens_missing_var:
+        data_vars[ens_missing_var] = (
+            ens_dims,
+            np.full(ens_shape, np.nan, dtype=np.float32),
+            {},
+        )
 
     global_attrs = dict(PRODUCT_METADATA_ATTRS.get(product, {}))
     if extra_attrs:
@@ -350,8 +412,8 @@ class MultiMetZarrWriter:
       product: MultiMet Product enum.
       var_name: Variable band name.
       day_idx: Integer index along the date dimension.
-      values: 1D or 2D numpy array of float32 values for this day across all
-        basins.
+      values: 1D, 2D, 3D, or 4D numpy array of float32 values for this day
+        across all basins.
       root_group: Optional pre-opened zarr Group handle to avoid repeated I/O.
 
     Returns:
@@ -376,7 +438,14 @@ class MultiMetZarrWriter:
       if values.ndim == 2:
         z_root[var_name][:, day_idx, :] = values.astype(np.float32)
       elif values.ndim == 3:
-        z_root[var_name][:, day_idx : day_idx + 1, :] = values.astype(
+        if z_root[var_name].ndim == 4:
+          z_root[var_name][:, day_idx, :, :] = values.astype(np.float32)
+        else:
+          z_root[var_name][:, day_idx : day_idx + 1, :] = values.astype(
+              np.float32
+          )
+      elif values.ndim == 4:
+        z_root[var_name][:, day_idx : day_idx + 1, :, :] = values.astype(
             np.float32
         )
     else:
@@ -403,9 +472,8 @@ class MultiMetZarrWriter:
       var_name: Variable band name.
       start_idx: Integer start index along the date dimension (inclusive).
       end_idx: Integer end index along the date dimension (exclusive).
-      values: 2D or 3D numpy array of float32 values for this date range across
-        all basins. Shape is (num_basins, num_days) for nowcast or
-        (num_basins, num_days, lead_steps) for forecast.
+      values: 2D, 3D, or 4D numpy array of float32 values for this date range
+        across all basins.
       root_group: Optional pre-opened zarr Group handle to avoid repeated I/O.
 
     Returns:
@@ -427,7 +495,12 @@ class MultiMetZarrWriter:
       raise KeyError(f"Variable {var_name} not found in store {store_path}")
 
     if is_forecast:
-      z_root[var_name][:, start_idx:end_idx, :] = values.astype(np.float32)
+      if values.ndim == 4:
+        z_root[var_name][:, start_idx:end_idx, :, :] = values.astype(
+            np.float32
+        )
+      else:
+        z_root[var_name][:, start_idx:end_idx, :] = values.astype(np.float32)
     else:
       z_root[var_name][:, start_idx:end_idx] = values.astype(np.float32)
 
@@ -570,6 +643,25 @@ class MultiMetZarrWriter:
     for band in all_store_vars:
       nan_vars[band] = (dims, np.full(shape, np.nan, dtype=np.float32))
 
+    with xr.open_zarr(store_path) as existing_ds:
+      if is_forecast and "ensemble_member" in existing_ds.dims:
+        ens_coord_vals = np.asarray(existing_ds["ensemble_member"].values)
+        coords["ensemble_member"] = ens_coord_vals
+        chunk_spec["ensemble_member"] = len(ens_coord_vals)
+        ens_dims = ["basin", "date", "ensemble_member", "lead_time"]
+        ens_shape = (
+            num_basins,
+            len(dates_to_add),
+            len(ens_coord_vals),
+            FORECAST_LEAD_DAYS[product],
+        )
+        for v_name in existing_ds.data_vars:
+          if existing_ds[v_name].ndim == 4:
+            nan_vars[v_name] = (
+                ens_dims,
+                np.full(ens_shape, np.nan, dtype=np.float32),
+            )
+
     nan_ds = xr.Dataset(data_vars=nan_vars, coords=coords).chunk(chunk_spec)
     _safe_to_zarr(nan_ds, store_path, append_dim="date", consolidated=True)
     self._open_groups.pop(product, None)
@@ -650,6 +742,10 @@ class MultiMetZarrWriter:
       chunk_spec["lead_time"] = FORECAST_LEAD_DAYS[product]
 
     with xr.open_zarr(store_path) as existing_ds:
+      if "ensemble_member" in existing_ds.dims:
+        chunk_spec["ensemble_member"] = int(
+            existing_ds.sizes["ensemble_member"]
+        )
       expanded_ds = existing_ds.reindex(
           date=union_dates.values, fill_value=np.nan
       ).chunk(chunk_spec)
@@ -747,11 +843,13 @@ class MultiMetZarrWriter:
 
     new_slice = ds_to_write.sel(basin=new_basins)
     prod_type = PRODUCT_TYPES[product]
-    chunk_spec = (
+    chunk_spec = dict(
         DEFAULT_CHUNKS_NOWCAST
         if prod_type == ProductType.NOWCAST
         else DEFAULT_CHUNKS_FORECAST
     )
+    if "ensemble_member" in new_slice.dims:
+      chunk_spec["ensemble_member"] = -1
     new_slice = new_slice.chunk(chunk_spec)
 
     _safe_to_zarr(
@@ -784,11 +882,13 @@ class MultiMetZarrWriter:
     store_path = self.get_store_path(product)
     prod_type = PRODUCT_TYPES[product]
     is_forecast = prod_type == ProductType.FORECAST
-    chunk_spec = (
+    chunk_spec = dict(
         DEFAULT_CHUNKS_NOWCAST
         if prod_type == ProductType.NOWCAST
         else DEFAULT_CHUNKS_FORECAST
     )
+    if "ensemble_member" in ds_to_write.dims:
+      chunk_spec["ensemble_member"] = -1
 
     local_target = store_path
 
@@ -877,9 +977,19 @@ class MultiMetZarrWriter:
                 and missing_var in ds_aligned.data_vars
                 and missing_var in z_root
             )
+            ens_missing_var = ENSEMBLE_MISSING_FRACTION_VAR.get(product)
+            has_ens_missing_var = (
+                ens_missing_var is not None
+                and ens_missing_var in ds_aligned.data_vars
+                and ens_missing_var in z_root
+            )
             old_miss_cache: Dict[int, np.ndarray] = {}
             new_miss_cache: Dict[int, np.ndarray] = {}
             updated_mask_by_local_idx: Dict[int, np.ndarray] = {}
+            old_ens_miss_cache: Dict[int, np.ndarray] = {}
+            new_ens_miss_cache: Dict[int, np.ndarray] = {}
+            updated_ens_mask_by_local_idx: Dict[int, np.ndarray] = {}
+
             if preserve_existing_valid and has_missing_var:
               new_miss_all = ds_aligned[missing_var].values.astype(np.float32)
               z_miss = z_root[missing_var]
@@ -895,14 +1005,67 @@ class MultiMetZarrWriter:
                   )
                   new_miss_cache[local_idx] = new_miss_all[:, local_idx]
 
+            if preserve_existing_valid and has_ens_missing_var:
+              new_ens_miss_all = ds_aligned[ens_missing_var].values.astype(
+                  np.float32
+              )
+              z_ens_miss = z_root[ens_missing_var]
+              for local_idx, store_idx in enumerate(indices):
+                old_ens_miss_cache[store_idx] = np.asarray(
+                    z_ens_miss[:, store_idx, :, :], dtype=np.float32
+                )
+                new_ens_miss_cache[local_idx] = new_ens_miss_all[
+                    :, local_idx, :, :
+                ]
+
             data_vars_non_missing = [
-                v for v in ds_aligned.data_vars if v != missing_var
+                v
+                for v in ds_aligned.data_vars
+                if v not in (missing_var, ens_missing_var)
             ]
             for var in data_vars_non_missing:
+              if var not in z_root:
+                continue
               vals = ds_aligned[var].values.astype(np.float32)
               z_var = z_root[var]
               for local_idx, store_idx in enumerate(indices):
-                if is_forecast:
+                if vals.ndim == 4:
+                  new_slice_arr = vals[:, local_idx, :, :]
+                  if preserve_existing_valid:
+                    old_slice_arr = np.asarray(
+                        z_var[:, store_idx, :, :], dtype=np.float32
+                    )
+                    if has_ens_missing_var:
+                      old_em = old_ens_miss_cache[store_idx]
+                      new_em = new_ens_miss_cache[local_idx]
+                      use_new = ~np.isnan(new_slice_arr) & (
+                          np.isnan(old_slice_arr)
+                          | np.isnan(old_em)
+                          | (new_em < old_em - 1e-5)
+                      )
+                    elif has_missing_var:
+                      old_m = old_miss_cache[store_idx][:, np.newaxis, :]
+                      new_m = new_miss_cache[local_idx][:, np.newaxis, :]
+                      use_new = ~np.isnan(new_slice_arr) & (
+                          np.isnan(old_slice_arr)
+                          | np.isnan(old_m)
+                          | (new_m < old_m - 1e-5)
+                      )
+                    else:
+                      use_new = ~np.isnan(new_slice_arr) & np.isnan(
+                          old_slice_arr
+                      )
+                    new_slice_arr = np.where(
+                        use_new, new_slice_arr, old_slice_arr
+                    )
+                    if local_idx not in updated_ens_mask_by_local_idx:
+                      updated_ens_mask_by_local_idx[local_idx] = use_new
+                    else:
+                      updated_ens_mask_by_local_idx[local_idx] = (
+                          updated_ens_mask_by_local_idx[local_idx] | use_new
+                      )
+                  z_var[:, store_idx, :, :] = new_slice_arr
+                elif is_forecast:
                   new_slice_arr = vals[:, local_idx, :]
                   if preserve_existing_valid:
                     old_slice_arr = np.asarray(
@@ -985,6 +1148,22 @@ class MultiMetZarrWriter:
                         use_new | np.isnan(old_m), new_m, old_m
                     )
                   z_var[:, store_idx] = new_m
+
+            if has_ens_missing_var and ens_missing_var is not None:
+              vals_em = ds_aligned[ens_missing_var].values.astype(np.float32)
+              z_em = z_root[ens_missing_var]
+              for local_idx, store_idx in enumerate(indices):
+                new_em = vals_em[:, local_idx, :, :]
+                if preserve_existing_valid:
+                  old_em = old_ens_miss_cache[store_idx]
+                  use_new_em = updated_ens_mask_by_local_idx.get(
+                      local_idx, np.isnan(old_em)
+                  )
+                  new_em = np.where(
+                      use_new_em | np.isnan(old_em), new_em, old_em
+                  )
+                z_em[:, store_idx, :, :] = new_em
+
             self.consolidate_metadata(product)
             return store_path
         elif overwrite_existing_basins:

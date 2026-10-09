@@ -9,12 +9,28 @@ tensorboard
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
 absl-py
-# Required so that autodoc can import the multimet archive builders.
+# Required so that autodoc can import model and multimet modules.
+bokeh
+cachey
+dask
 fsspec
+gcsfs
+google-cloud-storage
+h5netcdf
 h5py
+matplotlib
+more-itertools
+netcdf4
 pandas
+pyarrow
+pydantic
+pyogrio
+pyproj
+rasterio
 requests
+ruamel.yaml
 scipy
+shapely
 tqdm
 xarray
 zarr

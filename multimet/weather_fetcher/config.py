@@ -16,12 +16,14 @@
 
 from __future__ import annotations
 
-import dataclasses
-from datetime import datetime, timedelta, timezone
 import json
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from datetime import datetime, timedelta
+from typing import Any
 
 import numpy as np
+
+from utils.file_paths import DYNAMICAL_STAC_CATALOG_URL, ECMWF_OPEN_DATA_BUCKET
 
 # Grid and timeline specifications (0.25 deg global grid, +90.0 to -90.0 lat)
 N_LAT: int = 721
@@ -34,7 +36,7 @@ VIEWER_STEP_HOURS: int = 3
 MAX_LEAD_HOURS: int = (NUM_STEPS - 1) * STEP_HOURS
 
 # Metadata and synchronization constants
-STAC_CATALOG_URL: str = "https://stac.dynamical.org/catalog.json"
+STAC_CATALOG_URL: str = DYNAMICAL_STAC_CATALOG_URL
 RUN_METADATA_FILE: str = "latest_dynamical_meta.json"
 SYNC_STATUS_FILE: str = "sync_status.json"
 KEEP_PREVIOUS_RUNS: int = 1
@@ -43,15 +45,13 @@ DEFAULT_MSLP_OFFSET_HPA: float = 1000.0
 MIN_VALID_RESAMPLE_FRACTION: float = 0.8
 MSLP_OFFSET_HPA: float = 1000.0
 
-MIN_VALID_RESAMPLE_FRACTION: float = 0.8
-
 
 # Oldest acceptable last-valid day of a cached NOAA PSL CPC annual NetCDF file
 # before it must be downloaded again, and the maximum age of the cached file.
 CPC_MAX_PUBLICATION_LAG_DAYS: int = 7
 CPC_CACHE_REFRESH_HOURS: float = 6.0
 
-RUN_DATASET_TO_MODEL: Dict[str, str] = {
+RUN_DATASET_TO_MODEL: dict[str, str] = {
     "ecmwf_aifs_single_forecast": "ecmwf_aifs",
     "noaa_gfs_forecast": "noaa_gfs",
     "ecmwf_ifs_ens_forecast_15_day_0_25_degree": "ecmwf_ifs",
@@ -62,7 +62,7 @@ RUN_DATASET_TO_MODEL: Dict[str, str] = {
     "noaa_cpc_unified_gauge_precip": "noaa_cpc",
 }
 
-SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
+SUPPORTED_MODELS: dict[str, dict[str, str]] = {
     "ecmwf_hres": {
         "id": "ecmwf_hres",
         "name": "ECMWF IFS HRES Operational",
@@ -121,7 +121,7 @@ SUPPORTED_MODELS: Dict[str, Dict[str, str]] = {
     },
 }
 
-SUPPORTED_VARIABLES: Dict[str, Dict[str, Any]] = {
+SUPPORTED_VARIABLES: dict[str, dict[str, Any]] = {
     "precipitation": {
         "id": "precipitation",
         "name": "Total Precipitation Rate",
@@ -160,7 +160,7 @@ SUPPORTED_VARIABLES: Dict[str, Dict[str, Any]] = {
 }
 
 # Stream suffix -> dynamical.org variable name
-STREAM_VARIABLES: Dict[str, str] = {
+STREAM_VARIABLES: dict[str, str] = {
     "precip": "precipitation_surface",
     "temp": "temperature_2m",
     "mslp": "pressure_reduced_to_mean_sea_level",
@@ -169,7 +169,7 @@ STREAM_VARIABLES: Dict[str, str] = {
 }
 
 # Physical variable -> suffix of the binary stream that holds it
-STREAM_SUFFIX: Dict[str, str] = {
+STREAM_SUFFIX: dict[str, str] = {
     "precipitation": "precip",
     "accumulated_precip": "precip",
     "temperature": "temp",
@@ -177,7 +177,7 @@ STREAM_SUFFIX: Dict[str, str] = {
 }
 
 # (stream id, file name, is precipitation)
-STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
+STREAM_FILES: tuple[tuple[str, str, bool], ...] = (
     ("ecmwf_hres_precip", "ecmwf_hres_precip.bin", True),
     ("ecmwf_hres_temp", "ecmwf_hres_temp.bin", False),
     ("ecmwf_hres_mslp", "ecmwf_hres_mslp.bin", False),
@@ -212,7 +212,7 @@ STREAM_FILES: Tuple[Tuple[str, str, bool], ...] = (
     ("noaa_cpc_precip", "noaa_cpc_precip.bin", True),
 )
 
-GLOBAL_VARS: List[str] = [
+GLOBAL_VARS: list[str] = [
     "ecmwf_hres_precip",
     "ecmwf_hres_temp",
     "ecmwf_hres_u10",
@@ -234,7 +234,7 @@ GLOBAL_VARS: List[str] = [
 ]
 
 # Default operational models synchronized by sync_all_models
-DEFAULT_SYNC_MODELS: Tuple[str, ...] = (
+DEFAULT_SYNC_MODELS: tuple[str, ...] = (
     "ecmwf_hres",
     "ecmwf_ifs",
     "ecmwf_aifs",
@@ -247,14 +247,14 @@ DEFAULT_SYNC_MODELS: Tuple[str, ...] = (
 
 
 # Human-readable upstream source per ``DYNAMICAL_MODELS[...]["source"]``.
-SOURCE_LABELS: Dict[str, str] = {
+SOURCE_LABELS: dict[str, str] = {
     "dynamical": "dynamical.org",
     "dynamical_analysis": "dynamical.org",
-    "ecmwf_open_data": "gs://ecmwf-open-data",
+    "ecmwf_open_data": f"gs://{ECMWF_OPEN_DATA_BUCKET}",
     "noaa_psl_cpc": "NOAA PSL (downloads.psl.noaa.gov)",
 }
 
-DYNAMICAL_MODELS: Dict[str, Dict[str, Any]] = {
+DYNAMICAL_MODELS: dict[str, dict[str, Any]] = {
     "ecmwf_hres": {
         "dataset": "ecmwf-ifs-hres-0-25-degree",
         "title": "ECMWF IFS HRES Operational (0.25°)",
@@ -307,7 +307,7 @@ DYNAMICAL_MODELS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-MODEL_NATIVE_LEAD_HOURS: Dict[str, Tuple[int, ...]] = {
+MODEL_NATIVE_LEAD_HOURS: dict[str, tuple[int, ...]] = {
     "ecmwf_hres": tuple(list(range(0, 145, 3)) + list(range(150, 241, 6))),
     "ecmwf_ifs": tuple(list(range(0, 145, 3)) + list(range(150, 241, 6))),
     "ecmwf_aifs": tuple(range(0, 241, 6)),
@@ -323,14 +323,14 @@ def output_lead_hours(
     in_leads: Sequence[int],
     max_lead: int = MAX_LEAD_HOURS,
     step: int = STEP_HOURS,
-) -> List[int]:
+) -> list[int]:
   """Returns stored lead hours: unique model leads on 3-hourly steps."""
   return sorted({
       int(h) for h in in_leads if 0 <= int(h) <= max_lead and int(h) % step == 0
   })
 
 
-def run_lead_hours(model_key: str, n_steps: int) -> List[int]:
+def run_lead_hours(model_key: str, n_steps: int) -> list[int]:
   """Returns the lead hours of the first ``n_steps`` stored planes of a model.
 
   Args:
@@ -358,7 +358,7 @@ def run_lead_hours(model_key: str, n_steps: int) -> List[int]:
   return leads[:n_steps]
 
 
-_PRECIP_UNIT_TO_MM_PER_H: Dict[str, float] = {
+_PRECIP_UNIT_TO_MM_PER_H: dict[str, float] = {
     "kg m-2 s-1": 3600.0,
     "kg m**-2 s**-1": 3600.0,
     "mm/s": 3600.0,
@@ -370,8 +370,8 @@ _PRECIP_UNIT_TO_MM_PER_H: Dict[str, float] = {
     "mm/d": 1.0 / 24.0,
     "mm day-1": 1.0 / 24.0,
 }
-_KELVIN_UNITS: Tuple[str, ...] = ("K", "kelvin", "degK", "deg_K")
-_CELSIUS_UNITS: Tuple[str, ...] = (
+_KELVIN_UNITS: tuple[str, ...] = ("K", "kelvin", "degK", "deg_K")
+_CELSIUS_UNITS: tuple[str, ...] = (
     "degC",
     "deg_C",
     "C",
@@ -379,15 +379,15 @@ _CELSIUS_UNITS: Tuple[str, ...] = (
     "degree_Celsius",
     "degrees_Celsius",
 )
-_PASCAL_UNITS: Tuple[str, ...] = ("Pa", "pa", "pascal")
-_HECTOPASCAL_UNITS: Tuple[str, ...] = ("hPa", "hpa", "mbar", "millibar")
-_WIND_UNITS: Tuple[str, ...] = ("m/s", "m s-1", "m s**-1", "m/sec")
+_PASCAL_UNITS: tuple[str, ...] = ("Pa", "pa", "pascal")
+_HECTOPASCAL_UNITS: tuple[str, ...] = ("hPa", "hpa", "mbar", "millibar")
+_WIND_UNITS: tuple[str, ...] = ("m/s", "m s-1", "m s**-1", "m/sec")
 
 
 def to_stored_units(
     stream: str,
     values: Any,
-    source_units: Optional[str] = None,
+    source_units: str | None = None,
 ) -> np.ndarray:
   """Converts upstream physical units to stored float16 planes.
 
@@ -473,7 +473,7 @@ def from_stored_units(
 
 def parse_zarr_metadata_time_extent(
     zmetadata_json: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
   """Parses CF-compliant time extent from Zarr .zmetadata JSON content."""
   if not zmetadata_json:
     return None

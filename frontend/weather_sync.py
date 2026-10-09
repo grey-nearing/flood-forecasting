@@ -89,6 +89,9 @@ _SYNC_PYTHON_PROBE = "import icechunk, numpy, pystac, scipy, xarray"
 _SYNC_PYTHON_PROBE_TIMEOUT_S = 120
 
 
+from utils.file_paths import OPENHYDRONET_WEATHER_CACHE_DIR
+
+
 def weather_data_root() -> str:
   """Local-disk root of downloaded runs used by the frontend server.
 
@@ -99,7 +102,7 @@ def weather_data_root() -> str:
   env = os.environ.get("OPENHYDRONET_WEATHER_DATA_DIR", "").strip()
   if env:
     return str(Path(env).expanduser().resolve())
-  return str(Path.home() / ".cache" / "openhydronet" / "weather")
+  return str(OPENHYDRONET_WEATHER_CACHE_DIR)
 
 
 def current_run_dir(root: Optional[str] = None) -> Optional[str]:

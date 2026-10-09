@@ -340,24 +340,10 @@ result = extractor.extract_attributes_for_polygon(
     era5_source="hybas",
 )
 
-# `result` is an immutable CatchmentAttributes. `result.attributes` holds the
-# Caravan-native values (exactly the row written to the Caravan CSV); provenance
-# of the aggregation is carried alongside.
-attrs = result.attributes
-print("Drainage Area (km²):", result.area_km2)
-print("Sub-basins intersected:", result.n_subbasins)
+attrs = result["caravan_attributes"]
+print("Drainage Area (km²):", result["total_area_km2"])
 print("Mean Elevation (m):", attrs["ele_mt_sav"])
 print("Mean Precipitation (mm/yr):", attrs["pre_mm_syr"])
-
-# HydroATLAS stores some fields in scaled integer encodings (e.g. tmp_dc_* in
-# tenths of °C). Unit conversion is explicit and driven by the attribute
-# registry; the extractor itself never rescales values.
-physical = result.physical_units()
-print("Mean Temperature (°C):", physical["tmp_dc_syr"])
-
-# Everything is also available as plain pandas / dict structures.
-series = result.to_series()
-payload = result.to_dict()  # round-trips via CatchmentAttributes.from_dict
 ```
 
 ### 3. Add Extracted Attributes to a Zarr Store
@@ -366,31 +352,8 @@ payload = result.to_dict()  # round-trips via CatchmentAttributes.from_dict
 extractor.append_attributes_to_zarr(
     master_zarr_path="/data/multimet/caravan.zarr",
     basin_id="my_basin_01",
-    attributes=result,  # a CatchmentAttributes or a flat {attribute: value} mapping
+    attributes=attrs,
 )
-```
-
-### 4. Query Raw HydroATLAS Sub-basins and Attribute Metadata
-
-```python
-from multimet.static_extractor import ATTRIBUTE_REGISTRY, to_physical_units
-
-# Plain geospatial query: native values, full-resolution geometry, EPSG:4326.
-# Nothing is simplified, truncated or rescaled. Levels other than 12 require a
-# full BasinATLAS_v10.gdb (see `extractor.available_levels`).
-subbasins = extractor.read_subbasins(
-    bbox=(-87.0, 40.0, -85.0, 41.0),  # (min_lon, min_lat, max_lon, max_lat)
-    level=12,
-    columns=["ele_mt_sav", "tmp_dc_syr"],  # HYBAS_ID and geometry are always included
-)
-
-# Precomputed Caravan ERA5 climate indices for Level 12 sub-basins (one row per HYBAS_ID).
-climate = extractor.read_subbasin_climate_indices(subbasins["HYBAS_ID"])
-
-# Attribute metadata (name, category, native/physical unit, scale factor, aggregation rule).
-definition = ATTRIBUTE_REGISTRY["tmp_dc_syr"]
-print(definition.name, definition.physical_unit, definition.scale)
-print(to_physical_units({"tmp_dc_syr": 153.0}))  # {'tmp_dc_syr': 15.3}
 ```
 
 ---

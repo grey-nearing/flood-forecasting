@@ -110,7 +110,7 @@ We maintain four native-resolution Analysis-Ready Cloud-Optimized (ARCO) global 
 
 ### 3.2 `ERA5-Land` Internal Gridded Archive (`data/era5_land/daily_surface.zarr`)
 
-- **Provenance & Construction:** Built directly from raw hourly ECMWF ERA5-Land GRIB files (`ERA5_Land_Hourly_{YYYYMMDD}_default_{HH}.grib`, DOI: `10.24381/cds.e2161bac`) stored in Google's internal Earth Engine (`gestalt-ingest`) backend archive (`gs://open-multimet/data/era5_land/daily_surface.zarr`, backing Earth Engine's `ECMWF/ERA5_LAND/HOURLY` catalog), bypassing the Earth Engine API to preserve native `0.1°` (`1801 × 3600`) floating-point precision.
+- **Provenance & Construction:** Built from native hourly ECMWF ERA5-Land `0.1°` (`1801 × 3600`) reanalysis fields (`reanalysis-era5-land`, DOI: `10.24381/cds.e2161bac`, Earth Engine `ECMWF/ERA5_LAND/HOURLY`), aggregated and de-accumulated to daily UTC means, minimums, maximums, and daily totals while preserving native `0.1°` (`1801 × 3600`) floating-point precision.
 - **39 `float32` Surface Variables:**
   - **12 state & radiation variables with daily mean, `_min`, and `_max` (`36` bands):**
     - `era5land_temperature_2m{,_min,_max}` ($^\circ\text{C}$)
@@ -134,7 +134,7 @@ We maintain four native-resolution Analysis-Ready Cloud-Optimized (ARCO) global 
 
 - **Provenance & 3-Tier Contiguous Construction (`2016-01-01` to present):**
   1. **`2016-01-01` to `2023-01-10` (WeatherBench 2 HRES Archive):** Ingested from `gs://weatherbench2/datasets/hres/2016-2022-0012-1440x721.zarr` (`00Z` initialization, lead days `1..10`). Provides `hres_temperature_2m`, `hres_surface_pressure`, and `hres_total_precipitation`. Because WeatherBench 2 HRES does not archive surface radiation fluxes or daily min/max temperature, `hres_surface_net_solar_radiation`, `hres_surface_net_thermal_radiation`, `hres_temperature_2m_min`, and `hres_temperature_2m_max` are **`NaN`** during `2016-01-01 .. 2023-01-10`.
-  2. **`2023-01-11` to `2023-07-11` (Google Flood Forecasting Internal ECMWF HRES Archive):** Ingested from `gs://open-multimet/gridded-data-archives/HRES/daily_surface.zarr{YYYY-MM-DD}-tp-2t-sp-ssr-str-sf.nc` (`00Z` initialization, lead days `1..10`). Provides all 5 core MultiMet HRES bands (`hres_temperature_2m`, `hres_surface_pressure`, `hres_total_precipitation`, `hres_surface_net_solar_radiation`, `hres_surface_net_thermal_radiation`).
+  2. **`2023-01-11` to `2023-07-11` (Archived ECMWF IFS HRES 00Z Daily Surface NetCDF Archive):** Regridded `0.25°` daily surface archive (`00Z` initialization, lead days `1..10`). Provides all 5 core MultiMet HRES bands (`hres_temperature_2m`, `hres_surface_pressure`, `hres_total_precipitation`, `hres_surface_net_solar_radiation`, `hres_surface_net_thermal_radiation`).
   3. **`2023-07-12` to present (ECMWF Open Data Operational IFS HRES GRIB2 Archive):** Ingested from `gs://ecmwf-open-data/<YYYYMMDD>/00z/` (`0p4-beta/oper` on `2023-07-12`, `ifs/0p25/oper` from `2023-07-13` onward). Provides all 7 variables including `hres_temperature_2m_min` and `hres_temperature_2m_max`.
 - **7 `float32` Forecast Variables (`dims: ("time", "lead_time", "latitude", "longitude")`):**
   - `hres_temperature_2m`, `hres_temperature_2m_min`, `hres_temperature_2m_max` ($^\circ\text{C}$)
@@ -149,7 +149,7 @@ We maintain four native-resolution Analysis-Ready Cloud-Optimized (ARCO) global 
   - Built and incrementally extended via `build-cpc-archive` (`multimet/gridded_archive_builders/build_cpc_archive.py`) from NOAA PSL yearly NetCDF files (`https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/precip.{year}.nc`).
   - Flips raw PSL descending latitude (`89.75 .. -89.75`) to ascending (`-89.75 .. 89.75`), shifts `[0.25 .. 359.75]` longitude to `[-179.75 .. 179.75]`, and writes `cpc_precipitation` (`float32`, $\text{mm/day}$, ocean/missing cells as `NaN`).
 - **`IMERG` (`gridded-data-archives/IMERG/daily_surface.zarr`):**
-  - Built and incrementally extended via `build-imerg-archive` (`multimet/gridded_archive_builders/build_imerg_archive.py`) from NASA GES DISC `GPM_3IMERGDE.07` daily NetCDF-4 files and Google's internal mirror of `GPM_3IMERGHHE.07` half-hourly HDF5 granules (`gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr`).
+  - Built and incrementally extended via `build-imerg-archive` (`multimet/gridded_archive_builders/build_imerg_archive.py`) from NASA GES DISC `GPM_3IMERGDE.07` daily NetCDF-4 files and `GPM_3IMERGHHE.07` half-hourly HDF5 granules.
   - Writes `imerg_precipitation` (`float32`, $\text{mm/day}$) on `(-89.95 .. 89.95) × (-179.95 .. 179.95)`.
 
 ---
@@ -331,7 +331,7 @@ Timeline for Sample Issued on Date D (00:00 UTC) with seq_length=S, lead_time=L,
 | **`x_d_forecast`** | `dict[str, torch.Tensor]` (`float32`) | `{feature_name: (B, O + L, 1)}` | • **Forecast horizon (`L` steps):** 3D forecast features sliced at issue date `date = D` across `lead_time = [1 day .. L days]`, valid on **`[D, D + 1, ..., D + L - 1]`**.<br>• **Historical overlap (`O` steps, when `forecast_overlap = O > 0`):** Prepends `lead_time = 1 day` (`isel(lead_time=0)`) from issue dates `[D - O .. D - 1]` before the `L` forecast steps, yielding length `O + L`.<br>• If `timestep_counter: True`, includes `"forecast_counter"` of shape `(B, O + L, 1)` containing `[1, ..., 1]` ($O$ times) followed by `[1, 2, ..., L]`. |
 | **`y`** | `torch.Tensor` (`float32`) | `(B, S, F_target)` | Target variables (`streamflow`) on valid dates **`[D + L - S, ..., D + L - 1]`**. Loss and evaluation subset the trailing `predict_last_n` steps (`y[:, -predict_last_n:, :]`). |
 | **`date`** | `np.ndarray` (`datetime64[ns]`) | `(B, S)` | Valid dates **`[D + L - S, ..., D + L - 1]`** matching `y`. Note that the last date `date[:, -1]` is $D + L - 1$, from which `BaseTester` recovers the forecast issue date $D = \text{date}[:, -1] - (L - 1)\text{ days}$. |
-| **`basin_index`** | `torch.Tensor` (`int`) | `(B,)` | Integer index of each sample's basin in `dataset._basins`. |
+| **`basin_index`** | `torch.Tensor` (`int64`) | `(B,)` | Integer index of each sample's basin in `dataset._basins`. |
 | **`per_basin_target_stds`** | `torch.Tensor` (`float32`) | `(B, 1, F_target)` | Present when `loss: nse`; per-basin standard deviation of target variables for basin-normalized NSE loss. |
 
 ### 7.4 Cold-Start vs. Hot-Start Realtime Forecast Data & State Persistence

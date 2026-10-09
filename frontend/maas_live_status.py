@@ -14,8 +14,8 @@
 
 """Real-time forecast flow percentile and flood exceedance enrichment for MaaS river networks.
 
-Maintains an in-memory and disk-backed live forecast cache for all 4 MaaS providers
-(`floodhub`, `geoglows`, `glofas`, `todays_earth`) and populates uncached viewport
+Maintains an in-memory and disk-backed live forecast cache for all 3 MaaS providers
+(`floodhub`, `geoglows`, `glofas`) and populates uncached viewport
 reaches asynchronously in background batches so `/api/maas/network` always responds
 in < 15 ms while coloring river segments with 100% real-time forecast data.
 """
@@ -39,27 +39,30 @@ from PIL import Image
 import requests
 
 from frontend.config import CACHE_DIR, RIVER_NETWORKS_DIR
-from frontend.maas_viewer.consensus import route_floodplain_excess
+from utils.file_paths import (
+    FLOODHUB_API_KEY_FILE,
+    FLOODHUB_BASE_URL,
+    GEOGLOWS_ARCGIS_LIVEFEEDS_URL as ARCGIS_GAUGES_QUERY_URL,
+    GLOFAS_BASE_URL,
+    GLOFAS_OWS_URL,
+)
 
 _LOG = logging.getLogger(__name__)
 
 _LIVE_TTL_S = 1800.0  # 30 minutes
 _DISK_CACHE_PATH = Path(CACHE_DIR) / 'live_network_status_v1.json'
 _GLOFAS_OWS_CACHE_PATH = Path(CACHE_DIR) / 'glofas_ows_rank_grid_v1.npz'
-_GLOFAS_OWS_URL = 'https://globalfloods-ows.ecmwf.int/glofas-ows/ows.py'
-_ARCGIS_GEOGLOWS_URL = (
-    'https://livefeeds3.arcgis.com/arcgis/rest/services/'
-    'GEOGLOWS/GlobalWaterModel_Medium/MapServer/0/query'
-)
-_OPEN_METEO_FLOOD_URL = 'https://flood-api.open-meteo.com/v1/flood'
-_FLOODHUB_BASE_URL = 'https://floodforecasting.googleapis.com/v1'
+_GLOFAS_OWS_URL = GLOFAS_OWS_URL
+_ARCGIS_GEOGLOWS_URL = ARCGIS_GAUGES_QUERY_URL
+_OPEN_METEO_FLOOD_URL = GLOFAS_BASE_URL
+_FLOODHUB_BASE_URL = FLOODHUB_BASE_URL
 
 
 def _load_default_floodhub_key() -> str:
     env_key = os.environ.get('FLOODHUB_API_KEY', '').strip()
     if env_key:
         return env_key
-    key_file = Path.home() / '.config' / 'earthkit' / 'floodhub_api_key'
+    key_file = FLOODHUB_API_KEY_FILE
     if key_file.is_file():
         return key_file.read_text(encoding='utf-8').strip()
     return ''
@@ -72,13 +75,11 @@ _LIVE_STATUS: dict[str, dict[str, dict[str, Any]]] = {
     'floodhub': {},
     'geoglows': {},
     'glofas': {},
-    'todays_earth': {},
 }
 _IN_FLIGHT: dict[str, set[str]] = {
     'floodhub': set(),
     'geoglows': set(),
     'glofas': set(),
-    'todays_earth': set(),
 }
 _BG_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=4, thread_name_prefix='maas-live-net'
@@ -93,7 +94,6 @@ _LAST_REFRESH_TS: dict[str, float] = {
     'floodhub': 0.0,
     'geoglows': 0.0,
     'glofas': 0.0,
-    'todays_earth': 0.0,
 }
 
 
@@ -164,7 +164,7 @@ def clear_live_status_cache(model: str | None = None) -> None:
     """Clear cached live network flow status for `model` (or all models if `None`)."""
     global _GLOFAS_OWS_GRID, _GLOFAS_OWS_TS, _GLOFAS_OWS_IN_FLIGHT  # noqa: PLW0603
     _ensure_disk_cache_loaded()
-    clear_ows = model in (None, 'glofas', 'todays_earth')
+    clear_ows = model in (None, 'glofas')
     with _LOCK:
         targets = [model] if (model and model in _LIVE_STATUS) else list(_LIVE_STATUS.keys())
         for m in targets:
@@ -215,7 +215,7 @@ def get_last_refresh_iso(model: str) -> str | None:
         tbl = _LIVE_STATUS.get(model) or {}
         ts = max((float(v.get('ts', 0.0)) for v in tbl.values()), default=0.0)
         ts = max(ts, _LAST_REFRESH_TS.get(model, 0.0))
-        if model in ('glofas', 'todays_earth'):
+        if model == 'glofas':
             ts = max(ts, _GLOFAS_OWS_TS)
     if ts <= 0.0:
         return None
@@ -691,7 +691,7 @@ def sample_glofas_ows_polyline(coords: list[Any], grid: np.ndarray) -> int:
 
 
 def grid_feature_key(coords: list[Any], area: float) -> tuple[str, float, float]:
-    """Return simplification-invariant `(key, lat, lon)` for a GloFAS or Today's Earth polyline."""
+    """Return simplification-invariant `(key, lat, lon)` for a GloFAS polyline."""
     pt = coords[-1] if len(coords) >= 2 else coords[0]
     lon, lat = float(pt[0]), float(pt[1])
     area_int = int(round(max(area, 0.0)))
@@ -721,7 +721,7 @@ def enrich_network_features_live(
         in_flight = _IN_FLIGHT[model]
         ows_grid = (
             _GLOFAS_OWS_GRID
-            if (model in ('glofas', 'todays_earth') and _GLOFAS_OWS_GRID is not None and _GLOFAS_OWS_TS >= cutoff)
+            if (model == 'glofas' and _GLOFAS_OWS_GRID is not None and _GLOFAS_OWS_TS >= cutoff)
             else None
         )
 
@@ -819,7 +819,7 @@ def enrich_network_features_live(
                     in_flight.add(str(rid))
                 _BG_EXECUTOR.submit(_fetch_geoglows_batch_worker, sorted_gg)
 
-            elif model in ('glofas', 'todays_earth') and need_ows_grid and not _GLOFAS_OWS_IN_FLIGHT:
+            elif model == 'glofas' and need_ows_grid and not _GLOFAS_OWS_IN_FLIGHT:
                 _GLOFAS_OWS_IN_FLIGHT = True
                 _BG_EXECUTOR.submit(_fetch_glofas_ows_grid_worker)
 

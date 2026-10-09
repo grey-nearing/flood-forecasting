@@ -204,20 +204,24 @@ class CMAL(BaseHead):
             Dictionary, containing the mixture component parameters and weights; where the key 'mu'stores the means,
             the key 'b' the scale parameters, the key 'tau' the skewness parameters, and the key 'pi' the weights).
         """
-        h = torch.relu(self.fc1(x))
-        h = self.fc2(h)
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            x = x.float()
+            h = torch.relu(self.fc1(x))
+            h = self.fc2(h)
 
-        m_latent, b_latent, t_latent, p_latent = h.chunk(4, dim=-1)
+            m_latent, b_latent, t_latent, p_latent = h.chunk(4, dim=-1)
 
-        # enforce properties on component parameters and weights:
-        m = m_latent  # no restrictions (depending on setting m>0 might be useful)
-        b = (
-            self._softplus(b_latent) + self._eps
-        )  # scale > 0 (softplus was working good in tests)
-        t = (1 - self._eps) * torch.sigmoid(t_latent) + self._eps  # 0 > tau > 1
-        p = (1 - self._eps) * torch.softmax(
-            p_latent, dim=-1
-        ) + self._eps  # sum(pi) = 1 & pi > 0
+            # enforce properties on component parameters and weights:
+            m = m_latent  # no restrictions (depending on setting m>0 might be useful)
+            b = (
+                self._softplus(b_latent) + self._eps
+            )  # scale > 0 (softplus was working good in tests)
+            t = (
+                1 - self._eps
+            ) * torch.sigmoid(t_latent) + self._eps  # 0 > tau > 1
+            p = (1 - self._eps) * torch.softmax(
+                p_latent, dim=-1
+            ) + self._eps  # sum(pi) = 1 & pi > 0
 
         return {'mu': m, 'b': b, 'tau': t, 'pi': p}
 

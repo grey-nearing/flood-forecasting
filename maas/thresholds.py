@@ -437,11 +437,21 @@ def thresholds_from_return_periods(
 ) -> dict[str, Any]:
     """Map return-period levels onto the MaaS 2/5/20/100-yr threshold contract."""
     rps_map = rps or {}
+    for key in (
+        'return_period_2',
+        'return_period_5',
+        'return_period_20',
+        'return_period_100',
+    ):
+        if key not in rps_map:
+            raise KeyError(
+                f'Missing required return period {key!r} in threshold mapping'
+            )
     return {
-        'warning_2yr': rps_map.get('return_period_2'),
-        'danger_5yr': rps_map.get('return_period_5'),
-        'extreme_20yr': rps_map.get('return_period_20'),
-        'extreme_100yr': rps_map.get('return_period_100'),
+        'warning_2yr': rps_map['return_period_2'],
+        'danger_5yr': rps_map['return_period_5'],
+        'extreme_20yr': rps_map['return_period_20'],
+        'extreme_100yr': rps_map['return_period_100'],
         'source': source,
         'unit': 'm³/s',
     }

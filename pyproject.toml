@@ -28,13 +28,16 @@ docstring-code-format = true
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-testpaths = ["model/tests", "multimet/tests", "return_periods/tests", "maas/tests", "frontend/tests"]
+testpaths = ["model/tests", "multimet/tests", "return_periods/tests", "utils/tests", "benchmarks/tests", "maas/tests", "frontend/tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = [
     "--strict-markers",
     "--tb=short",
     "-ra",
+    "-n=auto",
+    "--maxprocesses=4",
+    "--dist=loadscope",
 ]
 markers = [
     "unit: fast unit tests",

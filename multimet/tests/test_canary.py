@@ -108,53 +108,63 @@ class TestNasaCmrImerg:
 
 
 class TestDynamicalCatalog:
-  """Canaries for the live dynamical.org S3/Icechunk catalog datasets."""
+  """Canaries for the dynamical.org Icechunk catalog feeds."""
 
-  def test_catalog_lists_expected_datasets(self) -> None:
-    from multimet.timeseries_extractors.dynamical import list_catalog_datasets
-
-    datasets = list_catalog_datasets()
-    for ds_id in (
-        "nasa-imerg-analysis-early",
-        "noaa-hrrr-analysis",
-        "ecmwf-aifs-single-forecast",
-        "noaa-gfs-forecast",
-        "noaa-gefs-forecast-35-day",
-        "ecmwf-ifs-ens-forecast-15-day-0-25-degree",
-    ):
-      assert ds_id in datasets
-
-  def test_live_imerg_and_gfs_extractors(self, tmp_path: Path) -> None:
-    from multimet.timeseries_extractors.config import Product
+  def test_catalog_contains_all_supported_datasets(self) -> None:
     from multimet.timeseries_extractors.dynamical import (
+        DYNAMICAL_FORECAST_DATASETS,
         DynamicalIMERGExtractor,
+        list_catalog_datasets,
+    )
+
+    available = set(list_catalog_datasets())
+    for _, dataset_id, _, _, _ in DYNAMICAL_FORECAST_DATASETS.values():
+      assert dataset_id in available
+    assert DynamicalIMERGExtractor.DEFAULT_DATASET_ID in available
+
+  def test_live_gfs_and_dynamical_imerg_extraction(self) -> None:
+    import geopandas as gpd
+    from shapely.geometry import box
+    from multimet.timeseries_extractors.dynamical import (
+        AIFSExtractor,
+        DynamicalIMERGExtractor,
+        GEFSExtractor,
         GFSExtractor,
     )
-    from multimet.timeseries_extractors.zarr_writer import MultiMetZarrWriter
-    from multimet.utils.geometry import load_basin_geometries
 
-    basins_gdf = load_basin_geometries(
-        Path(__file__).parent
-        / "test_data"
-        / "shapefiles"
-        / "us"
-        / "us_basin_shapes.geojson"
-    )
-    writer = MultiMetZarrWriter(tmp_path)
+    gdf = gpd.GeoDataFrame(
+        {"basin_id": ["canary_basin"], "geometry": [box(-120.5, 38.5, -120.0, 39.0)]},
+        crs="EPSG:4326",
+    ).set_index("basin_id")
 
-    imerg_ds = DynamicalIMERGExtractor().extract_for_basins(
-        basins_gdf=basins_gdf,
-        start_date="2020-01-01",
-        end_date="2020-01-01",
+    gfs = GFSExtractor(lead_days=2)
+    gfs_ds = gfs.extract_for_basins(
+        gdf, start_date="2025-06-01", end_date="2025-06-01"
     )
-    writer.validate_dataset_schema(imerg_ds, Product.DYNAMICAL_IMERG)
-    assert not np.isnan(imerg_ds["imerg_precipitation"].values).any()
+    assert np.all(np.isfinite(gfs_ds["gfs_total_precipitation"].values))
+    assert np.all(np.isfinite(gfs_ds["gfs_temperature_2m_max"].values))
+    assert np.all(np.isfinite(gfs_ds["gfs_temperature_2m_min"].values))
 
-    gfs_ds = GFSExtractor().extract_for_basins(
-        basins_gdf=basins_gdf,
-        start_date="2023-01-01",
-        end_date="2023-01-01",
+    aifs = AIFSExtractor(lead_days=2)
+    aifs_ds = aifs.extract_for_basins(
+        gdf, start_date="2025-06-01", end_date="2025-06-01"
     )
-    writer.validate_dataset_schema(gfs_ds, Product.GFS)
-    assert not np.isnan(gfs_ds["gfs_temperature_2m"].values).any()
+    assert np.all(np.isfinite(aifs_ds["aifs_total_precipitation"].values))
+
+    gefs = GEFSExtractor(lead_days=2, include_ensemble_members=True)
+    gefs_ds = gefs.extract_for_basins(
+        gdf, start_date="2025-06-01", end_date="2025-06-01"
+    )
+    assert np.all(np.isfinite(gefs_ds["gefs_total_precipitation_mean"].values))
+    assert np.all(
+        np.isfinite(gefs_ds["gefs_total_precipitation_ensemble"].values)
+    )
+
+    imerg = DynamicalIMERGExtractor(batch_days=1)
+    imerg_ds = imerg.extract_for_basins(
+        gdf, start_date="2025-06-01", end_date="2025-06-01"
+    )
+    assert np.all(
+        np.isfinite(imerg_ds["dynamical_imerg_precipitation"].values)
+    )
 

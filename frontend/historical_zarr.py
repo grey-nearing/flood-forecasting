@@ -20,11 +20,6 @@ import xarray as xr
 import zarr
 
 try:
-  fs_io = None
-except ImportError:
-  fs_io = None
-
-try:
   import numcodecs.blosc as blosc
 except ImportError:
   try:
@@ -38,12 +33,17 @@ from frontend.config import (
     WEATHER_CONFIG,
 )
 from frontend.weather_sources import get_weather_source, query_zarr_extent
+from utils.file_paths import (
+    DEFAULT_GCS_CPC_ARCHIVE_URI,
+    DEFAULT_GCS_GRIDDED_ERA5_URI as DEFAULT_GCS_ERA5_ARCHIVE_URI,
+    DEFAULT_GCS_IMERG_ARCHIVE_URI,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class HistoricalZarrExtractor:
-  """Extracts historical weather records for arbitrary polygons from CNS Zarr stores
+  """Extracts historical weather records for arbitrary polygons from cloud Zarr stores
 
   and appends them into a unified multi-basin local Zarr store indexed by basin
   ID.
@@ -303,12 +303,12 @@ class HistoricalZarrExtractor:
     time_index = pd.date_range(start=start_date, end=end_date, freq=freq)
     n_times = len(time_index)
 
-    # Check if we have live CNS access or need synthetic fallback
+    # Check if we have live cloud access or need synthetic fallback
     cns_extracted = {}
     if os.environ.get("OPENHYDRONET_OFFLINE_TESTS") != "1" and blosc is not None:
       try:
         if weather_source == "cpc":
-          zpath = "gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr"
+          zpath = DEFAULT_GCS_CPC_ARCHIVE_URI
           precip_arr = self._query_single_zarr_polygon(
               zpath, "precip", geom, start_date, end_date
           )
@@ -317,7 +317,7 @@ class HistoricalZarrExtractor:
             cns_extracted["total_precipitation"] = precip_arr
 
         elif weather_source == "imerg":
-          zpath = "gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr"
+          zpath = DEFAULT_GCS_IMERG_ARCHIVE_URI
           precip_arr = self._query_single_zarr_polygon(
               zpath, "precip", geom, start_date, end_date
           )
@@ -341,7 +341,7 @@ class HistoricalZarrExtractor:
           }
           for v in target_vars:
             cns_var = var_map.get(v, v)
-            zpath = "gs://open-multimet/data/era5_land/daily_surface.zarr"
+            zpath = DEFAULT_GCS_ERA5_ARCHIVE_URI
             arr = self._query_single_zarr_polygon(
                 zpath, cns_var, geom, start_date, end_date
             )
@@ -355,8 +355,8 @@ class HistoricalZarrExtractor:
 
         elif weather_source in ("ifs", "hres", "graphcast"):
           # For IFS and GraphCast, query ERA5/CPC base + model characteristics
-          z_tp = "gs://open-multimet/data/era5_land/daily_surface.zarr"
-          z_t2m = "gs://open-multimet/data/era5_land/daily_surface.zarr"
+          z_tp = DEFAULT_GCS_ERA5_ARCHIVE_URI
+          z_t2m = DEFAULT_GCS_ERA5_ARCHIVE_URI
           tp_arr = self._query_single_zarr_polygon(
               z_tp, "tp", geom, start_date, end_date
           )
@@ -379,7 +379,7 @@ class HistoricalZarrExtractor:
               cns_extracted["2m_temperature"] = t2m_arr - 273.15
       except Exception as e:
         logger.warning(
-            "CNS Zarr extraction encountered error (%s), using robust fallback",
+            "Zarr extraction encountered error (%s), using robust fallback",
             e,
         )
 
@@ -430,7 +430,7 @@ class HistoricalZarrExtractor:
       start_date: str,
       end_date: str,
   ) -> Optional[np.ndarray]:
-    """Extracts spatial mean timeseries from a single chunked Zarr on CNS."""
+    """Extracts spatial mean timeseries from a single chunked Zarr store."""
     try:
       # Read metadata
       meta = self._get_zarr_meta(zarr_root)
@@ -568,7 +568,7 @@ class HistoricalZarrExtractor:
       return None
 
   def _get_zarr_meta(self, zarr_root: str) -> Optional[Dict[str, Any]]:
-    """Retrieves and caches .zmetadata from CNS."""
+    """Retrieves and caches .zmetadata from Zarr store."""
     if zarr_root in self._cns_meta_cache:
       return self._cns_meta_cache[zarr_root]
     try:
@@ -584,38 +584,30 @@ class HistoricalZarrExtractor:
   def _index_time_chunks_for_tile(
       self, zarr_root: str, var: str, lat_chunk: int, lon_chunk: int
   ) -> Dict[int, str]:
-    """Finds all time chunks for a spatial tile on CNS."""
+    """Finds all time chunks for a spatial tile."""
     key = (f"{zarr_root}/{var}", lat_chunk, lon_chunk)
     if key in self._chunk_index_cache:
       return self._chunk_index_cache[key]
 
-    time_map = {}
-    pattern = f"{zarr_root}/{var}/*/*.0.{lat_chunk}.{lon_chunk}"
-    if fs_io is not None:
-      try:
-        matches = fs_io.Glob(pattern)
-        for p in matches:
-          fname = p.split("/")[-1]
-          tc = int(fname.split(".")[0])
-          time_map[tc] = p
-      except Exception:
-        pass
-    else:
-      pass
+    time_map: Dict[int, str] = {}
+    local_dir = Path(zarr_root) / var
+    if not zarr_root.startswith("gs://") and local_dir.is_dir():
+      for p in local_dir.glob(f"*/*.0.{lat_chunk}.{lon_chunk}"):
+        fname = p.name
+        tc = int(fname.split(".")[0])
+        time_map[tc] = str(p)
 
     self._chunk_index_cache[key] = time_map
     return time_map
 
   def _read_cns_bytes(self, path: str, retries: int = 3) -> Optional[bytes]:
-    """Reads raw binary bytes from CNS with retry handling."""
+    """Reads raw binary bytes from a local Zarr store path."""
     for attempt in range(retries):
-      if fs_io is not None:
-        try:
-          with fs_io.GFile(path, "rb") as f:
-            return f.read()
-        except Exception:
-          pass
-      
+      if not path.startswith("gs://"):
+        local_p = Path(path)
+        if local_p.is_file():
+          return local_p.read_bytes()
+
       if attempt < retries - 1:
         time.sleep(0.5 * (attempt + 1))
     return None

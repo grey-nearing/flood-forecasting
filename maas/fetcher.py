@@ -19,21 +19,20 @@ Provides `MaaSDataFetcher` and functional entry points (`resolve_reaches`,
 without any UI presentation, color-coding, or map-corridor rendering logic.
 """
 
-from collections.abc import Mapping, Sequence
 import concurrent.futures
-from contextlib import closing
-from datetime import UTC, datetime
 import json
-from pathlib import Path
 import sqlite3
 import threading
 import time
+from collections.abc import Mapping, Sequence
+from contextlib import closing
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from maas.config import (
-    CAMA_GRID_RES_DEG,
     GLOFAS_RES_DEG,
     RETURN_PERIOD_YEARS,
     MaaSConfig,
@@ -53,15 +52,12 @@ from maas.glofas import (
 from maas.networks import (
     GEOGLOWS_LOD,
     GLOFAS_LOD,
-    cama_cell_area_km2,
-    cama_cell_id,
     glofas_cell_center,
     is_geoglows_river_id,
     load_geoglows_lookup,
     load_network_pyramid,
     pyramid_signature,
     resolve_cross_network_click,
-    snap_cama_cell,
     snap_geoglows_reach_from_gpkg,
     snap_geoglows_reach_from_network,
     snap_glofas_cell_from_network,
@@ -74,7 +70,6 @@ from maas.thresholds import (
     extract_annual_maxima,
     thresholds_from_return_periods,
 )
-from maas.todays_earth import TodaysEarthClient
 
 
 class SQLiteCache:
@@ -113,7 +108,7 @@ class SQLiteCache:
         self._ensure_initialized()
         with closing(sqlite3.connect(str(self.db_path), timeout=5)) as conn:
             row = conn.execute(
-                f'SELECT payload, created_at FROM {self.table_name} '  # noqa: S608
+                f'SELECT payload, created_at FROM {self.table_name} '
                 'WHERE cache_key = ?',
                 (cache_key,),
             ).fetchone()
@@ -131,7 +126,7 @@ class SQLiteCache:
         self._ensure_initialized()
         with closing(sqlite3.connect(str(self.db_path), timeout=5)) as conn:
             conn.execute(
-                f'INSERT OR REPLACE INTO {self.table_name} '  # noqa: S608
+                f'INSERT OR REPLACE INTO {self.table_name} '
                 '(cache_key, payload, created_at) VALUES (?, ?, ?)',
                 (cache_key, json.dumps(dict(payload)), time.time()),
             )
@@ -233,7 +228,7 @@ def _get_cached_geoglows_lookup(attrs_path: Path) -> tuple[Any, Any] | None:
         return lookup
 
 
-def resolve_reaches(  # noqa: PLR0913
+def resolve_reaches(
     lat: float,
     lon: float,
     config: MaaSConfig,
@@ -244,7 +239,7 @@ def resolve_reaches(  # noqa: PLR0913
     river_id: int | str | None = None,
     gauge_id: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve and snap a geographic coordinate across all four model river networks.
+    """Resolve and snap a geographic coordinate across all three model river networks.
 
     Args:
         lat: Latitude in decimal degrees.
@@ -254,17 +249,15 @@ def resolve_reaches(  # noqa: PLR0913
             for cross-network reach matching.
         area_min_km2: Optional minimum upstream drainage area along a merged river line.
         network: Optional source network identifier (`'floodhub'`, `'glofas'`,
-            `'geoglows'`, `'todays_earth'`).
+            `'geoglows'`).
         river_id: Optional GEOGLOWS 9-digit `LINKNO` or HydroRIVERS `HYRIV_ID`.
         gauge_id: Optional FloodHub gauge identifier.
 
     Returns:
         Dictionary containing resolved grid cells and reach identifiers for
-        `floodhub`, `glofas`, `geoglows`, and `todays_earth`.
+        `floodhub`, `glofas`, and `geoglows`.
     """
     gl_lat, gl_lon = glofas_cell_center(lat, lon)
-    cama_lat, cama_lon = snap_cama_cell(lat, lon)
-    cama_id = cama_cell_id(cama_lat, cama_lon)
     eff_river_id = parse_int(river_id) if is_geoglows_river_id(river_id) else None
     up_area = parse_finite_float(upstream_area_km2)
     min_area = parse_finite_float(area_min_km2)
@@ -360,13 +353,6 @@ def resolve_reaches(  # noqa: PLR0913
             ),
             'snap': cross_snap.get('geoglows') if cross_snap else None,
         },
-        'todays_earth': {
-            'grid_cell_id': cama_id,
-            'cell_center_lat': cama_lat,
-            'cell_center_lon': cama_lon,
-            'resolution_deg': CAMA_GRID_RES_DEG,
-            'area_km2': cama_cell_area_km2(cama_lat),
-        },
     }
 
 
@@ -406,7 +392,7 @@ def fetch_gauges(
     )
 
 
-def fetch_historical(  # noqa: PLR0913
+def fetch_historical(
     config: MaaSConfig,
     provider: str,
     *,
@@ -488,6 +474,7 @@ def fetch_historical(  # noqa: PLR0913
         client = GeoGLOWSClient(
             base_url=config.geoglows_base_url,
             timeout_s=max(config.http_timeout_s, 30.0),
+            cache_dir=config.cache_dir,
         )
         url = f'{client.base_url}/retrospectivedaily/{rid}'
         resp = client.session.get(
@@ -524,7 +511,7 @@ def fetch_historical(  # noqa: PLR0913
     )
 
 
-def fetch_return_periods(  # noqa: PLR0913
+def fetch_return_periods(
     config: MaaSConfig,
     provider: str,
     *,
@@ -629,6 +616,7 @@ def fetch_return_periods(  # noqa: PLR0913
         client = GeoGLOWSClient(
             base_url=config.geoglows_base_url,
             timeout_s=config.http_timeout_s,
+            cache_dir=config.cache_dir,
         )
         rp = client.fetch_official_return_periods(rid)
         if rp is None:
@@ -644,7 +632,7 @@ def fetch_return_periods(  # noqa: PLR0913
     )
 
 
-def fetch_forecasts(  # noqa: PLR0913
+def fetch_forecasts(
     config: MaaSConfig,
     lat: float,
     lon: float,
@@ -711,6 +699,7 @@ def fetch_forecasts(  # noqa: PLR0913
         gg_client = GeoGLOWSClient(
             base_url=config.geoglows_base_url,
             timeout_s=config.http_timeout_s,
+            cache_dir=config.cache_dir,
         )
         eff_rid = (
             int(river_id)
@@ -733,30 +722,6 @@ def fetch_forecasts(  # noqa: PLR0913
             daily_central['geoglows'] = d_series
             pk_val, pk_date = window_peak(d_series)
             peaks['geoglows'] = {'peak_flow': pk_val, 'peak_date': pk_date}
-
-    if 'todays_earth' in req_models:
-        if config.todays_earth_api_url.strip():
-            te_client = TodaysEarthClient(
-                api_url=config.todays_earth_api_url,
-                timeout_s=config.http_timeout_s,
-            )
-            te_fc = te_client.fetch_forecast(lat, lon, reach_id=reach_id)
-        else:
-            te_fc = {
-                'model': 'jaxa_todays_earth',
-                'available': False,
-                'status': 'unavailable',
-                'reach_id': reach_id,
-                'data': [],
-            }
-        models_out['todays_earth'] = te_fc
-        if te_fc.get('data'):
-            d_series = daily_series(
-                te_fc.get('data'), 'discharge_mean', 'rivout'
-            )
-            daily_central['todays_earth'] = d_series
-            pk_val, pk_date = window_peak(d_series)
-            peaks['todays_earth'] = {'peak_flow': pk_val, 'peak_date': pk_date}
 
     dates = sorted({d for col in daily_central.values() for d in col})
     aligned = {
@@ -806,10 +771,7 @@ class MaaSDataFetcher:
         self.geoglows = GeoGLOWSClient(
             base_url=config.geoglows_base_url,
             timeout_s=config.http_timeout_s,
-        )
-        self.todays_earth = TodaysEarthClient(
-            api_url=config.todays_earth_api_url,
-            timeout_s=config.http_timeout_s,
+            cache_dir=config.cache_dir,
         )
         self.flood_cache = SQLiteCache(
             config.cache_dir / 'maas_flood_cache.sqlite',
@@ -826,7 +788,7 @@ class MaaSDataFetcher:
         lon: float,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Resolve and snap `(lat, lon)` across all four model river networks."""
+        """Resolve and snap `(lat, lon)` across all three model river networks."""
         return resolve_reaches(lat, lon, self.config, **kwargs)
 
     def fetch_gauges(
@@ -853,7 +815,7 @@ class MaaSDataFetcher:
         """Compute or fetch `[2, 5, 10, 20, 50, 100]`-yr return period thresholds."""
         return fetch_return_periods(self.config, provider, **kwargs)
 
-    def fetch_forecasts(  # noqa: PLR0913
+    def fetch_forecasts(
         self,
         lat: float,
         lon: float,
@@ -900,11 +862,6 @@ class MaaSDataFetcher:
         )
         eff_gauge_id = gauge_id
 
-        def _run_safe(fn: Any, *args: Any, default: Any = None, **kwargs: Any) -> Any:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
-                fut = _ex.submit(fn, *args, **kwargs)
-                return fut.result() if fut.exception() is None else default
-
         def _task_floodhub() -> tuple[dict[str, Any] | None, str | None]:
             if (
                 'floodhub' not in req_models
@@ -915,34 +872,10 @@ class MaaSDataFetcher:
             dist_km: float | None = None
             gauge_meta: dict[str, Any] | None = None
             if not gid:
-                import inspect  # noqa: PLC0415
-
                 target_area = reaches['probe'].get('upstream_area_km2')
-                sig_params = inspect.signature(
-                    self.floodhub.find_nearest_gauge
-                ).parameters
-                if (
-                    'target_area_km2' in sig_params
-                    or any(
-                        p.kind == inspect.Parameter.VAR_KEYWORD
-                        for p in sig_params.values()
-                    )
-                ):
-                    found = _run_safe(
-                        self.floodhub.find_nearest_gauge,
-                        fh_lat,
-                        fh_lon,
-                        target_area_km2=target_area,
-                        default=(None, None, None),
-                    )
-                else:
-                    found = _run_safe(
-                        self.floodhub.find_nearest_gauge,
-                        fh_lat,
-                        fh_lon,
-                        default=(None, None, None),
-                    )
-                gid, gauge_meta, dist_km = found
+                gid, gauge_meta, dist_km = self.floodhub.find_nearest_gauge(
+                    fh_lat, fh_lon, target_area_km2=target_area
+                )
             if not gid:
                 return None, None
             is_live_fh = not hasattr(self.floodhub.fetch_forecast, '_mock_name')
@@ -951,17 +884,7 @@ class MaaSDataFetcher:
                 cached_fh = self.flood_cache.get(fh_cache_key, max_age_s=1800)
                 if isinstance(cached_fh, dict) and cached_fh.get('status') == 'live':
                     return cached_fh, gid
-            fc = _run_safe(
-                self.floodhub.fetch_forecast,
-                gid,
-                default={
-                    'model': 'google_floodhub',
-                    'available': False,
-                    'status': 'unavailable',
-                    'gauge_id': gid,
-                    'data': [],
-                },
-            )
+            fc = self.floodhub.fetch_forecast(gid)
             enriched = self.floodhub.enrich_forecast_status(
                 gid,
                 fc,
@@ -975,7 +898,7 @@ class MaaSDataFetcher:
             return enriched, gid
 
         def _task_glofas() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-            if 'glofas' not in req_models and 'todays_earth' not in req_models:
+            if 'glofas' not in req_models:
                 return None, None
             cell_lat, cell_lon = glofas_cell_center(gl_query_lat, gl_query_lon)
             rp_key = f'glofas_rp_{cell_lat:.3f}_{cell_lon:.3f}'
@@ -994,30 +917,16 @@ class MaaSDataFetcher:
                     and gl_fc_cached.get('status') == 'live'
                 ):
                     return gl_fc_cached
-                res_fc = _run_safe(
-                    self.glofas.fetch_forecast,
-                    gl_query_lat,
-                    gl_query_lon,
-                    forecast_days=15,
-                    default={
-                        'model': 'copernicus_glofas',
-                        'available': False,
-                        'status': 'unavailable',
-                        'lat': gl_query_lat,
-                        'lon': gl_query_lon,
-                        'data': [],
-                    },
+                res_fc = self.glofas.fetch_forecast(
+                    gl_query_lat, gl_query_lon, forecast_days=15
                 )
                 if is_live_gl and res_fc.get('status') == 'live':
                     self.flood_cache.put(fc_key, res_fc)
                 return res_fc
 
             def _fetch_gl_rp() -> dict[str, Any] | None:
-                res_rp = _run_safe(
-                    self.glofas.fetch_reanalysis_return_periods,
-                    gl_query_lat,
-                    gl_query_lon,
-                    default=None,
+                res_rp = self.glofas.fetch_reanalysis_return_periods(
+                    gl_query_lat, gl_query_lon
                 )
                 if res_rp is not None and res_rp.get('source') != 'unit_test_rp':
                     self.flood_cache.put(rp_key, res_rp)
@@ -1042,9 +951,7 @@ class MaaSDataFetcher:
                 return None, None, eff_river_id
             rid = eff_river_id
             if not is_geoglows_river_id(rid):
-                rid = _run_safe(
-                    self.geoglows.fetch_river_id, lat, lon, default=None
-                )
+                rid = self.geoglows.fetch_river_id(lat, lon)
             if rid is None:
                 return (
                     {
@@ -1073,30 +980,16 @@ class MaaSDataFetcher:
                     and gg_f_cached.get('status') == 'live'
                 ):
                     return gg_f_cached
-                res_fc = _run_safe(
-                    self.geoglows.fetch_forecast,
-                    rid,
-                    default={
-                        'model': 'geoglows',
-                        'available': False,
-                        'status': 'unavailable',
-                        'river_id': rid,
-                        'data': [],
-                    },
-                )
+                res_fc = self.geoglows.fetch_forecast(rid)
                 if is_live_gg and res_fc.get('status') == 'live':
                     self.flood_cache.put(fc_key, res_fc)
                 return res_fc
 
             def _fetch_gg_rp() -> dict[str, Any] | None:
-                res_rp = _run_safe(
-                    self.geoglows.fetch_return_periods, rid, default=None
-                )
+                res_rp = self.geoglows.fetch_return_periods(rid)
                 if res_rp is None:
-                    res_rp = _run_safe(
-                        self.geoglows.fetch_retrospective_return_periods,
-                        rid,
-                        default=None,
+                    res_rp = self.geoglows.fetch_retrospective_return_periods(
+                        rid
                     )
                 if res_rp is not None:
                     self.flood_cache.put(rp_key, res_rp)
@@ -1114,29 +1007,13 @@ class MaaSDataFetcher:
                     gg_r = fut_rp.result()
             return gg_f, gg_r, rid
 
-        def _task_todays_earth() -> dict[str, Any] | None:
-            if (
-                'todays_earth' not in req_models
-                or not self.config.todays_earth_api_url.strip()
-            ):
-                return None
-            return _run_safe(
-                self.todays_earth.fetch_forecast,
-                gl_query_lat,
-                gl_query_lon,
-                reach_id=reach_id,
-                default=None,
-            )
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
             f_fh = ex.submit(_task_floodhub)
             f_gl = ex.submit(_task_glofas)
             f_gg = ex.submit(_task_geoglows)
-            f_te = ex.submit(_task_todays_earth)
             fh_fc, eff_gauge_id = f_fh.result()
             gl, glrp = f_gl.result()
             gg_fc, gg_rp, eff_river_id = f_gg.result()
-            te = f_te.result()
 
         models_output: dict[str, Any] = {}
         if 'floodhub' in req_models:
@@ -1160,12 +1037,6 @@ class MaaSDataFetcher:
             )
         if 'glofas' in req_models and gl:
             models_output['glofas'] = {**gl, 'return_periods': glrp}
-        if 'todays_earth' in req_models:
-            models_output['todays_earth'] = te or {
-                'available': False,
-                'status': 'unavailable',
-                'message': 'No operational TODAYS_EARTH_API_URL configured.',
-            }
 
         fh_th = (fh_fc or {}).get('thresholds') or {}
         fh_is_q = (
@@ -1226,7 +1097,6 @@ class MaaSDataFetcher:
             'floodhub_gauge': reaches['floodhub'],
             'glofas_cell': reaches['glofas'],
             'geoglows_reach': reaches['geoglows'],
-            'todays_earth_cell': reaches['todays_earth'],
             'hydrorivers_reach': reach_id,
         }
 

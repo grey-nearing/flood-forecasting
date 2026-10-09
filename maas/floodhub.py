@@ -326,7 +326,7 @@ def load_or_build_floodhub_catalog(
         if not cat_path.exists():
             return None
 
-    if cat_path.stat().st_size == 0:
+    if not cat_path.exists() or cat_path.stat().st_size == 0:
         return None
     with np.load(cat_path, allow_pickle=False) as z:
         gids = z['gauge_id']
@@ -479,14 +479,14 @@ class FloodHubClient:
         self.session = session if session is not None else requests.Session()
         self.cache_dir = cache_dir
 
-    def search_gauges_bbox(  # noqa: PLR0913, PLR0917
+    def search_gauges_bbox(
         self,
         min_lat: float,
         min_lon: float,
         max_lat: float,
         max_lon: float,
         page_size: int = 100,
-        include_non_verified: bool = True,  # noqa: FBT001, FBT002
+        include_non_verified: bool = True,
     ) -> list[dict[str, Any]]:
         """Query FloodHub gauges and latest flood status inside a bounding box."""
         url = (
@@ -562,8 +562,9 @@ class FloodHubClient:
             params={'key': self.api_key, 'gaugeIds': gauge_id},
             timeout=self.timeout_s,
         )
-        if resp.status_code != 200:
+        if resp.status_code == 404:
             return None
+        resp.raise_for_status()
         payload = resp.json()
         for st in (payload or {}).get('floodStatuses') or ():
             if isinstance(st, Mapping) and st.get('gaugeId') == gauge_id:
@@ -598,7 +599,7 @@ class FloodHubClient:
             'upstream_area_km2': round(area, 1) if area > 0 else None,
         }
 
-    def query_cached_gauges_bbox(  # noqa: PLR0913
+    def query_cached_gauges_bbox(
         self,
         min_lat: float,
         min_lon: float,
@@ -760,7 +761,7 @@ class FloodHubClient:
             round(dist_km, 2),
         )
 
-    def enrich_forecast_status(  # noqa: PLR0913
+    def enrich_forecast_status(
         self,
         gauge_id: str,
         forecast: Mapping[str, Any],

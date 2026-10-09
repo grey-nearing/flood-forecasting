@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from utils.file_paths import ATTRIBUTES_ZARR_NAME, STREAMFLOW_ZARR_NAME
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -273,10 +275,10 @@ def convert_caravan_to_zarr(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     attr_ds = convert_caravan_attributes(
-        attr_dir, output_dir / 'attributes.zarr'
+        attr_dir, output_dir / ATTRIBUTES_ZARR_NAME
     )
     ts_ds = convert_caravan_timeseries(
-        ts_dir, output_dir / 'streamflow.zarr', variables=variables
+        ts_dir, output_dir / STREAMFLOW_ZARR_NAME, variables=variables
     )
 
     return attr_ds, ts_ds

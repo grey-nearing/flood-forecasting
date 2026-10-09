@@ -42,8 +42,8 @@ from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
 from multimet.catchment_delineation.datasets import (
-    HYDROSHEDS_90M,
     DemDataset,
+    HYDROSHEDS_90M,
     resolve_dem_dataset,
 )
 from multimet.catchment_delineation.delineator import DemDelineator
@@ -52,13 +52,14 @@ from multimet.catchment_delineation.hybrid import delineate_hybrid
 from multimet.catchment_delineation.hydrography import RiverNetwork
 from multimet.catchment_delineation.tiles import (
     is_coord_in_coverage,
+    is_tile_available,
     is_tile_in_coverage,
     latlon_to_tile_key,
     tile_key_to_filename,
 )
 from multimet.utils.gcs import is_gcs_path, normalize_gcs_path
 
-logger = logging.getLogger('multimet.catchment_delineation.benchmark')
+logger = logging.getLogger('benchmarks.catchment_delineation')
 
 _MAX_PRECACHE_THREADS: int = 16
 _PROGRESS_INTERVAL: int = 50
@@ -113,6 +114,7 @@ def _evaluate_single_basin(
     snap_window_cells: int = 12,
     use_area_hint: bool = True,
     area_tolerance: float = 0.50,
+    save_geometries: bool = False,
     dataset_id: str = 'hydrosheds_90m',
     mode: str = 'dem',
     river_network_path: str | None = None,
@@ -121,39 +123,66 @@ def _evaluate_single_basin(
     gauge_id = str(row_dict['gauge_id'])
     lat = float(row_dict['latitude'])
     lon = float(row_dict['longitude'])
-    ref_area_km2 = float(row_dict['reference_area_km2'])
+    ref_area_raw = row_dict.get(
+        'reference_area_km2',
+        row_dict.get('ref_area_km2', row_dict.get('area_km2')),
+    )
+    if ref_area_raw is None:
+        raise KeyError(
+            f'Row for {gauge_id} is missing reference_area_km2, ref_area_km2, or area_km2.'
+        )
+    ref_area_km2 = float(ref_area_raw)
     ref_wkt = str(row_dict['geometry_wkt'])
-    continent = row_dict['continent']
-    hemisphere = row_dict['hemisphere']
-    size_tier = row_dict['size_tier']
+    continent = row_dict.get('continent', row_dict.get('dataset', 'Unknown'))
+    hemisphere = row_dict.get('hemisphere')
+    if hemisphere is None:
+        hemisphere = ('N' if lat >= 0 else 'S') + ('E' if lon >= 0 else 'W')
+    size_tier = row_dict.get('size_tier', 'Unknown')
 
-    dataset = resolve_dem_dataset(dataset_id)
+    resolved_ds = resolve_dem_dataset(dataset_id)
     delineator = DemDelineator(
         tiles_dir=tiles_dir,
         gcs_uri=gcs_uri,
         cache_dir=cache_dir,
         cache_tiles=True,
-        dataset=dataset,
+        dataset=resolved_ds,
     )
     t0 = time.time()
-    if mode == 'hybrid' and river_network_path:
+    start_key = latlon_to_tile_key(lat, lon)
+    if not is_coord_in_coverage(lat, lon, dataset=resolved_ds):
+        res, err_msg = None, (
+            f'Pour point coordinates ({lat:.4f}, {lon:.4f}) are outside '
+            'the global DEM coverage domain.'
+        )
+    elif (
+        delineator.tiles_dir is not None
+        and not is_tile_available(
+            start_key[0], start_key[1], delineator.tiles_dir
+        )
+    ):
+        res, err_msg = None, (
+            f'Starting tile {tile_key_to_filename(*start_key)} for '
+            f'({lat:.4f}, {lon:.4f}) is outside HydroSHEDS land tile coverage.'
+        )
+    elif mode == 'hybrid' and river_network_path:
+        net_p = Path(river_network_path)
+        net = (
+            RiverNetwork.from_merit_basins(net_p)
+            if resolved_ds.id == 'merit_hydro_90m' or net_p.is_dir()
+            else RiverNetwork.from_hydrorivers(net_p)
+        )
         try:
-            network = (
-                RiverNetwork.from_merit_basins(river_network_path)
-                if dataset.id == 'merit_hydro_90m'
-                else RiverNetwork.from_hydrorivers(river_network_path)
-            )
             res = delineate_hybrid(
-                dem=delineator,
-                network=network,
-                lat=lat,
-                lon=lon,
+                delineator,
+                net,
+                lat,
+                lon,
                 catchment_id=gauge_id,
+                area_tolerance=area_tolerance,
             )
             err_msg = None
-        except Exception as exc:
-            res = None
-            err_msg = str(exc)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            res, err_msg = None, str(exc)
     else:
         res, err_msg = delineator._delineate_safe(
             lat=lat,
@@ -163,6 +192,24 @@ def _evaluate_single_basin(
             expected_area_km2=ref_area_km2 if use_area_hint else None,
             area_tolerance=area_tolerance,
         )
+        if (
+            res is None
+            and use_area_hint
+            and 'AREA HINT FAILURE' in str(err_msg or '')
+        ):
+            res_nh, err_nh = delineator._delineate_safe(
+                lat=lat,
+                lon=lon,
+                catchment_id=gauge_id,
+                snap_window_cells=snap_window_cells,
+                expected_area_km2=None,
+            )
+            if (
+                res_nh is None
+                and err_nh is not None
+                and 'coverage boundary' in err_nh
+            ):
+                err_msg = err_nh
     elapsed = time.time() - t0
     if res is not None:
         props = res['properties']
@@ -175,6 +222,8 @@ def _evaluate_single_basin(
         iou, dice, area_rel_diff, abs_area_err = compute_iou_and_metrics(
             del_geom, ref_geom, ref_area_km2, del_area_km2
         )
+        iou_rounded = round(iou, 4) if math.isfinite(iou) else float('nan')
+        dice_rounded = round(dice, 4) if math.isfinite(dice) else float('nan')
         record = {
             'gauge_id': gauge_id,
             'continent': continent,
@@ -184,8 +233,10 @@ def _evaluate_single_basin(
             'longitude': lon,
             'ref_area_km2': ref_area_km2,
             'del_area_km2': del_area_km2,
-            'iou': round(iou, 4) if math.isfinite(iou) else float('nan'),
-            'dice': round(dice, 4) if math.isfinite(dice) else float('nan'),
+            'iou': iou_rounded,
+            'dice': dice_rounded,
+            'iou_unconditional': iou_rounded,
+            'dice_unconditional': dice_rounded,
             'area_bias_pct': (
                 round(area_rel_diff, 2)
                 if math.isfinite(area_rel_diff)
@@ -201,8 +252,27 @@ def _evaluate_single_basin(
             'elapsed_sec': round(elapsed, 3),
             'status': 'SUCCESS',
         }
+        if save_geometries:
+            record['del_geometry_wkt'] = del_geom.wkt
     else:
         nan_val = float('nan')
+        err_str = str(err_msg or '')
+        if (
+            'outside the global DEM coverage domain' in err_str
+            or 'outside HydroSHEDS land tile coverage' in err_str
+            or 'exceeded global DEM coverage boundary' in err_str
+        ):
+            status_str = f'OUT_OF_COVERAGE: {err_str}'
+            uncond_iou = nan_val
+            uncond_dice = nan_val
+        elif 'AREA HINT FAILURE' in err_str or 'Area hint mismatch' in err_str:
+            status_str = f'AREA_HINT_FAILURE: {err_str}'
+            uncond_iou = 0.0
+            uncond_dice = 0.0
+        else:
+            status_str = f'DELINEATION_FAILURE: {err_str}'
+            uncond_iou = 0.0
+            uncond_dice = 0.0
         record = {
             'gauge_id': gauge_id,
             'continent': continent,
@@ -214,13 +284,17 @@ def _evaluate_single_basin(
             'del_area_km2': nan_val,
             'iou': nan_val,
             'dice': nan_val,
+            'iou_unconditional': uncond_iou,
+            'dice_unconditional': uncond_dice,
             'area_bias_pct': nan_val,
             'abs_area_err_pct': nan_val,
             'snap_dist_m': nan_val,
             'tiles_spanned': nan_val,
             'elapsed_sec': round(elapsed, 3),
-            'status': f'OUT_OF_COVERAGE: {err_msg}',
+            'status': status_str,
         }
+        if save_geometries:
+            record['del_geometry_wkt'] = None
 
     created = [str(p) for p in delineator.created_cache_files]
     return record, created
@@ -229,12 +303,25 @@ def _evaluate_single_basin(
 def print_summary_table(
     df: pd.DataFrame, group_title: str, group_col: str
 ) -> None:
-    """Print formatted summary metrics grouped by a column."""
+    """Print formatted unconditional and conditional metrics grouped by a column."""
     if group_col not in df.columns or df.empty:
         return
-    sys.stdout.write(f'\n{group_title}\n' + '-' * 80 + '\n')
+    sys.stdout.write(f'\n{group_title}\n' + '-' * 108 + '\n')
     for group_val, grp_df in df.groupby(group_col):
-        valid_iou = grp_df['iou'].dropna()
+        is_succ = grp_df['status'] == 'SUCCESS'
+        is_ooc = grp_df['status'].str.startswith('OUT_OF_COVERAGE')
+        is_afail = ~is_succ & ~is_ooc
+        in_cov_grp = grp_df[~is_ooc]
+        uncond_iou = in_cov_grp['iou'].fillna(0.0)
+        uncond_med = (
+            float(uncond_iou.median()) if not uncond_iou.empty else float('nan')
+        )
+        uncond_80 = (
+            float((uncond_iou >= _IOU_THRESHOLD_80).mean() * 100.0)
+            if not uncond_iou.empty
+            else float('nan')
+        )
+        valid_iou = grp_df.loc[is_succ, 'iou'].dropna()
         med_iou = (
             float(valid_iou.median()) if not valid_iou.empty else float('nan')
         )
@@ -244,10 +331,229 @@ def print_summary_table(
             else float('nan')
         )
         sys.stdout.write(
-            f'  {group_val!s:20s} | n={len(grp_df):4d} '
-            f'(valid={len(valid_iou):4d}) | '
-            f'median IoU={med_iou:.3f} | IoU>=0.80: {pct_80:.1f}%\n'
+            f'  {group_val!s:16s} | n={len(grp_df):4d} '
+            f'(in_cov={len(in_cov_grp):4d}, succ={int(is_succ.sum()):4d}, '
+            f'fail={int(is_afail.sum()):3d}) | '
+            f'uncond med IoU={uncond_med:.3f} (>=0.80: {uncond_80:5.1f}%) | '
+            f'cond med IoU={med_iou:.3f} (>=0.80: {pct_80:5.1f}%)\n'
         )
+
+
+def _percentiles_dict(
+    series: pd.Series, qs: tuple[float, ...], prefix: str
+) -> dict[str, float]:
+    """Compute percentile ladder dictionary from a numeric Series."""
+    clean = series.dropna()
+    out: dict[str, float] = {}
+    for q in qs:
+        label = (
+            'min'
+            if q == 0.0
+            else ('max' if q == 100.0 else f'p{int(q)}')
+        )
+        out[f'{prefix}_{label}'] = (
+            float(clean.quantile(q / 100.0)) if not clean.empty else float('nan')
+        )
+    return out
+
+
+def summarize_results(
+    res_df: pd.DataFrame, total_time: float = 0.0
+) -> dict[str, Any]:
+    """Compute and print both Unconditional In-Coverage and Conditional Success metrics."""
+    is_success = res_df['status'] == 'SUCCESS'
+    is_ooc = res_df['status'].str.startswith('OUT_OF_COVERAGE')
+    is_in_cov_fail = ~is_success & ~is_ooc
+    in_cov_df = res_df[~is_ooc]
+    valid_df = res_df[is_success]
+
+    uncond_iou = in_cov_df['iou'].fillna(0.0)
+    uncond_dice = in_cov_df['dice'].fillna(0.0)
+
+    summary: dict[str, Any] = {
+        'total_basins': len(res_df),
+        'in_coverage_basins': len(in_cov_df),
+        'successful_basins': int(is_success.sum()),
+        'area_hint_failure_basins': int(is_in_cov_fail.sum()),
+        'out_of_coverage_basins': int(is_ooc.sum()),
+        'unconditional_median_iou': (
+            float(uncond_iou.median()) if not uncond_iou.empty else float('nan')
+        ),
+        'unconditional_mean_iou': (
+            float(uncond_iou.mean()) if not uncond_iou.empty else float('nan')
+        ),
+        'unconditional_median_dice': (
+            float(uncond_dice.median())
+            if not uncond_dice.empty
+            else float('nan')
+        ),
+        'unconditional_mean_dice': (
+            float(uncond_dice.mean()) if not uncond_dice.empty else float('nan')
+        ),
+        'unconditional_pct_iou_80': (
+            float((uncond_iou >= _IOU_THRESHOLD_80).mean() * 100.0)
+            if not uncond_iou.empty
+            else float('nan')
+        ),
+        'unconditional_pct_iou_90': (
+            float((uncond_iou >= _IOU_THRESHOLD_90).mean() * 100.0)
+            if not uncond_iou.empty
+            else float('nan')
+        ),
+        'conditional_median_iou': (
+            float(valid_df['iou'].median())
+            if not valid_df.empty
+            else float('nan')
+        ),
+        'conditional_mean_iou': (
+            float(valid_df['iou'].mean())
+            if not valid_df.empty
+            else float('nan')
+        ),
+        'conditional_median_dice': (
+            float(valid_df['dice'].median())
+            if not valid_df.empty
+            else float('nan')
+        ),
+        'conditional_mean_dice': (
+            float(valid_df['dice'].mean())
+            if not valid_df.empty
+            else float('nan')
+        ),
+        'conditional_pct_iou_80': (
+            float((valid_df['iou'] >= _IOU_THRESHOLD_80).mean() * 100.0)
+            if not valid_df.empty
+            else float('nan')
+        ),
+        'conditional_pct_iou_90': (
+            float((valid_df['iou'] >= _IOU_THRESHOLD_90).mean() * 100.0)
+            if not valid_df.empty
+            else float('nan')
+        ),
+        'conditional_median_abs_area_err_pct': (
+            float(valid_df['abs_area_err_pct'].median())
+            if not valid_df.empty
+            else float('nan')
+        ),
+    }
+    summary.update(
+        _percentiles_dict(
+            uncond_iou, (0.0, 1.0, 5.0, 10.0, 25.0, 50.0), 'unconditional_iou'
+        )
+    )
+    summary.update(
+        _percentiles_dict(
+            valid_df['iou'] if not valid_df.empty else pd.Series(dtype=float),
+            (0.0, 1.0, 5.0, 10.0, 25.0, 50.0),
+            'conditional_iou',
+        )
+    )
+    summary.update(
+        _percentiles_dict(
+            valid_df['abs_area_err_pct']
+            if not valid_df.empty
+            else pd.Series(dtype=float),
+            (50.0, 75.0, 90.0, 95.0, 99.0, 100.0),
+            'conditional_abs_area_err_pct',
+        )
+    )
+
+    sys.stdout.write('\n' + '=' * 108 + '\n')
+    sys.stdout.write('GLOBAL CATCHMENT DELINEATION BENCHMARK RESULTS\n')
+    sys.stdout.write('=' * 108 + '\n')
+    sys.stdout.write(f'Total Basins Evaluated       : {len(res_df)}\n')
+    sys.stdout.write(f'Total Wall-Clock Time        : {total_time:.1f}s\n')
+    sys.stdout.write(
+        f'In-Coverage Basins           : {len(in_cov_df)} / {len(res_df)}\n'
+    )
+    sys.stdout.write(
+        f'  Successful Delineations    : {int(is_success.sum())} / {len(in_cov_df)}\n'
+    )
+    sys.stdout.write(
+        f'  In-Coverage Failures (0.0) : {int(is_in_cov_fail.sum())} / {len(in_cov_df)}\n'
+    )
+    sys.stdout.write(
+        f'Out-of-Coverage Basins       : {int(is_ooc.sum())} / {len(res_df)}\n'
+    )
+    if not in_cov_df.empty:
+        sys.stdout.write(
+            '\n--- UNCONDITIONAL IN-COVERAGE METRICS '
+            '(In-Coverage Failures Assigned IoU=0.0, Dice=0.0) ---\n'
+        )
+        sys.stdout.write(
+            f'Unconditional Median IoU     : {summary["unconditional_median_iou"]:.3f}\n'
+        )
+        sys.stdout.write(
+            f'Unconditional Mean IoU       : {summary["unconditional_mean_iou"]:.3f}\n'
+        )
+        sys.stdout.write(
+            'Unconditional IoU Lower Tail : '
+            f'Min={summary["unconditional_iou_min"]:.3f}, '
+            f'P1={summary["unconditional_iou_p1"]:.3f}, '
+            f'P5={summary["unconditional_iou_p5"]:.3f}, '
+            f'P10={summary["unconditional_iou_p10"]:.3f}, '
+            f'P25={summary["unconditional_iou_p25"]:.3f}, '
+            f'P50={summary["unconditional_iou_p50"]:.3f}\n'
+        )
+        sys.stdout.write(
+            f'Unconditional Median Dice    : {summary["unconditional_median_dice"]:.3f}\n'
+        )
+        sys.stdout.write(
+            f'Unconditional Mean Dice      : {summary["unconditional_mean_dice"]:.3f}\n'
+        )
+        sys.stdout.write(
+            f'Unconditional IoU >= 0.80    : {summary["unconditional_pct_iou_80"]:.1f}%\n'
+        )
+        sys.stdout.write(
+            f'Unconditional IoU >= 0.90    : {summary["unconditional_pct_iou_90"]:.1f}%\n'
+        )
+    if not valid_df.empty:
+        sys.stdout.write(
+            '\n--- CONDITIONAL SUCCESS METRICS (status == SUCCESS only) ---\n'
+        )
+        sys.stdout.write(
+            f'Conditional Median IoU       : {summary["conditional_median_iou"]:.3f}\n'
+        )
+        sys.stdout.write(
+            f'Conditional Mean IoU         : {summary["conditional_mean_iou"]:.3f}\n'
+        )
+        sys.stdout.write(
+            'Conditional IoU Lower Tail   : '
+            f'Min={summary["conditional_iou_min"]:.3f}, '
+            f'P1={summary["conditional_iou_p1"]:.3f}, '
+            f'P5={summary["conditional_iou_p5"]:.3f}, '
+            f'P10={summary["conditional_iou_p10"]:.3f}, '
+            f'P25={summary["conditional_iou_p25"]:.3f}, '
+            f'P50={summary["conditional_iou_p50"]:.3f}\n'
+        )
+        sys.stdout.write(
+            f'Conditional Median Dice      : {summary["conditional_median_dice"]:.3f}\n'
+        )
+        sys.stdout.write(
+            f'Conditional Mean Dice        : {summary["conditional_mean_dice"]:.3f}\n'
+        )
+        sys.stdout.write(
+            f'Conditional IoU >= 0.80      : {summary["conditional_pct_iou_80"]:.1f}%\n'
+        )
+        sys.stdout.write(
+            f'Conditional IoU >= 0.90      : {summary["conditional_pct_iou_90"]:.1f}%\n'
+        )
+        sys.stdout.write(
+            'Conditional Abs Area Err (%) : '
+            f'P50={summary["conditional_abs_area_err_pct_p50"]:.1f}%, '
+            f'P75={summary["conditional_abs_area_err_pct_p75"]:.1f}%, '
+            f'P90={summary["conditional_abs_area_err_pct_p90"]:.1f}%, '
+            f'P95={summary["conditional_abs_area_err_pct_p95"]:.1f}%, '
+            f'P99={summary["conditional_abs_area_err_pct_p99"]:.1f}%, '
+            f'Max={summary["conditional_abs_area_err_pct_max"]:.1f}%\n'
+        )
+    print_summary_table(res_df, 'PERFORMANCE BY CONTINENT / DATASET', 'continent')
+    print_summary_table(
+        res_df, 'PERFORMANCE BY HEMISPHERE QUADRANT', 'hemisphere'
+    )
+    print_summary_table(res_df, 'PERFORMANCE BY BASIN SIZE TIER', 'size_tier')
+    sys.stdout.write('=' * 108 + '\n')
+    return summary
 
 
 def _load_benchmark_dataset(dataset_path: str | Path) -> pd.DataFrame:
@@ -282,11 +588,15 @@ def run_benchmark(
     clean_cache: bool = False,
     use_area_hint: bool = True,
     area_tolerance: float = 0.50,
-    dataset: DemDataset | str = HYDROSHEDS_90M,
+    save_geometries: bool = False,
+    export_redelineated_dataset_path: str | Path | None = None,
+    dataset: str | DemDataset = HYDROSHEDS_90M,
     mode: str = 'dem',
     river_network_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """Execute catchment delineation benchmark on an explicit dataset."""
+    if export_redelineated_dataset_path is not None:
+        save_geometries = True
     resolved_ds = resolve_dem_dataset(dataset)
     delineator = DemDelineator(
         tiles_dir=tiles_dir,
@@ -296,19 +606,28 @@ def run_benchmark(
     )
     df = _load_benchmark_dataset(dataset_path)
 
-    if continents:
-        df = df[df['continent'].isin(continents)]
-    if size_tiers:
+    region_col = (
+        'continent'
+        if 'continent' in df.columns
+        else ('dataset' if 'dataset' in df.columns else None)
+    )
+    if continents and region_col is not None:
+        df = df[df[region_col].isin(continents)]
+    if size_tiers and 'size_tier' in df.columns:
         df = df[df['size_tier'].isin(size_tiers)]
 
     if samples and samples < len(df):
         sampled_dfs = []
-        for _, grp in df.groupby(['continent', 'size_tier']):
-            n_take = max(1, int(len(grp) * samples / len(df)))
-            sampled_dfs.append(
-                grp.sample(n=min(len(grp), n_take), random_state=42)
-            )
-        df = pd.concat(sampled_dfs, ignore_index=True)
+        grp_cols = [
+            c for c in (region_col, 'size_tier') if c is not None and c in df.columns
+        ]
+        if grp_cols:
+            for _, grp in df.groupby(grp_cols):
+                n_take = max(1, int(len(grp) * samples / len(df)))
+                sampled_dfs.append(
+                    grp.sample(n=min(len(grp), n_take), random_state=42)
+                )
+            df = pd.concat(sampled_dfs, ignore_index=True)
         if len(df) > samples:
             df = df.sample(n=samples, random_state=42)
 
@@ -372,6 +691,7 @@ def run_benchmark(
                 snap_window_cells=snap_window_cells,
                 use_area_hint=use_area_hint,
                 area_tolerance=area_tolerance,
+                save_geometries=save_geometries,
                 dataset_id=resolved_ds.id,
                 mode=mode,
                 river_network_path=net_path_str,
@@ -397,43 +717,7 @@ def run_benchmark(
     res_df = pd.DataFrame([r for _, r in indexed_results])
     total_time = time.time() - t_start
 
-    valid_df = res_df[res_df['status'] == 'SUCCESS']
-    out_of_coverage = int(
-        res_df['status'].str.startswith('OUT_OF_COVERAGE').sum()
-    )
-    sys.stdout.write('\n' + '=' * 80 + '\n')
-    sys.stdout.write('GLOBAL CATCHMENT DELINEATION BENCHMARK RESULTS\n')
-    sys.stdout.write('=' * 80 + '\n')
-    sys.stdout.write(f'Total Basins Evaluated : {len(res_df)}\n')
-    sys.stdout.write(f'Total Wall-Clock Time  : {total_time:.1f}s\n')
-    sys.stdout.write(
-        f'Successful Delineations: {len(valid_df)} / {len(res_df)}\n'
-    )
-    if out_of_coverage > 0:
-        sys.stdout.write(
-            f'Out-of-Coverage Basins : {out_of_coverage} / {len(res_df)}\n'
-        )
-    if not valid_df.empty:
-        sys.stdout.write(
-            f'Median IoU (valid)     : {valid_df["iou"].median():.3f}\n'
-        )
-        sys.stdout.write(
-            f'Median Dice (valid)    : {valid_df["dice"].median():.3f}\n'
-        )
-        pct80 = (valid_df['iou'] >= _IOU_THRESHOLD_80).mean() * 100.0
-        pct90 = (valid_df['iou'] >= _IOU_THRESHOLD_90).mean() * 100.0
-        sys.stdout.write(f'Basins IoU >= 0.80     : {pct80:.1f}%\n')
-        sys.stdout.write(f'Basins IoU >= 0.90     : {pct90:.1f}%\n')
-        sys.stdout.write(
-            'Median Abs Area Err    : '
-            f'{valid_df["abs_area_err_pct"].median():.1f}%\n'
-        )
-    print_summary_table(res_df, 'PERFORMANCE BY CONTINENT', 'continent')
-    print_summary_table(
-        res_df, 'PERFORMANCE BY HEMISPHERE QUADRANT', 'hemisphere'
-    )
-    print_summary_table(res_df, 'PERFORMANCE BY BASIN SIZE TIER', 'size_tier')
-    sys.stdout.write('=' * 80 + '\n')
+    summarize_results(res_df, total_time=total_time)
 
     if output_path:
         out_p = Path(output_path).expanduser().resolve()
@@ -442,6 +726,20 @@ def run_benchmark(
             res_df.to_parquet(out_p, index=False)
         else:
             res_df.to_csv(out_p, index=False)
+
+    if export_redelineated_dataset_path:
+        redel_p = Path(export_redelineated_dataset_path).expanduser().resolve()
+        redel_p.parent.mkdir(parents=True, exist_ok=True)
+        cascade_df = df.copy()
+        geom_map = dict(
+            zip(res_df['gauge_id'], res_df['del_geometry_wkt'], strict=False)
+        )
+        status_map = dict(
+            zip(res_df['gauge_id'], res_df['status'], strict=False)
+        )
+        cascade_df['geometry_wkt'] = cascade_df['gauge_id'].map(geom_map)
+        cascade_df['delineation_status'] = cascade_df['gauge_id'].map(status_map)
+        cascade_df.to_parquet(redel_p, index=False)
 
     if clean_cache:
         delineator.created_cache_files.update(created_cache_files)
@@ -562,6 +860,21 @@ def main(argv: list[str] | None = None) -> int:
         default=0.50,
         help='Relative tolerance around expected_area_km2 (default: 0.50).',
     )
+    parser.add_argument(
+        '--save-geometries',
+        action='store_true',
+        help='Include delineated polygon WKT (del_geometry_wkt) in output records.',
+    )
+    parser.add_argument(
+        '--export-redelineated-dataset',
+        type=str,
+        default=None,
+        help=(
+            'Optional output Parquet path exporting the input benchmark dataset '
+            'with geometry_wkt replaced by del_geometry_wkt (and None for failed '
+            'or out-of-coverage basins) for downstream cascade benchmarking.'
+        ),
+    )
     args = parser.parse_args(argv)
     run_benchmark(
         dataset_path=args.dataset,
@@ -577,6 +890,8 @@ def main(argv: list[str] | None = None) -> int:
         clean_cache=args.clean_cache,
         use_area_hint=not args.no_area_hint,
         area_tolerance=args.area_tolerance,
+        save_geometries=args.save_geometries,
+        export_redelineated_dataset_path=args.export_redelineated_dataset,
         dataset=args.dem,
         mode=args.mode,
         river_network_path=args.river_network_path,

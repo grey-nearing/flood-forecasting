@@ -6,23 +6,20 @@ The **MultiMet Forcing Extractor** (``multimet.timeseries_extractors``) is a hig
 Supported Meteorological Products
 ---------------------------------
 
-The extractor supports **4 core Open-MultiMet products** plus **4 operational forecast products via dynamical.org**, each including a companion ``<prefix>_missing_fraction`` audit variable recording the area-weighted fraction ``[0.0, 1.0]`` of missing (``NaN``) pixels per catchment and timestep:
+The extractor supports **4 core products** plus **6 dynamical.org Icechunk products** (clipped directly from ``dynamical.org`` Icechunk stores without an intermediate gridded archive), each including a companion ``<prefix>_missing_fraction`` audit variable recording the area-weighted fraction ``[0.0, 1.0]`` of missing (``NaN``) pixels per catchment and timestep:
 
 1. **ERA5-Land (ECMWF)** (``ERA5_LAND``):
    Daily global reanalysis at 0.1° resolution (1801 × 3600). Extracted **exclusively from a user-supplied ERA5-Land gridded Zarr archive** (``source="archive"``) to prevent silent substitution with coarser 0.25° ERA5 products. Extracts **17 harmonized variables** including daily mean, daily minimum (``era5land_temperature_2m_min``), and daily maximum (``era5land_temperature_2m_max``) 2m air temperature (°C), dewpoint (°C), surface pressure (kPa), total precipitation (mm/day), net solar and thermal radiation fluxes (W/m²), 10m wind components (m/s), 4-layer volumetric soil water (m³/m³), snow depth water equivalent (mm), and **FAO-56 Penman-Monteith** potential evapotranspiration (PET), plus ``era5land_missing_fraction``.
 2. **CPC Global Unified Precipitation (NOAA PSL)** (``CPC``):
    Daily gauge-based precipitation analysis at 0.5° resolution (360 × 720). Extracts both ``cpc_precipitation`` (mm/day) and ``cpc_num_stations`` (reporting rain-gauge station count per grid cell), plus ``cpc_missing_fraction``. Supports both user-supplied gridded Zarr archives (``--source archive``) and direct NOAA PSL NetCDF / CPC binary files (``--source public`` / ``--source local``).
 3. **IMERG Early V07 (NASA GPM)** (``IMERG``):
-   Global satellite-derived precipitation nowcast at 0.1° resolution (1800 × 3600). Extracts ``imerg_precipitation`` (mm/day) and ``imerg_missing_fraction``. Supports user-supplied gridded Zarr archives (``--source archive``), NASA GES DISC HTTP downloads (``--source public``), and dynamical.org Icechunk catalogs.
+   Global satellite-derived precipitation nowcast at 0.1° resolution (1800 × 3600). Extracts ``imerg_precipitation`` (mm/day) and ``imerg_missing_fraction``. Supports user-supplied gridded Zarr archives (``--source archive``) and NASA GES DISC HTTP downloads (``--source public``).
 4. **ECMWF IFS HRES** (``HRES``):
    Operational high-resolution numerical weather prediction (NWP) 10-day forecasts at 0.25° resolution (721 × 1440). Extracts incremental daily forecast precipitation, daily mean temperature, surface pressure, and radiation fluxes, plus ``hres_missing_fraction``. Supports user-supplied gridded Zarr archives (``--source archive``), ECMWF Open Data on GCS (``gs://ecmwf-open-data``, ``--source open_data``), and explicit Zarr/GRIB stores.
-5. **dynamical.org Operational Forecast Products** (``AIFS``, ``GFS``, ``GEFS``, ``IFS_ENS``):
-   Operational 10-day deterministic and ensemble forecasts at 0.25° resolution (721 × 1440) streamed from the `dynamical.org catalog <https://dynamical.org/catalog/>`_ via Icechunk:
-
-   * **ECMWF AIFS Single** (``AIFS``): ``ecmwf-aifs-single-forecast`` (``aifs_*``).
-   * **NOAA GFS** (``GFS``): ``noaa-gfs-forecast`` (``gfs_*``), supporting mixed 1-hourly and 3-hourly lead-time step durations via exact duration-weighted integration.
-   * **NOAA GEFS** (``GEFS``): ``noaa-gefs-forecast-35-day`` (``gefs_*``), supporting explicit ``ensemble_member`` selection (integer member index or ``"mean"``).
-   * **ECMWF IFS ENS** (``IFS_ENS``): ``ecmwf-ifs-ens-forecast-15-day-0-25-degree`` (``ifs_ens_*``), supporting explicit ``ensemble_member`` selection (integer member index or ``"mean"``).
+5. **dynamical.org Deterministic & Ensemble Forecasts** (``GFS``, ``GEFS``, ``IFS_ENS``, ``AIFS``, ``AIFS_ENS``):
+   10-day global operational forecasts at 0.25° resolution (721 × 1440) from ``dynamical.org`` Icechunk stores. Deterministic products extract 8 ECMWF surface variables (``AIFS``) or 9 NOAA surface variables including daily min/max 2m temperature (``GFS``). Ensemble products (``IFS_ENS``, ``AIFS_ENS``, ``GEFS``) compute exact zonal basin trajectories per member and emit 7 ensemble summary statistics (``_mean``, sample ``_std`` with ``ddof=1``, ``_min``, ``_max``, ``_p10``, ``_p50``, ``_p90``) per variable, with optional 4D ``_ensemble`` member arrays and ``<prefix>_missing_fraction_ensemble`` via ``include_ensemble_members=True``.
+6. **dynamical.org NASA IMERG Early** (``DYNAMICAL_IMERG``):
+   Half-hourly 0.1° satellite precipitation from ``nasa-imerg-analysis-early`` aggregated into daily ``dynamical_imerg_precipitation`` (mm/day) and ``dynamical_imerg_missing_fraction``, kept separate from the primary ``IMERG`` product.
 
 Data-Quality & Provenance Guarantees
 ------------------------------------
@@ -34,7 +31,7 @@ Data-Quality & Provenance Guarantees
 * **No Out-of-Domain Nearest-Cell Snapping**:
   Sub-grid-scale polygons receive weight on a single grid cell only when the polygon genuinely lies inside that cell. Catchments outside the grid domain receive zero weight and evaluate to ``NaN`` (``missing_fraction = 1.0``).
 * **Companion Coverage Variable (``<prefix>_missing_fraction``)**:
-  Every extracted dataset records the area-weighted proportion of ``NaN`` grid pixels within each catchment at each timestep, matching ``SubbasinTouchResult.missing_values`` in Google's internal flood-forecasting ingestion pipeline.
+  Every extracted dataset records the area-weighted proportion of ``NaN`` grid pixels within each catchment at each timestep (plus 4D ``<prefix>_missing_fraction_ensemble`` when ``include_ensemble_members=True``).
 
 Quickstart Examples
 -------------------
@@ -81,10 +78,10 @@ Command-Line Interface (CLI)
 Real-Time Operational Forcing Fetcher (``multimet-realtime``)
 -------------------------------------------------------------
 
-``RealtimeForcingFetcher`` and ``fetch_realtime_multimet`` orchestrate live operational forcing extraction across ``HRES`` (``gs://ecmwf-open-data``), ``IMERG`` (``dynamical.org`` or NASA GES DISC), and ``CPC`` (NOAA PSL) in two operational modes:
+``RealtimeForcingFetcher`` and ``fetch_realtime_multimet`` orchestrate live operational forcing extraction across ``HRES`` (``gs://ecmwf-open-data``), ``IMERG`` (NASA GES DISC), ``CPC`` (NOAA PSL), and ``dynamical.org`` products (``GFS``, ``GEFS``, ``IFS_ENS``, ``AIFS``, ``AIFS_ENS``, ``DYNAMICAL_IMERG``) in two operational modes:
 
 * **Cold-Start (``mode="coldstart"``)**: Fetches a 365-day historical spin-up window (``[t0 - 365d, t0]``) plus the 10-day operational forecast issued on ``t0``. By default, historical spin-up dates prior to the forecast issue window download only ``step=24h`` (``lead_time=1D``) to reduce Cold-Start HRES download volume by 10x.
-* **Hot-Start (``mode="hotstart"``)**: Inspects existing Zarr stores (and/or a saved ``googlehydrology`` ``.npz`` state file or directory) to find the latest valid date across all bands and basins, automatically re-fetching and healing trailing ``NaN`` dates caused by upstream publication latency alongside newly elapsed days up to ``t0``.
+* **Hot-Start (``mode="hotstart"``)**: Inspects existing Zarr stores (and/or a saved ``openhydronet`` / ``model`` ``.npz`` state file or directory) to find the latest valid date across all bands and basins, automatically re-fetching and healing trailing ``NaN`` dates caused by upstream publication latency alongside newly elapsed days up to ``t0``.
 
 .. code-block:: python
 

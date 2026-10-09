@@ -54,11 +54,6 @@ Submodules
    :show-inheritance:
    :undoc-members:
 
-.. automodule:: return_periods.tools.run_caravan_usgs_benchmark
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 Module contents
 ---------------
 

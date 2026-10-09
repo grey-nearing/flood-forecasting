@@ -26,42 +26,43 @@ import gc
 import json
 import math
 import os
-from pathlib import Path
 import threading
 import time
-from typing import Any, Dict, List, Optional, Sequence
 import weakref
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 
 import multimet.weather_fetcher as wf
 from multimet.weather_fetcher.config import (
-    DYNAMICAL_MODELS,
-    from_stored_units,
-    MSLP_OFFSET_HPA,
-    N_LAT,
-    N_LON,
-    RUN_METADATA_FILE,
-    SUPPORTED_MODELS,
-    SUPPORTED_VARIABLES,
-    to_stored_units,
+  DYNAMICAL_MODELS,
+  MSLP_OFFSET_HPA,
+  N_LAT,
+  N_LON,
+  RUN_METADATA_FILE,
+  SUPPORTED_MODELS,
+  SUPPORTED_VARIABLES,
+  from_stored_units,
+  to_stored_units,
 )
 from multimet.weather_fetcher.fetcher import (
-    bilinear_sample_grid,
-    clear_accum_grid_cache,
-    close_unreferenced_mmaps,
-    compute_accumulated_precip_grid,
-    compute_wind_speed_and_direction,
-    extract_accumulation_series,
-    extract_point_value,
-    fetch_wind_grid,
-    file_step_for_lead,
-    geojson_polygon_to_shapely,
-    grid_indices,
-    rate_file_steps,
-    scan_streams,
-    WeatherDataFetcher,
+  WeatherDataFetcher,
+  bilinear_sample_grid,
+  clear_accum_grid_cache,
+  close_unreferenced_mmaps,
+  compute_accumulated_precip_grid,
+  compute_wind_speed_and_direction,
+  extract_accumulation_series,
+  extract_point_value,
+  fetch_wind_grid,
+  file_step_for_lead,
+  geojson_polygon_to_shapely,
+  grid_indices,
+  rate_file_steps,
+  scan_streams,
 )
 
 ROWS = np.arange(N_LAT, dtype=np.int64)[:, None]
@@ -169,7 +170,7 @@ def _write_stream(run_dir: Path, stream_id: str, planes: Sequence[np.ndarray]):
 
 
 def _write_meta(
-    run_dir: Path, datasets: Dict[str, Dict[str, Any]], downloaded: str
+    run_dir: Path, datasets: dict[str, dict[str, Any]], downloaded: str
 ) -> None:
   meta = {
       "status": "HEALTHY",
@@ -188,7 +189,7 @@ def _dataset_entry(
     leads: Sequence[int],
     streams: Sequence[str],
     downloaded: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
   return {
       "model": model,
       "init_time": init_time,
@@ -212,7 +213,7 @@ def _write_model(
     run_dir: Path,
     model: str,
     leads: Sequence[int],
-    stream_planes: Dict[str, List[np.ndarray]],
+    stream_planes: dict[str, list[np.ndarray]],
 ) -> None:
   for suffix, planes in stream_planes.items():
     assert len(planes) == len(leads)
@@ -366,14 +367,14 @@ def _box(min_lon: float, min_lat: float, max_lon: float, max_lat: float):
 
 
 def _feature(
-    geometry: Optional[Dict[str, Any]],
-    feature_id: Optional[str] = "basin",
-    area_km2: Optional[float] = None,
-) -> Dict[str, Any]:
-  props: Dict[str, Any] = {}
+    geometry: dict[str, Any] | None,
+    feature_id: str | None = "basin",
+    area_km2: float | None = None,
+) -> dict[str, Any]:
+  props: dict[str, Any] = {}
   if area_km2 is not None:
     props["area_km2"] = area_km2
-  feature: Dict[str, Any] = {"properties": props, "geometry": geometry}
+  feature: dict[str, Any] = {"properties": props, "geometry": geometry}
   if feature_id is not None:
     feature["id"] = feature_id
   return feature
@@ -1333,7 +1334,7 @@ def test_concurrent_reads_during_hot_reload_never_fail(tmp_path: Path) -> None:
   """Grid, probe, and wind requests keep succeeding while runs are swapped."""
   _write_small_run(tmp_path, "r1", "2026-09-29T00:00:00", rain_mmh=4.0)
   fetcher = WeatherDataFetcher(tmp_path)
-  errors: List[str] = []
+  errors: list[str] = []
   stop = threading.Event()
   completed = [0] * 6
 
@@ -1382,6 +1383,7 @@ def test_canary_dynamical_stac_catalog_reachable() -> None:
   """Live canary check verifying dynamical.org STAC catalog is reachable."""
   import importlib.util
   import urllib.request
+
   from multimet.weather_fetcher.config import STAC_CATALOG_URL
 
   with urllib.request.urlopen(STAC_CATALOG_URL, timeout=15) as resp:
@@ -1392,31 +1394,73 @@ def test_canary_dynamical_stac_catalog_reachable() -> None:
     assert cat is not None
     child = cat.get_child("noaa-gfs-forecast")
     assert child is not None
-def test_to_xarray_physical_units_and_coords(main_fetcher):
-    """Verifies physical units, coordinates, NaN preservation, and leads."""
-    ds = main_fetcher.to_xarray("ecmwf_ifs")
-    
-    assert "precipitation" in ds
-    assert "temperature" in ds
-    assert ds["precipitation"].attrs["units"] == "mm/h"
-    assert ds["temperature"].attrs["units"] == "degC"
-    
-    # Check coords
-    assert "latitude" in ds.coords
-    assert "longitude" in ds.coords
-    assert "lead_time" in ds.coords
-    assert "valid_time" in ds.coords
-    
-    assert ds.sizes["latitude"] == 721
-    assert ds.sizes["longitude"] == 1440
-    assert ds.sizes["lead_time"] > 0
-    
-    # Check NaN preservation (e.g. over oceans for some vars, or masked bounds)
-    # We can just check that the underlying array has some NaNs (e.g. at the poles if masked)
-    
-    # The first lead_time should be 0h
-    import pandas as pd
-    assert ds.lead_time.values[0] == pd.Timedelta(hours=0)
-    
-    # Check init_time attr
-    assert "init_time" in ds.attrs
+def test_to_xarray_physical_units_and_coords(main_fetcher: Any) -> None:
+  """Verifies physical units, coordinates, NaN preservation, and leads."""
+  ds = main_fetcher.to_xarray("ecmwf_ifs")
+
+  assert "precipitation" in ds
+  assert "temperature" in ds
+  assert ds["precipitation"].attrs["units"] == "mm/h"
+  assert ds["temperature"].attrs["units"] == "degC"
+
+  assert "latitude" in ds.coords
+  assert "longitude" in ds.coords
+  assert "lead_time" in ds.coords
+  assert "valid_time" in ds.coords
+
+  assert ds.sizes["latitude"] == 721
+  assert ds.sizes["longitude"] == 1440
+  assert ds.sizes["lead_time"] > 0
+
+  import pandas as pd
+
+  assert ds.lead_time.values[0] == pd.Timedelta(hours=0)
+  assert "init_time" in ds.attrs
+
+
+def test_hres_extract_for_basins_zarr_preserves_continuous_missing_fraction(
+    tmp_path: Path,
+) -> None:
+  """Verifies extract_for_basins_zarr preserves continuous spatial missing fraction."""
+  import geopandas as gpd
+  import pandas as pd
+  import shapely.geometry
+  import xarray as xr
+
+  from multimet.timeseries_extractors.hres import HRESExtractor
+  from multimet.utils.zonal import ZonalWeightCalculator
+
+  zarr_path = tmp_path / "hres_synth.zarr"
+
+  # 1 row (lat=0.5) x 10 cols (lon=0.5..9.5) over 240 hourly steps from 2016-01-01
+  t2m_data = np.full((240, 1, 10), 283.15, dtype=np.float32)
+  # Mask 1 of 10 equal-area cells (10% missing, 90% valid >= 80% coverage threshold)
+  t2m_data[:, 0, 0] = np.nan
+  xr.Dataset({"2m_temperature": (["time", "lat", "lon"], t2m_data)}).to_zarr(
+      zarr_path, mode="w"
+  )
+
+  extractor = HRESExtractor(data_dir=str(zarr_path), source="zarr")
+  extractor.lats = np.array([0.5], dtype=np.float64)
+  extractor.lons = np.arange(0.5, 10.0, 1.0, dtype=np.float64)
+  extractor.sort_lon_idx = np.arange(10)
+  extractor.zonal_calc = ZonalWeightCalculator(
+      extractor.lats, extractor.lons, cell_res_lat=1.0, cell_res_lon=1.0
+  )
+
+  basins_gdf = gpd.GeoDataFrame(
+      {"geometry": [shapely.geometry.box(0.0, 0.0, 10.0, 1.0)]},
+      index=pd.Index(["basin_partial"], name="basin"),
+      crs="EPSG:4326",
+  )
+
+  ds = extractor.extract_for_basins_zarr(
+      basins_gdf, start_date="2016-01-01", end_date="2016-01-01"
+  )
+  temp_vals = ds["hres_temperature_2m"].values
+  miss_vals = ds["hres_missing_fraction"].values
+  assert temp_vals.shape == (1, 1, 10)
+  assert miss_vals.shape == (1, 1, 10)
+  np.testing.assert_allclose(temp_vals, 10.0, atol=1e-4)
+  np.testing.assert_allclose(miss_vals, 0.10, atol=1e-5)
+

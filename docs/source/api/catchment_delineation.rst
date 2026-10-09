@@ -22,14 +22,6 @@ multimet.catchment_delineation.cli
    :show-inheritance:
    :undoc-members:
 
-multimet.catchment_delineation.benchmark
-----------------------------------------
-
-.. automodule:: multimet.catchment_delineation.benchmark
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 multimet.catchment_delineation.config
 -------------------------------------
 

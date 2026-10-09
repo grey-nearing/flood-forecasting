@@ -14,8 +14,6 @@
 
 """Unit tests for model.modelzoo architectures and layers."""
 
-from unittest.mock import MagicMock
-
 import pytest
 import torch
 
@@ -119,11 +117,11 @@ def test_fc_activations_and_shapes():
 
 
 @pytest.mark.unit
-def test_head_regression():
-    cfg = MagicMock()
-    cfg.head = 'regression'
-    cfg.output_activation = 'linear'
-    head = get_head(cfg=cfg, n_in=32, n_out=1)
+def test_head_regression(minimal_config):
+    minimal_config.update_config(
+        {'head': 'regression', 'output_activation': 'linear'}
+    )
+    head = get_head(cfg=minimal_config, n_in=32, n_out=1)
 
     x = torch.randn(4, 10, 32)  # [batch, seq, in_features]
     out = head(x)
@@ -132,11 +130,10 @@ def test_head_regression():
 
 
 @pytest.mark.unit
-def test_head_cmal():
-    cfg = MagicMock()
-    cfg.head = 'cmal'
+def test_head_cmal(minimal_config):
+    minimal_config.update_config({'head': 'cmal'})
     # n_out for CMAL should match n_targets * 4 * n_distributions
-    head = get_head(cfg=cfg, n_in=32, n_out=12, n_hidden=50)
+    head = get_head(cfg=minimal_config, n_in=32, n_out=12, n_hidden=50)
 
     x = torch.randn(4, 10, 32)
     out = head(x)
@@ -150,39 +147,47 @@ def test_head_cmal():
 
 
 @pytest.mark.unit
-def test_head_invalid_type():
-    cfg_empty = MagicMock(head='', model='lstm')
+def test_head_invalid_type(make_minimal_config):
+    cfg_empty = make_minimal_config({'head': '', 'model': 'lstm'})
     with pytest.raises(ValueError, match="No 'head' specified"):
         get_head(cfg=cfg_empty, n_in=32, n_out=1)
 
-    cfg_unsupported = MagicMock(head='unknown_head')
+    cfg_unsupported = make_minimal_config({'head': 'unknown_head'})
     with pytest.raises(NotImplementedError, match='not implemented'):
         get_head(cfg=cfg_unsupported, n_in=32, n_out=1)
 
 
 @pytest.mark.unit
-def test_base_model_methods(monkeypatch):
-    mock_sample_fn = MagicMock(return_value={'y_hat': torch.zeros(1)})
+def test_base_model_methods(monkeypatch, minimal_config):
+    sample_calls = []
+
+    def fake_sample_pointpredictions(*args, **kwargs):
+        sample_calls.append((args, kwargs))
+        return {'y_hat': torch.zeros(1)}
+
     monkeypatch.setattr(
         'model.modelzoo.basemodel.sample_pointpredictions',
-        mock_sample_fn,
+        fake_sample_pointpredictions,
     )
     monkeypatch.setattr(
-        'model.modelzoo.basemodel.Scaler', MagicMock()
+        'model.modelzoo.basemodel.Scaler', lambda **_kwargs: None
     )
 
-    cfg = MagicMock()
-    cfg.target_variables = ['streamflow']
-    cfg.head = 'regression'
-    cfg.base_run_dir = None
-    cfg.run_dir = None
-    cfg.is_finetuning = False
+    minimal_config.update_config(
+        {
+            'target_variables': ['streamflow'],
+            'head': 'regression',
+            'base_run_dir': None,
+            'run_dir': None,
+            'is_finetuning': False,
+        }
+    )
 
     class SimpleModel(BaseModel):
         def forward(self, data):
             return data
 
-    model = SimpleModel(cfg)
+    model = SimpleModel(minimal_config)
     data = {'x': torch.zeros(1)}
 
     # Test pre_model_hook
@@ -192,7 +197,7 @@ def test_base_model_methods(monkeypatch):
     # Test sample method
     samples = model.sample(data, n_samples=5)
     assert 'y_hat' in samples
-    mock_sample_fn.assert_called_once()
+    assert len(sample_calls) == 1
 
 
 @pytest.mark.unit
@@ -236,4 +241,3 @@ def test_load_weights_torch_compile_compatibility(
         train_model = torch.compile(train_model)
     trainer.model = train_model
     trainer._load_model_weights(weight_path)
-

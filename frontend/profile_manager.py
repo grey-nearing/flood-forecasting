@@ -603,10 +603,21 @@ class ProfileManager:
         try:
           with open(candidate, "r", encoding="utf-8") as f:
             data = json.load(f)
+            raw_feats = None
             if isinstance(data, dict) and data.get("type") == "FeatureCollection":
-              return data.get("features", [])
+              raw_feats = data.get("features", [])
             elif isinstance(data, list):
-              return data
+              raw_feats = data
+            if isinstance(raw_feats, list):
+              for idx, feat in enumerate(raw_feats):
+                if isinstance(feat, dict):
+                  bid = _extract_basin_id(feat, idx)
+                  props = feat.get("properties")
+                  if not isinstance(props, dict):
+                    props = {}
+                    feat["properties"] = props
+                  props.setdefault("catchment_id", bid)
+              return raw_feats
         except Exception as e:
           logger.warning("Failed to load %s for %s: %s", candidate, user, e)
     return []
@@ -657,6 +668,7 @@ class ProfileManager:
       )
       props.setdefault("id", basin_id)
       props.setdefault("basin_id", basin_id)
+      props.setdefault("catchment_id", basin_id)
 
       single_feat = {
           **feat,

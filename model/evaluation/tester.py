@@ -45,7 +45,7 @@ from model.evaluation.utils import (
     get_samples_indexes,
     metrics_to_dataframe,
 )
-from model.modelzoo import get_model
+from model.modelzoo import get_model, load_model_weights
 from model.modelzoo.basemodel import BaseModel
 from model.training import get_loss_obj, get_regularization_obj
 from model.training.logger import Logger, do_log_figures
@@ -176,15 +176,7 @@ class BaseTester(object):
         weight_file = self._get_weight_file(epoch)
 
         LOGGER.info('Using the model weights from %s', weight_file)
-        state_dict = torch.load(
-            weight_file, map_location=self.device, weights_only=True
-        )
-        # Drop `_orig_mod.` prefix introduced by torch.compile.
-        state_dict = {
-            k.removeprefix('_orig_mod.'): v for k, v in state_dict.items()
-        }
-        model_to_load = getattr(self.model, '_orig_mod', self.model)
-        model_to_load.load_state_dict(state_dict)
+        load_model_weights(self.model, weight_file, self.device)
 
     def _get_dataset_all(self) -> Dataset:
         """Get dataset for all basins."""
@@ -196,11 +188,21 @@ class BaseTester(object):
             compute_scaler=False,
         )
 
+    def _set_random_seeds(self) -> None:
+        """Seed Python, NumPy, and PyTorch RNGs for reproducible evaluation."""
+        raw_seed = getattr(self.cfg, 'seed', None)
+        seed = raw_seed if isinstance(raw_seed, int) else 42
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     def evaluate(
         self,
         epoch: int = None,
         save_results: bool = True,
-        metrics: list | dict = [],
+        metrics: list | dict | None = None,
         model: torch.nn.Module = None,
         experiment_logger: Logger = None,
         data_assimilation: bool | None = None,
@@ -225,6 +227,8 @@ class BaseTester(object):
             `_data_assimilation`. By default, the `assimilate` config value
             is used.
         """
+        if metrics is None:
+            metrics = []
         if data_assimilation is None:
             data_assimilation = self.cfg.assimilate
         if data_assimilation and self.assimilation is None:
@@ -244,6 +248,8 @@ class BaseTester(object):
                     'No model was initialized for the evaluation'
                 )
 
+        self._set_random_seeds()
+
         # during validation, depending on settings, only evaluate on a random subset of basins
         basins = self.basins
         if (
@@ -254,11 +260,14 @@ class BaseTester(object):
 
         model.eval()
 
+        # The sample index stores each basin as its position in the dataset's
+        # full basin list, not in `self.basins`, which `_calc_exclude_basins`
+        # may have shortened.
         batch_sampler = BasinBatchSampler(
             sample_index=self.dataset._sample_index,
             batch_size=self.cfg.batch_size,
             basins_indexes=get_samples_indexes(
-                self.basins, samples=list(basins)
+                self.dataset._basins, samples=list(basins)
             ),
         )
         loader = MultimetDataLoader(
@@ -411,11 +420,22 @@ class BaseTester(object):
                             sim = xarray.where(sim < 0, 0, sim)
 
                         if 'samples' in sim.dims:
+                            is_cmal_det = (
+                                self.cfg.head.lower() == 'cmal_deterministic'
+                            )
                             match self.cfg.tester_sample_reduction:
                                 case TesterSamplesReduction.MEAN:
-                                    sim = sim.mean(dim='samples')
+                                    sim = (
+                                        sim.isel(samples=0)
+                                        if is_cmal_det
+                                        else sim.mean(dim='samples')
+                                    )
                                 case TesterSamplesReduction.MEDIAN:
-                                    sim = sim.median(dim='samples')
+                                    sim = (
+                                        sim.isel(samples=5)
+                                        if is_cmal_det
+                                        else sim.median(dim='samples')
+                                    )
                                 case _:
                                     msg = f'Supported {self.cfg.tester_sample_reduction=}'
                                     raise KeyError(msg)
@@ -496,24 +516,27 @@ class BaseTester(object):
                 parent_directory / f'{self.period}_results{suffix}.zarr'
             )
             if result_file.exists():
-                try:
-                    zarr.consolidate_metadata(str(result_file))
-                    LOGGER.debug('Consolidated metadata for %s', result_file)
-                except Exception as e:
-                    LOGGER.warning('Could not consolidate metadata for %s: %s', result_file, e)
+                zarr.consolidate_metadata(str(result_file))
+                LOGGER.debug('Consolidated metadata for %s', result_file)
 
     def _calc_exclude_basins(self) -> Iterator[str]:
         if not self.cfg.tester_skip_obs_all_nan:
             return
 
-        period_start, period_end = (
-            self.cfg.test_start_date,
-            self.cfg.test_end_date,
-        )
         if self.period == 'validation':
             period_start, period_end = (
                 self.cfg.validation_start_date,
                 self.cfg.validation_end_date,
+            )
+        elif self.period == 'train':
+            period_start, period_end = (
+                self.cfg.train_start_date,
+                self.cfg.train_end_date,
+            )
+        else:
+            period_start, period_end = (
+                self.cfg.test_start_date,
+                self.cfg.test_end_date,
             )
 
         if self.cfg.lazy_load:
@@ -521,21 +544,34 @@ class BaseTester(object):
                 'tester_skip_obs_all_nan combined with lazy_load may be slow, '
                 'it goes over all the data.'
             )
-        # TODO(future): this may be optimized to work vectorically via xarray on all
-        # basins at once.
-        for basin in self.basins:
-            basin_ds = self.dataset._dataset.sel(basin=basin)
-            # Calculate all-nan ranges
-            diffs = np.diff(
-                basin_ds.streamflow.isnull(), prepend=[0], append=[0]
-            )
-            (starts,), (ends,) = np.where(diffs == 1), np.where(diffs == -1)
 
-            nan_date_starts = basin_ds.date.data[starts]
-            nan_date_ends = basin_ds.date.data[ends - 1]
-            for start, end in zip(period_start, period_end):
-                if np.any((nan_date_starts <= start) & (nan_date_ends >= end)):
-                    yield basin
+        if not self.basins:
+            return
+
+        observations = (
+            self.dataset._dataset[self.cfg.target_variables]
+            .sel(basin=self.basins)
+            .to_array(dim='__target__')
+        )
+        record_dates = observations.date.values
+        if len(record_dates) == 0:
+            return
+
+        in_period = np.zeros(len(record_dates), dtype=bool)
+        for start, end in zip(period_start, period_end, strict=True):
+            in_period |= (record_dates >= np.datetime64(start)) & (
+                record_dates <= np.datetime64(end)
+            )
+        if not in_period.any():
+            return
+
+        window_obs = observations.isel(date=in_period)
+        non_basin_dims = [dim for dim in window_obs.dims if dim != 'basin']
+        excluded_mask = window_obs.isnull().all(dim=non_basin_dims).values
+
+        for basin, excluded in zip(self.basins, excluded_mask, strict=True):
+            if excluded:
+                yield basin
 
     def _create_and_log_figures(
         self,
@@ -666,10 +702,12 @@ class BaseTester(object):
         self,
         model: BaseModel,
         loader: MultimetDataLoader,
-        basins: set[str] = set(),
+        basins: set[str] | None = None,
         data_assimilation: bool = False,
         suffix: str = '',
     ):
+        if basins is None:
+            basins = set()
         predict_last_n = self.cfg.predict_last_n
 
         # Data assimilation optimizes model components with autograd and thus

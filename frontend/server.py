@@ -16,11 +16,12 @@ import urllib.request
 import sys
 import numpy as np
 
-# Ensure openhydronet is importable when run directly via python3
+# Ensure workspace root is importable when run directly via python3
 _ws_root = str(Path(__file__).resolve().parents[1])
 if _ws_root not in sys.path:
   sys.path.insert(0, _ws_root)
 
+from utils.file_paths import RAINVIEWER_MAPS_URL
 from frontend.config import (
     ARCHIVES_DIR,
     ATTRIBUTES_DIR,
@@ -551,7 +552,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
     if path == "/api/weather/radar-times":
       try:
         req = urllib.request.Request(
-            "https://api.rainviewer.com/public/weather-maps.json",
+            RAINVIEWER_MAPS_URL,
             headers={"User-Agent": "EarthkitHydro/1.0"},
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -582,17 +583,11 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
 
     # API: MaaS Supported Models & Status (/api/maas/models)
     if path == "/api/maas/models":
-      try:
-        from frontend.maas_engine import todays_earth_service_status
-      except ImportError:
-        from maas_engine import todays_earth_service_status
-
       models_info = {
           "models": [
               {"id": "floodhub", "name": "Google FloodHub", "type": "AI / Physics", "horizon_days": 7, "units": "m³/s", "status": "operational"},
               {"id": "glofas", "name": "Copernicus GloFAS", "type": "30-Day Ensemble (CEMS)", "horizon_days": 15, "units": "m³/s", "status": "operational"},
               {"id": "geoglows", "name": "GEOGLOWS ECMWF", "type": "15-Day 51-Member Ensemble", "horizon_days": 15, "units": "m³/s", "status": "operational"},
-              {"id": "todays_earth", "name": "JAXA Today's Earth (CaMa-Flood)", "type": "MATSIRO + CaMa-Flood", "horizon_days": 15, "units": "m³/s", "status": todays_earth_service_status()},
           ]
       }
       self._send_json(models_info)
@@ -650,7 +645,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         self._send_error(f"Failed to query MaaS river network: {e}", status=400)
         return
 
-    # API: Unified 4-Provider Streamflow & Flood Forecast Probe (/api/maas/forecast)
+    # API: Unified 3-Provider Streamflow & Flood Forecast Probe (/api/maas/forecast)
     if path == "/api/maas/forecast":
       try:
         lat = float(query.get("lat", [32.756])[0])
@@ -664,7 +659,7 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
         upstream_area_km2 = query.get("upstream_area_km2", [None])[0]
         area_min_km2 = query.get("area_min_km2", [None])[0]
         network = query.get("network", [None])[0] or None
-        models_str = query.get("models", ["floodhub,glofas,geoglows,todays_earth"])[0]
+        models_str = query.get("models", ["floodhub,glofas,geoglows"])[0]
         requested_models = [m.strip().lower() for m in models_str.split(",") if m.strip()]
 
         try:
@@ -2202,7 +2197,7 @@ def _start_maas_warmup() -> None:
       except ImportError:
         import maas_networks  # pylint: disable=g-import-not-at-top
       from maas.geoglows import lookup_cached_geoglows_return_periods  # pylint: disable=g-import-not-at-top
-      for m in ("glofas", "todays_earth", "geoglows", "floodhub"):
+      for m in ("glofas", "geoglows", "floodhub"):
         maas_networks._network(m)
         maas_networks.get_model_network(m, -180.0, -85.0, 180.0, 85.0, 3)
       lookup_cached_geoglows_return_periods(760069805)

@@ -277,3 +277,35 @@ def test_calculate_metrics_dispatcher(sample_timeseries):
     # Test unknown metric error
     with pytest.raises(RuntimeError, match='Unknown metric invalid_metric'):
         metrics.calculate_metrics(obs, sim, metrics=['invalid_metric'])
+
+
+@pytest.mark.unit
+def test_missed_peaks_excludes_boundary_and_gap_peaks_from_denominator():
+    dates = pd.date_range('2020-01-01', periods=100, freq='D')
+
+    # 1. Peak at index 1 (within window=3 of start boundary) and peak at index 80.
+    # With sim=0, the valid peak at index 80 is missed -> fraction must be 1/1 = 1.0 (not 1/2 = 0.5).
+    obs_vals = np.zeros(100)
+    obs_vals[1] = 10.0
+    obs_vals[80] = 10.0
+    obs = xr.DataArray(obs_vals, coords={'date': dates}, dims=['date'])
+    sim = xr.DataArray(np.zeros(100), coords={'date': dates}, dims=['date'])
+
+    assert metrics.missed_peaks(obs, sim, window=3, resolution='1D', percentile=80) == 1.0
+
+    # 2. Peak excluded because its window spans a missing-observation gap
+    obs_gap_vals = np.zeros(100)
+    obs_gap_vals[40] = 10.0
+    obs_gap_vals[41] = np.nan  # NaN inside [40 - 3, 40 + 3] window
+    obs_gap_vals[80] = 10.0
+    obs_gap = xr.DataArray(obs_gap_vals, coords={'date': dates}, dims=['date'])
+    assert metrics.missed_peaks(obs_gap, sim, window=3, resolution='1D', percentile=80) == 1.0
+
+    # 3. When all detected peaks are excluded near boundaries -> returns np.nan
+    obs_boundary_only = np.zeros(100)
+    obs_boundary_only[1] = 10.0
+    obs_boundary_only[98] = 12.0
+    obs_bound = xr.DataArray(obs_boundary_only, coords={'date': dates}, dims=['date'])
+    assert np.isnan(
+        metrics.missed_peaks(obs_bound, sim, window=3, resolution='1D', percentile=80)
+    )

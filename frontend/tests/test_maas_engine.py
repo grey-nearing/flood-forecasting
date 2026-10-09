@@ -29,9 +29,7 @@ from frontend import maas_engine
 from frontend.maas_viewer import (
     MaaSViewer,
     build_consensus_row,
-    emulate_camaflood_physics,
     reach_exceedance_summary,
-    route_floodplain_excess,
 )
 from frontend.server import EarthkitHydroHandler
 from maas.config import MaaSConfig, parse_finite_float
@@ -141,23 +139,6 @@ class TestMaaSWatershedAndAdapter(unittest.TestCase):
     props = feat.get("properties", {})
     self.assertEqual(props.get("fabric"), "glofas_cell")
     self.assertGreater(props.get("area_km2", 0), 0)
-
-  def test_get_maas_watershed_polygon_camaflood_unit(self):
-    feat = maas_engine.get_maas_watershed_polygon(23.23, 90.64, geofabric="camaflood_unit")
-    self.assertEqual(feat.get("type"), "Feature")
-    geom = feat.get("geometry", {})
-    self.assertEqual(geom.get("type"), "Polygon")
-    ring = geom["coordinates"][0]
-    self.assertEqual(len(ring), 5)
-    self.assertEqual(ring[0], ring[-1])
-    lons, lats = [p[0] for p in ring], [p[1] for p in ring]
-    self.assertAlmostEqual(max(lons) - min(lons), 0.25, places=4)
-    self.assertAlmostEqual(max(lats) - min(lats), 0.25, places=4)
-    props = feat.get("properties", {})
-    self.assertEqual(props.get("geofabric"), "camaflood_unit")
-    self.assertEqual(props.get("fabric"), "camaflood_unit")
-    self.assertEqual(props.get("grid_cell_id"), "cama_025_23.125_90.625")
-    self.assertTrue(600 < props.get("area_km2", 0) < 800)
 
   def test_get_maas_watershed_polygon_merit_and_hydroatlas(self):
     feat = maas_engine.get_maas_watershed_polygon(23.23, 90.64, fabric="merit_reach", river_id=71000092)
@@ -303,46 +284,6 @@ class TestMaaSContracts(unittest.TestCase):
     self.assertEqual(res_nan["data"], [])
     self.assertEqual(res_nan["nan_issues_skipped"], 3)
 
-  def test_todays_earth_operational_feed_via_maas(self):
-    feed = {
-        "timestamps": [
-            "2026-01-01T00:00:00Z",
-            "2026-01-02T00:00:00Z",
-            "2026-01-03T00:00:00Z",
-        ],
-        "rivout": [100.0, 150.0, 120.0],
-        "fldout": [0.0, 30.0, 10.0],
-        "flddph": [0.0, 0.8, 0.3],
-        "fldfrc": [0.0, 0.12, 0.05],
-        "sfcelv": [5.0, 6.2, 5.6],
-    }
-    mock_resp = mock.MagicMock(status_code=200)
-    mock_resp.json.return_value = feed
-    with (
-        mock.patch.dict(os.environ, {"TODAYS_EARTH_API_URL": "http://te-feed.invalid/point"}),
-        mock.patch("requests.Session.get", return_value=mock_resp),
-    ):
-      self.assertEqual(maas_engine.todays_earth_service_status(), "operational")
-      te = maas_engine.fetch_todays_earth_forecast(-12.34, 56.78, reach_id="TEST_REACH")
-    self.assertEqual(te["status"], "live")
-    self.assertFalse(te["emulated"])
-    self.assertEqual(te["mean"], [100.0, 180.0, 130.0])
-    ff = te["flood_forecast"]
-    self.assertAlmostEqual(ff["max_flood_depth_m"], 0.8)
-    self.assertAlmostEqual(ff["max_flooded_fraction_pct"], 12.0)
-
-  def test_camaflood_emulation(self):
-    routed = route_floodplain_excess([1000.0, 2000.0, 2500.0], q_bankfull=1500.0)
-    self.assertEqual(len(routed), 3)
-    self.assertEqual(routed[0], 0.0)
-    self.assertGreater(routed[1], 0.0)
-
-    glofas_records = _mock_glofas_forecast()["data"]
-    rp = _mock_return_periods()
-    emulated = emulate_camaflood_physics(glofas_records, rp, elev=120.0)
-    self.assertEqual(len(emulated["series"]["rivout"]), 6)
-    self.assertEqual(len(emulated["series"]["flddph_m"]), 6)
-
   def test_maas_viewer_render_forecast_view(self):
     with tempfile.TemporaryDirectory() as tmp:
       tmp_path = Path(tmp)
@@ -374,14 +315,14 @@ class TestMaaSContracts(unittest.TestCase):
             38.6270,
             -90.1994,
             gauge_id="hybas_7120012340",
-            requested_models=["floodhub", "glofas", "geoglows", "todays_earth"],
+            requested_models=["floodhub", "glofas", "geoglows"],
         )
         self.assertEqual(
-            set(view["models"]), {"floodhub", "glofas", "geoglows", "todays_earth"}
+            set(view["models"]), {"floodhub", "glofas", "geoglows"}
         )
         self.assertEqual(
             [r["model"] for r in view["consensus"]],
-            ["floodhub", "glofas", "geoglows", "todays_earth"],
+            ["floodhub", "glofas", "geoglows"],
         )
         self.assertIn("overall_risk_level", view["flood_summary"])
         timeline = view["timeline"]
@@ -425,7 +366,7 @@ class TestMaaSServerEndpoints(unittest.TestCase):
     self.assertEqual(status, 200)
     self.assertIn("models", data)
     model_ids = [m["id"] for m in data["models"]]
-    self.assertEqual(model_ids, ["floodhub", "glofas", "geoglows", "todays_earth"])
+    self.assertEqual(model_ids, ["floodhub", "glofas", "geoglows"])
 
   def test_api_maas_gauges(self):
     with mock.patch(
@@ -444,17 +385,13 @@ class TestMaaSServerEndpoints(unittest.TestCase):
     status, data = self._get("/api/maas/reaches?lat=23.875&lon=89.875")
     self.assertEqual(status, 200)
     self.assertIn("glofas", data)
-    self.assertIn("todays_earth", data)
+    self.assertIn("geoglows", data)
 
   def test_api_maas_watershed(self):
     status, data = self._get("/api/maas/watershed?lat=23.23&lon=90.64&fabric=glofas_cell")
     self.assertEqual(status, 200)
     self.assertEqual(data.get("type"), "Feature")
     self.assertEqual(data.get("properties", {}).get("fabric"), "glofas_cell")
-
-    status, data = self._get("/api/maas/watershed?lat=23.23&lon=90.64&geofabric=camaflood_unit")
-    self.assertEqual(status, 200)
-    self.assertEqual(data.get("properties", {}).get("grid_cell_id"), "cama_025_23.125_90.625")
 
   def test_api_maas_forecast_mocked(self):
     mock_gl = _mock_glofas_forecast()
@@ -479,24 +416,24 @@ class TestMaaSServerEndpoints(unittest.TestCase):
       )
       self.assertEqual(status, 200)
       self.assertEqual(
-          set(data["models"]), {"floodhub", "glofas", "geoglows", "todays_earth"}
+          set(data["models"]), {"floodhub", "glofas", "geoglows"}
       )
       self.assertEqual(
           [r["model"] for r in data["consensus"]],
-          ["floodhub", "glofas", "geoglows", "todays_earth"],
+          ["floodhub", "glofas", "geoglows"],
       )
-      self.assertIn("todays_earth", data["timeline"]["series"])
+      self.assertIn("glofas", data["timeline"]["series"])
 
       status_sub, data_sub = self._get(
-          "/api/maas/forecast?lat=32.756&lon=-117.252&models=glofas,todays_earth"
+          "/api/maas/forecast?lat=32.756&lon=-117.252&models=glofas,geoglows"
       )
       self.assertEqual(status_sub, 200)
       self.assertEqual(
-          [r["model"] for r in data_sub["consensus"]], ["glofas", "todays_earth"]
+          [r["model"] for r in data_sub["consensus"]], ["glofas", "geoglows"]
       )
 
   def test_api_maas_network_telescoping_all_models(self):
-    for model in ("floodhub", "glofas", "geoglows", "todays_earth"):
+    for model in ("floodhub", "glofas", "geoglows"):
       status, data = self._get(
           f"/api/maas/network?model={model}&bbox=88.0,22.0,91.5,25.5&zoom=8"
       )
@@ -527,7 +464,7 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         mock.patch("maas.floodhub.FloodHubClient.fetch_flood_status", return_value=None),
     ):
       status, data = self._get(
-          "/api/maas/forecast?lat=23.875&lon=89.875&network=todays_earth&upstream_area_km2=1480000"
+          "/api/maas/forecast?lat=23.875&lon=89.875&network=glofas&upstream_area_km2=1480000"
       )
     self.assertEqual(status, 200)
     vs = data.get("virtual_station") or {}

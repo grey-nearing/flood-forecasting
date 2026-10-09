@@ -35,6 +35,7 @@ from maas.thresholds import (
     extract_annual_maxima,
     gumbel_quantile_from_return_periods,
 )
+from utils.file_paths import GEOGLOWS_CLOUDFRONT_URL
 
 
 def _opt_rounded(
@@ -291,26 +292,20 @@ _FORECASTSTATS_BROKEN_UNTIL: float = 0.0
 _GEOGLOWS_RP_TABLE: dict[str, np.ndarray] | None = None
 _ZARR_RIVID_INDEX: dict[str, np.ndarray] | None = None
 _ZARR_STORE_META: dict[str, Any] | None = None
-_DEFAULT_GEOGLOWS_RP_PATH = (
-    Path.home()
-    / '.cache'
-    / 'openhydronet'
-    / 'data'
-    / 'geoglows_v2'
-    / 'geoglows_return_periods_v1.npz'
-)
-_GEOGLOWS_CLOUDFRONT_BASE = 'https://d14ritg1bypdp7.cloudfront.net'
+
+_GEOGLOWS_CLOUDFRONT_BASE = GEOGLOWS_CLOUDFRONT_URL
 
 
-def _get_zarr_rivid_index(npy_path: Path | None = None) -> dict[str, np.ndarray] | None:
+def _get_zarr_rivid_index(npy_path: Path) -> dict[str, np.ndarray] | None:
     """Load and sort the 6.84M-reach CloudFront Zarr river_id lookup array once."""
-    global _ZARR_RIVID_INDEX  # noqa: PLW0603
+    global _ZARR_RIVID_INDEX
     if _ZARR_RIVID_INDEX is not None:
         return _ZARR_RIVID_INDEX
-    path = npy_path or (_DEFAULT_GEOGLOWS_RP_PATH.parent / 'geoglows_zarr_rivid_v1.npy')
-    if not path.exists() or path.stat().st_size == 0:
+    if npy_path is None:
+        raise ValueError('npy_path must be explicitly provided')
+    if not npy_path.exists() or npy_path.stat().st_size == 0:
         return None
-    raw = np.load(path, allow_pickle=False)
+    raw = np.load(npy_path, allow_pickle=False)
     order = np.argsort(raw).astype(np.int32)
     _ZARR_RIVID_INDEX = {
         'sorted_rids': raw[order].astype(np.int32),
@@ -321,10 +316,11 @@ def _get_zarr_rivid_index(npy_path: Path | None = None) -> dict[str, np.ndarray]
 
 def _get_cloudfront_zarr_meta(session: requests.Session) -> dict[str, Any] | None:
     """Resolve and cache the latest GEOGLOWS v2 CloudFront Zarr metadata and time axis."""
-    global _ZARR_STORE_META  # noqa: PLW0603
-    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
-    import time as _time  # noqa: PLC0415
-    import numcodecs  # noqa: PLC0415
+    global _ZARR_STORE_META
+    import time as _time
+    from datetime import UTC, datetime, timedelta
+
+    import numcodecs
 
     now_mono = _time.monotonic()
     if _ZARR_STORE_META is not None and now_mono < _ZARR_STORE_META.get('expires_at', 0.0):
@@ -344,7 +340,7 @@ def _get_cloudfront_zarr_meta(session: requests.Session) -> dict[str, Any] | Non
         if not q_meta or not t_meta:
             continue
         r_time = session.get(f'{zarr_url}/time/0', timeout=6.0)
-        if r_time.status_code != 200 or not r_time.content:
+        if r_time.status_code != 200:
             continue
         t_comp = numcodecs.get_codec(t_meta['compressor'])
         t_sec = np.frombuffer(t_comp.decode(r_time.content), dtype=t_meta['dtype'])
@@ -369,9 +365,12 @@ def _get_cloudfront_zarr_meta(session: requests.Session) -> dict[str, Any] | Non
 def _fetch_forecast_from_cloudfront_zarr(
     river_id: int,
     session: requests.Session | None = None,
+    npy_path: Path | None = None,
 ) -> dict[str, Any] | None:
     """Fetch 51-member ensemble + high_res forecast for `river_id` from GEOGLOWS CloudFront Zarr."""
-    idx_table = _get_zarr_rivid_index()
+    if npy_path is None:
+        return None
+    idx_table = _get_zarr_rivid_index(npy_path)
     if idx_table is None:
         return None
     rid = int(river_id)
@@ -392,7 +391,7 @@ def _fetch_forecast_from_cloudfront_zarr(
     offset = zarr_idx % chunk_width
 
     r_chunk = sess.get(f"{meta['zarr_url']}/Qout/0.0.{chunk_id}", timeout=8.0)
-    if r_chunk.status_code != 200 or not r_chunk.content:
+    if r_chunk.status_code != 200:
         return None
     q_arr = np.frombuffer(
         meta['q_codec'].decode(r_chunk.content),
@@ -445,12 +444,13 @@ def lookup_cached_geoglows_return_periods(
     npz_path: Path | None = None,
 ) -> dict[str, Any] | None:
     """Look up pre-cached GEOGLOWS return periods from `geoglows_return_periods_v1.npz` in O(log N)."""
-    global _GEOGLOWS_RP_TABLE  # noqa: PLW0603
-    path = npz_path or _DEFAULT_GEOGLOWS_RP_PATH
+    global _GEOGLOWS_RP_TABLE
+    if npz_path is None:
+        raise ValueError('npz_path must be explicitly provided')
     if _GEOGLOWS_RP_TABLE is None:
-        if not path.exists() or path.stat().st_size == 0:
+        if not npz_path.exists() or npz_path.stat().st_size == 0:
             return None
-        with np.load(path, allow_pickle=False) as z:
+        with np.load(npz_path, allow_pickle=False) as z:
             _GEOGLOWS_RP_TABLE = {
                 'river_id': z['river_id'],
                 'return_periods': z['return_periods'],
@@ -498,10 +498,12 @@ class GeoGLOWSClient:
         base_url: str = GEOGLOWS_BASE_URL,
         timeout_s: float = 12.0,
         session: requests.Session | None = None,
+        cache_dir: Path | None = None,
     ) -> None:
         self.base_url = base_url.rstrip('/')
         self.timeout_s = timeout_s
         self.session = session if session is not None else requests.Session()
+        self.cache_dir = cache_dir
 
     def fetch_river_id(self, lat: float, lon: float) -> int | None:
         """Snap `(lat, lon)` to a 9-digit GEOGLOWS COMID via local pyramid or `/getriverid`."""
@@ -510,11 +512,13 @@ class GeoGLOWSClient:
             and not hasattr(self.session.get, '_mock_name')
             and self.base_url == GEOGLOWS_BASE_URL.rstrip('/')
         )
-        if is_live_session:
-            from maas.fetcher import _get_cached_geoglows_pyramid  # noqa: PLC0415
-            from maas.networks import snap_geoglows_reach_from_network  # noqa: PLC0415
+        if is_live_session and self.cache_dir is not None:
+            from maas.fetcher import _get_cached_geoglows_pyramid
+            from maas.networks import snap_geoglows_reach_from_network
 
-            npz_path = _DEFAULT_GEOGLOWS_RP_PATH.parent / 'geoglows_network_v1.npz'
+            npz_path = (
+                self.cache_dir / 'geoglows_v2' / 'geoglows_network_v1.npz'
+            )
             if npz_path.exists():
                 net = _get_cached_geoglows_pyramid(npz_path)
                 if net is not None:
@@ -538,8 +542,8 @@ class GeoGLOWSClient:
 
     def fetch_forecast(self, river_id: int) -> dict[str, Any]:
         """Fetch 15-day ensemble forecast statistics for `river_id`."""
-        global _FORECASTSTATS_BROKEN_UNTIL  # noqa: PLW0603
-        import time as _time  # noqa: PLC0415
+        global _FORECASTSTATS_BROKEN_UNTIL
+        import time as _time
 
         rid = int(river_id)
         is_live_session = (
@@ -547,11 +551,18 @@ class GeoGLOWSClient:
             and not hasattr(self.session.get, '_mock_name')
             and self.base_url == GEOGLOWS_BASE_URL.rstrip('/')
         )
-        if is_live_session and (
+        npy_path = (
+            self.cache_dir / 'geoglows_v2' / 'geoglows_zarr_rivid_v1.npy'
+            if self.cache_dir is not None
+            else None
+        )
+        if is_live_session and npy_path is not None and (
             _time.monotonic() < _FORECASTSTATS_BROKEN_UNTIL
-            or _get_zarr_rivid_index() is not None
+            or _get_zarr_rivid_index(npy_path) is not None
         ):
-            zarr_fc = _fetch_forecast_from_cloudfront_zarr(rid, self.session)
+            zarr_fc = _fetch_forecast_from_cloudfront_zarr(
+                rid, self.session, npy_path=npy_path
+            )
             if zarr_fc is not None:
                 return zarr_fc
 
@@ -562,24 +573,30 @@ class GeoGLOWSClient:
         )
         if is_live_session and resp.status_code >= 500:
             _FORECASTSTATS_BROKEN_UNTIL = _time.monotonic() + 300.0
-            zarr_fc = _fetch_forecast_from_cloudfront_zarr(rid, self.session)
-            if zarr_fc is not None:
-                return zarr_fc
+            if npy_path is not None:
+                zarr_fc = _fetch_forecast_from_cloudfront_zarr(
+                    rid, self.session, npy_path=npy_path
+                )
+                if zarr_fc is not None:
+                    return zarr_fc
         resp.raise_for_status()
         return parse_geoglows_forecast_response(resp.json(), river_id=rid)
 
     def fetch_return_periods(self, river_id: int) -> dict[str, Any] | None:
         """Fetch official GEOGLOWS return periods from local cache or `/returnperiods/{river_id}`."""
-        global _RETURNPERIODS_BROKEN_UNTIL  # noqa: PLW0603
-        import time as _time  # noqa: PLC0415
+        global _RETURNPERIODS_BROKEN_UNTIL
+        import time as _time
 
         is_live_session = (
             type(self.session) is requests.Session
             and not hasattr(self.session.get, '_mock_name')
             and self.base_url == GEOGLOWS_BASE_URL.rstrip('/')
         )
-        if is_live_session:
-            cached_rp = lookup_cached_geoglows_return_periods(int(river_id))
+        if is_live_session and self.cache_dir is not None:
+            cached_rp = lookup_cached_geoglows_return_periods(
+                int(river_id),
+                self.cache_dir / 'geoglows_v2' / 'geoglows_return_periods_v1.npz',
+            )
             if cached_rp is not None:
                 return cached_rp
             if _time.monotonic() < _RETURNPERIODS_BROKEN_UNTIL:

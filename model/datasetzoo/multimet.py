@@ -51,6 +51,7 @@ from model.utils.configutils import (
 )
 from model.utils.errors import NoEvaluationDataError, NoTrainDataError
 from model.utils.tqdm import AutoRefreshTqdm as tqdm
+from utils.file_paths import TIMESERIES_ZARR_NAME
 
 LOGGER = logging.getLogger(__name__)
 
@@ -358,19 +359,9 @@ class Multimet(Dataset):
 
         LOGGER.debug('create valid sample mask and indices plan')
         valid_sample_mask, indices = self._create_valid_sample_mask()
-        LOGGER.debug('compute indices')
-        (indices,) = dask.compute(indices)
-        memory.release()
 
-        LOGGER.debug(f'Dataset size: {sizeof(self._dataset) / 1024**2} MB')
-        LOGGER.debug(f'Dataset on disk: {self._dataset.nbytes / 1024**2} MB')
-        LOGGER.debug(f'Sample index size: {sizeof(indices) / 1024**2} MB')
-
-        # Create sample index lookup table for `__getitem__`.
-        LOGGER.debug('create sample index')
-        self._create_sample_index(valid_sample_mask, indices)
-
-        # Compute stats for NSE-based loss functions.
+        # Compute stats for NSE-based loss functions alongside sample indices so
+        # lazy_load batches do not re-evaluate target .std(dim='date') per batch.
         # TODO (future) :: Find a better way to decide whether to calculate these. At least keep a list of
         # losses that require them somewhere like `training.__init__.py`. Perhaps simply always calculate.
         self._per_basin_target_stds = None
@@ -386,6 +377,20 @@ class Multimet(Dataset):
                 ],
                 skipna=True,
             )
+
+        LOGGER.debug('compute indices')
+        indices, self._per_basin_target_stds = dask.compute(
+            indices, self._per_basin_target_stds
+        )
+        memory.release()
+
+        LOGGER.debug(f'Dataset size: {sizeof(self._dataset) / 1024**2} MB')
+        LOGGER.debug(f'Dataset on disk: {self._dataset.nbytes / 1024**2} MB')
+        LOGGER.debug(f'Sample index size: {sizeof(indices) / 1024**2} MB')
+
+        # Create sample index lookup table for `__getitem__`.
+        LOGGER.debug('create sample index')
+        self._create_sample_index(valid_sample_mask, indices)
 
         self._data_cache: dict[str, xr.DataArray] = {}
 
@@ -445,9 +450,7 @@ class Multimet(Dataset):
 
         # Can't use strings. Torch does not support it in tensors.
         basin_index = sample_index['basin']
-        # Use signed type: -1 handles limits, e.g. 128 > -128 > -129 > int16.
-        min_dtype = np.min_scalar_type(-int(basin_index)  - 1)
-        sample['basin_index'] = np.array(basin_index , dtype=min_dtype)
+        sample['basin_index'] = np.array(basin_index, dtype=np.int64)
 
         return sample
 
@@ -1022,18 +1025,18 @@ def _find_single_dynamics_zarr_path(dynamics_path: Path | str) -> Path | None:
         return p
     if not p.exists():
         raise FileNotFoundError(f'Dynamics data path not found: {p}')
-    if (p / 'timeseries.zarr').exists():
-        return p / 'timeseries.zarr'
+    if (p / TIMESERIES_ZARR_NAME).exists():
+        return p / TIMESERIES_ZARR_NAME
     return None
 
 
 def _find_product_zarr_path(dynamics_path: Path | str, product: str) -> Path:
     path_str = str(dynamics_path)
     if path_str.startswith('gs://') or path_str.startswith('gs:/'):
-        return Path(f"{path_str.rstrip('/')}/{product}/timeseries.zarr")
+        return Path(f"{path_str.rstrip('/')}/{product}/{TIMESERIES_ZARR_NAME}")
 
     p = Path(dynamics_path)
-    candidate = p / product / 'timeseries.zarr'
+    candidate = p / product / TIMESERIES_ZARR_NAME
     if candidate.exists():
         return candidate
     raise FileNotFoundError(
@@ -1049,9 +1052,12 @@ def _open_zarr(path: Path) -> xr.Dataset:
     else:
         store = str_path
     is_cloud = str_path.startswith(('gs:', 'gs/'))
+    # `chunks={}` keeps the on-disk Zarr chunks (e.g. `basin=128` in
+    # Caravan-MultiMet) so that lazily loaded samples only read the chunk of
+    # their own basin.
     return xr.open_zarr(
         store=store,
-        chunks='auto',
+        chunks={},
         decode_timedelta=True,
         consolidated=True if is_cloud else False,
     )
@@ -1112,7 +1118,7 @@ def _get_products_and_bands_from_features(
                     existing.append(band)
         return product_bands
 
-    flat_features = flatten_feature_list(list(features))
+    flat_features = flatten_feature_list(features)
     return _get_products_and_bands_from_feature_strings(flat_features)
 
 class SampleIndexer:
@@ -1150,5 +1156,44 @@ class SampleIndexer:
     def get_column(self, dim: str):
         return next(v for (k, v) in self._aligned_indices if k == dim)
 
-def rechunk(ds: xr.Dataset | xr.DataTree) -> xr.Dataset:
-    return ds.chunk('auto').unify_chunks()
+
+def _finest_chunks(ds: xr.Dataset, dim: str) -> tuple[int, ...] | None:
+    """Return the finest multi-element chunking of `dim` across variables.
+
+    The result is the union of the chunk boundaries of every dask-backed
+    variable that has `dim` with multi-element chunks (ignoring trivial
+    1-element-per-chunk arrays from legacy per-file NetCDF concatenation).
+    Returns None when no variable has multi-element chunks along `dim`.
+    """
+    boundaries: set[int] = set()
+    dim_size = ds.sizes.get(dim, 0)
+    for variable in ds.variables.values():
+        if variable.chunks is None or dim not in variable.dims:
+            continue
+        dim_chunks = variable.chunksizes[dim]
+        if not dim_chunks or (dim_size > 1 and max(dim_chunks) == 1):
+            continue
+        boundaries.update(itertools.accumulate(dim_chunks))
+    if not boundaries:
+        return None
+    edges = np.array([0, *sorted(boundaries)])
+    return tuple(int(size) for size in np.diff(edges))
+
+
+def rechunk(ds: xr.Dataset) -> xr.Dataset:
+    """Return `ds` with dask-backed variables and consistent chunks.
+
+    Every variable is coerced to a dask array. The `basin` dimension keeps the
+    finest chunking already present in `ds` (the on-disk Zarr chunks, e.g.
+    `basin=128` in Caravan-MultiMet), so that a lazily loaded sample only reads
+    the chunk of its own basin. All other dimensions are chunked with dask's
+    `'auto'` heuristic, which would otherwise also merge all basins of a small
+    dataset into a single chunk.
+    """
+    chunks: dict[Hashable, str | tuple[int, ...]] = dict.fromkeys(
+        ds.dims, 'auto'
+    )
+    basin_chunks = _finest_chunks(ds, 'basin')
+    if basin_chunks is not None:
+        chunks['basin'] = basin_chunks
+    return ds.chunk(chunks).unify_chunks()

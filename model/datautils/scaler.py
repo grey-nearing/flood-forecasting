@@ -21,7 +21,9 @@ import dask.array
 import pandas as pd
 import xarray as xr
 
-SCALER_FILE_NAME = 'scaler.zarr'
+from utils.file_paths import SCALER_ZARR_NAME
+
+SCALER_FILE_NAME = SCALER_ZARR_NAME
 
 
 def _calc_stats(dataset: xr.Dataset, needed: set[str]):
@@ -95,9 +97,11 @@ class Scaler:
         self,
         scaler_dir: Path,
         calculate_scaler,
-        custom_normalization: dict[str, dict[str, float]] = {},
+        custom_normalization: dict[str, dict[str, float]] | None = None,
         dataset: xr.Dataset | None = None,
     ):
+        if custom_normalization is None:
+            custom_normalization = {}
         # Consistency check.
         if not calculate_scaler and dataset is not None:
             raise ValueError(
