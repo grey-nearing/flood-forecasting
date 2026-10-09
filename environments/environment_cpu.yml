@@ -32,6 +32,8 @@ dependencies:
   - h5netcdf=1.7.*
   - h5py=3.15.*
   - icechunk=2.*  # dynamical.org forecast stores (multimet.weather_fetcher)
+  - ipython
+  - jupyter
   - libprotobuf
   - matplotlib=3.10.*
   - more-itertools=10.8.*

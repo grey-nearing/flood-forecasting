@@ -22,7 +22,7 @@ with readme_file.open('r') as fp:
     long_description = fp.read()
 
 about = {}
-with open('model/__about__.py') as fp:
+with open('model/__about__.py', 'r') as fp:
     exec(fp.read(), about)
 
 setup(
@@ -50,9 +50,12 @@ setup(
         'utils',
         'benchmarks',
         'benchmarks.tools',
+        'frontend',
+        'frontend.maas_viewer',
     ],
     package_data={
         'return_periods': ['*.csv'],
+        'frontend': ['static/*', 'data/*.json'],
     },
     url='https://openhydronet.readthedocs.io',
     project_urls={
@@ -81,6 +84,7 @@ setup(
             'extract-caravan-static-batch=multimet.static_extractor.batch_runner:main',
             'extract-static-attributes-batch=multimet.static_extractor.batch_runner:main',
             'fetch-maas-forecast=maas.cli:main',
+            'openhydronet-ui=frontend.server:main',
             'benchmark-catchment=benchmarks.catchment_delineation:main',
             'benchmark-static-extractor=benchmarks.static_extractor:main',
             'benchmark-gridded-archive=benchmarks.gridded_archive_builders:main',
