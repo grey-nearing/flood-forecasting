@@ -30,9 +30,12 @@ from multimet.static_extractor.climate import (
     CARAVAN_CLIMATE_ALIASES,
     ERA5ClimateLoader,
     ERA5GriddedExtractor,
+    ERA5TimeseriesZarrLoader,
+    NAN_CLIMATE_METRICS,
     calculate_fao_pm_pet,
     calculate_knoben_moisture_and_seasonality,
     compute_caravan_climate_metrics,
+    compute_climate_metrics_from_dataframe,
     expand_caravan_climate_aliases,
 )
 from multimet.static_extractor.config import (
@@ -77,7 +80,10 @@ __all__ = [
     "run_batch_extraction",
     "ERA5ClimateLoader",
     "ERA5GriddedExtractor",
+    "ERA5TimeseriesZarrLoader",
+    "NAN_CLIMATE_METRICS",
     "compute_caravan_climate_metrics",
+    "compute_climate_metrics_from_dataframe",
     "calculate_fao_pm_pet",
     "calculate_knoben_moisture_and_seasonality",
     "compute_pour_point_properties",

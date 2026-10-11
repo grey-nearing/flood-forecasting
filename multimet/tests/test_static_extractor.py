@@ -399,9 +399,24 @@ def test_extract_attributes_for_polygon_end_to_end(tmp_path):
   assert res_filtered.attributes["area_fraction_used_for_aggregation"] == 0.0
   assert np.isnan(res_filtered.attributes["ele_mt_sav"])
 
-  # Omitting era5_source when timeseries_df is not provided must raise ValueError
-  with pytest.raises(ValueError, match="era5_source must be explicitly specified"):
-    extractor.extract_attributes_for_polygon(query_poly, catchment_id="b_err")
+  # Default era5_source="auto" uses priority (timeseries -> hybas -> gridded)
+  res_auto = extractor.extract_attributes_for_polygon(query_poly, catchment_id="b_auto")
+  assert res_auto.era5_source == "hybas"
+  assert np.isclose(res_auto.attributes["p_mean"], 4.5, rtol=1e-3)
+  assert np.isclose(res_auto.attributes["pet_mean_FAO_PM"], 2.25, rtol=1e-3)
+
+  # Override prefer_gridded_over_hybas=True switches auto priority to (timeseries -> gridded -> hybas)
+  res_pref_grid = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_pref_grid", prefer_gridded_over_hybas=True
+  )
+  assert res_pref_grid.era5_source == "gridded"
+  assert np.isclose(res_pref_grid.attributes["p_mean"], 4.0, rtol=1e-3)
+  assert np.isclose(res_pref_grid.attributes["pet_mean_FAO_PM"], 2.0, rtol=1e-3)
+
+  # Extractor with no ERA5 source configured must raise ValueError when timeseries_df is not provided
+  ext_no_era5 = StaticAttributesExtractor(gdb_path=shp_path)
+  with pytest.raises(ValueError, match="At least one ERA5 climate source must be configured"):
+    ext_no_era5.extract_attributes_for_polygon(query_poly, catchment_id="b_err")
 
   # Omitting catchment_id when input is a bare geometry must raise ValueError
   with pytest.raises(ValueError, match="catchment_id must be provided"):
@@ -1457,3 +1472,124 @@ def test_catchment_attributes_container_round_trip():
   with pytest.raises(ValueError):
     CatchmentAttributes.from_dict({"catchment_id": "x"})
 
+
+def test_era5_source_priority_and_timeseries_zarr(tmp_path):
+  """Verifies default priority (timeseries -> hybas -> gridded) and --prefer-gridded-over-hybas override."""
+  import xarray as xr
+
+  shp_path, era5_cache, zarr_dir = _build_synthetic_hydroatlas_env(
+      tmp_path, include_native_pet=True
+  )
+  # Create a synthetic pre-extracted ERA5_LAND/timeseries.zarr with one basin ("b_in_ts")
+  ts_zarr_dir = tmp_path / "era5_timeseries.zarr"
+  dates = pd.date_range("2000-01-01", periods=60, freq="D")
+  ds_ts = xr.Dataset(
+      data_vars={
+          "era5land_total_precipitation": (
+              ["basin", "date"],
+              np.full((1, 60), 6.0, dtype=np.float32),
+          ),
+          "era5land_temperature_2m": (
+              ["basin", "date"],
+              np.full((1, 60), 14.0, dtype=np.float32),
+          ),
+          "era5land_potential_evaporation_FAO_PENMAN_MONTEITH": (
+              ["basin", "date"],
+              np.full((1, 60), 3.0, dtype=np.float32),
+          ),
+          "era5land_potential_evaporation_DEPRECATED": (
+              ["basin", "date"],
+              np.full((1, 60), -5.0, dtype=np.float32),
+          ),
+      },
+      coords={"basin": ["b_in_ts"], "date": dates.values},
+  )
+  ds_ts.to_zarr(str(ts_zarr_dir), mode="w")
+
+  extractor = StaticAttributesExtractor(
+      gdb_path=shp_path,
+      era5_cache_dir=era5_cache,
+      gridded_era5_uri=str(zarr_dir),
+      era5_timeseries_zarr=str(ts_zarr_dir),
+  )
+
+  query_poly = shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)
+
+  # 1. Basin present in timeseries.zarr uses 'timeseries' (p_mean=6.0, pet_fao=3.0, pet_era5=5.0)
+  out_ts = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_in_ts"
+  )
+  assert out_ts.era5_source == "timeseries"
+  res_ts = out_ts.attributes
+  assert np.isclose(res_ts["p_mean"], 6.0, rtol=1e-3)
+  assert np.isclose(res_ts["pet_mean_FAO_PM"], 3.0, rtol=1e-3)
+  assert np.isclose(res_ts["pet_mean_ERA5_LAND"], 5.0, rtol=1e-3)
+  assert np.isclose(res_ts["aridity_FAO_PM"], 0.5, rtol=1e-3)
+
+  # 2. Basin NOT in timeseries.zarr falls back to 'hybas' by default (p_mean=4.5, pet_fao=2.25)
+  out_fallback_hybas = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_not_in_ts"
+  )
+  assert out_fallback_hybas.era5_source == "hybas"
+  res_fallback_hybas = out_fallback_hybas.attributes
+  assert np.isclose(res_fallback_hybas["p_mean"], 4.5, rtol=1e-3)
+  assert np.isclose(res_fallback_hybas["pet_mean_FAO_PM"], 2.25, rtol=1e-3)
+
+  # 3. With prefer_gridded_over_hybas=True, basin in timeseries still uses 'timeseries',
+  #    while basin NOT in timeseries falls back to 'gridded' ahead of 'hybas' (p_mean=4.0, pet_fao=2.0)
+  out_ts_override = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_in_ts", prefer_gridded_over_hybas=True
+  )
+  assert out_ts_override.era5_source == "timeseries"
+  res_ts_override = out_ts_override.attributes
+  assert np.isclose(res_ts_override["p_mean"], 6.0, rtol=1e-3)
+
+  out_fallback_gridded = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_not_in_ts", prefer_gridded_over_hybas=True
+  )
+  assert out_fallback_gridded.era5_source == "gridded"
+  res_fallback_gridded = out_fallback_gridded.attributes
+  assert np.isclose(res_fallback_gridded["p_mean"], 4.0, rtol=1e-3)
+  assert np.isclose(res_fallback_gridded["pet_mean_FAO_PM"], 2.0, rtol=1e-3)
+
+  # 4. Mixed-basin file extraction via CLI under default and --prefer-gridded-over-hybas
+  mixed_gdf = gpd.GeoDataFrame(
+      {"gauge_id": ["b_in_ts", "b_not_in_ts"]},
+      geometry=[query_poly, query_poly],
+      crs="EPSG:4326",
+  )
+  mixed_geojson = tmp_path / "mixed_basins.geojson"
+  mixed_gdf.to_file(mixed_geojson, driver="GeoJSON")
+
+  out_default_csv = tmp_path / "mixed_default.csv"
+  cli_main([
+      "--input", str(mixed_geojson),
+      "--output", str(out_default_csv),
+      "--gdb-path", str(shp_path),
+      "--era5-timeseries-zarr", str(ts_zarr_dir),
+      "--era5-cache-dir", str(era5_cache),
+      "--gridded-era5-uri", str(zarr_dir),
+  ])
+  df_default = pd.read_csv(out_default_csv, index_col=0)
+  assert np.isclose(df_default.loc["b_in_ts", "p_mean"], 6.0, rtol=1e-3)
+  assert np.isclose(df_default.loc["b_not_in_ts", "p_mean"], 4.5, rtol=1e-3)
+
+  out_pref_gridded_csv = tmp_path / "mixed_pref_gridded.csv"
+  cli_main([
+      "--input", str(mixed_geojson),
+      "--output", str(out_pref_gridded_csv),
+      "--gdb-path", str(shp_path),
+      "--era5-timeseries-zarr", str(ts_zarr_dir),
+      "--era5-cache-dir", str(era5_cache),
+      "--gridded-era5-uri", str(zarr_dir),
+      "--prefer-gridded-over-hybas",
+  ])
+  df_pref_gridded = pd.read_csv(out_pref_gridded_csv, index_col=0)
+  assert np.isclose(df_pref_gridded.loc["b_in_ts", "p_mean"], 6.0, rtol=1e-3)
+  assert np.isclose(df_pref_gridded.loc["b_not_in_ts", "p_mean"], 4.0, rtol=1e-3)
+
+  # 5. Strict era5_source='timeseries' raises KeyError when basin is missing from timeseries.zarr
+  with pytest.raises(KeyError, match="not found in era5_timeseries_zarr"):
+    extractor.extract_attributes_for_polygon(
+        query_poly, catchment_id="b_not_in_ts", era5_source="timeseries"
+    )

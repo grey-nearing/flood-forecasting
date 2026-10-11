@@ -3,10 +3,9 @@ name: gcs-bucket-organization
 description: >-
   Complete architecture, directory hierarchy, dataset schemas, and Python/CLI
   access patterns for the gs://open-multimet/ Google Cloud Storage bucket
-  (caravan-new, caravan-old, caravan-multimet, gridded-data-archives,
-  ancillary-data, and data/era5_land). Use whenever reading from, writing to,
-  extending, or documenting datasets in gs://open-multimet/ or
-  gs://caravan-multimet/.
+  (caravan-new, caravan-old, caravan-multimet, gridded-data-archives, and
+  ancillary-data). Use whenever reading from, writing to, extending, or
+  documenting datasets in gs://open-multimet/ or gs://caravan-multimet/.
 ---
 
 # `gs://open-multimet/` GCS Bucket Organization & Runbook
@@ -22,16 +21,15 @@ This skill documents the canonical layout, schemas, and access conventions for t
 
 ## 1. Top-Level Partition Summary
 
-`gs://open-multimet/` is divided into six isolated top-level partitions:
+`gs://open-multimet/` is divided into five isolated top-level partitions:
 
 | Partition | Purpose | Status |
 | :--- | :--- | :--- |
 | **`caravan-new/`** | Next-generation Caravan benchmark across **26,708 basins** (master `coordinates.csv`, rederived watershed polygons in `shapefiles-rederived/`, HydroATLAS + Caravan climate `attributes/`, and extracted `<product>/timeseries.zarr` stores). | Active Production Target |
 | **`caravan-old/`** | Complete legacy Caravan v1.0, community extensions, and Google-internal extensions (baseline shapefiles, CSV/NetCDF timeseries, and CSV attributes). | 100% Verified Archive |
 | **`caravan-multimet/`** | Pre-extracted MultiMet basin Zarr archives (`v1` and `v1.1`, 112.1 GiB total) across standard Caravan basins for 7 meteorological products (`CHIRPS`, `CHIRPS_GEFS`, `CPC`, `ERA5_LAND`, `GRAPHCAST`, `HRES`, `IMERG`). | 100% Complete |
-| **`gridded-data-archives/`** | Native-resolution Analysis-Ready Cloud-Optimized (ARCO) global daily surface Zarr stores (`CPC/daily_surface.zarr`, `IMERG/daily_surface.zarr`, `HRES/daily_surface.zarr`). | Active Operational Stores |
+| **`gridded-data-archives/`** | Native-resolution Analysis-Ready Cloud-Optimized (ARCO) global daily surface Zarr stores (`CPC/daily_surface.zarr`, `ERA5_LAND/daily_surface.zarr`, `IMERG/daily_surface.zarr`, `HRES/daily_surface.zarr`). | Active Operational Stores |
 | **`ancillary-data/`** | Pipeline dependencies: HydroSHEDS 3-arcsec flow directions/DEMs (`dems/`), HydroATLAS Level 12 geometries & BasinATLAS (`hydroatlas/`), and standard evaluation cohorts (`benchmarks/benchmark_basins_{500,1000}.parquet`). | Complete |
-| **`data/`** | ECMWF ERA5-Land 0.1° daily surface reanalysis archive (`data/era5_land/daily_surface.zarr`, 1980-01-01 to 2026-09-08, 17 surface variables + FAO Penman-Monteith PET). | Completed |
 
 ---
 
@@ -48,6 +46,7 @@ gs://open-multimet/
 │   │
 │   ├── caravan-original/                        # Caravan v1.0 cohorts (16,299 basins across 7 subdatasets)
 │   │   ├── CPC/timeseries.zarr/                 # Extracted daily CPC precipitation Zarr store
+│   │   ├── ERA5_LAND/timeseries.zarr/           # Extracted daily ERA5-Land reanalysis Zarr store
 │   │   ├── HRES/timeseries.zarr/                # Extracted ECMWF HRES forecast Zarr store
 │   │   ├── IMERG/timeseries.zarr/               # Extracted NASA IMERG Early V07 precipitation Zarr store
 │   │   ├── attributes/<subdataset>/             # Parquet & CSV attributes (camels, camelsaus, camelsbr, ...)
@@ -56,6 +55,7 @@ gs://open-multimet/
 │   │
 │   ├── caravan-extensions/                      # Community cohorts (8,548 basins across 8 subdatasets)
 │   │   ├── CPC/timeseries.zarr/
+│   │   ├── ERA5_LAND/timeseries.zarr/
 │   │   ├── HRES/timeseries.zarr/
 │   │   ├── IMERG/timeseries.zarr/
 │   │   ├── attributes/<subdataset>/             # camelsch, camelscz, camelsde, camelsdk, camelses, grdc, il, lamahice
@@ -64,6 +64,7 @@ gs://open-multimet/
 │   │
 │   └── google-internal/                         # Google internal cohorts (7 subdatasets)
 │       ├── CPC/timeseries.zarr/
+│       ├── ERA5_LAND/timeseries.zarr/
 │       ├── HRES/timeseries.zarr/
 │       ├── IMERG/timeseries.zarr/
 │       ├── attributes/<subdataset>/             # camelscol, camelsfr, camelsind, camelskr, camelslux, camelsnz, camelspe
@@ -100,18 +101,16 @@ gs://open-multimet/
 │
 ├── gridded-data-archives/                       # Native-resolution ARCO global daily surface Zarr stores
 │   ├── CPC/daily_surface.zarr/                  # NOAA CPC 0.5° global daily precipitation (1979-present)
+│   ├── ERA5_LAND/daily_surface.zarr/            # ECMWF ERA5-Land 0.1° daily surface reanalysis (1980-01-01 to 2026-09-08)
 │   ├── IMERG/daily_surface.zarr/                # NASA GPM IMERG Early V07 0.1° daily precipitation (2000-06-01-present)
 │   └── HRES/daily_surface.zarr/                 # ECMWF HRES 0.1° operational forecast archive
 │
-├── ancillary-data/                              # Delineation & static extraction inputs
-│   ├── benchmarks/
-│   │   ├── benchmark_basins_500.parquet         # Standard 500-basin global evaluation cohort
-│   │   └── benchmark_basins_1000.parquet        # Standard 1000-basin global evaluation cohort
-│   ├── dems/                                    # HydroSHEDS 3-arcsec flow direction grids (*_dir_3s.tif) & 5° tiles
-│   └── hydroatlas/                              # hydro_atlas_lev12.parquet, BasinATLAS_v10.gdb/, subpolygons/, era5_climate/
-│
-└── data/
-    └── era5_land/daily_surface.zarr/            # ECMWF ERA5-Land 0.1° daily surface reanalysis (1980-01-01 to 2026-09-08)
+└── ancillary-data/                              # Delineation & static extraction inputs
+    ├── benchmarks/
+    │   ├── benchmark_basins_500.parquet         # Standard 500-basin global evaluation cohort
+    │   └── benchmark_basins_1000.parquet        # Standard 1000-basin global evaluation cohort
+    ├── dems/                                    # HydroSHEDS 3-arcsec flow direction grids (*_dir_3s.tif) & 5° tiles
+    └── hydroatlas/                              # hydro_atlas_lev12.parquet, BasinATLAS_v10.gdb/, subpolygons/, era5_climate/
 ```
 
 ---
@@ -145,6 +144,8 @@ gs://open-multimet/
   - `attributes_other_<subdataset>.csv`: Provider metadata (`gauge_name`, `country`, `area`, `elevation`).
 
 ### 3.5 Gridded ARCO Surface Zarr Archives (`gridded-data-archives/`)
+- **ECMWF ERA5-Land (`gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr`):**
+  - Grid: `0.1°` (`1801` latitudes `-90.0 .. 90.0` ascending $\times$ `3600` longitudes `-180.0 .. 179.9`), 39 `float32` daily surface variables (`1980-01-01` to `2026-09-08`).
 - **NOAA CPC (`gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr`):**
   - Grid: `0.5°` (`360` latitudes `-89.75 .. 89.75` ascending $\times$ `720` longitudes `-179.75 .. 179.75`), variable `cpc_precipitation` (`mm/day`, `float32`).
   - Built/extended via:

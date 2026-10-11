@@ -22,7 +22,10 @@ from pathlib import Path
 import shutil
 import sys
 
-from multimet.static_extractor.extractor import StaticAttributesExtractor
+from multimet.static_extractor.extractor import (
+    StaticAttributesExtractor,
+    _VALID_SINGLE_ERA5_SOURCES,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,21 +62,52 @@ def parse_args(args=None):
   )
   parser.add_argument(
       "--era5-source",
-      choices=["hybas", "gridded"],
-      required=True,
-      help="Source for ERA5 climate metrics: 'hybas' (precalculated Level 12 sub-basin statistics) or 'gridded' (recalculated from daily ERA5 Zarr data).",
+      default="auto",
+      type=str,
+      help=(
+          "Source or priority order for ERA5 climate metrics. Defaults to 'auto', "
+          "which resolves per catchment in the order: 'timeseries' (if the basin "
+          "exists in --era5-timeseries-zarr) -> 'hybas' (precomputed Level 12 "
+          "sub-basin tables) -> 'gridded' (recalculated from daily ERA5-Land Zarr "
+          "archive). Use --prefer-gridded-over-hybas to switch 'auto' priority to "
+          "'timeseries -> gridded -> hybas', or pass an explicit mode ('timeseries', "
+          "'hybas', 'gridded') or comma-separated priority list (e.g. "
+          "'timeseries,gridded,hybas')."
+      ),
+  )
+  parser.add_argument(
+      "--prefer-gridded-over-hybas",
+      action="store_true",
+      default=False,
+      help=(
+          "Prioritize the gridded ERA5-Land Zarr archive ('gridded') ahead of "
+          "HydroATLAS Level 12 precomputed tables ('hybas') when --era5-source is "
+          "'auto' (changing the fallback order from 'timeseries -> hybas -> gridded' "
+          "to 'timeseries -> gridded -> hybas'). Requires --gridded-era5-uri."
+      ),
+  )
+  parser.add_argument(
+      "--era5-timeseries-zarr",
+      nargs="+",
+      default=None,
+      type=str,
+      help=(
+          "Optional path(s) or gs:// URI(s) to pre-extracted basin-level "
+          "ERA5_LAND/timeseries.zarr store(s). Checked first in 'auto' mode "
+          "when a basin ID exists in the store."
+      ),
   )
   parser.add_argument(
       "--era5-cache-dir",
       default=None,
       type=str,
-      help="Local directory containing continental ERA5 climate index files (required when --era5-source=hybas unless --no-download is used with --gcs-era5-climate-uri).",
+      help="Local directory containing continental ERA5 climate index files (required when using 'hybas' unless --no-download is used with --gcs-era5-climate-uri).",
   )
   parser.add_argument(
       "--gridded-era5-uri",
       default=None,
       type=str,
-      help="GCS URI or local path to gridded daily ERA5 Zarr store (required when --era5-source=gridded; optional when --era5-source=hybas to compute *_ERA5_LAND columns).",
+      help="GCS URI or local path to gridded daily ERA5 Zarr store (required when using 'gridded' or --prefer-gridded-over-hybas).",
   )
   parser.add_argument(
       "--gcs-gdb-uri",
@@ -123,28 +157,60 @@ def parse_args(args=None):
       help="Show detailed debug/info log messages.",
   )
   parsed = parser.parse_args(args)
+
+  raw_source = (parsed.era5_source or "auto").strip().lower()
+  if raw_source != "auto":
+    tokens = [t.strip() for t in raw_source.split(",") if t.strip()]
+    if not tokens or any(t not in _VALID_SINGLE_ERA5_SOURCES for t in tokens):
+      parser.error(
+          f"Invalid --era5-source {parsed.era5_source!r}; choose from 'auto', "
+          "'timeseries', 'hybas', 'gridded', or a comma-separated priority list."
+      )
+    parsed.era5_source = ",".join(tokens)
+  else:
+    parsed.era5_source = "auto"
+
   if parsed.no_download:
     if not parsed.gdb_path and not parsed.gcs_gdb_uri:
       parser.error(
           "Either --gdb-path or --gcs-gdb-uri is required when --no-download is set."
-      )
-    if (
-        parsed.era5_source == "hybas"
-        and not parsed.era5_cache_dir
-        and not parsed.gcs_era5_climate_uri
-    ):
-      parser.error(
-          "Either --era5-cache-dir or --gcs-era5-climate-uri is required when --era5-source is 'hybas' with --no-download."
       )
   else:
     if not parsed.gdb_path:
       parser.error(
           "--gdb-path is required unless --no-download is set with --gcs-gdb-uri."
       )
-    if parsed.era5_source == "hybas" and not parsed.era5_cache_dir:
-      parser.error("--era5-cache-dir is required when --era5-source is 'hybas'.")
-  if parsed.era5_source == "gridded" and not parsed.gridded_era5_uri:
+
+  has_ts = bool(parsed.era5_timeseries_zarr)
+  has_hybas = bool(
+      parsed.era5_cache_dir or (parsed.no_download and parsed.gcs_era5_climate_uri)
+  )
+  has_gridded = bool(parsed.gridded_era5_uri)
+
+  if parsed.prefer_gridded_over_hybas and not has_gridded:
+    parser.error(
+        "--gridded-era5-uri is required when --prefer-gridded-over-hybas is set."
+    )
+
+  if parsed.era5_source == "hybas" and not has_hybas:
+    if parsed.no_download:
+      parser.error(
+          "Either --era5-cache-dir or --gcs-era5-climate-uri is required when --era5-source is 'hybas' with --no-download."
+      )
+    parser.error("--era5-cache-dir is required when --era5-source is 'hybas'.")
+  if parsed.era5_source == "gridded" and not has_gridded:
     parser.error("--gridded-era5-uri is required when --era5-source is 'gridded'.")
+  if parsed.era5_source == "timeseries" and not has_ts:
+    parser.error(
+        "--era5-timeseries-zarr is required when --era5-source is 'timeseries'."
+    )
+
+  if not (has_ts or has_hybas or has_gridded):
+    parser.error(
+        "At least one ERA5 climate source must be provided (--era5-timeseries-zarr, "
+        "--era5-cache-dir / --gcs-era5-climate-uri, or --gridded-era5-uri)."
+    )
+
   return parsed
 
 
@@ -167,14 +233,17 @@ def main(args=None):
     sys.exit(1)
 
   logger.debug(
-      "Initializing Caravan Static Attributes Extractor (ERA5 source: %s)...",
+      "Initializing Caravan Static Attributes Extractor (ERA5 source: %s, prefer_gridded_over_hybas: %s)...",
       parsed.era5_source,
+      parsed.prefer_gridded_over_hybas,
   )
   extractor = StaticAttributesExtractor(
       gdb_path=parsed.gdb_path,
       era5_source=parsed.era5_source,
       era5_cache_dir=parsed.era5_cache_dir,
       gridded_era5_uri=parsed.gridded_era5_uri,
+      era5_timeseries_zarr=parsed.era5_timeseries_zarr,
+      prefer_gridded_over_hybas=parsed.prefer_gridded_over_hybas,
       gcs_gdb_uri=parsed.gcs_gdb_uri,
       gcs_era5_climate_uri=parsed.gcs_era5_climate_uri,
       no_download=parsed.no_download,
@@ -190,6 +259,8 @@ def main(args=None):
       output_csv_path=parsed.output,
       id_column=parsed.id_column,
       min_overlap_threshold=parsed.min_overlap_threshold,
+      era5_source=parsed.era5_source,
+      prefer_gridded_over_hybas=parsed.prefer_gridded_over_hybas,
       workers=parsed.workers,
       show_progress=True,
   )

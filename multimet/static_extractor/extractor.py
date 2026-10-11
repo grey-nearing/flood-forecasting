@@ -18,10 +18,15 @@ Interfaces with global BasinATLAS (HydroATLAS v1.0 Level 12) local geodatabase
 or shapefile to compute exact area-weighted physiographic, hydro-environmental,
 soil, land-cover, climatology, and anthropogenic attributes for user-supplied
 watershed polygons following the Caravan aggregation methodology:
+
 - Area-weighted majority voting for discrete categorical classes
 - Downstream topological outlet tracing via NEXT_DOWN for pour-point metrics
 - Area-weighted averaging for continuous physiographic & hydro-climatic properties
-- 40-year ERA5 climate indices (1981-2020)
+- 40-year ERA5 climate indices (1981-2020) resolved by default in the order:
+  pre-extracted basin timeseries (if available) -> HydroATLAS Level 12 precomputed
+  tables ('hybas') -> gridded ERA5-Land Zarr archive ('gridded'), with an override
+  option (`prefer_gridded_over_hybas=True` / `--prefer-gridded-over-hybas`) to
+  prioritize 'gridded' ahead of 'hybas'.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from collections import defaultdict
 import io
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import warnings
 
 import geopandas as gpd
@@ -45,8 +50,10 @@ import xarray as xr
 from multimet.static_extractor.climate import (
     ERA5ClimateLoader,
     ERA5GriddedExtractor,
+    ERA5TimeseriesZarrLoader,
     calculate_fao_pm_pet,
     compute_caravan_climate_metrics,
+    compute_climate_metrics_from_dataframe,
     depth_to_mm,
     normalize_era5_pet_sign,
     pressure_to_kpa,
@@ -76,6 +83,8 @@ warnings.filterwarnings("ignore", category=UserWarning, module="google.auth.*")
 
 logger = logging.getLogger(__name__)
 
+_VALID_SINGLE_ERA5_SOURCES = frozenset({"timeseries", "hybas", "gridded"})
+
 _WORKER_EXTRACTOR: Optional[StaticAttributesExtractor] = None
 _WORKER_EXTRACTOR_KEY: Optional[Tuple[Any, ...]] = None
 
@@ -95,6 +104,37 @@ def _bboxes_intersect(
   return not (b1[2] < b2[0] or b1[0] > b2[2] or b1[3] < b2[1] or b1[1] > b2[3])
 
 
+def _normalize_timeseries_zarr_arg(
+    era5_timeseries_zarr: Optional[Union[str, Path, Sequence[Union[str, Path]]]]
+) -> Optional[Tuple[str, ...]]:
+  """Normalizes an optional timeseries Zarr path/URI or sequence into a tuple of strings."""
+  if era5_timeseries_zarr is None:
+    return None
+  if isinstance(era5_timeseries_zarr, (str, Path)):
+    parts = tuple(
+        s.strip() for s in str(era5_timeseries_zarr).split(",") if s.strip()
+    )
+    return parts if parts else None
+  parts = tuple(str(u).strip() for u in era5_timeseries_zarr if str(u).strip())
+  return parts if parts else None
+
+
+def _validate_era5_source_spec(era5_source: Optional[str]) -> Optional[str]:
+  """Validates an era5_source string ('auto', 'timeseries', 'hybas', 'gridded', or comma-separated list)."""
+  if era5_source is None:
+    return None
+  cleaned = era5_source.strip().lower()
+  if not cleaned or cleaned == "auto":
+    return "auto"
+  tokens = [t.strip() for t in cleaned.split(",") if t.strip()]
+  if not tokens or any(t not in _VALID_SINGLE_ERA5_SOURCES for t in tokens):
+    raise ValueError(
+        f"Invalid era5_source {era5_source!r}; must be 'auto', 'timeseries', "
+        "'hybas', 'gridded', or a comma-separated priority list of those sources."
+    )
+  return ",".join(tokens)
+
+
 def _get_worker_extractor(
     gdb_path: Optional[str],
     era5_cache_dir: Optional[str],
@@ -102,6 +142,8 @@ def _get_worker_extractor(
     gcs_gdb_uri: Optional[str] = None,
     gcs_era5_climate_uri: Optional[str] = None,
     no_download: bool = False,
+    era5_timeseries_zarr: Optional[Tuple[str, ...]] = None,
+    prefer_gridded_over_hybas: bool = False,
 ) -> StaticAttributesExtractor:
   global _WORKER_EXTRACTOR, _WORKER_EXTRACTOR_KEY
   key = (
@@ -111,12 +153,16 @@ def _get_worker_extractor(
       gcs_gdb_uri,
       gcs_era5_climate_uri,
       no_download,
+      era5_timeseries_zarr,
+      prefer_gridded_over_hybas,
   )
   if _WORKER_EXTRACTOR is None or _WORKER_EXTRACTOR_KEY != key:
     _WORKER_EXTRACTOR = StaticAttributesExtractor(
         gdb_path=gdb_path,
         era5_cache_dir=era5_cache_dir,
         gridded_era5_uri=gridded_era5_uri,
+        era5_timeseries_zarr=era5_timeseries_zarr,
+        prefer_gridded_over_hybas=prefer_gridded_over_hybas,
         gcs_gdb_uri=gcs_gdb_uri,
         gcs_era5_climate_uri=gcs_era5_climate_uri,
         no_download=no_download,
@@ -140,7 +186,9 @@ def _worker_extract_polygon(args: tuple) -> CatchmentAttributes:
     gcs_gdb_uri = None
     gcs_era5_climate_uri = None
     no_download = False
-  else:
+    era5_timeseries_zarr = None
+    prefer_gridded_over_hybas = False
+  elif len(args) == 11:
     (
         geom,
         gid,
@@ -154,6 +202,24 @@ def _worker_extract_polygon(args: tuple) -> CatchmentAttributes:
         gcs_era5_climate_uri,
         no_download,
     ) = args
+    era5_timeseries_zarr = None
+    prefer_gridded_over_hybas = False
+  else:
+    (
+        geom,
+        gid,
+        min_overlap_threshold,
+        era5_source,
+        gdb_path,
+        era5_cache_dir,
+        gridded_era5_uri,
+        skip_climate,
+        gcs_gdb_uri,
+        gcs_era5_climate_uri,
+        no_download,
+        era5_timeseries_zarr,
+        prefer_gridded_over_hybas,
+    ) = args
   ext = _get_worker_extractor(
       gdb_path,
       era5_cache_dir,
@@ -161,12 +227,15 @@ def _worker_extract_polygon(args: tuple) -> CatchmentAttributes:
       gcs_gdb_uri=gcs_gdb_uri,
       gcs_era5_climate_uri=gcs_era5_climate_uri,
       no_download=no_download,
+      era5_timeseries_zarr=era5_timeseries_zarr,
+      prefer_gridded_over_hybas=prefer_gridded_over_hybas,
   )
   return ext.extract_attributes_for_polygon(
       geom,
       catchment_id=gid,
       min_overlap_threshold=min_overlap_threshold,
       era5_source=era5_source,
+      prefer_gridded_over_hybas=prefer_gridded_over_hybas,
       _batch_mode=True,
       _skip_climate=skip_climate,
   )
@@ -234,9 +303,13 @@ class StaticAttributesExtractor:
   def __init__(
       self,
       gdb_path: Optional[Union[str, Path]] = None,
-      era5_source: Optional[str] = None,
+      era5_source: Optional[str] = "auto",
       era5_cache_dir: Optional[Union[str, Path]] = None,
       gridded_era5_uri: Optional[Union[str, Path]] = None,
+      era5_timeseries_zarr: Optional[
+          Union[str, Path, Sequence[Union[str, Path]]]
+      ] = None,
+      prefer_gridded_over_hybas: bool = False,
       gcs_gdb_uri: Optional[str] = None,
       gcs_era5_climate_uri: Optional[str] = None,
       no_download: bool = False,
@@ -246,15 +319,22 @@ class StaticAttributesExtractor:
     Args:
       gdb_path: Path to local BasinATLAS_v10.gdb directory, shapefile, or
         GeoParquet file (or GCS URI when streaming in memory).
-      era5_source: Optional sourcing mode for ERA5 climate attributes ("hybas"
-        or "gridded"). Must be provided either at initialization or when calling
-        extraction methods (unless timeseries_df is passed).
+      era5_source: Sourcing mode for ERA5 climate attributes. Defaults to
+        ``"auto"``, which checks configured sources in the order:
+        ``timeseries -> hybas -> gridded`` (or ``timeseries -> gridded -> hybas``
+        when ``prefer_gridded_over_hybas=True``). Can also be set to an explicit
+        single source (``"timeseries"``, ``"hybas"``, or ``"gridded"``) or a
+        comma-separated priority list (e.g. ``"timeseries,gridded,hybas"``).
       era5_cache_dir: Directory containing continental ERA5 climate index files
-        (required when era5_source="hybas" unless no_download=True with
-        gcs_era5_climate_uri).
-      gridded_era5_uri: GCS URI or local path to gridded daily ERA5 Zarr store
-        (required when era5_source="gridded"; optional when era5_source="hybas"
-        to compute *_ERA5_LAND attributes).
+        for ``hybas`` mode.
+      gridded_era5_uri: GCS URI or local path to gridded daily ERA5-Land Zarr
+        store for ``gridded`` mode (and optional fallback for ``*_ERA5_LAND``
+        columns if a legacy ``hybas`` table omits them).
+      era5_timeseries_zarr: Optional path/URI (or sequence of paths/URIs) to
+        pre-extracted basin-level ``ERA5_LAND/timeseries.zarr`` store(s).
+      prefer_gridded_over_hybas: If True, prioritizes ``gridded`` ahead of
+        ``hybas`` when ``era5_source="auto"``, changing the resolution order to
+        ``timeseries -> gridded -> hybas``.
       gcs_gdb_uri: Optional GCS URI for HydroATLAS data. Downloaded to gdb_path
         when no_download=False, or streamed directly in memory when
         no_download=True.
@@ -264,11 +344,8 @@ class StaticAttributesExtractor:
       no_download: If True, streams HydroATLAS and ERA5 data directly in memory
         from Google Cloud Storage without writing files to local disk.
     """
-    if era5_source is not None and era5_source.lower() not in {"hybas", "gridded"}:
-      raise ValueError(
-          f"Invalid era5_source {era5_source!r}; must be 'hybas' or 'gridded'."
-      )
-    self.era5_source = era5_source.lower() if era5_source else None
+    self.era5_source = _validate_era5_source_spec(era5_source)
+    self.prefer_gridded_over_hybas = bool(prefer_gridded_over_hybas)
     self.no_download = bool(no_download)
     self.gcs_gdb_uri = gcs_gdb_uri
 
@@ -364,12 +441,29 @@ class StaticAttributesExtractor:
         else None
     )
 
+    self.era5_timeseries_zarr = _normalize_timeseries_zarr_arg(
+        era5_timeseries_zarr
+    )
+    self.timeseries_loader = (
+        ERA5TimeseriesZarrLoader(self.era5_timeseries_zarr)
+        if self.era5_timeseries_zarr is not None
+        else None
+    )
+
     if self.era5_source == "hybas" and self.era5_loader is None:
       raise ValueError(
           "era5_cache_dir (or gcs_era5_climate_uri with no_download=True) must be provided when era5_source='hybas'."
       )
     if self.era5_source == "gridded" and self.gridded_extractor is None:
       raise ValueError("gridded_era5_uri must be provided when era5_source='gridded'.")
+    if self.era5_source == "timeseries" and self.timeseries_loader is None:
+      raise ValueError(
+          "era5_timeseries_zarr must be provided when era5_source='timeseries'."
+      )
+    if self.prefer_gridded_over_hybas and self.gridded_extractor is None:
+      raise ValueError(
+          "gridded_era5_uri must be provided when prefer_gridded_over_hybas=True."
+      )
 
 
   @property
@@ -628,19 +722,86 @@ class StaticAttributesExtractor:
 
     return pyogrio.read_dataframe(self.gdb_path, **read_kwargs)
 
-  def _resolve_era5_source(self, era5_source: Optional[str]) -> str:
-    source = (era5_source or self.era5_source or "").strip().lower()
-    if source not in {"hybas", "gridded"}:
+  def _is_source_configured(self, src: str) -> bool:
+    if src == "timeseries":
+      return self.timeseries_loader is not None
+    if src == "hybas":
+      return self.era5_loader is not None
+    if src == "gridded":
+      return self.gridded_extractor is not None
+    return False
+
+  def _resolve_era5_priority(
+      self,
+      era5_source: Optional[str] = None,
+      prefer_gridded_over_hybas: Optional[bool] = None,
+  ) -> Tuple[str, ...]:
+    """Resolves the ordered tuple of ERA5 climate sources to consult."""
+    spec = _validate_era5_source_spec(era5_source) or self.era5_source or "auto"
+    prefer_gridded = (
+        self.prefer_gridded_over_hybas
+        if prefer_gridded_over_hybas is None
+        else bool(prefer_gridded_over_hybas)
+    )
+    if prefer_gridded and self.gridded_extractor is None:
       raise ValueError(
-          "era5_source must be explicitly specified as either 'hybas' or 'gridded'."
+          "gridded_era5_uri must be provided when prefer_gridded_over_hybas=True."
       )
-    if source == "hybas" and self.era5_loader is None:
+
+    if spec == "hybas":
+      if self.era5_loader is None:
+        raise ValueError(
+            "era5_cache_dir (or gcs_era5_climate_uri with no_download=True) must be provided when era5_source='hybas'."
+        )
+      return ("hybas",)
+    if spec == "gridded":
+      if self.gridded_extractor is None:
+        raise ValueError("gridded_era5_uri must be provided when era5_source='gridded'.")
+      return ("gridded",)
+    if spec == "timeseries":
+      if self.timeseries_loader is None:
+        raise ValueError(
+            "era5_timeseries_zarr must be provided when era5_source='timeseries'."
+        )
+      return ("timeseries",)
+
+    if spec == "auto":
+      candidate_order = (
+          ("timeseries", "gridded", "hybas")
+          if prefer_gridded
+          else ("timeseries", "hybas", "gridded")
+      )
+    else:
+      candidate_order = tuple(t.strip() for t in spec.split(",") if t.strip())
+
+    active = tuple(s for s in candidate_order if self._is_source_configured(s))
+    if not active:
       raise ValueError(
-          "era5_cache_dir (or gcs_era5_climate_uri with no_download=True) must be provided when era5_source='hybas'."
+          "At least one ERA5 climate source must be configured "
+          "(era5_timeseries_zarr, era5_cache_dir/gcs_era5_climate_uri, or gridded_era5_uri)."
       )
-    if source == "gridded" and self.gridded_extractor is None:
-      raise ValueError("gridded_era5_uri must be provided when era5_source='gridded'.")
-    return source
+    return active
+
+  def _select_basin_era5_source(
+      self, basin_id: str, priority: Tuple[str, ...]
+  ) -> str:
+    """Selects the first available ERA5 source in ``priority`` that can serve ``basin_id``."""
+    for src in priority:
+      if src == "timeseries":
+        if (
+            self.timeseries_loader is not None
+            and self.timeseries_loader.has_basin(basin_id)
+        ):
+          return "timeseries"
+      elif src == "hybas" and self.era5_loader is not None:
+        return "hybas"
+      elif src == "gridded" and self.gridded_extractor is not None:
+        return "gridded"
+
+    raise KeyError(
+        f"Catchment {basin_id!r} was not found in era5_timeseries_zarr and no "
+        f"fallback ERA5 source ('hybas' or 'gridded') is available in priority={priority}."
+    )
 
   def extract_attributes_for_polygon(
       self,
@@ -650,6 +811,7 @@ class StaticAttributesExtractor:
       baseline_years: Tuple[int, int] = (1981, 2020),
       timeseries_df: Optional[pd.DataFrame] = None,
       era5_source: Optional[str] = None,
+      prefer_gridded_over_hybas: Optional[bool] = None,
       _batch_mode: bool = False,
       _skip_climate: bool = False,
   ) -> CatchmentAttributes:
@@ -665,17 +827,28 @@ class StaticAttributesExtractor:
       timeseries_df: Optional daily timeseries DataFrame containing columns
         (total_precipitation or prcp, temperature or 2m_temperature,
         potential_evaporation or pet) to compute climate indices directly.
-      era5_source: Required ERA5 sourcing mode ('hybas' or 'gridded') when timeseries_df is not provided.
+      era5_source: Optional ERA5 sourcing mode override ('auto', 'timeseries',
+        'hybas', 'gridded', or comma-separated priority list). Defaults to the
+        extractor's configured ``era5_source`` ('auto': ``timeseries -> hybas -> gridded``).
+      prefer_gridded_over_hybas: Optional override to prioritize ``gridded``
+        ahead of ``hybas`` when ``era5_source="auto"`` (changing the priority
+        order to ``timeseries -> gridded -> hybas``).
 
     Returns:
       Dictionary containing extracted attributes, summary, categories, and area metadata.
     """
+    priority_sources: Tuple[str, ...] = ()
+    actual_era5_source: Optional[str] = None
     if timeseries_df is not None and not timeseries_df.empty:
-      actual_era5_source: Optional[str] = "timeseries"
+      actual_era5_source = "timeseries"
     elif _skip_climate and not era5_source:
       actual_era5_source = ""
-    else:
-      actual_era5_source = self._resolve_era5_source(era5_source)
+    elif not _skip_climate:
+      priority_sources = self._resolve_era5_priority(
+          era5_source, prefer_gridded_over_hybas=prefer_gridded_over_hybas
+      )
+    elif era5_source:
+      actual_era5_source = str(era5_source)
 
     # 1. Parse Input Geometry and Catchment ID
     if isinstance(polygon_geojson, (gpd.GeoDataFrame, gpd.GeoSeries)):
@@ -718,6 +891,13 @@ class StaticAttributesExtractor:
 
     if geom.area <= 0:
       raise ValueError("Target polygon area must be greater than 0.")
+
+    chosen_era5_source: Optional[str] = None
+    if (timeseries_df is None or timeseries_df.empty) and not _skip_climate:
+      chosen_era5_source = self._select_basin_era5_source(
+          catchment_id, priority_sources
+      )
+      actual_era5_source = chosen_era5_source
 
     minx, miny, maxx, maxy = geom.bounds
 
@@ -841,199 +1021,16 @@ class StaticAttributesExtractor:
     era5_indices = {}
     if not _skip_climate:
       if timeseries_df is not None and not timeseries_df.empty:
-        ts_df = timeseries_df
-        if baseline_years is not None and isinstance(
-            timeseries_df.index, pd.DatetimeIndex
-        ):
-          sliced = timeseries_df.loc[
-              (timeseries_df.index.year >= baseline_years[0])
-              & (timeseries_df.index.year <= baseline_years[1])
-          ]
-          if not sliced.empty:
-            ts_df = sliced
-
-        p_col = next(
-            (
-                c
-                for c in [
-                    "era5land_total_precipitation",
-                    "total_precipitation_sum",
-                    "total_precipitation",
-                    "prcp",
-                    "precip",
-                    "tp",
-                ]
-                if c in ts_df.columns
-            ),
-            None,
+        era5_indices = compute_climate_metrics_from_dataframe(
+            timeseries_df,
+            baseline_years=baseline_years,
+            include_fao_pm=True,
         )
-        t_col = next(
-            (
-                c
-                for c in [
-                    "era5land_temperature_2m",
-                    "temperature_2m_mean",
-                    "temperature_2m",
-                    "temperature",
-                    "2m_temperature",
-                    "temp",
-                    "t2m",
-                ]
-                if c in ts_df.columns
-            ),
-            None,
+      elif chosen_era5_source == "timeseries":
+        era5_indices = self.timeseries_loader.get_metrics_for_basin(
+            catchment_id, baseline_years=baseline_years
         )
-        pet_era5_col = next(
-            (
-                c
-                for c in [
-                    "era5land_potential_evaporation_DEPRECATED",
-                    "potential_evaporation_sum_ERA5_LAND",
-                    "potential_evaporation_sum",
-                    "potential_evaporation",
-                    "pet_era5",
-                    "pev",
-                ]
-                if c in ts_df.columns
-            ),
-            None,
-        )
-        pet_fao_col = next(
-            (
-                c
-                for c in [
-                    "era5land_potential_evaporation_FAO_PENMAN_MONTEITH",
-                    "potential_evaporation_sum_FAO_PENMAN_MONTEITH",
-                    "pet_fao",
-                    "pet_mean_FAO_PM",
-                    "fao_pet",
-                ]
-                if c in ts_df.columns
-            ),
-            None,
-        )
-
-        if not p_col or not t_col:
-          raise ValueError(
-              f"timeseries_df is missing required precipitation/temperature columns (found {list(ts_df.columns)})."
-          )
-        p_series = depth_to_mm(ts_df[p_col], None, p_col)
-        t_series = temp_to_celsius(ts_df[t_col], None, t_col)
-        pet_era5_series = (
-            normalize_era5_pet_sign(
-                depth_to_mm(ts_df[pet_era5_col], None, pet_era5_col)
-            )
-            if pet_era5_col
-            else None
-        )
-        if pet_fao_col and not ts_df[pet_fao_col].isna().all():
-          pet_fao_series = depth_to_mm(ts_df[pet_fao_col], None, pet_fao_col)
-        else:
-          d2m_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_dewpoint_temperature_2m",
-                      "dewpoint_temperature_2m_mean",
-                      "dewpoint_temperature_2m",
-                      "2m_dewpoint_temperature",
-                      "d2m",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          sp_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_surface_pressure",
-                      "surface_pressure_mean",
-                      "surface_pressure",
-                      "sp",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          ssr_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_surface_net_solar_radiation",
-                      "surface_net_solar_radiation_mean",
-                      "surface_net_solar_radiation",
-                      "ssr",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          str_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_surface_net_thermal_radiation",
-                      "surface_net_thermal_radiation_mean",
-                      "surface_net_thermal_radiation",
-                      "str",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          u10_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_u_component_of_wind_10m",
-                      "u_component_of_wind_10m_mean",
-                      "u_component_of_wind_10m",
-                      "10m_u_component_of_wind",
-                      "u10",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          v10_col = next(
-              (
-                  c
-                  for c in [
-                      "era5land_v_component_of_wind_10m",
-                      "v_component_of_wind_10m_mean",
-                      "v_component_of_wind_10m",
-                      "10m_v_component_of_wind",
-                      "v10",
-                  ]
-                  if c in ts_df.columns
-              ),
-              None,
-          )
-          if all((d2m_col, sp_col, ssr_col, str_col, u10_col, v10_col)):
-            pet_fao_series = calculate_fao_pm_pet(
-                surface_pressure_kpa=pressure_to_kpa(
-                    ts_df[sp_col], None, sp_col
-                ),
-                temperature_2m_c=t_series,
-                dewpoint_temperature_2m_c=temp_to_celsius(
-                    ts_df[d2m_col], None, d2m_col
-                ),
-                u_component_of_wind_10m=ts_df[u10_col],
-                v_component_of_wind_10m=ts_df[v10_col],
-                surface_net_solar_radiation_mean=ts_df[ssr_col],
-                surface_net_thermal_radiation_mean=ts_df[str_col],
-            )
-          else:
-            pet_fao_series = None
-
-        era5_indices = compute_caravan_climate_metrics(
-            precipitation=p_series,
-            temperature=t_series,
-            pet_era5=pet_era5_series,
-            pet_fao=pet_fao_series,
-        )
-      elif actual_era5_source == "gridded":
+      elif chosen_era5_source == "gridded":
         era5_indices = self.gridded_extractor.extract_climate_metrics_for_polygon(
             geom, baseline_years=baseline_years
         )
@@ -1051,7 +1048,11 @@ class StaticAttributesExtractor:
         era5_indices = self.era5_loader.get_indices_for_subbasins(
             hybas_ids, intersect_weights
         )
-        if self.gridded_extractor is not None:
+        if (
+            self.gridded_extractor is not None
+            and len(hybas_ids) > 0
+            and np.isnan(era5_indices.get("pet_mean_ERA5_LAND", np.nan))
+        ):
           era5_indices.update(
               self._era5_land_variants_from_gridded(geom, baseline_years)
           )
@@ -1092,28 +1093,53 @@ class StaticAttributesExtractor:
       baseline_years: Tuple[int, int] = (1981, 2020),
   ) -> None:
     """Computes gridded ERA5 climate metrics in a single pass over Zarr chunks for all polygons."""
+    if not poly_tasks:
+      return
     if self.gridded_extractor is None:
-      raise ValueError("gridded_era5_uri must be provided when era5_source='gridded'.")
+      raise ValueError("gridded_era5_uri must be provided when using 'gridded' ERA5 source.")
     climate_map = self.gridded_extractor.extract_climate_metrics_for_polygons_batch(
         poly_tasks, baseline_years=baseline_years
     )
     for i, r in enumerate(results):
-      if r:
-        cid = r.catchment_id
-        results[i] = r.with_attributes(climate_map[cid])
+      if r and r.catchment_id in climate_map:
+        results[i] = r.with_attributes(climate_map[r.catchment_id])
+
+  def _populate_timeseries_climate_batch(
+      self,
+      results: List[CatchmentAttributes],
+      basin_ids: List[str],
+      baseline_years: Tuple[int, int] = (1981, 2020),
+  ) -> None:
+    """Computes ERA5 climate metrics from pre-extracted timeseries Zarr store(s) in bulk."""
+    if not basin_ids:
+      return
+    if self.timeseries_loader is None:
+      raise ValueError(
+          "era5_timeseries_zarr must be provided when using 'timeseries' ERA5 source."
+      )
+    climate_map = self.timeseries_loader.get_metrics_for_basins_batch(
+        basin_ids, baseline_years=baseline_years
+    )
+    for i, r in enumerate(results):
+      if r and r.catchment_id in climate_map:
+        results[i] = r.with_attributes(climate_map[r.catchment_id])
 
   def extract_attributes_batch(
       self,
       features: List[Dict[str, Any]],
       min_overlap_threshold: float = 0.0,
       era5_source: Optional[str] = None,
+      prefer_gridded_over_hybas: Optional[bool] = None,
   ) -> List[CatchmentAttributes]:
     """Extracts Caravan attributes for a list of GeoJSON Feature dicts."""
-    actual_era5_source = self._resolve_era5_source(era5_source)
-    skip_climate = actual_era5_source == "gridded"
+    priority = self._resolve_era5_priority(
+        era5_source, prefer_gridded_over_hybas=prefer_gridded_over_hybas
+    )
 
     results = []
-    poly_tasks = []
+    gridded_tasks: List[Tuple[Any, str]] = []
+    ts_basin_ids: List[str] = []
+
     for feat in features:
       if not isinstance(feat, dict):
         raise ValueError(
@@ -1127,18 +1153,26 @@ class StaticAttributesExtractor:
         )
       c_id = str(c_id)
       geom = shape(feat["geometry"] if feat.get("type") == "Feature" else feat)
-      poly_tasks.append((geom, c_id))
+      chosen_src = self._select_basin_era5_source(c_id, priority)
+      skip_climate = chosen_src in ("timeseries", "gridded")
+      if chosen_src == "gridded":
+        gridded_tasks.append((geom, c_id))
+      elif chosen_src == "timeseries":
+        ts_basin_ids.append(c_id)
+
       res = self.extract_attributes_for_polygon(
           feat,
           catchment_id=c_id,
           min_overlap_threshold=min_overlap_threshold,
-          era5_source=actual_era5_source,
+          era5_source=chosen_src,
           _skip_climate=skip_climate,
       )
       results.append(res)
 
-    if skip_climate:
-      self._populate_gridded_climate_batch(results, poly_tasks)
+    if ts_basin_ids:
+      self._populate_timeseries_climate_batch(results, ts_basin_ids)
+    if gridded_tasks:
+      self._populate_gridded_climate_batch(results, gridded_tasks)
 
     return results
 
@@ -1149,6 +1183,7 @@ class StaticAttributesExtractor:
       id_column: Optional[str] = None,
       min_overlap_threshold: float = 0.0,
       era5_source: Optional[str] = None,
+      prefer_gridded_over_hybas: Optional[bool] = None,
       workers: int = 1,
       show_progress: bool = True,
       dataset_name: Optional[str] = None,
@@ -1160,7 +1195,10 @@ class StaticAttributesExtractor:
       output_csv_path: Optional path to save extracted attributes CSV.
       id_column: Name of column to use for basin / gauge ID (defaults to 'gauge_id').
       min_overlap_threshold: Minimum area threshold in km2.
-      era5_source: Required ERA5 sourcing mode ('hybas' or 'gridded') if not set on extractor.
+      era5_source: Optional ERA5 sourcing mode override ('auto', 'timeseries',
+        'hybas', 'gridded', or comma-separated priority list).
+      prefer_gridded_over_hybas: Optional override to prioritize ``gridded``
+        ahead of ``hybas`` when ``era5_source="auto"``.
       workers: Number of parallel processes to use (default 1).
       show_progress: Whether to show an interactive tqdm progress bar.
       dataset_name: Optional dataset label to display in the progress bar.
@@ -1168,8 +1206,14 @@ class StaticAttributesExtractor:
     Returns:
       Pandas DataFrame with extracted attributes, indexed by gauge_id.
     """
-    actual_era5_source = self._resolve_era5_source(era5_source)
-    skip_climate = actual_era5_source == "gridded"
+    priority = self._resolve_era5_priority(
+        era5_source, prefer_gridded_over_hybas=prefer_gridded_over_hybas
+    )
+    prefer_gridded = (
+        self.prefer_gridded_over_hybas
+        if prefer_gridded_over_hybas is None
+        else bool(prefer_gridded_over_hybas)
+    )
 
     in_path = Path(input_path)
     if not in_path.exists():
@@ -1205,10 +1249,20 @@ class StaticAttributesExtractor:
           f"ID column {target_id_col!r} in {in_path} contains duplicate IDs: {dup_ids[:5]}"
       )
 
-    tasks = []
+    tasks: List[Tuple[Any, str, str, bool]] = []
+    gridded_tasks: List[Tuple[Any, str]] = []
+    ts_basin_ids: List[str] = []
+
     for _, row in gdf.iterrows():
       gid = str(row[target_id_col])
-      tasks.append((row.geometry, gid))
+      geom = row.geometry
+      chosen_src = self._select_basin_era5_source(gid, priority)
+      skip_climate = chosen_src in ("timeseries", "gridded")
+      if chosen_src == "gridded":
+        gridded_tasks.append((geom, gid))
+      elif chosen_src == "timeseries":
+        ts_basin_ids.append(gid)
+      tasks.append((geom, gid, chosen_src, skip_climate))
 
     ds_label = dataset_name or in_path.stem.replace("_basin_shapes", "").replace("_basins", "")
 
@@ -1221,7 +1275,7 @@ class StaticAttributesExtractor:
               geom,
               gid,
               min_overlap_threshold,
-              actual_era5_source,
+              chosen_src,
               str(self.gdb_path) if self.gdb_path else None,
               str(self.era5_cache_dir) if self.era5_cache_dir else None,
               self.gridded_era5_uri,
@@ -1229,8 +1283,10 @@ class StaticAttributesExtractor:
               self.gcs_gdb_uri,
               self.gcs_era5_climate_uri,
               self.no_download,
+              self.era5_timeseries_zarr,
+              prefer_gridded,
           )
-          for geom, gid in tasks
+          for geom, gid, chosen_src, skip_climate in tasks
       ]
       logger.debug(
           "Processing %d catchments in parallel with %d workers...",
@@ -1259,7 +1315,7 @@ class StaticAttributesExtractor:
           results[idx] = future.result()
     else:
       results = []
-      for geom, gid in tqdm(
+      for geom, gid, chosen_src, skip_climate in tqdm(
           tasks,
           desc=f"  ↳ {ds_label}",
           unit="basin",
@@ -1271,14 +1327,17 @@ class StaticAttributesExtractor:
             geom,
             catchment_id=gid,
             min_overlap_threshold=min_overlap_threshold,
-            era5_source=actual_era5_source,
+            era5_source=chosen_src,
+            prefer_gridded_over_hybas=prefer_gridded,
             _batch_mode=True,
             _skip_climate=skip_climate,
         )
         results.append(res)
 
-    if skip_climate:
-      self._populate_gridded_climate_batch(results, tasks)
+    if ts_basin_ids:
+      self._populate_timeseries_climate_batch(results, ts_basin_ids)
+    if gridded_tasks:
+      self._populate_gridded_climate_batch(results, gridded_tasks)
 
     df = self.export_caravan_csv(
         results, output_csv_path=output_csv_path if output_csv_path else None

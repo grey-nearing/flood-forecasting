@@ -328,9 +328,11 @@ class MultiMetZarrWriter:
     if missing_var and missing_var not in all_store_vars:
       all_store_vars.append(missing_var)
 
-    data_vars: Dict[str, Any] = {}
+    var_specs: List[Tuple[str, List[str], Tuple[int, ...], Tuple[int, ...], Dict[str, Any]]] = []
+    base_chunks = tuple(int(chunk_spec[d]) for d in dims)
+    base_shape = tuple(int(s) for s in shape)
     for band in all_store_vars:
-      var_attrs = {}
+      var_attrs: Dict[str, Any] = {}
       if band in (
           "hres_surface_net_solar_radiation",
           "hres_surface_net_thermal_radiation",
@@ -342,11 +344,7 @@ class MultiMetZarrWriter:
                 " WeatherBench 2 HRES archive (2016-01-01 to 2023-01-10)."
             ),
         }
-      data_vars[band] = (
-          dims,
-          np.full(shape, np.nan, dtype=np.float32),
-          var_attrs,
-      )
+      var_specs.append((band, list(dims), base_shape, base_chunks, var_attrs))
 
     if (
         is_forecast
@@ -369,27 +367,80 @@ class MultiMetZarrWriter:
           len(ens_coord_vals),
           lead_steps,
       )
+      ens_chunks = (
+          len(basin_ids),
+          1,
+          len(ens_coord_vals),
+          lead_steps,
+      )
       for ens_band in ENSEMBLE_MEMBER_BANDS[product]:
-        data_vars[ens_band] = (
-            ens_dims,
-            np.full(ens_shape, np.nan, dtype=np.float32),
-            {},
-        )
+        var_specs.append((ens_band, ens_dims, ens_shape, ens_chunks, {}))
       ens_missing_var = ENSEMBLE_MISSING_FRACTION_VAR.get(product)
       if ens_missing_var:
-        data_vars[ens_missing_var] = (
-            ens_dims,
-            np.full(ens_shape, np.nan, dtype=np.float32),
-            {},
-        )
+        var_specs.append((ens_missing_var, ens_dims, ens_shape, ens_chunks, {}))
 
     global_attrs = dict(PRODUCT_METADATA_ATTRS.get(product, {}))
     if extra_attrs:
       global_attrs.update(extra_attrs)
-    ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=global_attrs)
-    ds = ds.chunk(chunk_spec)
 
-    _safe_to_zarr(ds, store_path, mode="w", compute=False, consolidated=True)
+    import json
+    import tempfile
+
+    is_remote = store_path.startswith(
+        ("gs://", "gcs://", "s3://", "abfs://", "az://", "memory://")
+    )
+
+    def _populate_local_skeleton(local_dir: str) -> None:
+      coord_ds = xr.Dataset(coords=coords, attrs=global_attrs)
+      _safe_to_zarr(coord_ds, local_dir, mode="w", consolidated=False)
+      with open(
+          os.path.join(local_dir, "basin", ".zarray"), "r", encoding="utf-8"
+      ) as f:
+        coord_zarray = json.load(f)
+      compressor_cfg = coord_zarray.get("compressor")
+      for v_name, v_dims, v_shape, v_chunks, v_attrs in var_specs:
+        v_dir = os.path.join(local_dir, v_name)
+        os.makedirs(v_dir, exist_ok=True)
+        zarray_doc = {
+            "chunks": list(v_chunks),
+            "compressor": compressor_cfg,
+            "dimension_separator": ".",
+            "dtype": "<f4",
+            "fill_value": "NaN",
+            "filters": None,
+            "order": "C",
+            "shape": list(v_shape),
+            "zarr_format": 2,
+        }
+        with open(
+            os.path.join(v_dir, ".zarray"), "w", encoding="utf-8"
+        ) as f:
+          json.dump(zarray_doc, f, indent=2)
+        zattrs_doc = dict(v_attrs)
+        zattrs_doc["_ARRAY_DIMENSIONS"] = v_dims
+        with open(
+            os.path.join(v_dir, ".zattrs"), "w", encoding="utf-8"
+        ) as f:
+          json.dump(zattrs_doc, f, indent=2)
+      zarr.consolidate_metadata(local_dir)
+
+    if not is_remote:
+      _populate_local_skeleton(store_path)
+    else:
+      import fsspec
+
+      fs, fs_path = fsspec.core.url_to_fs(store_path)
+      with tempfile.TemporaryDirectory() as tmp_dir:
+        _populate_local_skeleton(tmp_dir)
+        payloads: Dict[str, bytes] = {}
+        for root_dir, _, files in os.walk(tmp_dir):
+          for fname in files:
+            full_local = os.path.join(root_dir, fname)
+            rel_path = os.path.relpath(full_local, tmp_dir).replace("\\", "/")
+            with open(full_local, "rb") as bf:
+              payloads[f"{fs_path.rstrip('/')}/{rel_path}"] = bf.read()
+        fs.pipe(payloads)
+
     return store_path
 
   def consolidate_metadata(self, product: Product) -> str:
