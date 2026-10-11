@@ -398,10 +398,13 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
       self.assertEqual(sb_info["tag"], "aside")
       self.assertIn("unified-left-sidebar", sb_info["classes"])
 
-    # Global toggle button in top navbar and floating expand tab on left edge
+    # Global toggle button in top navbar, floating expand tab, and Weather Viewer catchments toggle
     self.assertIn("globalSidebarToggleBtn", self.dom.by_id)
     self.assertIn("sidebarExpandFloatingBtn", self.dom.by_id)
     self.assertIn("accountMainContent", self.dom.by_id)
+    self.assertIn("weatherCatchmentsToggleBtn", self.dom.by_id)
+    self.assertIn("weatherCatchmentsToggleLabel", self.dom.by_id)
+    self.assertIn("weatherCatchmentsToggleState", self.dom.by_id)
 
     # Verify CSS custom properties, classes, and JS persistence keys in index.html
     for token in (
@@ -414,6 +417,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         'data-action="collapse-sidebar"',
         "openhydronet.sidebarWidth",
         "openhydronet.sidebarCollapsed",
+        "openhydronet.weatherShowCatchments",
         "initUnifiedSidebar",
         "notifySidebarLayoutChange",
     ):
@@ -430,6 +434,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         len(expected_sidebars),
         "Every unified left sidebar header must include a collapse button",
     )
+
 
 
 

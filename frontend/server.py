@@ -2089,6 +2089,9 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
       model_run_dir = data.get("model_run_dir")
       requested_issue_date = data.get("requested_issue_date") or data.get("issue_date")
       precip_overrides = data.get("precip_overrides")
+      temp_overrides = data.get("temp_overrides")
+      product_overrides = data.get("product_overrides")
+      is_what_if = bool(data.get("is_what_if", False))
 
       try:
         import importlib
@@ -2107,6 +2110,9 @@ class EarthkitHydroHandler(BaseHTTPRequestHandler):
             model_run_dir=model_run_dir,
             requested_issue_date=requested_issue_date,
             precip_overrides=precip_overrides,
+            temp_overrides=temp_overrides,
+            product_overrides=product_overrides,
+            is_what_if=is_what_if,
         )
         self._send_json(payload)
         return

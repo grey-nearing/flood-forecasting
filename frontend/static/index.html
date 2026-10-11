@@ -8771,6 +8771,168 @@
     const fcSelectedCatchmentIds = new Set();
     const fcKnownCatchmentIds = new Set();
 
+    // What-If Scenario State (per catchment)
+    let fcWhatIfEditsByBasin = {};
+    let fcWhatIfScenariosByBasin = {};
+    let fcWhatIfCounterByBasin = {};
+    let fcWhatIfDragState = null;
+    let fcWhatIfCanvasBound = false;
+
+    const FC_WHATIF_COLORS = [
+      { stroke: '#7c3aed', fill: 'rgba(124, 58, 237, 0.14)' }, // Vivid Violet
+      { stroke: '#ea580c', fill: 'rgba(234, 88, 12, 0.14)' },  // Vivid Orange
+      { stroke: '#db2777', fill: 'rgba(219, 39, 119, 0.14)' }, // Magenta
+      { stroke: '#ca8a04', fill: 'rgba(202, 138, 4, 0.14)' },  // Amber Gold
+      { stroke: '#dc2626', fill: 'rgba(220, 38, 38, 0.14)' },  // Crimson Red
+      { stroke: '#0d9488', fill: 'rgba(13, 148, 136, 0.14)' }  // Deep Teal
+    ];
+
+    function getBasinWhatIfEdits(basinId) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      if (!bid) {
+        return { product_overrides: {}, precip_overrides: {}, temp_overrides: {} };
+      }
+      if (!fcWhatIfEditsByBasin[bid]) {
+        fcWhatIfEditsByBasin[bid] = {
+          product_overrides: {},
+          precip_overrides: {},
+          temp_overrides: {}
+        };
+      }
+      return fcWhatIfEditsByBasin[bid];
+    }
+
+    function getWhatIfOverrideValue(basinId, prodKey, varKind, dateStr) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      if (!bid || !fcWhatIfEditsByBasin[bid] || !dateStr) return undefined;
+      const edits = fcWhatIfEditsByBasin[bid];
+      const pMap = edits.product_overrides && edits.product_overrides[prodKey];
+      if (pMap && pMap[varKind] && pMap[varKind][dateStr] !== undefined) {
+        return pMap[varKind][dateStr];
+      }
+      return undefined;
+    }
+
+    function recomputeAggregateWhatIfOverrides(edits) {
+      const precipByDate = {};
+      const tempByDate = {};
+      const prodOverrides = (edits && edits.product_overrides) || {};
+      Object.keys(prodOverrides).forEach(pk => {
+        const pEntry = prodOverrides[pk] || {};
+        if (pEntry.precip) {
+          Object.keys(pEntry.precip).forEach(d => {
+            const v = Number(pEntry.precip[d]);
+            if (Number.isFinite(v)) {
+              if (!precipByDate[d]) precipByDate[d] = [];
+              precipByDate[d].push(v);
+            }
+          });
+        }
+        if (pEntry.temp) {
+          Object.keys(pEntry.temp).forEach(d => {
+            const v = Number(pEntry.temp[d]);
+            if (Number.isFinite(v)) {
+              if (!tempByDate[d]) tempByDate[d] = [];
+              tempByDate[d].push(v);
+            }
+          });
+        }
+      });
+      edits.precip_overrides = {};
+      Object.keys(precipByDate).forEach(d => {
+        const arr = precipByDate[d];
+        edits.precip_overrides[d] = Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10;
+      });
+      edits.temp_overrides = {};
+      Object.keys(tempByDate).forEach(d => {
+        const arr = tempByDate[d];
+        edits.temp_overrides[d] = Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10;
+      });
+    }
+
+    function setWhatIfOverrideValue(basinId, prodKey, varKind, dateStr, newValue) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      if (!bid || !prodKey || !varKind || !dateStr) return;
+      const edits = getBasinWhatIfEdits(bid);
+      if (!edits.product_overrides[prodKey]) {
+        edits.product_overrides[prodKey] = { precip: {}, temp: {} };
+      }
+      if (!edits.product_overrides[prodKey][varKind]) {
+        edits.product_overrides[prodKey][varKind] = {};
+      }
+      edits.product_overrides[prodKey][varKind][dateStr] = newValue;
+      recomputeAggregateWhatIfOverrides(edits);
+      updateWhatIfControlsUI();
+    }
+
+    function countWhatIfEdits(basinId) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      if (!bid || !fcWhatIfEditsByBasin[bid]) return { total: 0, precip: 0, temp: 0 };
+      const prodOverrides = fcWhatIfEditsByBasin[bid].product_overrides || {};
+      let precip = 0;
+      let temp = 0;
+      Object.keys(prodOverrides).forEach(pk => {
+        const pEntry = prodOverrides[pk] || {};
+        if (pEntry.precip) precip += Object.keys(pEntry.precip).length;
+        if (pEntry.temp) temp += Object.keys(pEntry.temp).length;
+      });
+      return { total: precip + temp, precip, temp };
+    }
+
+    function hasWhatIfEdits(basinId) {
+      return countWhatIfEdits(basinId).total > 0;
+    }
+
+    function summarizeWhatIfEdits(basinId) {
+      const counts = countWhatIfEdits(basinId);
+      const parts = [];
+      if (counts.precip > 0) parts.push(`${counts.precip} precip`);
+      if (counts.temp > 0) parts.push(`${counts.temp} temp`);
+      return parts.length > 0 ? `${parts.join(', ')} edited` : 'Modified inputs';
+    }
+
+    function resetBasinWhatIfEdits(basinId) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      if (bid) {
+        delete fcWhatIfEditsByBasin[bid];
+      }
+      if (hyetographChart && hyetographChart.options && hyetographChart.options.scales && hyetographChart.options.scales.yPrecip) {
+        hyetographChart.options.scales.yPrecip.suggestedMax = 25;
+      }
+      updateWhatIfControlsUI();
+      renderForcingChart();
+    }
+
+    function updateWhatIfControlsUI() {
+      const basinId = getActiveForecastBasinId();
+      const counts = countWhatIfEdits(basinId);
+      const badgeEl = document.getElementById('fcWhatIfEditsBadge');
+      const resetBtn = document.getElementById('fcResetWhatIfInputsBtn');
+      const runWhatIfBtn = document.getElementById('fcRunWhatIfBtn');
+      const runWhatIfLabel = document.getElementById('fcRunWhatIfBtnLabel');
+
+      if (badgeEl) {
+        if (counts.total > 0) {
+          badgeEl.className = 'text-[11px] font-mono bg-[#f3e8ff] text-[#6d28d9] border border-[#d8b4fe] px-2.5 py-1 rounded-lg font-semibold';
+          badgeEl.innerText = `${counts.total} forecast pt${counts.total > 1 ? 's' : ''} modified (${summarizeWhatIfEdits(basinId)})`;
+        } else {
+          badgeEl.className = 'text-[11px] font-mono bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0] px-2.5 py-1 rounded-lg';
+          badgeEl.innerText = 'Drag forecast bars/points to edit';
+        }
+      }
+      if (resetBtn) {
+        resetBtn.disabled = counts.total === 0 || fcIsRunningModel || fcIsFetching;
+      }
+      if (runWhatIfBtn) {
+        runWhatIfBtn.disabled = counts.total === 0 || fcIsRunningModel || fcIsFetching || !basinId;
+      }
+      if (runWhatIfLabel && !fcIsRunningModel) {
+        runWhatIfLabel.innerText = counts.total > 0
+          ? `Run What-If Forecast (${counts.total} edit${counts.total > 1 ? 's' : ''})`
+          : 'Run What-If Forecast';
+      }
+    }
+
     function getAllForecastCatchments() {
       const basins = Array.isArray(activeWatersheds) ? activeWatersheds : [];
       const list = [];
@@ -8988,6 +9150,7 @@
       }
 
       renderForecastCatchmentChecklist();
+      updateWhatIfControlsUI();
 
       const tabEl = document.getElementById('tab-forecasting');
       if (tabEl && !tabEl.classList.contains('hidden')) {
@@ -9082,18 +9245,63 @@
       }
     };
 
-    // Build a single shared timeline (allDates, labels, issueDate, t0Index) so
-    // the top Input Forcing chart and bottom Streamflow Forecast chart share
-    // identical X-axis categories and pixel coordinates.
+    // Custom Chart.js plugin on the Input Forcing chart to draw subtle drag-grip caps
+    // on top of every forecast precipitation bar (including 0 mm bars!) so the user can
+    // easily grab a 0 mm forecast bar and pull it upward to add rain.
+    const fcWhatIfDragHandlePlugin = {
+      id: 'fcWhatIfDragHandle',
+      afterDatasetsDraw(chart) {
+        const meta = chart.$fcTimelineMeta;
+        if (!meta || typeof meta.t0Index !== 'number' || meta.t0Index < 0) return;
+        const ctx = chart.ctx;
+        const area = chart.chartArea;
+        if (!ctx || !area) return;
+
+        ctx.save();
+        chart.data.datasets.forEach((ds, dsIdx) => {
+          if (!ds || ds.$fcRole !== 'forecast_precip') return;
+          if (!chart.isDatasetVisible(dsIdx)) return;
+          const dsMeta = chart.getDatasetMeta(dsIdx);
+          if (!dsMeta || !Array.isArray(dsMeta.data)) return;
+
+          for (let i = meta.t0Index; i < dsMeta.data.length; i++) {
+            const barElem = dsMeta.data[i];
+            if (!barElem || !Number.isFinite(barElem.x) || !Number.isFinite(barElem.y)) continue;
+            const val = ds.data[i];
+            if (val === null || val === undefined) continue;
+
+            const capW = Math.max(6, Math.min(18, (barElem.width || 10) * 0.8));
+            const capY = Math.min(area.bottom - 2, barElem.y);
+            ctx.beginPath();
+            ctx.lineWidth = 2.2;
+            ctx.strokeStyle = val === 0 ? '#4338ca' : '#ffffff';
+            ctx.moveTo(barElem.x - capW / 2, capY);
+            ctx.lineTo(barElem.x + capW / 2, capY);
+            ctx.stroke();
+          }
+        });
+        ctx.restore();
+      }
+    };
+
+    // Build a single shared timeline (allDates, labels, issueDate, t0Index) across
+    // ALL available nowcast and forecast products so the top Input Forcing chart
+    // and bottom Streamflow Forecast chart share identical X-axis categories and pixels.
     function buildSharedForecastTimeline(modelResult) {
       const nowcastProducts = (fcStatusData && fcStatusData.nowcast_products) || {};
       const forecastProducts = (fcStatusData && fcStatusData.forecast_products) || {};
 
-      const nowcastObj = fcSelectedNowcast ? nowcastProducts[fcSelectedNowcast] : null;
-      const prodObj = getActiveProductObject();
-      const isSelectedProdForecast = Boolean(prodObj && (prodObj.kind === 'forecast' || forecastProducts[fcSelectedForecast]));
-      const forecastObj = isSelectedProdForecast ? prodObj : null;
-      const activeNowcastObj = isSelectedProdForecast ? nowcastObj : (prodObj || nowcastObj);
+      const directNowcastKeys = Object.keys(nowcastProducts).filter(k => !k.endsWith('_1D'));
+      const forecastKeys = Object.keys(forecastProducts);
+
+      const nowcastObj = (fcSelectedNowcast && nowcastProducts[fcSelectedNowcast])
+        ? nowcastProducts[fcSelectedNowcast]
+        : (directNowcastKeys.length > 0 ? nowcastProducts[directNowcastKeys[0]] : null);
+      const prodObj = getActiveProductObject() ||
+        (forecastKeys.length > 0 ? forecastProducts[forecastKeys[0]] : nowcastObj);
+      const isSelectedProdForecast = Boolean(prodObj && (prodObj.kind === 'forecast' || forecastKeys.length > 0));
+      const forecastObj = forecastKeys.length > 0 ? (forecastProducts[fcSelectedForecast] || forecastProducts[forecastKeys[0]]) : null;
+      const activeNowcastObj = nowcastObj;
 
       const nowcastSeries = (activeNowcastObj && Array.isArray(activeNowcastObj.series)) ? activeNowcastObj.series : [];
       const forecastSeries = (forecastObj && Array.isArray(forecastObj.series)) ? forecastObj.series : [];
@@ -9105,25 +9313,59 @@
       const hydroForecast = (targetResult && Array.isArray(targetResult.forecast)) ? targetResult.forecast : [];
 
       const dateSet = new Set();
-      nowcastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-      forecastHindcastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-      forecastSeries.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-      hydroHindcast.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-      hydroForecast.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
-
-      const allDates = Array.from(dateSet).sort();
-
       const forecastLeadByDate = {};
-      forecastSeries.forEach(pt => {
-        if (pt && pt.date && pt.lead_time_days) forecastLeadByDate[pt.date] = pt.lead_time_days;
-      });
-      hydroForecast.forEach(pt => {
-        if (pt && pt.date && pt.lead_time_days && !forecastLeadByDate[pt.date]) {
-          forecastLeadByDate[pt.date] = pt.lead_time_days;
+
+      // Collect dates from ALL direct nowcast products
+      directNowcastKeys.forEach(k => {
+        const nc = nowcastProducts[k];
+        if (nc && Array.isArray(nc.series)) {
+          nc.series.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
         }
       });
 
+      // Collect dates from ALL forecast products (both spin-up hindcast_series and forecast series)
+      let detectedIssueDate = null;
+      forecastKeys.forEach(k => {
+        const fc = forecastProducts[k];
+        if (!fc) return;
+        if (!detectedIssueDate && fc.issue_date) detectedIssueDate = fc.issue_date;
+        if (Array.isArray(fc.hindcast_series)) {
+          fc.hindcast_series.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+        }
+        if (Array.isArray(fc.series)) {
+          fc.series.forEach(pt => {
+            if (pt && pt.date) {
+              dateSet.add(pt.date);
+              if (pt.lead_time_days && !forecastLeadByDate[pt.date]) {
+                forecastLeadByDate[pt.date] = pt.lead_time_days;
+              }
+            }
+          });
+        }
+      });
+
+      hydroHindcast.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+      hydroForecast.forEach(pt => {
+        if (pt && pt.date) {
+          dateSet.add(pt.date);
+          if (pt.lead_time_days && !forecastLeadByDate[pt.date]) {
+            forecastLeadByDate[pt.date] = pt.lead_time_days;
+          }
+        }
+      });
+
+      // Also include any dates from saved What-If scenarios for the active catchment
+      const scenarios = (activeId && fcWhatIfScenariosByBasin[activeId]) || [];
+      scenarios.forEach(sc => {
+        if (sc && sc.result && Array.isArray(sc.result.forecast)) {
+          sc.result.forecast.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
+        }
+      });
+
+      const allDates = Array.from(dateSet).sort();
+
       const issueDate = (forecastObj && forecastObj.issue_date) ||
+        detectedIssueDate ||
         (targetResult && targetResult.issue_date) ||
         (fcStatusData && fcStatusData.issue_date) ||
         null;
@@ -9150,6 +9392,10 @@
         labels,
         issueDate,
         t0Index,
+        nowcastProducts,
+        forecastProducts,
+        directNowcastKeys,
+        forecastKeys,
         nowcastObj,
         prodObj,
         isSelectedProdForecast,
@@ -9181,6 +9427,180 @@
       return bridgedIndex;
     }
 
+    // Attach pointer click-and-drag handlers to #whatIfHyetographCanvas so a forecaster
+    // can slide any forecast precipitation bar (including 0 mm bars!) or forecast
+    // temperature point up/down point-by-point.
+    function initWhatIfChartDragging(canvas) {
+      if (!canvas || fcWhatIfCanvasBound) return;
+      fcWhatIfCanvasBound = true;
+
+      const getCanvasPos = (evt) => {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = (evt.touches && evt.touches[0]) ? evt.touches[0].clientX : evt.clientX;
+        const clientY = (evt.touches && evt.touches[0]) ? evt.touches[0].clientY : evt.clientY;
+        return {
+          x: clientX - rect.left,
+          y: clientY - rect.top
+        };
+      };
+
+      const findDraggableTarget = (mouseX, mouseY) => {
+        if (!hyetographChart || !hyetographChart.$fcTimelineMeta) return null;
+        const { t0Index, allDates } = hyetographChart.$fcTimelineMeta;
+        if (typeof t0Index !== 'number' || t0Index < 0 || !Array.isArray(allDates)) return null;
+
+        const area = hyetographChart.chartArea;
+        const xScale = hyetographChart.scales && hyetographChart.scales.x;
+        if (!area || !xScale) return null;
+        if (mouseX < area.left || mouseX > area.right || mouseY < area.top - 12 || mouseY > area.bottom + 14) {
+          return null;
+        }
+
+        // 1. Check if pointer is close to any Forecast Temperature vertex (within 14px)
+        let bestTempTarget = null;
+        let bestTempDist = 14;
+        hyetographChart.data.datasets.forEach((ds, dsIdx) => {
+          if (!ds || ds.$fcRole !== 'forecast_temp' || !hyetographChart.isDatasetVisible(dsIdx)) return;
+          const dsMeta = hyetographChart.getDatasetMeta(dsIdx);
+          if (!dsMeta || !Array.isArray(dsMeta.data)) return;
+          for (let i = t0Index; i < dsMeta.data.length; i++) {
+            if (ds.data[i] === null || ds.data[i] === undefined) continue;
+            const ptElem = dsMeta.data[i];
+            if (!ptElem || !Number.isFinite(ptElem.x) || !Number.isFinite(ptElem.y)) continue;
+            const dist = Math.hypot(mouseX - ptElem.x, mouseY - ptElem.y);
+            if (dist <= bestTempDist) {
+              bestTempDist = dist;
+              bestTempTarget = {
+                datasetIndex: dsIdx,
+                dataIndex: i,
+                dateStr: allDates[i],
+                productKey: ds.$productKey || 'HRES',
+                varKind: 'temp',
+                yAxisID: ds.yAxisID || 'yTemp'
+              };
+            }
+          }
+        });
+        if (bestTempTarget) return bestTempTarget;
+
+        // 2. Otherwise match a Forecast Precipitation bar in the clicked date column
+        // (supports grabbing 0 mm bars from the bottom stub or anywhere in the bar's column!)
+        const rawIdx = xScale.getValueForPixel(mouseX);
+        const dataIndex = Math.round(Number(rawIdx));
+        if (!Number.isFinite(dataIndex) || dataIndex < t0Index || dataIndex >= allDates.length) {
+          return null;
+        }
+
+        let bestBarTarget = null;
+        let bestBarDx = Infinity;
+        hyetographChart.data.datasets.forEach((ds, dsIdx) => {
+          if (!ds || ds.$fcRole !== 'forecast_precip' || !hyetographChart.isDatasetVisible(dsIdx)) return;
+          const dsMeta = hyetographChart.getDatasetMeta(dsIdx);
+          if (!dsMeta || !Array.isArray(dsMeta.data)) return;
+          const barElem = dsMeta.data[dataIndex];
+          if (!barElem || !Number.isFinite(barElem.x)) return;
+          const dx = Math.abs(mouseX - barElem.x);
+          const halfW = Math.max(8, ((barElem.width || 12) / 2) + 6);
+          if (dx <= halfW || dx < bestBarDx) {
+            if (dx < bestBarDx) {
+              bestBarDx = dx;
+              bestBarTarget = {
+                datasetIndex: dsIdx,
+                dataIndex,
+                dateStr: allDates[dataIndex],
+                productKey: ds.$productKey || 'HRES',
+                varKind: 'precip',
+                yAxisID: ds.yAxisID || 'yPrecip'
+              };
+            }
+          }
+        });
+
+        return bestBarTarget;
+      };
+
+      const applyDragAtY = (mouseY) => {
+        if (!fcWhatIfDragState || !hyetographChart) return;
+        const { datasetIndex, dataIndex, dateStr, productKey, varKind, yAxisID } = fcWhatIfDragState;
+        const scale = hyetographChart.scales && hyetographChart.scales[yAxisID];
+        const ds = hyetographChart.data.datasets[datasetIndex];
+        if (!scale || !ds) return;
+
+        const rawVal = scale.getValueForPixel(mouseY);
+        if (!Number.isFinite(rawVal)) return;
+
+        let newVal;
+        if (varKind === 'precip') {
+          newVal = Math.max(0, Math.round(rawVal * 10) / 10);
+          // Dynamically expand yPrecip ceiling when dragging near the top of the chart
+          if (newVal > (scale.max || 25) * 0.92) {
+            hyetographChart.options.scales.yPrecip.suggestedMax = Math.ceil(newVal * 1.2);
+          }
+        } else {
+          newVal = Math.round(rawVal * 10) / 10;
+        }
+
+        ds.data[dataIndex] = newVal;
+        const basinId = getActiveForecastBasinId();
+        setWhatIfOverrideValue(basinId, productKey, varKind, dateStr, newVal);
+        hyetographChart.update('none');
+
+        const meta = hyetographChart.$fcTimelineMeta;
+        if (meta && meta.leadTimeTargetObj) {
+          renderLeadTimeInspector(meta.leadTimeTargetObj, meta.issueDate);
+        }
+      };
+
+      canvas.addEventListener('mousedown', (evt) => {
+        if (evt.button !== 0) return;
+        const pos = getCanvasPos(evt);
+        const target = findDraggableTarget(pos.x, pos.y);
+        if (!target) return;
+        evt.preventDefault();
+        fcWhatIfDragState = target;
+        canvas.style.cursor = 'ns-resize';
+        applyDragAtY(pos.y);
+      });
+
+      canvas.addEventListener('mousemove', (evt) => {
+        const pos = getCanvasPos(evt);
+        if (fcWhatIfDragState) {
+          evt.preventDefault();
+          applyDragAtY(pos.y);
+          return;
+        }
+        const hoverTarget = findDraggableTarget(pos.x, pos.y);
+        canvas.style.cursor = hoverTarget ? 'ns-resize' : 'default';
+      });
+
+      const endDrag = () => {
+        if (fcWhatIfDragState) {
+          fcWhatIfDragState = null;
+        }
+      };
+      window.addEventListener('mouseup', endDrag);
+      canvas.addEventListener('mouseleave', endDrag);
+
+      // Touch support
+      canvas.addEventListener('touchstart', (evt) => {
+        const pos = getCanvasPos(evt);
+        const target = findDraggableTarget(pos.x, pos.y);
+        if (!target) return;
+        evt.preventDefault();
+        fcWhatIfDragState = target;
+        applyDragAtY(pos.y);
+      }, { passive: false });
+
+      canvas.addEventListener('touchmove', (evt) => {
+        if (!fcWhatIfDragState) return;
+        evt.preventDefault();
+        const pos = getCanvasPos(evt);
+        applyDragAtY(pos.y);
+      }, { passive: false });
+
+      window.addEventListener('touchend', endDrag);
+    }
+
     function initModelingCharts() {
       const hyetoCanvas = document.getElementById('whatIfHyetographCanvas');
       const hydroCanvas = document.getElementById('masterHydrographCanvas');
@@ -9193,7 +9613,7 @@
         const ctx = hyetoCanvas.getContext('2d');
         hyetographChart = new Chart(ctx, {
           type: 'bar',
-          plugins: [fcIssueDateBoundaryPlugin],
+          plugins: [fcIssueDateBoundaryPlugin, fcWhatIfDragHandlePlugin],
           data: {
             labels: [],
             datasets: []
@@ -9202,7 +9622,7 @@
             responsive: true,
             maintainAspectRatio: false,
             layout: { padding: { left: 0, right: 0, top: 4, bottom: 0 } },
-            interaction: { mode: 'index', intersect: false },
+            interaction: { mode: 'nearest', intersect: true },
             scales: {
               x: {
                 offset: true,
@@ -9213,6 +9633,7 @@
                 type: 'linear',
                 position: 'left',
                 beginAtZero: true,
+                suggestedMax: 25,
                 afterFit: (axis) => { axis.width = LEFT_AXIS_WIDTH; },
                 title: { display: true, text: 'Precipitation (mm/day)', color: '#0e7490', font: { size: 10 } },
                 ticks: { color: '#5f6368' },
@@ -9231,13 +9652,7 @@
             plugins: {
               legend: { labels: { color: '#202124', font: { size: 10 }, boxWidth: 12 } },
               tooltip: {
-                filter: (item) => {
-                  const ds = item.dataset;
-                  if (ds && typeof ds.$bridgedIndex === 'number' && item.dataIndex === ds.$bridgedIndex) {
-                    return false;
-                  }
-                  return true;
-                }
+                enabled: false
               }
             }
           }
@@ -9245,6 +9660,8 @@
       } else {
         hyetographChart.resize();
       }
+
+      initWhatIfChartDragging(hyetoCanvas);
 
       if (!masterHydroChart) {
         const ctx = hydroCanvas.getContext('2d');
@@ -9687,14 +10104,13 @@
       }
 
       container.classList.remove('hidden');
-      const prodName = prodObj.product || prodObj.id || 'Product';
+      const basinId = getActiveForecastBasinId();
+      const prodName = prodObj.product || prodObj.id || 'HRES';
       const isForecast = prodObj.kind === 'forecast' || Boolean(prodObj.series[0] && prodObj.series[0].lead_time_days);
-      const varsMeta = Array.isArray(prodObj.variables) ? prodObj.variables : [];
-      const selectedVarMeta = varsMeta.find(v => v.name === fcSelectedVariableMode) || null;
 
       if (labelEl) {
         if (isForecast) {
-          labelEl.innerText = `${prodName} — Issue Date (t₀ = ${prodObj.issue_date || issueDate}) & All Forecast Lead Times`;
+          labelEl.innerText = `${prodName} — Issue Date (t₀ = ${prodObj.issue_date || issueDate}) & Forecast Lead-Time Values (Drag chart bars/points to edit)`;
         } else {
           labelEl.innerText = `${prodName} — Trailing Nowcast Input Series (up to t₀ − 1d)`;
         }
@@ -9709,41 +10125,30 @@
       prodObj.series.forEach(pt => {
         const card = document.createElement('div');
         const isT0 = Boolean(pt.is_issue_date || pt.date === issueDate || pt.lead_time_days === 1);
+        const pOverride = getWhatIfOverrideValue(basinId, prodName, 'precip', pt.date);
+        const tOverride = getWhatIfOverrideValue(basinId, prodName, 'temp', pt.date);
+        const isEdited = pOverride !== undefined || tOverride !== undefined;
+
         card.className = `flex-shrink-0 px-2.5 py-1.5 rounded-lg border ${
-          isT0
-            ? 'bg-[#fff7ed] border-[#ea580c]'
-            : 'bg-[#f8f9fa] border-[#dadce0]'
+          isEdited
+            ? 'bg-[#f3e8ff] border-[#7c3aed]'
+            : (isT0 ? 'bg-[#fff7ed] border-[#ea580c]' : 'bg-[#f8f9fa] border-[#dadce0]')
         }`;
 
         const leadHeader = pt.lead_time_days
           ? (pt.lead_time_days === 1 ? `Lead +1d (t₀)` : `Lead +${pt.lead_time_days}d`)
           : 'Nowcast';
 
-        let valuesHtml = '';
-        if (selectedVarMeta) {
-          const rawVal = pt.values && pt.values[selectedVarMeta.name] !== undefined
-            ? pt.values[selectedVarMeta.name]
-            : null;
-          const valStr = (rawVal !== null && rawVal !== undefined)
-            ? `${Number(rawVal).toFixed(2)} ${selectedVarMeta.unit || ''}`
-            : 'NaN (Gap)';
-          valuesHtml = `<div class="font-mono font-semibold text-[#1d4ed8] mt-0.5">${valStr}</div>`;
-        } else if (fcSelectedVariableMode === 'precip_only') {
-          const pStr = (pt.precip_mm !== null && pt.precip_mm !== undefined) ? `${Number(pt.precip_mm).toFixed(1)} mm` : 'NaN';
-          valuesHtml = `<div class="font-mono font-semibold text-[#1d4ed8] mt-0.5">P: ${pStr}</div>`;
-        } else if (fcSelectedVariableMode === 'temp_only') {
-          const tVal = pt.temperature_c !== undefined ? pt.temperature_c : pt.temp_c;
-          const tStr = (tVal !== null && tVal !== undefined) ? `${Number(tVal).toFixed(1)} °C` : 'NaN';
-          valuesHtml = `<div class="font-mono font-semibold text-[#dc2626] mt-0.5">T: ${tStr}</div>`;
-        } else {
-          const pStr = (pt.precip_mm !== null && pt.precip_mm !== undefined) ? `${Number(pt.precip_mm).toFixed(1)} mm` : 'NaN';
-          const tVal = pt.temperature_c !== undefined ? pt.temperature_c : pt.temp_c;
-          const tStr = (tVal !== null && tVal !== undefined) ? `${Number(tVal).toFixed(1)} °C` : '—';
-          valuesHtml = `
-            <div class="font-mono font-semibold text-[#1d4ed8] mt-0.5">P: ${pStr}</div>
-            <div class="font-mono text-[#dc2626]">T: ${tStr}</div>
-          `;
-        }
+        const effP = pOverride !== undefined ? pOverride : pt.precip_mm;
+        const rawT = pt.temperature_c !== undefined ? pt.temperature_c : pt.temp_c;
+        const effT = tOverride !== undefined ? tOverride : rawT;
+        const pStr = (effP !== null && effP !== undefined) ? `${Number(effP).toFixed(1)} mm` : '0.0 mm';
+        const tStr = (effT !== null && effT !== undefined) ? `${Number(effT).toFixed(1)} °C` : '—';
+
+        const valuesHtml = `
+          <div class="font-mono font-semibold ${pOverride !== undefined ? 'text-[#6d28d9]' : 'text-[#1d4ed8]'} mt-0.5">P: ${pStr}${pOverride !== undefined ? ' *' : ''}</div>
+          <div class="font-mono ${tOverride !== undefined ? 'text-[#6d28d9] font-semibold' : 'text-[#dc2626]'}">T: ${tStr}${tOverride !== undefined ? ' *' : ''}</div>
+        `;
 
         card.innerHTML = `
           <div class="font-bold text-[#202124] whitespace-nowrap">${leadHeader}</div>
@@ -9754,10 +10159,46 @@
       });
     }
 
+    // Distinct palettes for showing ALL precipitation and temperature products on the same input chart
+    const FC_NOWCAST_PRECIP_PALETTE = {
+      IMERG: { bg: 'rgba(8, 145, 178, 0.78)', border: '#0e7490' },
+      CPC: { bg: 'rgba(13, 148, 136, 0.78)', border: '#0f766e' },
+      ERA5_LAND: { bg: 'rgba(2, 132, 199, 0.72)', border: '#0369a1' },
+      CHIRPS: { bg: 'rgba(5, 150, 105, 0.72)', border: '#047857' }
+    };
+    const FC_FORECAST_PRECIP_PALETTE = {
+      HRES: { bg: 'rgba(29, 78, 216, 0.90)', border: '#1e3a8a' },
+      ECMWF_AIFS: { bg: 'rgba(109, 40, 217, 0.86)', border: '#4c1d95' },
+      AIFS: { bg: 'rgba(109, 40, 217, 0.86)', border: '#4c1d95' },
+      GRAPHCAST: { bg: 'rgba(109, 40, 217, 0.86)', border: '#4c1d95' },
+      NOAA_GFS: { bg: 'rgba(37, 99, 235, 0.84)', border: '#1d4ed8' },
+      GFS: { bg: 'rgba(37, 99, 235, 0.84)', border: '#1d4ed8' },
+      NOAA_GEFS: { bg: 'rgba(79, 70, 229, 0.84)', border: '#3730a3' },
+      GEFS: { bg: 'rgba(79, 70, 229, 0.84)', border: '#3730a3' },
+      ECMWF_IFS_ENS: { bg: 'rgba(147, 51, 234, 0.84)', border: '#6b21a8' },
+      IFS_ENS: { bg: 'rgba(147, 51, 234, 0.84)', border: '#6b21a8' }
+    };
+    const FC_HINDCAST_TEMP_COLORS = ['#d97706', '#b45309', '#ca8a04', '#ea580c'];
+    const FC_FORECAST_TEMP_PALETTE = {
+      HRES: '#dc2626',
+      ECMWF_AIFS: '#db2777',
+      AIFS: '#db2777',
+      GRAPHCAST: '#db2777',
+      NOAA_GFS: '#ea580c',
+      GFS: '#ea580c',
+      NOAA_GEFS: '#9333ea',
+      GEFS: '#9333ea',
+      ECMWF_IFS_ENS: '#e11d48',
+      IFS_ENS: '#e11d48'
+    };
+
     function renderForcingChart() {
       if (!hyetographChart) return;
       const subtitleEl = document.getElementById('fcForcingSubtitle');
       const titleEl = document.getElementById('fcForcingChartTitle');
+      const basinId = getActiveForecastBasinId();
+
+      updateWhatIfControlsUI();
 
       const timeline = buildSharedForecastTimeline();
       const {
@@ -9765,17 +10206,17 @@
         labels,
         issueDate,
         t0Index,
+        nowcastProducts,
+        forecastProducts,
+        directNowcastKeys,
+        forecastKeys,
         nowcastObj,
         prodObj,
-        isSelectedProdForecast,
         forecastObj,
-        activeNowcastObj,
-        nowcastSeries,
-        forecastSeries,
-        forecastHindcastSeries
+        activeNowcastObj
       } = timeline;
 
-      if ((!nowcastObj && !prodObj) || allDates.length === 0) {
+      if ((directNowcastKeys.length === 0 && forecastKeys.length === 0) || allDates.length === 0) {
         hyetographChart.$fcTimelineMeta = null;
         hyetographChart.data.labels = [];
         hyetographChart.data.datasets = [];
@@ -9787,264 +10228,384 @@
         return;
       }
 
-      hyetographChart.$fcTimelineMeta = { issueDate, t0Index };
-
-      const nowcastByDate = {};
-      nowcastSeries.forEach(pt => { if (pt && pt.date) nowcastByDate[pt.date] = pt; });
-      const fcHindcastByDate = {};
-      forecastHindcastSeries.forEach(pt => { if (pt && pt.date) fcHindcastByDate[pt.date] = pt; });
-      const forecastByDate = {};
-      forecastSeries.forEach(pt => { if (pt && pt.date) forecastByDate[pt.date] = pt; });
-
-      const varsMeta = (prodObj && Array.isArray(prodObj.variables)) ? prodObj.variables : [];
-      const specificVarMeta = varsMeta.find(v => v.name === fcSelectedVariableMode) || null;
+      const leadTimeTargetObj = forecastObj || prodObj || activeNowcastObj || null;
+      hyetographChart.$fcTimelineMeta = { issueDate, t0Index, allDates, leadTimeTargetObj };
 
       const datasets = [];
       const yPrecipScale = hyetographChart.options.scales.yPrecip;
       const yTempScale = hyetographChart.options.scales.yTemp;
 
-      if (specificVarMeta) {
-        // Specific variable chosen from the Forecast Variable menu
-        const vName = specificVarMeta.name;
-        const isBar = specificVarMeta.chart_type === 'bar';
-        const unitLabel = specificVarMeta.unit ? `${specificVarMeta.label}` : vName;
+      const shownNowcastNames = [];
+      const shownForecastNames = [];
 
-        const spinupData = allDates.map(d => {
-          if (issueDate && d >= issueDate && isSelectedProdForecast) return null;
-          const ncPt = nowcastByDate[d];
-          if (ncPt && ncPt.values && ncPt.values[vName] !== undefined) return ncPt.values[vName];
-          const hcPt = fcHindcastByDate[d];
-          if (hcPt && hcPt.values && hcPt.values[vName] !== undefined) return hcPt.values[vName];
-          return null;
-        });
-
-        const fcData = allDates.map(d => {
-          if (issueDate && d < issueDate) return null;
-          const fcPt = forecastByDate[d];
-          if (fcPt && fcPt.values && fcPt.values[vName] !== undefined) return fcPt.values[vName];
-          return null;
-        });
-
-        let bridgedIdx = -1;
-        if (!isBar && isSelectedProdForecast) {
-          bridgedIdx = bridgeHandoffAtT0(spinupData, fcData, t0Index);
-        }
-
-        if (spinupData.some(v => v !== null)) {
-          datasets.push({
-            type: isBar ? 'bar' : 'line',
-            label: `HINDCAST (< t₀): ${(prodObj && prodObj.product) || 'Spin-Up'} ${specificVarMeta.short_name}`,
-            data: spinupData,
-            yAxisID: 'yPrecip',
-            backgroundColor: isBar ? 'rgba(8, 145, 178, 0.72)' : 'rgba(217, 119, 6, 0.14)',
-            borderColor: isBar ? '#0e7490' : '#d97706',
-            borderWidth: isBar ? 1 : 2.2,
-            borderRadius: isBar ? 3 : 0,
-            pointRadius: isBar ? 0 : 2.8,
-            pointBackgroundColor: '#d97706',
-            tension: 0.25,
-            spanGaps: false
-          });
-        }
-
-        if (isSelectedProdForecast) {
-          datasets.push({
-            type: isBar ? 'bar' : 'line',
-            label: `FORECAST (≥ t₀): ${prodObj.product} ${specificVarMeta.short_name} (Lead +1d…+${forecastSeries.length}d)`,
-            data: fcData,
-            $bridgedIndex: bridgedIdx,
-            yAxisID: 'yPrecip',
-            backgroundColor: isBar ? 'rgba(29, 78, 216, 0.94)' : 'rgba(220, 38, 38, 0.16)',
-            borderColor: isBar ? '#1e3a8a' : '#dc2626',
-            borderWidth: isBar ? 1.2 : 2.8,
-            borderDash: isBar ? [] : [6, 3],
-            borderRadius: isBar ? 3 : 0,
-            pointRadius: isBar ? 0 : (ctx) => (ctx.dataIndex === bridgedIdx ? 0 : 3.6),
-            pointBackgroundColor: '#ffffff',
-            pointBorderColor: '#dc2626',
-            pointBorderWidth: 2,
-            tension: 0.25,
-            spanGaps: false
-          });
-        }
-
-        yPrecipScale.beginAtZero = isBar;
-        yPrecipScale.title.text = unitLabel;
-        yPrecipScale.title.color = isBar ? '#0e7490' : '#dc2626';
-        // Keep right axis reserved at fixed width so top & bottom X-axes stay aligned
-        yTempScale.display = true;
-        yTempScale.title.display = false;
-        yTempScale.ticks.display = false;
-        yTempScale.border = { display: false };
-        if (titleEl) {
-          titleEl.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4 text-[#1a73e8]"></i> Input Forcing Visualization: ${prodObj ? prodObj.product : ''} · ${specificVarMeta.label}`;
-        }
-      } else {
-        // Default mode ('precip_and_temp') or 'precip_only' / 'temp_only'
-        const showPrecip = fcSelectedVariableMode !== 'temp_only';
-        const showTemp = fcSelectedVariableMode !== 'precip_only';
-
-        const nowcastPrecip = allDates.map(d => {
-          if (issueDate && d >= issueDate && isSelectedProdForecast) return null;
-          const pt = nowcastByDate[d];
+      // 1. HINDCAST PRECIPITATION BARS (< t₀) — Plot ALL direct nowcast precip products
+      let addedHindcastPrecip = false;
+      directNowcastKeys.forEach((ncKey, idx) => {
+        const ncItem = nowcastProducts[ncKey];
+        if (!ncItem || ncItem.has_precip === false || !Array.isArray(ncItem.series)) return;
+        const byDate = {};
+        ncItem.series.forEach(pt => { if (pt && pt.date) byDate[pt.date] = pt; });
+        const dataArr = allDates.map(d => {
+          if (issueDate && d >= issueDate && forecastKeys.length > 0) return null;
+          const pt = byDate[d];
           return (pt && pt.precip_mm !== undefined && pt.precip_mm !== null) ? pt.precip_mm : null;
         });
-        const forecastPrecip = allDates.map(d => {
-          if (issueDate && d < issueDate) return null;
-          const pt = forecastByDate[d];
-          return (pt && pt.precip_mm !== undefined && pt.precip_mm !== null) ? pt.precip_mm : null;
+        if (!dataArr.some(v => v !== null)) return;
+        addedHindcastPrecip = true;
+        if (!shownNowcastNames.includes(ncKey)) shownNowcastNames.push(ncKey);
+        const pal = FC_NOWCAST_PRECIP_PALETTE[ncKey] || {
+          bg: idx % 2 === 0 ? 'rgba(8, 145, 178, 0.75)' : 'rgba(13, 148, 136, 0.75)',
+          border: idx % 2 === 0 ? '#0e7490' : '#0f766e'
+        };
+        datasets.push({
+          type: 'bar',
+          label: `HINDCAST (< t₀): ${ncKey} Precip (mm/d)`,
+          data: dataArr,
+          $fcRole: 'hindcast_precip',
+          $productKey: ncKey,
+          $varKind: 'precip',
+          yAxisID: 'yPrecip',
+          backgroundColor: pal.bg,
+          borderColor: pal.border,
+          borderWidth: 1,
+          borderRadius: 2,
+          order: 3
         });
-        const nowcastTemp = allDates.map(d => {
-          if (issueDate && d >= issueDate && isSelectedProdForecast) return null;
-          const pt = nowcastByDate[d];
-          if (pt && pt.temperature_c !== undefined && pt.temperature_c !== null) return pt.temperature_c;
-          if (pt && pt.temp_c !== undefined && pt.temp_c !== null) return pt.temp_c;
-          const hcPt = fcHindcastByDate[d];
-          if (hcPt && hcPt.temperature_c !== undefined && hcPt.temperature_c !== null) return hcPt.temperature_c;
-          if (hcPt && hcPt.temp_c !== undefined && hcPt.temp_c !== null) return hcPt.temp_c;
+      });
+
+      // Fallback hindcast precip from forecast product day-1 spinup if no direct nowcast precip exists
+      if (!addedHindcastPrecip) {
+        forecastKeys.forEach((fcKey) => {
+          const fcItem = forecastProducts[fcKey];
+          if (!fcItem || !Array.isArray(fcItem.hindcast_series)) return;
+          const byDate = {};
+          fcItem.hindcast_series.forEach(pt => { if (pt && pt.date) byDate[pt.date] = pt; });
+          const dataArr = allDates.map(d => {
+            if (issueDate && d >= issueDate) return null;
+            const pt = byDate[d];
+            return (pt && pt.precip_mm !== undefined && pt.precip_mm !== null) ? pt.precip_mm : null;
+          });
+          if (!dataArr.some(v => v !== null)) return;
+          datasets.push({
+            type: 'bar',
+            label: `HINDCAST (< t₀): ${fcKey} Day-1 Precip (mm/d)`,
+            data: dataArr,
+            $fcRole: 'hindcast_precip',
+            $productKey: fcKey,
+            $varKind: 'precip',
+            yAxisID: 'yPrecip',
+            backgroundColor: 'rgba(8, 145, 178, 0.72)',
+            borderColor: '#0e7490',
+            borderWidth: 1,
+            borderRadius: 2,
+            order: 3
+          });
+        });
+      }
+
+      // 2. FORECAST PRECIPITATION BARS (≥ t₀) — Plot ALL forecast precip products (draggable, including 0 mm!)
+      forecastKeys.forEach((fcKey, idx) => {
+        const fcItem = forecastProducts[fcKey];
+        if (!fcItem || fcItem.has_precip === false || !Array.isArray(fcItem.series)) return;
+        const byDate = {};
+        fcItem.series.forEach(pt => { if (pt && pt.date) byDate[pt.date] = pt; });
+        const dataArr = allDates.map((d, dIdx) => {
+          if (issueDate && d < issueDate) return null;
+          const overrideVal = getWhatIfOverrideValue(basinId, fcKey, 'precip', d);
+          if (overrideVal !== undefined) return overrideVal;
+          const pt = byDate[d];
+          if (pt && pt.precip_mm !== undefined && pt.precip_mm !== null) return pt.precip_mm;
+          // Ensure forecast dates have a grabbable 0.0 mm bar if within the product's forecast window
+          if (t0Index >= 0 && dIdx >= t0Index && pt) return 0.0;
           return null;
         });
-        const forecastTemp = allDates.map(d => {
-          if (issueDate && d < issueDate) return null;
-          const pt = forecastByDate[d];
+        if (!dataArr.some(v => v !== null)) return;
+        if (!shownForecastNames.includes(fcKey)) shownForecastNames.push(fcKey);
+
+        const pal = FC_FORECAST_PRECIP_PALETTE[fcKey] || {
+          bg: idx % 2 === 0 ? 'rgba(29, 78, 216, 0.90)' : 'rgba(109, 40, 217, 0.86)',
+          border: idx % 2 === 0 ? '#1e3a8a' : '#4c1d95'
+        };
+
+        datasets.push({
+          type: 'bar',
+          label: `FORECAST (≥ t₀): ${fcKey} Precip (mm/d)`,
+          data: dataArr,
+          $fcRole: 'forecast_precip',
+          $productKey: fcKey,
+          $varKind: 'precip',
+          yAxisID: 'yPrecip',
+          minBarLength: 7,
+          backgroundColor: (ctx) => {
+            const dStr = allDates[ctx.dataIndex];
+            if (dStr && getWhatIfOverrideValue(basinId, fcKey, 'precip', dStr) !== undefined) {
+              return 'rgba(124, 58, 237, 0.92)';
+            }
+            return pal.bg;
+          },
+          borderColor: (ctx) => {
+            const dStr = allDates[ctx.dataIndex];
+            if (dStr && getWhatIfOverrideValue(basinId, fcKey, 'precip', dStr) !== undefined) {
+              return '#4c1d95';
+            }
+            return pal.border;
+          },
+          borderWidth: (ctx) => {
+            const dStr = allDates[ctx.dataIndex];
+            return (dStr && getWhatIfOverrideValue(basinId, fcKey, 'precip', dStr) !== undefined) ? 2.2 : 1.2;
+          },
+          borderRadius: 3,
+          order: 2
+        });
+      });
+
+      // 3. HINDCAST 2m TEMPERATURE LINES (< t₀) — Plot all available spin-up temperature series
+      const hindcastTempByProduct = {};
+      let hcTempColorIdx = 0;
+
+      directNowcastKeys.forEach((ncKey) => {
+        const ncItem = nowcastProducts[ncKey];
+        if (!ncItem || !ncItem.has_temp || !Array.isArray(ncItem.series)) return;
+        const byDate = {};
+        ncItem.series.forEach(pt => { if (pt && pt.date) byDate[pt.date] = pt; });
+        const dataArr = allDates.map(d => {
+          if (issueDate && d >= issueDate && forecastKeys.length > 0) return null;
+          const pt = byDate[d];
           if (!pt) return null;
           return (pt.temperature_c !== undefined && pt.temperature_c !== null)
             ? pt.temperature_c
             : (pt.temp_c !== undefined ? pt.temp_c : null);
         });
+        if (!dataArr.some(v => v !== null)) return;
+        hindcastTempByProduct[ncKey] = dataArr;
+        if (!shownNowcastNames.includes(ncKey)) shownNowcastNames.push(ncKey);
+        const strokeColor = FC_HINDCAST_TEMP_COLORS[hcTempColorIdx++ % FC_HINDCAST_TEMP_COLORS.length];
+        datasets.push({
+          type: 'line',
+          label: `HINDCAST (< t₀): ${ncKey} 2m Temp (°C)`,
+          data: dataArr,
+          $fcRole: 'hindcast_temp',
+          $productKey: ncKey,
+          $varKind: 'temp',
+          yAxisID: 'yTemp',
+          borderColor: strokeColor,
+          backgroundColor: 'rgba(217, 119, 6, 0.12)',
+          borderWidth: 2.1,
+          pointRadius: 2.5,
+          pointBackgroundColor: strokeColor,
+          tension: 0.25,
+          spanGaps: false,
+          order: 1
+        });
+      });
 
+      forecastKeys.forEach((fcKey) => {
+        const fcItem = forecastProducts[fcKey];
+        if (!fcItem || !Array.isArray(fcItem.hindcast_series)) return;
+        const byDate = {};
+        fcItem.hindcast_series.forEach(pt => { if (pt && pt.date) byDate[pt.date] = pt; });
+        const dataArr = allDates.map(d => {
+          if (issueDate && d >= issueDate) return null;
+          const pt = byDate[d];
+          if (!pt) return null;
+          return (pt.temperature_c !== undefined && pt.temperature_c !== null)
+            ? pt.temperature_c
+            : (pt.temp_c !== undefined ? pt.temp_c : null);
+        });
+        if (!dataArr.some(v => v !== null)) return;
+        hindcastTempByProduct[fcKey] = dataArr;
+        const strokeColor = FC_HINDCAST_TEMP_COLORS[hcTempColorIdx++ % FC_HINDCAST_TEMP_COLORS.length];
+        datasets.push({
+          type: 'line',
+          label: `HINDCAST (< t₀): ${fcKey} Day-1 2m Temp (°C)`,
+          data: dataArr,
+          $fcRole: 'hindcast_temp',
+          $productKey: fcKey,
+          $varKind: 'temp',
+          yAxisID: 'yTemp',
+          borderColor: strokeColor,
+          backgroundColor: 'rgba(217, 119, 6, 0.12)',
+          borderWidth: 2.1,
+          pointRadius: 2.5,
+          pointBackgroundColor: strokeColor,
+          tension: 0.25,
+          spanGaps: false,
+          order: 1
+        });
+      });
+
+      // 4. FORECAST 2m TEMPERATURE LINES (≥ t₀) — Plot ALL forecast temp products (draggable!)
+      const defaultHindcastTemp = Object.values(hindcastTempByProduct)[0] || null;
+      forecastKeys.forEach((fcKey, idx) => {
+        const fcItem = forecastProducts[fcKey];
+        if (!fcItem || fcItem.has_temp === false || !Array.isArray(fcItem.series)) return;
+        const byDate = {};
+        fcItem.series.forEach(pt => { if (pt && pt.date) byDate[pt.date] = pt; });
+        const dataArr = allDates.map(d => {
+          if (issueDate && d < issueDate) return null;
+          const overrideVal = getWhatIfOverrideValue(basinId, fcKey, 'temp', d);
+          if (overrideVal !== undefined) return overrideVal;
+          const pt = byDate[d];
+          if (!pt) return null;
+          return (pt.temperature_c !== undefined && pt.temperature_c !== null)
+            ? pt.temperature_c
+            : (pt.temp_c !== undefined ? pt.temp_c : null);
+        });
+        if (!dataArr.some(v => v !== null)) return;
+        if (!shownForecastNames.includes(fcKey)) shownForecastNames.push(fcKey);
+
+        const matchingHindcastTemp = hindcastTempByProduct[fcKey] || defaultHindcastTemp;
         let bridgedTempIdx = -1;
-        if (showTemp && isSelectedProdForecast) {
-          bridgedTempIdx = bridgeHandoffAtT0(nowcastTemp, forecastTemp, t0Index);
+        if (matchingHindcastTemp) {
+          bridgedTempIdx = bridgeHandoffAtT0(matchingHindcastTemp, dataArr, t0Index);
         }
 
-        const ncLabelName = (activeNowcastObj && (activeNowcastObj.product || activeNowcastObj.id)) || fcSelectedNowcast || 'Nowcast';
-        const fcLabelName = (forecastObj && (forecastObj.product || forecastObj.id)) || fcSelectedForecast || 'Forecast';
+        const strokeColor = FC_FORECAST_TEMP_PALETTE[fcKey] || (idx % 2 === 0 ? '#dc2626' : '#db2777');
+        datasets.push({
+          type: 'line',
+          label: `FORECAST (≥ t₀): ${fcKey} 2m Temp (°C)`,
+          data: dataArr,
+          $fcRole: 'forecast_temp',
+          $productKey: fcKey,
+          $varKind: 'temp',
+          $bridgedIndex: bridgedTempIdx,
+          yAxisID: 'yTemp',
+          borderColor: strokeColor,
+          backgroundColor: 'rgba(220, 38, 38, 0.14)',
+          borderWidth: 2.6,
+          borderDash: [6, 3],
+          pointRadius: (ctx) => {
+            if (ctx.dataIndex === bridgedTempIdx) return 0;
+            const dStr = allDates[ctx.dataIndex];
+            if (dStr && getWhatIfOverrideValue(basinId, fcKey, 'temp', dStr) !== undefined) return 6;
+            return 4.5;
+          },
+          pointHoverRadius: (ctx) => (ctx.dataIndex === bridgedTempIdx ? 0 : 7),
+          pointHitRadius: 14,
+          pointBackgroundColor: (ctx) => {
+            const dStr = allDates[ctx.dataIndex];
+            if (dStr && getWhatIfOverrideValue(basinId, fcKey, 'temp', dStr) !== undefined) {
+              return '#7c3aed';
+            }
+            return '#ffffff';
+          },
+          pointBorderColor: (ctx) => {
+            const dStr = allDates[ctx.dataIndex];
+            if (dStr && getWhatIfOverrideValue(basinId, fcKey, 'temp', dStr) !== undefined) {
+              return '#4c1d95';
+            }
+            return strokeColor;
+          },
+          pointBorderWidth: 2.2,
+          tension: 0.25,
+          spanGaps: false,
+          order: 1
+        });
+      });
 
-        if (showPrecip) {
-          datasets.push({
-            type: 'bar',
-            label: `HINDCAST (< t₀): ${ncLabelName} Precip (mm/day)`,
-            data: nowcastPrecip,
-            yAxisID: 'yPrecip',
-            backgroundColor: 'rgba(8, 145, 178, 0.72)',
-            borderColor: '#0e7490',
-            borderWidth: 1,
-            borderRadius: 3,
-            order: 2
-          });
-          if (isSelectedProdForecast) {
-            datasets.push({
-              type: 'bar',
-              label: `FORECAST (≥ t₀): ${fcLabelName} Precip (mm/day · t₀…+${forecastSeries.length}d)`,
-              data: forecastPrecip,
-              yAxisID: 'yPrecip',
-              backgroundColor: 'rgba(29, 78, 216, 0.94)',
-              borderColor: '#1e3a8a',
-              borderWidth: 1.2,
-              borderRadius: 3,
-              order: 2
-            });
-          }
-        }
+      yPrecipScale.beginAtZero = true;
+      yPrecipScale.title.text = 'Precipitation (mm/day)';
+      yPrecipScale.title.color = '#0e7490';
+      yTempScale.display = true;
+      yTempScale.title.display = true;
+      yTempScale.title.text = '2m Temperature (°C)';
+      yTempScale.title.color = '#dc2626';
+      yTempScale.ticks.display = true;
+      yTempScale.border = { display: true };
 
-        if (showTemp) {
-          const tempAxisId = showPrecip ? 'yTemp' : 'yPrecip';
-          const spinupTempLabel = (activeNowcastObj && activeNowcastObj.has_temp)
-            ? `HINDCAST (< t₀): ${ncLabelName} 2m Temp (°C)`
-            : `HINDCAST (< t₀): ${fcLabelName} Day-1 2m Temp (°C)`;
-          datasets.push({
-            type: 'line',
-            label: spinupTempLabel,
-            data: nowcastTemp,
-            yAxisID: tempAxisId,
-            borderColor: '#d97706',
-            backgroundColor: 'rgba(217, 119, 6, 0.14)',
-            borderWidth: 2.2,
-            pointRadius: 2.8,
-            pointBackgroundColor: '#d97706',
-            pointBorderColor: '#b45309',
-            tension: 0.25,
-            spanGaps: false,
-            order: 1
-          });
-          if (isSelectedProdForecast) {
-            datasets.push({
-              type: 'line',
-              label: `FORECAST (≥ t₀): ${fcLabelName} 2m Temp (°C · t₀…+${forecastSeries.length}d)`,
-              data: forecastTemp,
-              $bridgedIndex: bridgedTempIdx,
-              yAxisID: tempAxisId,
-              borderColor: '#dc2626',
-              backgroundColor: 'rgba(220, 38, 38, 0.16)',
-              borderWidth: 2.8,
-              borderDash: [6, 3],
-              pointRadius: (ctx) => (ctx.dataIndex === bridgedTempIdx ? 0 : 3.6),
-              pointBackgroundColor: '#ffffff',
-              pointBorderColor: '#dc2626',
-              pointBorderWidth: 2,
-              tension: 0.25,
-              spanGaps: false,
-              order: 1
-            });
-          }
-        }
-
-        if (showPrecip && showTemp) {
-          yPrecipScale.beginAtZero = true;
-          yPrecipScale.title.text = 'Precipitation (mm/day)';
-          yPrecipScale.title.color = '#0e7490';
-          yTempScale.display = true;
-          yTempScale.title.display = true;
-          yTempScale.title.text = '2m Temperature (°C)';
-          yTempScale.title.color = '#dc2626';
-          yTempScale.ticks.display = true;
-          yTempScale.border = { display: true };
-        } else if (showPrecip) {
-          yPrecipScale.beginAtZero = true;
-          yPrecipScale.title.text = 'Precipitation (mm/day)';
-          yPrecipScale.title.color = '#0e7490';
-          yTempScale.display = true;
-          yTempScale.title.display = false;
-          yTempScale.ticks.display = false;
-          yTempScale.border = { display: false };
-        } else {
-          yPrecipScale.beginAtZero = false;
-          yPrecipScale.title.text = '2m Temperature (°C)';
-          yPrecipScale.title.color = '#dc2626';
-          yTempScale.display = true;
-          yTempScale.title.display = false;
-          yTempScale.ticks.display = false;
-          yTempScale.border = { display: false };
-        }
-
-        if (titleEl) {
-          titleEl.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4 text-[#1a73e8]"></i> Input Forcing Visualization: Precipitation (Bars) &amp; 2m Temperature (Lines)`;
-        }
+      if (titleEl) {
+        titleEl.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4 text-[#1a73e8]"></i> Input Forcing Visualization: All Precip (Bars) &amp; 2m Temp (Lines) Products`;
       }
 
       hyetographChart.data.labels = labels;
       hyetographChart.data.datasets = datasets;
       hyetographChart.update();
 
-      renderLeadTimeInspector(prodObj || activeNowcastObj, issueDate);
+      renderLeadTimeInspector(leadTimeTargetObj, issueDate);
 
       if (subtitleEl) {
-        const ncName = activeNowcastObj ? (activeNowcastObj.product || activeNowcastObj.id) : 'None';
-        const fcName = forecastObj
-          ? `${forecastObj.product || forecastObj.id} (Issue Date t₀ = ${forecastObj.issue_date || issueDate}, Lead +1d…+${forecastSeries.length}d)`
-          : 'None';
-        const basinId = getActiveForecastBasinId();
-        subtitleEl.innerText = `Viewing Basin: ${basinId} · Hindcast (< t₀): ${ncName} · Forecast (≥ t₀): ${fcName}`;
+        const ncSummary = shownNowcastNames.length > 0 ? shownNowcastNames.join(', ') : 'None';
+        const fcSummary = shownForecastNames.length > 0 ? shownForecastNames.join(', ') : 'None';
+        subtitleEl.innerText = `Viewing Basin: ${basinId} · Hindcast (< t₀): ${ncSummary} · Forecast (≥ t₀): ${fcSummary} · Click & drag forecast bars (including 0 mm) or temp points up/down to run What-Ifs`;
       }
     }
 
     function renderHydroCatchmentTabs() {
       const tabsEl = document.getElementById('fcHydroCatchmentTabs');
       if (!tabsEl) return;
-      // Catchment viewing selection is controlled solely by #fcBasinSelect in the left-hand panel.
       tabsEl.classList.add('hidden');
       tabsEl.innerHTML = '';
+    }
+
+    function renderWhatIfScenariosList() {
+      const barEl = document.getElementById('fcWhatIfScenariosBar');
+      const listEl = document.getElementById('fcWhatIfScenariosList');
+      if (!barEl || !listEl) return;
+
+      const activeId = getActiveForecastBasinId();
+      const scenarios = (activeId && fcWhatIfScenariosByBasin[activeId]) || [];
+
+      if (scenarios.length === 0) {
+        barEl.classList.add('hidden');
+        listEl.innerHTML = '';
+        return;
+      }
+
+      barEl.classList.remove('hidden');
+      listEl.innerHTML = '';
+
+      scenarios.forEach((sc) => {
+        const pill = document.createElement('div');
+        pill.className = `inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] transition ${
+          sc.enabled
+            ? 'bg-white border-[#dadce0] shadow-xs text-[#202124]'
+            : 'bg-[#f1f3f4]/70 border-[#dadce0] text-[#5f6368] opacity-65'
+        }`;
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'fc-whatif-toggle-cb rounded cursor-pointer';
+        cb.checked = Boolean(sc.enabled);
+        cb.title = `Enable or disable plotting of ${sc.name}`;
+        cb.dataset.scenarioId = sc.id;
+        cb.addEventListener('change', () => {
+          sc.enabled = cb.checked;
+          renderWhatIfScenariosList();
+          renderHydrographChart();
+        });
+
+        const swatch = document.createElement('span');
+        swatch.className = 'w-2.5 h-2.5 rounded-full flex-shrink-0';
+        swatch.style.backgroundColor = sc.color;
+
+        const peakVal = (sc.result && sc.result.peak_discharge_cms !== undefined && sc.result.peak_discharge_cms !== null)
+          ? `${Number(sc.result.peak_discharge_cms).toFixed(1)} m³/s`
+          : '—';
+
+        const textSpan = document.createElement('span');
+        textSpan.className = 'font-medium whitespace-nowrap';
+        textSpan.innerHTML = `<strong class="font-semibold">${sc.name}</strong> <span class="text-[10px] font-mono text-[#5f6368]">(${sc.summary} · Peak ${peakVal})</span>`;
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'fc-whatif-delete-btn ml-1 text-[#5f6368] hover:text-[#c5221f] font-bold px-1 rounded hover:bg-[#fce8e6] transition';
+        delBtn.title = `Delete ${sc.name}`;
+        delBtn.dataset.scenarioId = sc.id;
+        delBtn.innerText = '×';
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const arr = fcWhatIfScenariosByBasin[activeId] || [];
+          fcWhatIfScenariosByBasin[activeId] = arr.filter(item => item.id !== sc.id);
+          renderWhatIfScenariosList();
+          renderHydrographChart();
+        });
+
+        pill.appendChild(cb);
+        pill.appendChild(swatch);
+        pill.appendChild(textSpan);
+        pill.appendChild(delBtn);
+        listEl.appendChild(pill);
+      });
     }
 
     function renderHydrographChart(modelResult) {
@@ -10053,16 +10614,19 @@
       const peakBadge = document.getElementById('fcHydroPeakBadge');
 
       renderHydroCatchmentTabs();
+      renderWhatIfScenariosList();
 
       const activeId = getActiveForecastBasinId();
       const targetResult = (activeId && fcModelResultsByBasin[activeId]) ? fcModelResultsByBasin[activeId] : modelResult;
+      const scenarios = (activeId && fcWhatIfScenariosByBasin[activeId]) || [];
+      const enabledScenarios = scenarios.filter(sc => sc && sc.enabled && sc.result && Array.isArray(sc.result.forecast));
 
-      const timeline = buildSharedForecastTimeline(targetResult);
+      const timeline = buildSharedForecastTimeline(targetResult || (enabledScenarios[0] && enabledScenarios[0].result) || null);
       const { allDates, labels, issueDate, t0Index } = timeline;
       masterHydroChart.$fcTimelineMeta = allDates.length > 0 ? { issueDate, t0Index } : null;
 
-      if (!targetResult || !Array.isArray(targetResult.forecast) || targetResult.forecast.length === 0) {
-        // Keep the bottom chart's X-axis aligned with the top chart's timeline even before model execution
+      const hasBaseline = Boolean(targetResult && Array.isArray(targetResult.forecast) && targetResult.forecast.length > 0);
+      if (!hasBaseline && enabledScenarios.length === 0) {
         masterHydroChart.data.labels = labels;
         masterHydroChart.data.datasets = allDates.length > 0
           ? [
@@ -10074,7 +10638,7 @@
                 borderWidth: 2.2
               },
               {
-                label: 'FORECAST (≥ t₀): Streamflow Horizon (m³/s)',
+                label: 'FORECAST (≥ t₀): Baseline Streamflow (m³/s)',
                 data: allDates.map(() => null),
                 borderColor: '#15803d',
                 backgroundColor: 'rgba(21, 128, 61, 0.20)',
@@ -10087,35 +10651,25 @@
         if (peakBadge) peakBadge.classList.add('hidden');
         if (subtitleEl) {
           subtitleEl.innerText = activeId
-            ? `Viewing Basin: ${activeId} · Click "2. Make Forecasts" after fetching real-time data to generate the discharge forecast.`
+            ? `Viewing Basin: ${activeId} · Click "2. Make Forecasts" or drag forecast bars & click "Run What-If Forecast" to generate discharge trajectories.`
             : 'Click "2. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
         }
         return;
       }
 
-      const hindcastTail = Array.isArray(targetResult.hindcast_tail) ? targetResult.hindcast_tail : [];
-      const forecastSeries = targetResult.forecast;
-
+      const refResult = hasBaseline ? targetResult : enabledScenarios[0].result;
+      const hindcastTail = Array.isArray(refResult.hindcast_tail) ? refResult.hindcast_tail : [];
       const hindcastByDate = {};
       hindcastTail.forEach(pt => { if (pt && pt.date) hindcastByDate[pt.date] = pt; });
-      const forecastByDate = {};
-      forecastSeries.forEach(pt => { if (pt && pt.date) forecastByDate[pt.date] = pt; });
 
       const hindcastData = allDates.map(d => {
         const pt = hindcastByDate[d];
         return (pt && pt.discharge_cms !== undefined && pt.discharge_cms !== null) ? pt.discharge_cms : null;
       });
-      const forecastData = allDates.map(d => {
-        const pt = forecastByDate[d];
-        return (pt && pt.discharge_cms !== undefined && pt.discharge_cms !== null) ? pt.discharge_cms : null;
-      });
 
-      const bridgedHydroIdx = bridgeHandoffAtT0(hindcastData, forecastData, t0Index);
-
-      masterHydroChart.data.labels = labels;
-      masterHydroChart.data.datasets = [
+      const chartDatasets = [
         {
-          label: `HINDCAST (< t₀): ${targetResult.basin_id} Spin-Up Streamflow (m³/s)`,
+          label: `HINDCAST (< t₀): ${refResult.basin_id || activeId} Spin-Up Streamflow (m³/s)`,
           data: hindcastData,
           borderColor: '#0284c7',
           backgroundColor: 'rgba(2, 132, 199, 0.15)',
@@ -10125,14 +10679,26 @@
           pointBorderColor: '#0369a1',
           tension: 0.3,
           spanGaps: false,
-          fill: true
-        },
-        {
-          label: `FORECAST (≥ t₀): ${targetResult.basin_id} Streamflow (${targetResult.mode === 'hotstart' ? 'Hot Start' : 'Cold Start'}, m³/s)`,
+          fill: true,
+          order: 3
+        }
+      ];
+
+      if (hasBaseline) {
+        const forecastByDate = {};
+        targetResult.forecast.forEach(pt => { if (pt && pt.date) forecastByDate[pt.date] = pt; });
+        const forecastData = allDates.map(d => {
+          const pt = forecastByDate[d];
+          return (pt && pt.discharge_cms !== undefined && pt.discharge_cms !== null) ? pt.discharge_cms : null;
+        });
+        const bridgedHydroIdx = bridgeHandoffAtT0(hindcastData, forecastData, t0Index);
+
+        chartDatasets.push({
+          label: `BASELINE FORECAST (≥ t₀): ${targetResult.basin_id} (${targetResult.mode === 'hotstart' ? 'Hot Start' : 'Cold Start'}, m³/s)`,
           data: forecastData,
           $bridgedIndex: bridgedHydroIdx,
           borderColor: '#15803d',
-          backgroundColor: 'rgba(21, 128, 61, 0.22)',
+          backgroundColor: 'rgba(21, 128, 61, 0.20)',
           borderWidth: 2.8,
           borderDash: [6, 3],
           pointRadius: (ctx) => (ctx.dataIndex === bridgedHydroIdx ? 0 : 3.6),
@@ -10141,14 +10707,56 @@
           pointBorderWidth: 2,
           tension: 0.3,
           spanGaps: false,
-          fill: true
-        }
-      ];
+          fill: true,
+          order: 2
+        });
+      }
+
+      // Overlay each enabled What-If trajectory alongside the baseline unmodified forecast
+      enabledScenarios.forEach((sc) => {
+        const scByDate = {};
+        sc.result.forecast.forEach(pt => { if (pt && pt.date) scByDate[pt.date] = pt; });
+        const scData = allDates.map(d => {
+          const pt = scByDate[d];
+          return (pt && pt.discharge_cms !== undefined && pt.discharge_cms !== null) ? pt.discharge_cms : null;
+        });
+        const scBridgedIdx = bridgeHandoffAtT0(hindcastData, scData, t0Index);
+        const peakVal = (sc.result.peak_discharge_cms !== undefined && sc.result.peak_discharge_cms !== null)
+          ? ` · Peak ${Number(sc.result.peak_discharge_cms).toFixed(1)} m³/s`
+          : '';
+
+        chartDatasets.push({
+          label: `${sc.name} (≥ t₀): ${sc.summary}${peakVal}`,
+          data: scData,
+          $bridgedIndex: scBridgedIdx,
+          $whatIfScenarioId: sc.id,
+          borderColor: sc.color,
+          backgroundColor: sc.fillColor || 'rgba(124, 58, 237, 0.10)',
+          borderWidth: 2.8,
+          borderDash: [4, 2],
+          pointRadius: (ctx) => (ctx.dataIndex === scBridgedIdx ? 0 : 4.0),
+          pointBackgroundColor: sc.color,
+          pointBorderColor: '#ffffff',
+          pointBorderWidth: 1.5,
+          tension: 0.3,
+          spanGaps: false,
+          fill: false,
+          order: 1
+        });
+      });
+
+      masterHydroChart.data.labels = labels;
+      masterHydroChart.data.datasets = chartDatasets;
       masterHydroChart.update();
 
       if (peakBadge) {
-        if (targetResult.peak_discharge_cms !== null && targetResult.peak_discharge_cms !== undefined) {
-          peakBadge.innerText = `Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s (${targetResult.peak_date || '—'})`;
+        if (hasBaseline && targetResult.peak_discharge_cms !== null && targetResult.peak_discharge_cms !== undefined) {
+          const latestSc = enabledScenarios.length > 0 ? enabledScenarios[enabledScenarios.length - 1] : null;
+          if (latestSc && latestSc.result && latestSc.result.peak_discharge_cms !== null && latestSc.result.peak_discharge_cms !== undefined) {
+            peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s · ${latestSc.name} Peak: ${Number(latestSc.result.peak_discharge_cms).toFixed(2)} m³/s`;
+          } else {
+            peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s (${targetResult.peak_date || '—'})`;
+          }
           peakBadge.classList.remove('hidden');
         } else {
           peakBadge.classList.add('hidden');
@@ -10156,11 +10764,121 @@
       }
 
       if (subtitleEl) {
-        const modeText = targetResult.mode === 'hotstart' ? 'Hot-Start' : 'Cold-Start';
-        const stateNote = targetResult.saved_state && targetResult.saved_state.state_date
-          ? `Saved state at ${targetResult.saved_state.state_date}`
+        const modeText = refResult.mode === 'hotstart' ? 'Hot-Start' : 'Cold-Start';
+        const whatIfNote = enabledScenarios.length > 0
+          ? ` · ${enabledScenarios.length} active What-If trajectory(s) plotted`
           : '';
-        subtitleEl.innerText = `Viewing Basin: ${targetResult.basin_id} · ${modeText} forecast · Issue date t₀ = ${targetResult.issue_date} · ${stateNote}`;
+        subtitleEl.innerText = `Viewing Basin: ${refResult.basin_id || activeId} · ${modeText} baseline forecast · Issue date t₀ = ${refResult.issue_date}${whatIfNote}`;
+      }
+    }
+
+    async function runWhatIfScenario() {
+      const basinId = getActiveForecastBasinId();
+      if (!basinId || fcIsRunningModel || fcIsFetching) return;
+      if (!hasWhatIfEdits(basinId)) return;
+
+      const runWhatIfBtn = document.getElementById('fcRunWhatIfBtn');
+      const runWhatIfLabel = document.getElementById('fcRunWhatIfBtnLabel');
+      const blockedReasonEl = document.getElementById('fcRunBlockedReason');
+
+      fcIsRunningModel = true;
+      updateForecastControlsUI();
+      updateWhatIfControlsUI();
+      if (runWhatIfLabel) {
+        runWhatIfLabel.innerText = 'Running What-If...';
+      }
+
+      try {
+        const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+
+        // Ensure baseline unmodified forecast exists for this catchment so What-If appears alongside it
+        if (!fcModelResultsByBasin[basinId]) {
+          const baseRes = await fetch('/api/forecast/run-model', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-User-Profile': u
+            },
+            body: JSON.stringify({
+              catchment_id: basinId,
+              catchment_ids: [basinId],
+              mode: fcCurrentMode,
+              username: u
+            })
+          });
+          const baseData = await baseRes.json();
+          if (baseRes.ok && baseData.status === 'success') {
+            if (baseData.results_by_id && baseData.results_by_id[basinId]) {
+              fcModelResultsByBasin[basinId] = baseData.results_by_id[basinId];
+            } else {
+              fcModelResultsByBasin[basinId] = baseData;
+            }
+            if (baseData.post_run_status) {
+              fcStatusData = baseData.post_run_status;
+            }
+          }
+        }
+
+        const edits = getBasinWhatIfEdits(basinId);
+        const precipPayload = Object.assign({}, edits.precip_overrides || {}, {
+          __temp_overrides__: edits.temp_overrides || {},
+          __product_overrides__: edits.product_overrides || {},
+          __is_what_if__: true
+        });
+
+        const res = await fetch('/api/forecast/run-model', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Profile': u
+          },
+          body: JSON.stringify({
+            catchment_id: basinId,
+            catchment_ids: [basinId],
+            mode: fcCurrentMode,
+            username: u,
+            precip_overrides: precipPayload,
+            temp_overrides: edits.temp_overrides || {},
+            product_overrides: edits.product_overrides || {},
+            is_what_if: true
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+          throw new Error(data.message || `HTTP ${res.status}`);
+        }
+
+        const whatIfResult = (data.results_by_id && data.results_by_id[basinId]) ? data.results_by_id[basinId] : data;
+        const nextNum = (fcWhatIfCounterByBasin[basinId] || 0) + 1;
+        fcWhatIfCounterByBasin[basinId] = nextNum;
+        const colorObj = FC_WHATIF_COLORS[(nextNum - 1) % FC_WHATIF_COLORS.length];
+
+        if (!Array.isArray(fcWhatIfScenariosByBasin[basinId])) {
+          fcWhatIfScenariosByBasin[basinId] = [];
+        }
+        fcWhatIfScenariosByBasin[basinId].push({
+          id: `whatif_${basinId}_${nextNum}_${Date.now()}`,
+          number: nextNum,
+          name: `What-If #${nextNum}`,
+          summary: summarizeWhatIfEdits(basinId),
+          color: colorObj.stroke,
+          fillColor: colorObj.fill,
+          enabled: true,
+          result: whatIfResult,
+          editsSnapshot: JSON.parse(JSON.stringify(edits))
+        });
+
+        renderWhatIfScenariosList();
+        renderHydrographChart();
+      } catch (err) {
+        if (blockedReasonEl) {
+          blockedReasonEl.className = 'text-[11px] text-[#d93025] leading-relaxed font-medium';
+          blockedReasonEl.innerText = `What-If execution failed: ${err.message}`;
+        }
+      } finally {
+        fcIsRunningModel = false;
+        updateForecastControlsUI();
+        updateWhatIfControlsUI();
       }
     }
 
@@ -10168,6 +10886,7 @@
       const basinId = getActiveForecastBasinId();
       const selectedIds = getSelectedForecastCatchmentIds();
       updateForecastControlsUI();
+      updateWhatIfControlsUI();
       if (!basinId) {
         fcStatusData = null;
         populateProductDropdowns();
@@ -10189,6 +10908,7 @@
           renderForecastCatchmentChecklist();
           populateProductDropdowns();
           updateForecastControlsUI();
+          updateWhatIfControlsUI();
           renderForcingChart();
           renderHydrographChart(fcModelResultsByBasin[basinId] || null);
         }
@@ -10215,6 +10935,9 @@
       const runBtn = document.getElementById('fcRunModelBtn');
       const runBtnLabel = document.getElementById('fcRunBtnLabel');
       const blockedReasonEl = document.getElementById('fcRunBlockedReason');
+      const resetWhatIfBtn = document.getElementById('fcResetWhatIfInputsBtn');
+      const runWhatIfBtn = document.getElementById('fcRunWhatIfBtn');
+      const clearAllWhatIfsBtn = document.getElementById('fcClearAllWhatIfsBtn');
 
       if (coldBtn) {
         coldBtn.addEventListener('click', () => setForecastMode('coldstart'));
@@ -10253,6 +10976,7 @@
             activeCatchmentId = newId;
             syncForecastTabBasin();
           }
+          updateWhatIfControlsUI();
           renderHydrographChart(fcModelResultsByBasin[newId] || null);
         });
       }
@@ -10266,7 +10990,6 @@
       if (forecastSel) {
         forecastSel.addEventListener('change', (e) => {
           fcSelectedForecast = e.target.value !== 'none' ? e.target.value : null;
-          // Default to showing precipitation (as bars) and temperature (as lines) for any chosen product
           populateForecastVariableDropdown(true);
           renderForcingChart();
           renderHydrographChart(fcModelResultsByBasin[getActiveForecastBasinId()] || null);
@@ -10276,6 +10999,26 @@
         variableSel.addEventListener('change', (e) => {
           fcSelectedVariableMode = e.target.value || 'precip_and_temp';
           renderForcingChart();
+        });
+      }
+      if (resetWhatIfBtn) {
+        resetWhatIfBtn.addEventListener('click', () => {
+          resetBasinWhatIfEdits(getActiveForecastBasinId());
+        });
+      }
+      if (runWhatIfBtn) {
+        runWhatIfBtn.addEventListener('click', () => {
+          runWhatIfScenario();
+        });
+      }
+      if (clearAllWhatIfsBtn) {
+        clearAllWhatIfsBtn.addEventListener('click', () => {
+          const activeId = getActiveForecastBasinId();
+          if (activeId) {
+            fcWhatIfScenariosByBasin[activeId] = [];
+            renderWhatIfScenariosList();
+            renderHydrographChart();
+          }
         });
       }
 
@@ -10288,6 +11031,7 @@
 
           fcIsFetching = true;
           updateForecastControlsUI();
+          updateWhatIfControlsUI();
           if (fetchBtnLabel) {
             fetchBtnLabel.innerText = `Fetching ${fcCurrentMode === 'hotstart' ? 'Hot-Start' : 'Cold-Start'} Data (${targetIds.length} Basin${targetIds.length > 1 ? 's' : ''})...`;
           }
@@ -10347,6 +11091,7 @@
           } finally {
             fcIsFetching = false;
             updateForecastControlsUI();
+            updateWhatIfControlsUI();
           }
         });
       }
@@ -10358,8 +11103,16 @@
           const targetIds = selectedIds.length > 0 ? selectedIds : (basinId ? [basinId] : []);
           if (targetIds.length === 0 || fcIsRunningModel) return;
 
+          // If the user has dragged/modified forecast inputs on the active catchment,
+          // clicking "Run Model" runs the What-If scenario (and ensures baseline exists first)!
+          if (basinId && hasWhatIfEdits(basinId)) {
+            await runWhatIfScenario();
+            return;
+          }
+
           fcIsRunningModel = true;
           updateForecastControlsUI();
+          updateWhatIfControlsUI();
           if (runBtnLabel) {
             runBtnLabel.innerText = `Running Model (${fcCurrentMode === 'hotstart' ? 'Hot Start' : 'Cold Start'} · ${targetIds.length} Basin${targetIds.length > 1 ? 's' : ''})...`;
           }
@@ -10404,6 +11157,7 @@
           } finally {
             fcIsRunningModel = false;
             updateForecastControlsUI();
+            updateWhatIfControlsUI();
           }
         });
       }

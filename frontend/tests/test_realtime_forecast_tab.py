@@ -749,6 +749,117 @@ class RealtimeForecastTabTest(unittest.TestCase):
     self.assertIn("if (typeof loadPersistedExtractedAttributes === 'function') await loadPersistedExtractedAttributes();", html)
     self.assertIn("if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();", html)
 
+  def test_what_if_scenario_precip_and_temp_overrides_and_ui_controls(self):
+    """Verifies What-If precip/temp/product overrides produce modified trajectories without overwriting saved state, and checks UI controls."""
+    _populate_synthetic_realtime_zarr_stores(
+        self.profile_dir,
+        basin_id=TEST_BASIN,
+        issue_date_str="2026-03-30",
+    )
+
+    # 1. Run baseline unmodified Cold-Start forecast
+    code, base_res = self._request(
+        "POST",
+        "/api/forecast/run-model",
+        {"catchment_id": TEST_BASIN, "mode": "coldstart"},
+    )
+    self.assertEqual(code, 200, f"Baseline run failed: {base_res}")
+    base_q = np.array([pt["discharge_cms"] for pt in base_res["forecast"]])
+
+    # Corrupt state file slightly to verify What-If (is_what_if=True) does NOT overwrite saved state on disk
+    state_path = realtime_forecast_service.get_state_file_path(
+        TEST_USER, TEST_BASIN
+    )
+    mtime_before = state_path.stat().st_mtime_ns
+
+    # 2. Run What-If Scenario #1 with increased precipitation and modified temperature
+    code, whatif_1 = self._request(
+        "POST",
+        "/api/forecast/run-model",
+        {
+            "catchment_id": TEST_BASIN,
+            "mode": "coldstart",
+            "precip_overrides": {
+                "2026-03-30": 75.0,
+                "2026-03-31": 90.0,
+                "__temp_overrides__": {"2026-03-30": 24.5, "2026-03-31": 25.0},
+                "__is_what_if__": True,
+            },
+            "temp_overrides": {"2026-03-30": 24.5, "2026-03-31": 25.0},
+            "is_what_if": True,
+        },
+    )
+    self.assertEqual(code, 200, f"What-If #1 failed: {whatif_1}")
+    self.assertTrue(whatif_1.get("is_what_if"))
+    q_whatif_1 = np.array([pt["discharge_cms"] for pt in whatif_1["forecast"]])
+    self.assertFalse(
+        np.allclose(base_q, q_whatif_1),
+        "What-If #1 trajectory should differ from baseline when precip/temp are modified",
+    )
+    self.assertEqual(
+        state_path.stat().st_mtime_ns,
+        mtime_before,
+        "What-If run must not overwrite saved state on disk",
+    )
+
+    # 3. Run What-If Scenario #2 with per-product overrides (e.g. HRES vs ECMWF_AIFS)
+    code, whatif_2 = self._request(
+        "POST",
+        "/api/forecast/run-model",
+        {
+            "catchment_id": TEST_BASIN,
+            "mode": "coldstart",
+            "product_overrides": {
+                "HRES": {
+                    "precip": {"2026-04-01": 120.0, "2026-04-02": 110.0},
+                    "temp": {"2026-04-01": 5.0},
+                },
+            },
+            "precip_overrides": {
+                "2026-04-01": 120.0,
+                "2026-04-02": 110.0,
+                "__product_overrides__": {
+                    "HRES": {
+                        "precip": {"2026-04-01": 120.0, "2026-04-02": 110.0},
+                        "temp": {"2026-04-01": 5.0},
+                    },
+                },
+                "__is_what_if__": True,
+            },
+            "is_what_if": True,
+        },
+    )
+    self.assertEqual(code, 200, f"What-If #2 failed: {whatif_2}")
+    q_whatif_2 = np.array([pt["discharge_cms"] for pt in whatif_2["forecast"]])
+    self.assertFalse(
+        np.allclose(base_q, q_whatif_2),
+        "What-If #2 trajectory should differ from baseline",
+    )
+    self.assertFalse(
+        np.allclose(q_whatif_1, q_whatif_2),
+        "What-If #1 and What-If #2 should produce distinct trajectories",
+    )
+
+    # 4. Verify frontend HTML/JS structure for multi-product chart, disabled input tooltip, 0 mm bar grab, and multi-scenario What-If controls
+    html_path = (
+        Path(__file__).resolve().parent.parent / "static" / "index.html"
+    )
+    html = html_path.read_text(encoding="utf-8")
+    self.assertIn("FC_NOWCAST_PRECIP_PALETTE", html)
+    self.assertIn("FC_FORECAST_PRECIP_PALETTE", html)
+    self.assertIn("FC_FORECAST_TEMP_PALETTE", html)
+    self.assertIn("minBarLength: 7", html)
+    self.assertIn("fcWhatIfDragHandlePlugin", html)
+    self.assertIn("initWhatIfChartDragging", html)
+    self.assertIn("enabled: false", html)
+    self.assertIn('id="fcRunWhatIfBtn"', html)
+    self.assertIn('id="fcResetWhatIfInputsBtn"', html)
+    self.assertIn('id="fcWhatIfScenariosBar"', html)
+    self.assertIn('id="fcWhatIfScenariosList"', html)
+    self.assertIn("fc-whatif-toggle-cb", html)
+    self.assertIn("fc-whatif-delete-btn", html)
+
 
 if __name__ == "__main__":
   unittest.main()
+

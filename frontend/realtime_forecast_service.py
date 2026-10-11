@@ -1351,7 +1351,7 @@ def _load_static_attributes_for_basin(
 
 
 def _resolve_var_in_ds(ds: Optional[xr.Dataset], feat: str) -> Optional[str]:
-  """Finds matching variable name in `ds` (handling `_precipitation` vs `_precip` aliases)."""
+  """Finds matching variable name in `ds` (handling `_precipitation` vs `_precip` and `graphcast_` vs `aifs_` aliases)."""
   if ds is None:
     return None
   candidates = [
@@ -1359,6 +1359,13 @@ def _resolve_var_in_ds(ds: Optional[xr.Dataset], feat: str) -> Optional[str]:
       feat.replace("_precipitation", "_precip"),
       feat.replace("_precip", "_precipitation"),
   ]
+  if feat.startswith("graphcast_"):
+    aifs_feat = feat.replace("graphcast_", "aifs_", 1)
+    candidates.extend([
+        aifs_feat,
+        aifs_feat.replace("_precipitation", "_precip"),
+        aifs_feat.replace("_precip", "_precipitation"),
+    ])
   for cand in candidates:
     if cand in ds.data_vars:
       return cand
@@ -1380,6 +1387,89 @@ def _scale_feature_array(
   return arr.astype(np.float32)
 
 
+def _unpack_override_payloads(
+    precip_overrides: Optional[Dict[str, Any]],
+    temp_overrides: Optional[Dict[str, float]] = None,
+    product_overrides: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+    is_what_if: bool = False,
+) -> Tuple[
+    Dict[str, float],
+    Dict[str, float],
+    Dict[str, Dict[str, Dict[str, float]]],
+    bool,
+]:
+  """Normalizes precip, temp, and per-product override dicts (supporting embedded keys inside precip_overrides)."""
+  clean_precip: Dict[str, float] = {}
+  clean_temp: Dict[str, float] = dict(temp_overrides or {})
+  clean_prod: Dict[str, Dict[str, Dict[str, float]]] = dict(product_overrides or {})
+  what_if_flag = bool(is_what_if)
+
+  if isinstance(precip_overrides, dict):
+    if "__temp_overrides__" in precip_overrides and not clean_temp:
+      raw_t = precip_overrides.get("__temp_overrides__")
+      if isinstance(raw_t, dict):
+        clean_temp = {
+            str(k): float(v) for k, v in raw_t.items() if v is not None
+        }
+    if "__product_overrides__" in precip_overrides and not clean_prod:
+      raw_p = precip_overrides.get("__product_overrides__")
+      if isinstance(raw_p, dict):
+        clean_prod = raw_p
+    if "__is_what_if__" in precip_overrides:
+      what_if_flag = what_if_flag or bool(precip_overrides.get("__is_what_if__"))
+    for k, v in precip_overrides.items():
+      if not str(k).startswith("__") and v is not None:
+        try:
+          clean_precip[str(k)] = float(v)
+        except (TypeError, ValueError):
+          pass
+
+  if clean_precip or clean_temp or clean_prod:
+    what_if_flag = True
+
+  return clean_precip, clean_temp, clean_prod, what_if_flag
+
+
+def _lookup_feature_override(
+    prod: str,
+    var_kind: Optional[str],
+    d_str: str,
+    precip_overrides: Dict[str, float],
+    temp_overrides: Dict[str, float],
+    product_overrides: Dict[str, Dict[str, Dict[str, float]]],
+) -> Optional[float]:
+  """Resolves an override value for `(prod, var_kind, d_str)` if one was specified."""
+  if var_kind not in ("precip", "temp"):
+    return None
+
+  prod_lower = prod.lower()
+  if prod_lower == "hres":
+    aliases = ("HRES", "hres")
+  elif prod_lower in ("graphcast", "aifs", "ecmwf_aifs"):
+    aliases = ("ECMWF_AIFS", "AIFS", "GRAPHCAST", "ecmwf_aifs", "aifs", "graphcast")
+  elif prod_lower == "imerg":
+    aliases = ("IMERG", "imerg")
+  elif prod_lower == "cpc":
+    aliases = ("CPC", "cpc")
+  else:
+    aliases = (prod.upper(), prod_lower)
+
+  for alias in aliases:
+    p_dict = product_overrides.get(alias)
+    if isinstance(p_dict, dict):
+      v_dict = p_dict.get(var_kind)
+      if isinstance(v_dict, dict) and d_str in v_dict and v_dict[d_str] is not None:
+        val = float(v_dict[d_str])
+        return max(0.0, val) if var_kind == "precip" else val
+
+  fallback_map = precip_overrides if var_kind == "precip" else temp_overrides
+  if d_str in fallback_map and fallback_map[d_str] is not None:
+    val = float(fallback_map[d_str])
+    return max(0.0, val) if var_kind == "precip" else val
+
+  return None
+
+
 def _assemble_inference_tensors(
     username: Optional[str],
     catchment_id: str,
@@ -1387,10 +1477,16 @@ def _assemble_inference_tensors(
     seq_len: int,
     lead_time: int,
     bundle: Dict[str, Any],
-    precip_overrides: Optional[Dict[str, float]] = None,
+    precip_overrides: Optional[Dict[str, Any]] = None,
+    temp_overrides: Optional[Dict[str, float]] = None,
+    product_overrides: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
 ) -> Tuple[Dict[str, Any], pd.DatetimeIndex, pd.DatetimeIndex, float]:
   """Builds scaled PyTorch input dictionary for `MeanEmbeddingForecastLSTM` on `fork/main`."""
   import torch  # pylint: disable=g-import-not-at-top
+
+  clean_precip, clean_temp, clean_prod, _ = _unpack_override_payloads(
+      precip_overrides, temp_overrides, product_overrides
+  )
 
   cfg = bundle["cfg"]
   scaler = bundle["scaler"]
@@ -1420,6 +1516,10 @@ def _assemble_inference_tensors(
       open_datasets[p_name.upper()] = ds_obj
     except Exception:  # pylint: disable=broad-except
       pass
+  if "graphcast" not in open_datasets:
+    aifs_ds = open_datasets.get("ecmwf_aifs") or open_datasets.get("aifs")
+    if aifs_ds is not None:
+      open_datasets["graphcast"] = aifs_ds
 
   # 1. Populate hindcast features (`x_d_hindcast`), each shaped `[1, seq_len + lead_time, 1]`
   # with the last `lead_time` steps padded with NaN for nowcast-only products.
@@ -1430,6 +1530,7 @@ def _assemble_inference_tensors(
     var_name = _resolve_var_in_ds(ds, feat)
     hc_arr = np.full(seq_len, np.nan, dtype=np.float32)
     fc_pad = np.full(lead_time, np.nan, dtype=np.float32)
+    var_kind = "precip" if "precip" in feat else ("temp" if "temp" in feat else None)
 
     if ds is not None and var_name is not None:
       bkey = _find_basin_key_in_ds(ds, catchment_id)
@@ -1444,11 +1545,14 @@ def _assemble_inference_tensors(
           if d in v_map:
             hc_arr[i] = float(v_map[d])
 
-    if precip_overrides and "precip" in feat:
+    if var_kind is not None and (clean_precip or clean_temp or clean_prod):
       for i, d in enumerate(hindcast_dates):
         d_str = _format_date_str(d)
-        if d_str in precip_overrides and precip_overrides[d_str] is not None:
-          hc_arr[i] = float(precip_overrides[d_str])
+        ov = _lookup_feature_override(
+            prod, var_kind, d_str, clean_precip, clean_temp, clean_prod
+        )
+        if ov is not None:
+          hc_arr[i] = ov
 
     full_arr = _scale_feature_array(
         scaler, feat, np.concatenate([hc_arr, fc_pad])
@@ -1465,6 +1569,7 @@ def _assemble_inference_tensors(
     var_name = _resolve_var_in_ds(ds, feat)
     hc_arr = np.full(seq_len, np.nan, dtype=np.float32)
     fc_arr = np.full(lead_time, np.nan, dtype=np.float32)
+    var_kind = "precip" if "precip" in feat else ("temp" if "temp" in feat else None)
 
     if ds is not None and var_name is not None:
       bkey = _find_basin_key_in_ds(ds, catchment_id)
@@ -1483,15 +1588,21 @@ def _assemble_inference_tensors(
           n_copy = min(lead_time, len(fc_vals))
           fc_arr[:n_copy] = fc_vals[:n_copy].astype(np.float32)
 
-    if precip_overrides and "precip" in feat:
+    if var_kind is not None and (clean_precip or clean_temp or clean_prod):
       for i, d in enumerate(hindcast_dates):
         d_str = _format_date_str(d)
-        if d_str in precip_overrides and precip_overrides[d_str] is not None:
-          hc_arr[i] = float(precip_overrides[d_str])
+        ov = _lookup_feature_override(
+            prod, var_kind, d_str, clean_precip, clean_temp, clean_prod
+        )
+        if ov is not None:
+          hc_arr[i] = ov
       for j, d in enumerate(forecast_dates):
         d_str = _format_date_str(d)
-        if d_str in precip_overrides and precip_overrides[d_str] is not None:
-          fc_arr[j] = float(precip_overrides[d_str])
+        ov = _lookup_feature_override(
+            prod, var_kind, d_str, clean_precip, clean_temp, clean_prod
+        )
+        if ov is not None:
+          fc_arr[j] = ov
 
     full_arr = _scale_feature_array(
         scaler, feat, np.concatenate([hc_arr, fc_arr])
@@ -1539,11 +1650,18 @@ def _run_forecast_model_single(
     norm_mode: str,
     t0: pd.Timestamp,
     bundle: Dict[str, Any],
-    precip_overrides: Optional[Dict[str, float]] = None,
+    precip_overrides: Optional[Dict[str, Any]] = None,
     model_id: str = "5-basin-example",
+    temp_overrides: Optional[Dict[str, float]] = None,
+    product_overrides: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+    is_what_if: bool = False,
 ) -> Dict[str, Any]:
   """Runs `MeanEmbeddingForecastLSTM` for a single catchment after state validation."""
   import torch  # pylint: disable=g-import-not-at-top
+
+  clean_precip, clean_temp, clean_prod, what_if_flag = _unpack_override_payloads(
+      precip_overrides, temp_overrides, product_overrides, is_what_if
+  )
 
   issue_date_str = _format_date_str(t0)
   expected_state_date = _format_date_str(t0 - pd.Timedelta(days=1))
@@ -1570,7 +1688,9 @@ def _run_forecast_model_single(
           seq_len=full_seq_len,
           lead_time=lead_time,
           bundle=bundle,
-          precip_overrides=precip_overrides,
+          precip_overrides=clean_precip,
+          temp_overrides=clean_temp,
+          product_overrides=clean_prod,
       )
   )
 
@@ -1578,16 +1698,17 @@ def _run_forecast_model_single(
     if norm_mode == "coldstart":
       model.seq_length = full_seq_len
       model._preloaded_state = None
-      state_path.parent.mkdir(parents=True, exist_ok=True)
-      model.save_state(model_input, state_path)
-      # Record `date` (and `h_n`/`c_n` compatibility aliases) in the state archive
-      saved_npz = dict(np.load(state_path, allow_pickle=False))
-      saved_npz["date"] = np.array(expected_state_date, dtype="U10")
-      if "h_hindcast" in saved_npz and "h_n" not in saved_npz:
-        saved_npz["h_n"] = saved_npz["h_hindcast"]
-      if "c_hindcast" in saved_npz and "c_n" not in saved_npz:
-        saved_npz["c_n"] = saved_npz["c_hindcast"]
-      np.savez_compressed(state_path, **saved_npz)
+      if not what_if_flag:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        model.save_state(model_input, state_path)
+        # Record `date` (and `h_n`/`c_n` compatibility aliases) in the state archive
+        saved_npz = dict(np.load(state_path, allow_pickle=False))
+        saved_npz["date"] = np.array(expected_state_date, dtype="U10")
+        if "h_hindcast" in saved_npz and "h_n" not in saved_npz:
+          saved_npz["h_n"] = saved_npz["h_hindcast"]
+        if "c_hindcast" in saved_npz and "c_n" not in saved_npz:
+          saved_npz["c_n"] = saved_npz["c_hindcast"]
+        np.savez_compressed(state_path, **saved_npz)
 
       pred_dict = model(model_input)
     else:
@@ -1682,6 +1803,7 @@ def _run_forecast_model_single(
   return {
       "status": "success",
       "mode": norm_mode,
+      "is_what_if": what_if_flag,
       "basin_id": catchment_id,
       "catchment_id": catchment_id,
       "model_id": model_id,
@@ -1703,10 +1825,13 @@ def run_forecast_model(
     catchment_id: Optional[str] = None,
     mode: str = "coldstart",
     requested_issue_date: Optional[str] = None,
-    precip_overrides: Optional[Dict[str, float]] = None,
+    precip_overrides: Optional[Dict[str, Any]] = None,
     model_id: str = "5-basin-example",
     model_run_dir: Optional[Path] = None,
     catchment_ids: Optional[Sequence[str]] = None,
+    temp_overrides: Optional[Dict[str, float]] = None,
+    product_overrides: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+    is_what_if: bool = False,
 ) -> Dict[str, Any]:
   """Executes Cold-Start or Hot-Start inference on `MeanEmbeddingForecastLSTM` for 1 or more catchments.
 
@@ -1775,6 +1900,9 @@ def run_forecast_model(
         bundle=bundle,
         precip_overrides=precip_overrides,
         model_id=model_id,
+        temp_overrides=temp_overrides,
+        product_overrides=product_overrides,
+        is_what_if=is_what_if,
     )
 
   primary_res = results_by_id[primary_id]
@@ -1844,8 +1972,11 @@ def run_hydrological_model_for_basin(
     mode: str = "coldstart",
     model_run_dir: Optional[Union[str, Path]] = None,
     requested_issue_date: Optional[str] = None,
-    precip_overrides: Optional[Dict[str, float]] = None,
+    precip_overrides: Optional[Dict[str, Any]] = None,
     basin_ids: Optional[Sequence[str]] = None,
+    temp_overrides: Optional[Dict[str, float]] = None,
+    product_overrides: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+    is_what_if: bool = False,
 ) -> Dict[str, Any]:
   """Server endpoint wrapper for POST /api/forecast/run-model."""
   return run_forecast_model(
@@ -1856,6 +1987,9 @@ def run_hydrological_model_for_basin(
       precip_overrides=precip_overrides,
       model_run_dir=Path(model_run_dir) if model_run_dir else None,
       catchment_ids=basin_ids,
+      temp_overrides=temp_overrides,
+      product_overrides=product_overrides,
+      is_what_if=is_what_if,
   )
 
 
