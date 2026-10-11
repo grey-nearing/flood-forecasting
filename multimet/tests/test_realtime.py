@@ -128,6 +128,7 @@ class FakeECMWFOpenDataFS:
 
   _STEP_CACHE: Dict[int, Tuple[bytes, bytes]] = {}
   _PARAMS: Tuple[str, ...] = ("2t", "sp", "tp", "ssr", "str")
+  _LOCK = __import__("threading").RLock()
 
   def __init__(
       self,
@@ -162,44 +163,46 @@ class FakeECMWFOpenDataFS:
     return date_str in self.available_dates and step in self.published_steps
 
   def _get_step_index_and_grib(self, step: int) -> Tuple[bytes, bytes]:
-    if not self.custom_step_values and step in self._STEP_CACHE:
-      return self._STEP_CACHE[step]
-    if step in self._local_step_cache:
-      return self._local_step_cache[step]
+    with self._LOCK:
+      if not self.custom_step_values and step in self._STEP_CACHE:
+        return self._STEP_CACHE[step]
+      if step in self._local_step_cache:
+        return self._local_step_cache[step]
 
-    lines: List[str] = []
-    chunks: List[bytes] = []
-    offset = 0
-    for param in self._PARAMS:
-      if (param, step) in self.custom_step_values:
-        val_nh, val_sh = self.custom_step_values[(param, step)]
+      lines: List[str] = []
+      chunks: List[bytes] = []
+      offset = 0
+      for param in self._PARAMS:
+        if (param, step) in self.custom_step_values:
+          val_nh, val_sh = self.custom_step_values[(param, step)]
+        else:
+          val_nh, val_sh = _physical_values_for_param_and_step(param, step)
+        msg = _encode_test_grib2_message(param, val_nh, val_sh)
+        lines.append(
+            json.dumps({
+                "param": param,
+                "levtype": "sfc",
+                "step": str(step),
+                "_offset": offset,
+                "_length": len(msg),
+            })
+        )
+        chunks.append(msg)
+        offset += len(msg)
+
+      idx_bytes = ("\n".join(lines) + "\n").encode("utf-8")
+      grib_bytes = b"".join(chunks)
+      if not self.custom_step_values:
+        self._STEP_CACHE[step] = (idx_bytes, grib_bytes)
       else:
-        val_nh, val_sh = _physical_values_for_param_and_step(param, step)
-      msg = _encode_test_grib2_message(param, val_nh, val_sh)
-      lines.append(
-          json.dumps({
-              "param": param,
-              "levtype": "sfc",
-              "step": str(step),
-              "_offset": offset,
-              "_length": len(msg),
-          })
-      )
-      chunks.append(msg)
-      offset += len(msg)
-
-    idx_bytes = ("\n".join(lines) + "\n").encode("utf-8")
-    grib_bytes = b"".join(chunks)
-    if not self.custom_step_values:
-      self._STEP_CACHE[step] = (idx_bytes, grib_bytes)
-    else:
-      self._local_step_cache[step] = (idx_bytes, grib_bytes)
-    return idx_bytes, grib_bytes
+        self._local_step_cache[step] = (idx_bytes, grib_bytes)
+      return idx_bytes, grib_bytes
 
   def cat(self, paths: Sequence[str]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for p in paths:
-      self.requested_index_paths.append(p)
+      with self._LOCK:
+        self.requested_index_paths.append(p)
       date_str, step = self._parse_date_and_step(p)
       if date_str not in self.available_dates or step not in self.published_steps:
         raise FileNotFoundError(p)
@@ -212,7 +215,8 @@ class FakeECMWFOpenDataFS:
   ) -> List[bytes]:
     blobs: List[bytes] = []
     for p, s, e in zip(paths, starts, ends):
-      self.requested_grib_ranges.append((p, s, e))
+      with self._LOCK:
+        self.requested_grib_ranges.append((p, s, e))
       date_str, step = self._parse_date_and_step(p)
       if date_str not in self.available_dates or step not in self.published_steps:
         raise FileNotFoundError(p)

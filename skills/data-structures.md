@@ -51,7 +51,7 @@ All global gridded meteorological archives in `gs://open-multimet/` share a unif
 | **3D Nowcast Dimensions** | `("time", "latitude", "longitude")` |
 | **4D Forecast Dimensions** | `("time", "lead_time", "latitude", "longitude")` |
 | **CRS & Registration** | Geographic WGS84 (`EPSG:4326`), regular lat/lon grid with **cell-center registration** (each `(latitude[i], longitude[j])` is the center of a $\Delta\text{lat} \times \Delta\text{lon}$ box). |
-| **`latitude` Coordinate** | `float32`, monotonically **ascending south-to-north** in `[-90.0, 90.0]` (`-89.75 .. 89.75` for `0.5°` CPC; `-89.95 .. 89.95` for `0.1°` IMERG; `-90.0 .. 90.0` for `0.1°` HRES). *(Note: Legacy `data/era5_land/daily_surface.zarr` has descending `90.0 .. -90.0` from native ECMWF GRIB order; all new gridded archives must use ascending south-to-north latitude, and `multimet` readers align either orientation automatically.)* |
+| **`latitude` Coordinate** | `float32`, monotonically **ascending south-to-north** in `[-90.0, 90.0]` (`-89.75 .. 89.75` for `0.5°` CPC; `-89.95 .. 89.95` for `0.1°` IMERG; `-90.0 .. 90.0` for `0.1°` ERA5-Land and HRES). |
 | **`longitude` Coordinate** | `float32`, monotonically **ascending west-to-east** in `[-180.0, 180.0)` (`-180.0 .. 179.9` for `0.1°` ECMWF grids; `-179.95 .. 179.95` for `0.1°` IMERG; `-179.75 .. 179.75` for `0.5°` CPC). Upstream `[0, 360)` grids are shifted via `np.where(lon >= 180.0, lon - 360.0, lon)` and sorted ascending. |
 | **`time` Coordinate** | `datetime64[ns]`, strictly contiguous daily (`1D`) **UTC+0** midnight timestamps (`YYYY-MM-DDT00:00:00`), **left-labeled** so date $D$ covers $[D\text{ 00:00:00}, D+1\text{ 00:00:00})$. |
 | **`lead_time` Coordinate** | **1-indexed daily steps** (`int64` `1 .. L` with `{"units": "days"}` in gridded archives, or `timedelta64[ns]` `1 day .. L days` in basin Zarr stores). On forecast issue date $D$ (`00:00 UTC`), `lead_time = k` (0-based index `k - 1`) covers the valid 24-hour UTC window $[D + (k - 1)\text{ 00:00:00}, D + k\text{ 00:00:00})$. |
@@ -103,12 +103,12 @@ We maintain four native-resolution Analysis-Ready Cloud-Optimized (ARCO) global 
 
 | Product | GCS Zarr URI | Dims & Shape | Grid Resolution & Coordinates | Chunk Shape | Time Range |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`ERA5_LAND`** | `gs://open-multimet/data/era5_land/daily_surface.zarr` | `("time", "latitude", "longitude")`<br>`(17053, 1801, 3600)` | `0.1° × 0.1°`<br>`latitude`: `90.0 .. -90.0` (`1801`)<br>`longitude`: `-180.0 .. 179.9` (`3600`) | `(1, 1801, 3600)` | `1980-01-01` to `2026-09-08` |
+| **`ERA5_LAND`** | `gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr` | `("time", "latitude", "longitude")`<br>`(17053, 1801, 3600)` | `0.1° × 0.1°`<br>`latitude`: `-90.0 .. 90.0` (`1801`)<br>`longitude`: `-180.0 .. 179.9` (`3600`) | `(1, 1801, 3600)` | `1980-01-01` to `2026-09-08` |
 | **`HRES`** | `gs://open-multimet/gridded-data-archives/HRES/daily_surface.zarr` | `("time", "lead_time", "latitude", "longitude")`<br>`(3926, 10, 1801, 3600)` | `0.1° × 0.1°`<br>`latitude`: `-90.0 .. 90.0` (`1801`)<br>`longitude`: `-180.0 .. 179.9` (`3600`)<br>`lead_time`: `1 .. 10` (`int64`, days) | `(1, 10, 1801, 3600)` | `2016-01-01` to `2026-09-30` |
 | **`CPC`** | `gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr` | `("time", "latitude", "longitude")`<br>`(17426+, 360, 720)` | `0.5° × 0.5°`<br>`latitude`: `-89.75 .. 89.75` (`360`)<br>`longitude`: `-179.75 .. 179.75` (`720`) | `(30, 360, 720)` | `1979-01-01` to present |
 | **`IMERG`** | `gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr` | `("time", "latitude", "longitude")`<br>`(9605+, 1800, 3600)` | `0.1° × 0.1°`<br>`latitude`: `-89.95 .. 89.95` (`1800`)<br>`longitude`: `-179.95 .. 179.95` (`3600`) | `(1, 1800, 3600)` | `2000-06-01` to present |
 
-### 3.2 `ERA5-Land` Internal Gridded Archive (`data/era5_land/daily_surface.zarr`)
+### 3.2 `ERA5-Land` Internal Gridded Archive (`gridded-data-archives/ERA5_LAND/daily_surface.zarr`)
 
 - **Provenance & Construction:** Built from native hourly ECMWF ERA5-Land `0.1°` (`1801 × 3600`) reanalysis fields (`reanalysis-era5-land`, DOI: `10.24381/cds.e2161bac`, Earth Engine `ECMWF/ERA5_LAND/HOURLY`), aggregated and de-accumulated to daily UTC means, minimums, maximums, and daily totals while preserving native `0.1°` (`1801 × 3600`) floating-point precision.
 - **39 `float32` Surface Variables:**

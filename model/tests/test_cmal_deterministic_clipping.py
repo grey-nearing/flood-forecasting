@@ -264,16 +264,27 @@ def test_cmal_deterministic_evaluate_selects_mean_and_median_indices(
 @pytest.mark.unit
 def test_critical_ruff_lint_rules():
     """Enforce zero critical ruff lint errors (F821, E9, B006, B023, PLE) in CI."""
+    import os
     from pathlib import Path
+    import shutil
     import subprocess
     import sys
 
     repo_root = Path(__file__).resolve().parents[2]
+    py_dir = Path(sys.executable).resolve().parent
+    search_path = os.pathsep.join(
+        [
+            str(py_dir),
+            str(py_dir / 'Scripts'),
+            str(py_dir / 'Library' / 'bin'),
+            os.environ.get('PATH', ''),
+        ]
+    )
+    ruff_bin = shutil.which('ruff', path=search_path)
+    ruff_cmd = [ruff_bin] if ruff_bin is not None else [sys.executable, '-m', 'ruff']
     result = subprocess.run(
         [
-            sys.executable,
-            '-m',
-            'ruff',
+            *ruff_cmd,
             'check',
             '--select',
             'F821,E9,B006,B023,PLE',

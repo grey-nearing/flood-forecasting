@@ -123,6 +123,7 @@ class _HermeticWeatherStreamTestCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         """Restore WeatherEngine candidate directories and clean up."""
+        we._install_streams(None)  # noqa: SLF001
         we.CANDIDATE_DATA_DIRS[:] = cls._saved_dirs
         if cls._saved_warm is None:
             os.environ.pop('OPENHYDRONET_WEATHER_WARM_CACHE', None)

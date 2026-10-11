@@ -8,7 +8,7 @@ The extractor supports **4 core products** (operating either against user-suppli
 
 | Product | Type | Native Grid | Forecast Lead | Variables Extracted | Supported Sources |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **ERA5-Land** (`ERA5_LAND`) | Daily Reanalysis | $0.1^\circ$ (1801 $\times$ 3600) | N/A | **17 variables** (`era5land_temperature_2m`, `era5land_temperature_2m_min`, `era5land_temperature_2m_max`, `era5land_dewpoint_temperature_2m`, `era5land_surface_pressure`, `era5land_total_precipitation`, solar/thermal radiation, 10m U/V wind, soil moisture layers 1–4, snow depth water equivalent, FAO-56 & ERA5-Land PET) + `era5land_missing_fraction` | **Gridded Zarr archive only** (explicit user-supplied `gs://` or local `.zarr` URI; third-party sources are disabled to prevent 0.25° ERA5 substitution) |
+| **ERA5-Land** (`ERA5_LAND`) | Daily Reanalysis | $0.1^\circ$ (1801 $\times$ 3600) | N/A | **39 variables** (12 state & radiation variables with daily mean, `_min`, and `_max` + `era5land_total_precipitation`, `era5land_potential_evaporation_FAO_PENMAN_MONTEITH`, and `era5land_potential_evaporation_DEPRECATED`) + `era5land_missing_fraction` | **Gridded Zarr archive only** (explicit user-supplied `gs://` or local `.zarr` URI; third-party sources are disabled to prevent 0.25° ERA5 substitution) |
 | **CPC Global Precip** (`CPC`) | Daily Gauge | $0.5^\circ$ (360 $\times$ 720) | N/A | **2 variables**: `cpc_precipitation` ($\text{mm/day}$) and `cpc_num_stations` (reporting rain-gauge count per cell) + `cpc_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`), NOAA PSL NetCDF (`https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/`), or local CPC binary grids |
 | **IMERG Early V07** (`IMERG`) | Daily / Half-Hourly Satellite | $0.1^\circ$ (1800 $\times$ 3600) | N/A | `imerg_precipitation` ($\text{mm/day}$) + `imerg_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`) or NASA GES DISC (`GPM_3IMERGDE.07`) |
 | **ECMWF IFS HRES** (`HRES`) | Operational NWP Forecast | $0.25^\circ$ (721 $\times$ 1440) | 10 days ($1 \dots 10$) | **5 variables** (`hres_total_precipitation`, `hres_temperature_2m`, `hres_surface_pressure`, `hres_surface_net_solar_radiation`, `hres_surface_net_thermal_radiation`) + `hres_missing_fraction` | User-supplied gridded Zarr archive (`--source archive`), ECMWF Open Data (`gs://ecmwf-open-data`, `--source open_data`), or explicit Zarr/GRIB store (`data_dir`) |
@@ -55,7 +55,7 @@ output_stores = extract_multimet_serial(
     source="archive",
     archive_stores={
         "CPC": "gs://<your-bucket>/gridded-data-archives/CPC/daily_surface.zarr",
-        "ERA5_LAND": "gs://<your-bucket>/data/era5_land/daily_surface.zarr",
+        "ERA5_LAND": "gs://<your-bucket>/gridded-data-archives/ERA5_LAND/daily_surface.zarr",
         "IMERG": "gs://<your-bucket>/gridded-data-archives/IMERG/daily_surface.zarr",
         "HRES": "gs://<your-bucket>/gridded-data-archives/HRES/daily_surface.zarr",
     },
@@ -74,7 +74,7 @@ extract-multimet \
   --end_date 2022-01-05 \
   --source archive \
   --archive-store CPC=gs://<your-bucket>/gridded-data-archives/CPC/daily_surface.zarr \
-  --archive-store ERA5_LAND=gs://<your-bucket>/data/era5_land/daily_surface.zarr \
+  --archive-store ERA5_LAND=gs://<your-bucket>/gridded-data-archives/ERA5_LAND/daily_surface.zarr \
   --archive-store IMERG=gs://<your-bucket>/gridded-data-archives/IMERG/daily_surface.zarr \
   --archive-store HRES=gs://<your-bucket>/gridded-data-archives/HRES/daily_surface.zarr
 

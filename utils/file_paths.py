@@ -40,7 +40,7 @@ DEFAULT_GCS_ERA5_CLIMATE_URI = (
     f'{OPEN_MULTIMET_BUCKET_URI}/ancillary-data/hydroatlas/era5_climate'
 )
 DEFAULT_GCS_GRIDDED_ERA5_URI = (
-    f'{OPEN_MULTIMET_BUCKET_URI}/data/era5_land/daily_surface.zarr'
+    f'{OPEN_MULTIMET_BUCKET_URI}/gridded-data-archives/ERA5_LAND/daily_surface.zarr'
 )
 DEFAULT_GCS_DEM_TILES_URI = (
     f'{OPEN_MULTIMET_BUCKET_URI}/ancillary-data/dems/tiles_5deg'

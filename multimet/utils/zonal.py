@@ -35,6 +35,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 import geopandas as gpd
 import numpy as np
 from scipy import sparse
+import shapely
 import shapely.geometry
 import shapely.prepared
 
@@ -146,6 +147,14 @@ class ZonalWeightCalculator:
       empty_w = np.array([], dtype=np.float64)
       self._cache[basin_id] = (empty_i, empty_i, empty_w)
       return self._cache[basin_id]
+
+    if not polygon.is_valid:
+      polygon = shapely.make_valid(polygon)
+      if polygon is None or polygon.is_empty:
+        empty_i = np.array([], dtype=np.int32)
+        empty_w = np.array([], dtype=np.float64)
+        self._cache[basin_id] = (empty_i, empty_i, empty_w)
+        return self._cache[basin_id]
 
     minx, miny, maxx, maxy = polygon.bounds
     half_lat = self.dlat / 2.0

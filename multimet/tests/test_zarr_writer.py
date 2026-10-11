@@ -339,3 +339,76 @@ def test_expand_date_range_forecast_product(writer: MultiMetZarrWriter):
     # Day 4 (postpended 07) should be NaN
     assert np.isnan(vals[0, 4, :]).all()
 
+
+def test_initialize_zarr_store_local_and_remote_memory_roundtrip(tmp_path):
+  """Verifies initialize_zarr_store skeleton on local and memory:// stores, including re-init cleanup."""
+  import zarr
+  from multimet.timeseries_extractors.zarr_writer import check_zarr_store_exists
+
+  basins = ["b_01", "b_02", "b_03"]
+  dates = pd.date_range("2022-01-01", periods=4, freq="D")
+
+  # 1. Remote memory:// store initialization (Nowcast ERA5_LAND)
+  mem_root = "memory://test_init_zarr_store_roundtrip"
+  mem_writer = MultiMetZarrWriter(mem_root)
+  store_uri = mem_writer.initialize_zarr_store(
+      Product.ERA5_LAND,
+      basin_ids=basins,
+      dates=list(dates),
+      extra_attrs={"source_test": "unit"},
+  )
+  assert check_zarr_store_exists(store_uri)
+
+  with xr.open_zarr(store_uri, consolidated=True) as ds:
+    assert list(ds["basin"].values) == basins
+    assert len(ds["date"]) == 4
+    assert ds.attrs.get("source_test") == "unit"
+    for band in PRODUCT_BANDS[Product.ERA5_LAND]:
+      assert band in ds.data_vars
+      assert ds[band].dtype == np.float32
+      assert ds[band].shape == (3, 4)
+    # Unwritten skeleton chunks must read back as NaN
+    assert np.all(np.isnan(ds["era5land_total_precipitation"].values))
+
+  # Write a direct chunk to day 1 and verify it persists
+  mem_writer.write_direct_chunk(
+      Product.ERA5_LAND,
+      "era5land_total_precipitation",
+      1,
+      np.array([10.0, 20.0, 30.0], dtype=np.float32),
+  )
+  with xr.open_zarr(store_uri, consolidated=True) as ds_written:
+    np.testing.assert_allclose(
+        ds_written["era5land_total_precipitation"].values[:, 1],
+        [10.0, 20.0, 30.0],
+    )
+    assert np.all(np.isnan(ds_written["era5land_total_precipitation"].values[:, 0]))
+
+  # Re-initializing the same remote memory:// store must wipe the previously written day-1 chunk
+  mem_writer_reinit = MultiMetZarrWriter(mem_root)
+  mem_writer_reinit.initialize_zarr_store(
+      Product.ERA5_LAND,
+      basin_ids=basins,
+      dates=list(dates),
+  )
+  with xr.open_zarr(store_uri, consolidated=True) as ds_reinit:
+    assert np.all(np.isnan(ds_reinit["era5land_total_precipitation"].values))
+
+  # 2. Local Forecast store with include_ensemble_members=True (GEFS)
+  local_writer = MultiMetZarrWriter(tmp_path / "ens_init")
+  ens_store = local_writer.initialize_zarr_store(
+      Product.GEFS,
+      basin_ids=["b_ens"],
+      dates=list(dates[:2]),
+      include_ensemble_members=True,
+      ensemble_members=[0, 1, 2],
+  )
+  with xr.open_zarr(ens_store, consolidated=True) as ds_ens:
+    assert "ensemble_member" in ds_ens.coords
+    assert list(ds_ens["ensemble_member"].values) == [0, 1, 2]
+    assert ds_ens["gefs_total_precipitation_ensemble"].shape == (1, 2, 3, 10)
+    assert ds_ens["gefs_total_precipitation_ensemble"].dtype == np.float32
+  z_grp = zarr.open_group(ens_store, mode="r")
+  assert "_f32_template" not in z_grp
+
+

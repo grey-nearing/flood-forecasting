@@ -805,10 +805,12 @@ def test_find_product_zarr_path_multi_directory_and_cloud_fallback(
     )
 
     # Missing local dir in dynamics_data_dir raises FileNotFoundError (H1)
+    import re
+
     missing_local_dir = tmp_path / 'nonexistent_local_dir'
     with pytest.raises(
         FileNotFoundError,
-        match=f'Dynamics data path not found: {missing_local_dir}',
+        match=re.escape(f'Dynamics data path not found: {missing_local_dir}'),
     ):
         _find_product_zarr_path(
             ['gs://caravan-multimet/v1.1', missing_local_dir], 'CPC'

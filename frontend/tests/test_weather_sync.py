@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import struct
@@ -33,6 +32,7 @@ import xarray as xr
 from frontend import weather_engine as we
 from frontend import weather_sync as ws
 from multimet.weather_fetcher.config import N_LAT, N_LON
+from multimet.weather_fetcher.sync import swap_current_symlink
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -300,8 +300,8 @@ class WeatherSyncTest(unittest.TestCase):
         runs_dir = Path(self.root) / 'runs'
         runs_dir.mkdir(parents=True, exist_ok=True)
         lock_path = Path(self.root) / 'sync.lock'
-        with lock_path.open('w', encoding='utf-8') as holder:
-            fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with lock_path.open('a+', encoding='utf-8') as holder:
+            assert ws._try_acquire_lock(holder.fileno())  # noqa: SLF001
             calls: list[str] = []
             status = self._sync(['ecmwf_aifs'], lambda _c, i: calls.append(i))
         assert status['last_result'] == 'busy'
@@ -335,6 +335,7 @@ class WeatherEngineReloadAndFramesTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         """Restore WeatherEngine state and remove temporary directory."""
+        we._install_streams(None)  # noqa: SLF001
         we.CANDIDATE_DATA_DIRS[:] = self._saved[0]
         if self._saved[1] is None:
             os.environ.pop('OPENHYDRONET_WEATHER_WARM_CACHE', None)
@@ -371,11 +372,7 @@ class WeatherEngineReloadAndFramesTest(unittest.TestCase):
         (run / we.RUN_METADATA_FILE).write_text(
             json.dumps(meta), encoding='utf-8'
         )
-        tmp = self.root / 'current.tmp'
-        if tmp.is_symlink():
-            tmp.unlink()
-        tmp.symlink_to(Path('runs') / name)
-        tmp.replace(self.root / 'current')
+        swap_current_symlink(self.root, name)
 
     def test_frames_skip_duplicate_steps_and_reload_picks_up_new_run(
         self,

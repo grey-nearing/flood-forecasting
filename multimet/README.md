@@ -145,20 +145,28 @@ It calculates these attributes using the same community datasets and methods use
 ### 2. Reference Datasets
 You provide the paths where the HydroATLAS and ERA5-Land reference datasets are stored:
 - **HydroATLAS (`--gdb-path` or `--gcs-gdb-uri`):** Local path to `BasinATLAS_v10.gdb` (or `BasinATLAS_v10_lev12.shp`). If you do not already have it on disk, pass `--gcs-gdb-uri gs://open-multimet/ancillary-data/hydroatlas/BasinATLAS_v10.gdb` and the tool will download it into `--gdb-path` (~4.9 GB).
-- **ERA5-Land Climate Data:**
-  - When using `--era5-source hybas`, pass `--era5-cache-dir /path/to/era5_climate`. If you do not already have the continental climate tables on disk, also pass `--gcs-era5-climate-uri gs://open-multimet/ancillary-data/hydroatlas/era5_climate` (~550 MB) to download them into `--era5-cache-dir`.
-  - When using `--era5-source gridded`, pass `--gridded-era5-uri gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr` (or a local Zarr path). This streams the daily grid slices directly from the Zarr store without downloading the archive to your machine.
+- **ERA5-Land Climate Data (one or more sources):**
+  - **Pre-extracted Basin Timeseries (`--era5-timeseries-zarr`):** Pass one or more `ERA5_LAND/timeseries.zarr` stores (local path or `gs://...`, such as `gs://open-multimet/caravan-new/caravan-original/ERA5_LAND/timeseries.zarr`). When a watershed ID exists in the Zarr store, climate numbers are calculated directly from its already-extracted daily timeseries without repeating spatial polygon intersection.
+  - **HydroATLAS Sub-Basin Climate Tables (`--era5-cache-dir` or `--gcs-era5-climate-uri`):** Pass `--era5-cache-dir /path/to/era5_climate`. If you do not already have the continental climate tables on disk, also pass `--gcs-era5-climate-uri gs://open-multimet/ancillary-data/hydroatlas/era5_climate` (~550 MB) to download them into `--era5-cache-dir`.
+  - **Gridded ERA5-Land Archive (`--gridded-era5-uri`):** Pass `--gridded-era5-uri gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr` (or a local Zarr path). This streams daily grid slices directly from the Zarr store over your exact watershed polygon.
 - **Running Without Downloading Cloud Files (`--no-download`):**
-  - If you have limited local disk space and do not want to download the HydroATLAS or ERA5 files to your computer, pass `--no-download` along with `--gcs-gdb-uri gs://open-multimet/ancillary-data/hydroatlas` and `--gcs-era5-climate-uri gs://open-multimet/ancillary-data/hydroatlas/era5_climate` (or `--gridded-era5-uri`). The tool will stream the required HydroATLAS and ERA5 data directly from Google Cloud Storage in memory without saving reference files to disk.
+  - If you have limited local disk space and do not want to download the HydroATLAS or ERA5 files to your computer, pass `--no-download` along with `--gcs-gdb-uri gs://open-multimet/ancillary-data/hydroatlas` and `--gcs-era5-climate-uri gs://open-multimet/ancillary-data/hydroatlas/era5_climate` (or `--gridded-era5-uri` / `--era5-timeseries-zarr`). The tool will stream the required HydroATLAS and ERA5 data directly from Google Cloud Storage in memory without saving reference files to disk.
   - Alternatively, if you download the files to disk for a run and want them deleted automatically when the run finishes, add `--clean-cache`.
 
-### 3. Choosing `--era5-source` (`hybas` vs. `gridded`)
-Every run requires the `--era5-source` flag to tell the tool how to calculate climate statistics:
+### 3. Choosing `--era5-source` and Fallback Priority
+By default (`--era5-source auto`), the extractor checks available ERA5-Land climate sources for each watershed in the following priority order:
+1. **`timeseries`**: Pre-extracted basin daily timeseries (`--era5-timeseries-zarr`), if provided and if that basin ID is present in the Zarr store.
+2. **`hybas`**: Pre-calculated climate summaries from the HydroATLAS Level 12 sub-basins overlapping your watershed (`--era5-cache-dir` or `--gcs-era5-climate-uri`).
+3. **`gridded`**: 40 years (`1981–2020`) of daily `0.1°` ERA5-Land weather grids streamed over your exact watershed boundary (`--gridded-era5-uri`).
+
+To prioritize **`gridded` ahead of `hybas`** when a basin is not found in `timeseries` (`timeseries -> gridded -> hybas`), pass **`--prefer-gridded-over-hybas`**. You can also lock extraction to a single source (`--era5-source timeseries`, `--era5-source hybas`, or `--era5-source gridded`) or pass an explicit comma-separated priority list (`--era5-source timeseries,gridded,hybas`).
 
 | Option | How It Works | Speed | When to Use It |
 | :--- | :--- | :--- | :--- |
-| **`--era5-source hybas`** | Combines pre-calculated climate summaries from the standard HydroATLAS sub-basins that overlap your watershed. *(If you also pass `--gridded-era5-uri`, the four `*_ERA5_LAND` evaporation columns are computed from the daily weather grid).* | Fast | **Recommended for most users.** Works well whenever your watersheds are roughly the size of standard river sub-basins (~100 $\text{km}^2$) or larger. |
-| **`--era5-source gridded`** | Reads 40 years (1981–2020) of daily ERA5-Land weather grids over your exact polygon boundary and calculates every climate number from scratch. | Slower (several seconds per basin) | Use this if your watersheds are very small, have custom boundaries that do not follow natural river sub-basins, or if you want to stream climate data directly from a Zarr store without downloading continental climate tables. |
+| **`--era5-source auto`** *(default)* | Uses `timeseries` if the basin exists in `--era5-timeseries-zarr`, otherwise falls back to `hybas`, then `gridded` (or `timeseries -> gridded -> hybas` when `--prefer-gridded-over-hybas` is set). | Fastest | **Recommended default.** Reuses pre-extracted basin timeseries when available and automatically falls back for new watersheds. |
+| **`--era5-source timeseries`** | Reads 1981–2020 daily basin timeseries directly from `--era5-timeseries-zarr` without repeating spatial grid extraction. | Very fast | When `ERA5_LAND/timeseries.zarr` has already been extracted for all watersheds in your input file. |
+| **`--era5-source hybas`** | Combines pre-calculated climate summaries from the standard HydroATLAS sub-basins that overlap your watershed. | Fast | Works well for new watersheds roughly the size of standard river sub-basins (~100 $\text{km}^2$) or larger. |
+| **`--era5-source gridded`** | Reads 40 years (1981–2020) of daily ERA5-Land weather grids over your exact polygon boundary and calculates every climate number from scratch. | Slower | Use this for small or custom watershed boundaries that do not follow natural river sub-basins, or pair with `--prefer-gridded-over-hybas`. |
 
 ---
 
@@ -169,6 +177,25 @@ Every run requires the `--era5-source` flag to tell the tool how to calculate cl
 Use `extract-caravan-static` (or its alias `extract-static-attributes`) when you have a single file of watershed polygons and want a single CSV table of attributes.
 
 ```bash
+# Default auto priority (timeseries if present -> hybas -> gridded)
+extract-caravan-static \
+    --input /path/to/watershed_polygons.geojson \
+    --output /path/to/extracted_caravan_attributes.csv \
+    --gdb-path /path/to/BasinATLAS_v10.gdb \
+    --era5-timeseries-zarr gs://open-multimet/caravan-new/caravan-original/ERA5_LAND/timeseries.zarr \
+    --era5-cache-dir /path/to/era5_climate \
+    --gridded-era5-uri gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr
+
+# Prefer gridded ERA5-Land archive ahead of hybas for new basins (timeseries -> gridded -> hybas)
+extract-caravan-static \
+    --input /path/to/watershed_polygons.geojson \
+    --output /path/to/extracted_caravan_attributes.csv \
+    --gdb-path /path/to/BasinATLAS_v10.gdb \
+    --era5-timeseries-zarr gs://open-multimet/caravan-new/caravan-original/ERA5_LAND/timeseries.zarr \
+    --era5-cache-dir /path/to/era5_climate \
+    --gridded-era5-uri gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr \
+    --prefer-gridded-over-hybas
+
 # Using local HydroATLAS and pre-calculated sub-basin climate tables
 extract-caravan-static \
     --input /path/to/watershed_polygons.geojson \
@@ -222,9 +249,11 @@ extract-caravan-static \
 | `--input`, `-i` | **Yes** | — | Path to your input watershed boundary file (`.geojson`, `.shp`, `.gpkg`, or `.parquet`). |
 | `--output`, `-o` | **Yes** | — | Path where the output CSV file will be saved. |
 | `--gdb-path`, `-g` | Required unless `--no-download` | `None` | Local path to `BasinATLAS_v10.gdb`, shapefile, or GeoParquet file. |
-| `--era5-source` | **Yes** | — | How to calculate ERA5 climate numbers: `hybas` (from pre-calculated sub-basin tables) or `gridded` (from daily ERA5-Land grids). |
+| `--era5-source` | No | `auto` | How to calculate ERA5 climate numbers: `auto` (`timeseries -> hybas -> gridded`, or `timeseries -> gridded -> hybas` with `--prefer-gridded-over-hybas`), `timeseries`, `hybas`, `gridded`, or a comma-separated priority list. |
+| `--prefer-gridded-over-hybas` | No | Disabled | When `--era5-source` is `auto`, prioritize `gridded` ahead of `hybas` (`timeseries -> gridded -> hybas`). |
+| `--era5-timeseries-zarr` | Required if `timeseries` | `None` | One or more local paths or `gs://` URIs to pre-extracted `ERA5_LAND/timeseries.zarr` basin stores. |
 | `--era5-cache-dir` | Required if `hybas` (unless `--no-download`) | `None` | Local folder where continental ERA5 climate tables (`<continent>_climate_indices.txt`) are stored. |
-| `--gridded-era5-uri` | Required if `gridded` | `None` | Google Cloud Storage (`gs://...`) URI or local folder path for the daily ERA5-Land Zarr dataset. Can also be passed with `--era5-source hybas` to compute the four `*_ERA5_LAND` columns. |
+| `--gridded-era5-uri` | Required if `gridded` | `None` | Google Cloud Storage (`gs://...`) URI or local folder path for the daily ERA5-Land Zarr dataset (`gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr`). |
 | `--gcs-gdb-uri` | Required if `--no-download` without `--gdb-path` | `None` | Google Cloud Storage (`gs://...`) URI for HydroATLAS data. Downloaded into `--gdb-path` by default, or streamed directly in memory when `--no-download` is set. |
 | `--gcs-era5-climate-uri` | Required if `hybas` with `--no-download` | `None` | Google Cloud Storage (`gs://...`) URI for continental ERA5 climate tables. Downloaded into `--era5-cache-dir` by default, or streamed directly in memory when `--no-download` is set. |
 | `--no-download` | No | Disabled | Stream HydroATLAS and ERA5 data directly from Google Cloud Storage in memory without downloading files to local disk. |
@@ -246,7 +275,7 @@ extract-caravan-static-batch \
     --parent-dir /path/to/watershed_folders/ \
     --output-dir /path/to/output_attributes/ \
     --gdb-path /path/to/BasinATLAS_v10.gdb \
-    --era5-source hybas \
+    --era5-timeseries-zarr gs://open-multimet/caravan-new/caravan-original/ERA5_LAND/timeseries.zarr \
     --era5-cache-dir /path/to/era5_climate \
     --workers 16 \
     --combine
@@ -272,7 +301,9 @@ extract-caravan-static-batch \
 | `--input-files`, `-f` | One input flag required | — | Space-separated list of specific polygon files (`.shp`, `.geojson`, `.gpkg`, `.parquet`) to process. |
 | `--output-dir`, `-o` | **Yes** | — | Local folder or Google Cloud Storage (`gs://...`) path where output files will be written. |
 | `--gdb-path`, `-g` | Required unless `--no-download` | `None` | Local path to `BasinATLAS_v10.gdb`, shapefile, or GeoParquet file. |
-| `--era5-source` | **Yes** | — | How to calculate ERA5 climate numbers: `hybas` or `gridded`. |
+| `--era5-source` | No | `auto` | How to calculate ERA5 climate numbers: `auto` (`timeseries -> hybas -> gridded`, or `timeseries -> gridded -> hybas` with `--prefer-gridded-over-hybas`), `timeseries`, `hybas`, `gridded`, or a comma-separated priority list. |
+| `--prefer-gridded-over-hybas` | No | Disabled | When `--era5-source` is `auto`, prioritize `gridded` ahead of `hybas` (`timeseries -> gridded -> hybas`). |
+| `--era5-timeseries-zarr` | Required if `timeseries` | `None` | One or more local paths or `gs://` URIs to pre-extracted `ERA5_LAND/timeseries.zarr` basin stores. |
 | `--era5-cache-dir` | Required if `hybas` (unless `--no-download`) | `None` | Local folder where continental ERA5 climate tables are stored. |
 | `--gridded-era5-uri` | Required if `gridded` | `None` | Google Cloud Storage (`gs://...`) URI or local path for the daily ERA5-Land Zarr dataset. |
 | `--staging-dir` | Required for `gs://` inputs/outputs | `None` | Local folder used to stage downloaded input shapefiles or output CSVs when reading from or writing to `gs://` paths. |

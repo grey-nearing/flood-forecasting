@@ -1092,7 +1092,11 @@ def _find_single_dynamics_zarr_path(
 ) -> Path | None:
     if isinstance(dynamics_path, list):
         return None
-    path_str = str(dynamics_path)
+    path_str = (
+        dynamics_path.as_posix()
+        if isinstance(dynamics_path, Path)
+        else str(dynamics_path)
+    )
     if path_str.startswith('gs://') or path_str.startswith('gs:/'):
         if path_str.rstrip('/').endswith('.zarr'):
             return Path(path_str.rstrip('/'))
@@ -1120,7 +1124,7 @@ def _find_product_zarr_path(
     local_matches: list[Path] = []
     cloud_candidates: list[Path] = []
     for dp in paths:
-        path_str = str(dp)
+        path_str = dp.as_posix() if isinstance(dp, Path) else str(dp)
         if path_str.startswith(('gs://', 'gs:/')):
             cloud_candidates.append(
                 Path(f'{path_str.rstrip("/")}/{product}/{TIMESERIES_ZARR_NAME}')

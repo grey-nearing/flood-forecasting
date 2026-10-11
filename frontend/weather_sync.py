@@ -33,7 +33,6 @@ Run ``python frontend/weather_sync.py --data-root <dir>`` for one manual sync.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import logging
 import os
 import shutil
@@ -43,6 +42,11 @@ import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+if os.name == 'nt':
+    import msvcrt
+else:
+    import fcntl
 
 from multimet.weather_fetcher.config import (
     DEFAULT_SYNC_MODELS,
@@ -213,7 +217,14 @@ def _merge_outcome(
 
 
 def _try_acquire_lock(lock_fd: int) -> bool:
-    """Attempt a non-blocking exclusive flock on ``lock_fd``."""
+    """Attempt a non-blocking exclusive lock on ``lock_fd``."""
+    if os.name == 'nt':
+        os.lseek(lock_fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -264,7 +275,7 @@ def sync_latest(  # noqa: PLR0913
     status_path = str(Path(resolved_root) / SYNC_STATUS_FILE)
     lock_path = Path(resolved_root) / _LOCK_FILE
 
-    with lock_path.open('w', encoding='utf-8') as lock_file:
+    with lock_path.open('a+', encoding='utf-8') as lock_file:
         if not _try_acquire_lock(lock_file.fileno()):
             status = read_sync_status(resolved_root)
             status.update(

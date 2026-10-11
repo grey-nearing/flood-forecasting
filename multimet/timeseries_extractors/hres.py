@@ -130,12 +130,13 @@ def decode_grib2_message(
   if _has_module("eccodes"):
     import eccodes  # type: ignore[import-untyped]
 
-    gid = eccodes.codes_new_from_message(raw_bytes)
-    short_name = str(eccodes.codes_get(gid, "shortName"))
-    bitmap_present = int(eccodes.codes_get(gid, "bitmapPresent"))
-    missing_val = float(eccodes.codes_get(gid, "missingValue"))
-    vals = eccodes.codes_get_values(gid)
-    eccodes.codes_release(gid)
+    with _RASTERIO_LOCK:
+      gid = eccodes.codes_new_from_message(raw_bytes)
+      short_name = str(eccodes.codes_get(gid, "shortName"))
+      bitmap_present = int(eccodes.codes_get(gid, "bitmapPresent"))
+      missing_val = float(eccodes.codes_get(gid, "missingValue"))
+      vals = eccodes.codes_get_values(gid)
+      eccodes.codes_release(gid)
 
     if param and short_name != param:
       label = f" at {context}" if context else ""

@@ -15,8 +15,9 @@
 """Climate metrics and ERA5 indices computation following Caravan methodology.
 
 Implements FAO-56 Penman-Monteith potential evapotranspiration, Knoben et al. (2018)
-climate indices, Addor et al. (2017) extreme precipitation indices, and
-area-weighted Level 12 continental ERA5 precomputed climate indices loading.
+climate indices, Addor et al. (2017) extreme precipitation indices, pre-extracted
+basin ERA5-Land Zarr timeseries loading, area-weighted Level 12 continental ERA5
+precomputed climate indices loading, and gridded ERA5-Land Zarr extraction.
 """
 
 from __future__ import annotations
@@ -28,12 +29,15 @@ import threading
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
+import dask
 import numpy as np
 import pandas as pd
 import shapely.geometry
+import xarray as xr
 import zarr
 
 from multimet.static_extractor.config import CARAVAN_CLIMATE_COLUMNS, CONTINENT_MAP
+from multimet.timeseries_extractors.gridded_archive import open_gridded_archive
 from multimet.utils.climate import (
     calculate_fao_pm_pet,
     calculate_knoben_moisture_and_seasonality,
@@ -43,14 +47,24 @@ from multimet.utils.climate import (
     pressure_to_kpa,
     temp_to_celsius,
 )
+from multimet.utils.zonal import (
+    MIN_VALID_COVERAGE_FRACTION,
+    ZonalWeightCalculator,
+)
 
 __all__ = [
+    "CARAVAN_CLIMATE_ALIASES",
+    "CARAVAN_CLIMATE_STORED_KEYS",
     "ERA5ClimateLoader",
     "ERA5GriddedExtractor",
+    "ERA5TimeseriesZarrLoader",
+    "NAN_CLIMATE_METRICS",
     "calculate_fao_pm_pet",
     "calculate_knoben_moisture_and_seasonality",
     "compute_caravan_climate_metrics",
+    "compute_climate_metrics_from_dataframe",
     "depth_to_mm",
+    "expand_caravan_climate_aliases",
     "normalize_era5_pet_sign",
     "pressure_to_kpa",
     "temp_to_celsius",
@@ -84,6 +98,458 @@ def expand_caravan_climate_aliases(values: Mapping[str, Any]) -> Dict[str, Any]:
     source_key = CARAVAN_CLIMATE_ALIASES.get(key, key)
     out[key] = values.get(source_key, np.nan)
   return out
+
+
+NAN_CLIMATE_METRICS: Dict[str, float] = {
+    "p_mean": np.nan,
+    "pet_mean": np.nan,
+    "pet_mean_FAO_PM": np.nan,
+    "pet_mean_ERA5_LAND": np.nan,
+    "aridity": np.nan,
+    "aridity_FAO_PM": np.nan,
+    "aridity_ERA5_LAND": np.nan,
+    "frac_snow": np.nan,
+    "moisture_index": np.nan,
+    "moisture_index_FAO_PM": np.nan,
+    "moisture_index_ERA5_LAND": np.nan,
+    "seasonality": np.nan,
+    "seasonality_FAO_PM": np.nan,
+    "seasonality_ERA5_LAND": np.nan,
+    "high_prec_freq": np.nan,
+    "high_prec_dur": np.nan,
+    "low_prec_freq": np.nan,
+    "low_prec_dur": np.nan,
+}
+
+_PRECIP_CANDIDATES: Tuple[str, ...] = (
+    "era5land_total_precipitation",
+    "total_precipitation_sum",
+    "total_precipitation_24hr",
+    "total_precipitation",
+    "prcp",
+    "precip",
+    "tp",
+)
+_TEMP_CANDIDATES: Tuple[str, ...] = (
+    "era5land_temperature_2m",
+    "temperature_2m_mean",
+    "2m_temperature",
+    "temperature_2m",
+    "temperature",
+    "temp",
+    "t2m",
+)
+_PET_ERA5_CANDIDATES: Tuple[str, ...] = (
+    "era5land_potential_evaporation_DEPRECATED",
+    "potential_evaporation_sum_ERA5_LAND",
+    "potential_evaporation_sum",
+    "potential_evaporation",
+    "pet_era5",
+    "pev",
+    "pet",
+)
+_PET_FAO_CANDIDATES: Tuple[str, ...] = (
+    "era5land_potential_evaporation_FAO_PENMAN_MONTEITH",
+    "potential_evaporation_sum_FAO_PENMAN_MONTEITH",
+    "pet_fao",
+    "fao_pet",
+)
+_D2M_CANDIDATES: Tuple[str, ...] = (
+    "era5land_dewpoint_temperature_2m",
+    "dewpoint_temperature_2m_mean",
+    "dewpoint_temperature_2m",
+    "2m_dewpoint_temperature",
+    "d2m",
+)
+_SP_CANDIDATES: Tuple[str, ...] = (
+    "era5land_surface_pressure",
+    "surface_pressure_mean",
+    "surface_pressure",
+    "sp",
+)
+_SSR_CANDIDATES: Tuple[str, ...] = (
+    "era5land_surface_net_solar_radiation",
+    "surface_net_solar_radiation_mean",
+    "surface_net_solar_radiation",
+    "ssr",
+)
+_STR_CANDIDATES: Tuple[str, ...] = (
+    "era5land_surface_net_thermal_radiation",
+    "surface_net_thermal_radiation_mean",
+    "surface_net_thermal_radiation",
+    "str",
+)
+_U10_CANDIDATES: Tuple[str, ...] = (
+    "era5land_u_component_of_wind_10m",
+    "u_component_of_wind_10m_mean",
+    "u_component_of_wind_10m",
+    "10m_u_component_of_wind",
+    "u10",
+)
+_V10_CANDIDATES: Tuple[str, ...] = (
+    "era5land_v_component_of_wind_10m",
+    "v_component_of_wind_10m_mean",
+    "v_component_of_wind_10m",
+    "10m_v_component_of_wind",
+    "v10",
+)
+
+
+def compute_climate_metrics_from_dataframe(
+    timeseries_df: pd.DataFrame,
+    baseline_years: Optional[Tuple[int, int]] = (1981, 2020),
+    units_map: Optional[Mapping[str, Optional[str]]] = None,
+    include_fao_pm: bool = True,
+) -> Dict[str, float]:
+  """Computes the 18 Caravan climate indices from a daily basin DataFrame.
+
+  Args:
+    timeseries_df: Daily DataFrame indexed by ``pd.DatetimeIndex``.
+    baseline_years: Optional ``(start_year, end_year)`` filter. Restricted to
+      that inclusive window; if no rows fall within ``baseline_years``, all
+      18 climate metrics are returned as ``NaN``.
+    units_map: Optional mapping from column name to CF unit string (e.g. ``'m'``,
+      ``'K'``, ``'Pa'``).
+    include_fao_pm: Whether to compute FAO-56 Penman-Monteith PET indices.
+
+  Returns:
+    Dictionary of 18 Caravan climate metrics.
+  """
+  if timeseries_df is None or timeseries_df.empty:
+    raise ValueError("timeseries_df must be a non-empty DataFrame.")
+
+  cols = timeseries_df.columns
+  p_col = next((c for c in _PRECIP_CANDIDATES if c in cols), None)
+  t_col = next((c for c in _TEMP_CANDIDATES if c in cols), None)
+  if not p_col or not t_col:
+    raise ValueError(
+        "timeseries_df is missing required precipitation/temperature columns "
+        f"(found {list(cols)})."
+    )
+
+  ts_df = timeseries_df
+  if not isinstance(ts_df.index, pd.DatetimeIndex):
+    ts_df = ts_df.copy()
+    ts_df.index = pd.to_datetime(ts_df.index)
+
+  if baseline_years is not None:
+    sliced = ts_df.loc[
+        (ts_df.index.year >= baseline_years[0])
+        & (ts_df.index.year <= baseline_years[1])
+    ]
+    if sliced.empty:
+      return dict(NAN_CLIMATE_METRICS)
+    ts_df = sliced
+
+  u_map = units_map or {}
+  pet_era5_col = next((c for c in _PET_ERA5_CANDIDATES if c in cols), None)
+  pet_fao_col = (
+      next((c for c in _PET_FAO_CANDIDATES if c in cols), None)
+      if include_fao_pm
+      else None
+  )
+
+  if ts_df[p_col].isna().all() or ts_df[t_col].isna().all():
+    return dict(NAN_CLIMATE_METRICS)
+
+  p_series = pd.Series(
+      depth_to_mm(ts_df[p_col].to_numpy(dtype=float), u_map.get(p_col), p_col),
+      index=ts_df.index,
+  )
+  t_series = pd.Series(
+      temp_to_celsius(
+          ts_df[t_col].to_numpy(dtype=float), u_map.get(t_col), t_col
+      ),
+      index=ts_df.index,
+  )
+
+  pet_era5_series: Optional[pd.Series] = None
+  if pet_era5_col and not ts_df[pet_era5_col].isna().all():
+    era5_mm = depth_to_mm(
+        ts_df[pet_era5_col].to_numpy(dtype=float),
+        u_map.get(pet_era5_col),
+        pet_era5_col,
+    )
+    pet_era5_series = pd.Series(
+        normalize_era5_pet_sign(era5_mm),
+        index=ts_df.index,
+    )
+
+  pet_fao_series: Optional[pd.Series] = None
+  if include_fao_pm:
+    if pet_fao_col and not ts_df[pet_fao_col].isna().all():
+      fao_mm = depth_to_mm(
+          ts_df[pet_fao_col].to_numpy(dtype=float),
+          u_map.get(pet_fao_col),
+          pet_fao_col,
+      )
+      fao_clipped = np.where(np.isfinite(fao_mm), np.maximum(fao_mm, 0.0), np.nan)
+      pet_fao_series = pd.Series(fao_clipped, index=ts_df.index)
+    else:
+      d2m_col = next((c for c in _D2M_CANDIDATES if c in cols), None)
+      sp_col = next((c for c in _SP_CANDIDATES if c in cols), None)
+      ssr_col = next((c for c in _SSR_CANDIDATES if c in cols), None)
+      str_col = next((c for c in _STR_CANDIDATES if c in cols), None)
+      u10_col = next((c for c in _U10_CANDIDATES if c in cols), None)
+      v10_col = next((c for c in _V10_CANDIDATES if c in cols), None)
+      if all((d2m_col, sp_col, ssr_col, str_col, u10_col, v10_col)):
+        aux_cols = [d2m_col, sp_col, ssr_col, str_col, u10_col, v10_col]
+        if not any(ts_df[c].isna().all() for c in aux_cols):
+          ssr_u = u_map.get(ssr_col)
+          str_u = u_map.get(str_col)
+          if (
+              ssr_u is not None
+              and str_u is not None
+              and str(ssr_u).strip().lower() != str(str_u).strip().lower()
+          ):
+            raise ValueError(
+                f"Mismatched radiation units between {ssr_col!r} ({ssr_u!r}) "
+                f"and {str_col!r} ({str_u!r})."
+            )
+          rad_units = ssr_u or str_u or "W/m^2"
+          pet_fao_series = calculate_fao_pm_pet(
+              surface_pressure_kpa=pd.Series(
+                  pressure_to_kpa(
+                      ts_df[sp_col].to_numpy(dtype=float),
+                      u_map.get(sp_col),
+                      sp_col,
+                  ),
+                  index=ts_df.index,
+              ),
+              temperature_2m_c=t_series,
+              dewpoint_temperature_2m_c=pd.Series(
+                  temp_to_celsius(
+                      ts_df[d2m_col].to_numpy(dtype=float),
+                      u_map.get(d2m_col),
+                      d2m_col,
+                  ),
+                  index=ts_df.index,
+              ),
+              u_component_of_wind_10m=ts_df[u10_col],
+              v_component_of_wind_10m=ts_df[v10_col],
+              surface_net_solar_radiation_mean=ts_df[ssr_col],
+              surface_net_thermal_radiation_mean=ts_df[str_col],
+              radiation_units=rad_units,
+          )
+
+  return compute_caravan_climate_metrics(
+      precipitation=p_series,
+      temperature=t_series,
+      pet_era5=pet_era5_series,
+      pet_fao=pet_fao_series,
+  )
+
+
+class ERA5TimeseriesZarrLoader:
+  """Loads pre-extracted basin-level ERA5-Land daily time series from Zarr store(s)."""
+
+  def __init__(
+      self,
+      zarr_uris: Union[str, Path, Sequence[Union[str, Path]]],
+  ):
+    if isinstance(zarr_uris, (str, Path)):
+      raw_list = [
+          s.strip() for s in str(zarr_uris).split(",") if s.strip()
+      ]
+    else:
+      raw_list = [str(u).strip() for u in zarr_uris if str(u).strip()]
+
+    if not raw_list:
+      raise ValueError("At least one ERA5 timeseries Zarr URI or path must be provided.")
+
+    self.zarr_uris: List[str] = raw_list
+    self._stores: List[xr.Dataset] = []
+    self._store_basin_dims: List[str] = []
+    self._store_time_dims: List[str] = []
+    self._store_dates: List[pd.DatetimeIndex] = []
+    self._basin_lookup: Dict[str, Tuple[int, int]] = {}
+    self._metrics_cache: Dict[Tuple[str, Optional[Tuple[int, int]]], Dict[str, float]] = {}
+
+    for store_idx, uri in enumerate(self.zarr_uris):
+      ds = open_gridded_archive(uri)
+      basin_dim = next(
+          (d for d in ("basin", "gauge_id", "catchment_id") if d in ds.coords or d in ds.dims),
+          None,
+      )
+      time_dim = next(
+          (d for d in ("date", "time") if d in ds.coords or d in ds.dims),
+          None,
+      )
+      if basin_dim is None or time_dim is None:
+        raise ValueError(
+            f"ERA5 timeseries Zarr store at {uri!r} must contain a basin coordinate "
+            "('basin' or 'gauge_id') and a time coordinate ('date' or 'time'); "
+            f"found dims={list(ds.dims)}, coords={list(ds.coords)}."
+        )
+      basin_vals = [str(b) for b in ds[basin_dim].values]
+      dates = pd.DatetimeIndex(pd.to_datetime(ds[time_dim].values).floor("D"))
+      self._stores.append(ds)
+      self._store_basin_dims.append(basin_dim)
+      self._store_time_dims.append(time_dim)
+      self._store_dates.append(dates)
+      for row_idx, b_id in enumerate(basin_vals):
+        if b_id in self._basin_lookup:
+          prev_store_idx, _ = self._basin_lookup[b_id]
+          raise ValueError(
+              f"Duplicate basin ID {b_id!r} found across ERA5 timeseries Zarr stores "
+              f"({self.zarr_uris[prev_store_idx]!r} and {uri!r})."
+          )
+        self._basin_lookup[b_id] = (store_idx, row_idx)
+
+  def has_basin(self, basin_id: str) -> bool:
+    """Returns True if ``basin_id`` is present in any configured timeseries Zarr store."""
+    return str(basin_id) in self._basin_lookup
+
+  def get_metrics_for_basin(
+      self,
+      basin_id: str,
+      baseline_years: Optional[Tuple[int, int]] = (1981, 2020),
+  ) -> Dict[str, float]:
+    """Computes the 18 Caravan climate metrics for a single basin from pre-extracted timeseries."""
+    b_str = str(basin_id)
+    cache_key = (b_str, baseline_years)
+    if cache_key in self._metrics_cache:
+      return dict(self._metrics_cache[cache_key])
+    batch = self.get_metrics_for_basins_batch([b_str], baseline_years=baseline_years)
+    return dict(batch[b_str])
+
+  def get_metrics_for_basins_batch(
+      self,
+      basin_ids: Sequence[str],
+      baseline_years: Optional[Tuple[int, int]] = (1981, 2020),
+      chunk_basins: int = 512,
+  ) -> Dict[str, Dict[str, float]]:
+    """Computes the 18 Caravan climate metrics for a batch of basins via bulk Zarr reads."""
+    results: Dict[str, Dict[str, float]] = {}
+    by_store: Dict[int, List[Tuple[str, int]]] = {}
+
+    for raw_id in basin_ids:
+      b_id = str(raw_id)
+      cache_key = (b_id, baseline_years)
+      if cache_key in self._metrics_cache:
+        results[b_id] = dict(self._metrics_cache[cache_key])
+        continue
+      if b_id not in self._basin_lookup:
+        raise KeyError(
+            f"Basin {b_id!r} not found in any configured ERA5 timeseries Zarr store "
+            f"({self.zarr_uris})."
+        )
+      s_idx, r_idx = self._basin_lookup[b_id]
+      by_store.setdefault(s_idx, []).append((b_id, r_idx))
+
+    for s_idx, items in by_store.items():
+      ds = self._stores[s_idx]
+      basin_dim = self._store_basin_dims[s_idx]
+      time_dim = self._store_time_dims[s_idx]
+      full_dates = self._store_dates[s_idx]
+      uri = self.zarr_uris[s_idx]
+
+      if baseline_years is not None:
+        start_y, end_y = baseline_years
+        t_indices = np.where(
+            (full_dates.year >= start_y) & (full_dates.year <= end_y)
+        )[0]
+        if len(t_indices) == 0:
+          logger.warning(
+              "ERA5 timeseries Zarr at %s has no dates in baseline_years=%s; returning NaN.",
+              uri,
+              baseline_years,
+          )
+          for b_id, _ in items:
+            results[b_id] = dict(NAN_CLIMATE_METRICS)
+            self._metrics_cache[(b_id, baseline_years)] = dict(NAN_CLIMATE_METRICS)
+          continue
+        t_start = int(t_indices[0])
+        t_end = int(t_indices[-1]) + 1
+        rel_t = t_indices - t_start
+        ds_time = ds.isel({time_dim: slice(t_start, t_end)})
+        date_index = full_dates[t_indices]
+      else:
+        rel_t = np.arange(len(full_dates), dtype=int)
+        ds_time = ds
+        date_index = full_dates
+
+      var_names = list(ds_time.data_vars)
+      p_col = next((c for c in _PRECIP_CANDIDATES if c in var_names), None)
+      t_col = next((c for c in _TEMP_CANDIDATES if c in var_names), None)
+      if not p_col or not t_col:
+        raise ValueError(
+            f"Required ERA5 climate variables (precip/temp) not found in {uri}. "
+            f"Available variables: {var_names}"
+        )
+      pet_era5_col = next((c for c in _PET_ERA5_CANDIDATES if c in var_names), None)
+      pet_fao_col = next((c for c in _PET_FAO_CANDIDATES if c in var_names), None)
+
+      cols_to_load = [p_col, t_col]
+      if pet_era5_col:
+        cols_to_load.append(pet_era5_col)
+      if pet_fao_col:
+        cols_to_load.append(pet_fao_col)
+
+      aux_cols = [
+          next((c for c in cand if c in var_names), None)
+          for cand in (
+              _D2M_CANDIDATES,
+              _SP_CANDIDATES,
+              _SSR_CANDIDATES,
+              _STR_CANDIDATES,
+              _U10_CANDIDATES,
+              _V10_CANDIDATES,
+          )
+      ]
+      has_all_aux = all(c is not None for c in aux_cols)
+      if pet_fao_col is None and has_all_aux:
+        cols_to_load.extend([c for c in aux_cols if c is not None])
+
+      units_map = {
+          c: dict(ds_time[c].attrs).get("units") for c in cols_to_load
+      }
+
+      items_sorted = sorted(items, key=lambda x: x[1])
+      step = max(1, int(chunk_basins))
+      for offset in range(0, len(items_sorted), step):
+        batch_items = items_sorted[offset : offset + step]
+        row_indices = [r_idx for _, r_idx in batch_items]
+        sub_ds = ds_time[cols_to_load].isel({basin_dim: row_indices})
+        with dask.config.set(scheduler="threads"):
+          computed = sub_ds.compute()
+
+        # If pet_fao_col is present but all-NaN for some basins in this chunk, load aux cols if available
+        loaded_arrays: Dict[str, np.ndarray] = {}
+        for c in cols_to_load:
+          da = computed[c].transpose(basin_dim, time_dim)
+          loaded_arrays[c] = np.asarray(da.values, dtype=np.float64)[:, rel_t]
+
+        if (
+            pet_fao_col is not None
+            and has_all_aux
+            and np.any(np.all(np.isnan(loaded_arrays[pet_fao_col]), axis=1))
+        ):
+          aux_only = [c for c in aux_cols if c is not None and c not in loaded_arrays]
+          if aux_only:
+            sub_aux = ds_time[aux_only].isel({basin_dim: row_indices})
+            with dask.config.set(scheduler="threads"):
+              comp_aux = sub_aux.compute()
+            for c in aux_only:
+              units_map[c] = dict(ds_time[c].attrs).get("units")
+              da = comp_aux[c].transpose(basin_dim, time_dim)
+              loaded_arrays[c] = np.asarray(da.values, dtype=np.float64)[:, rel_t]
+
+        for i, (b_id, _) in enumerate(batch_items):
+          df_basin = pd.DataFrame(
+              {c: loaded_arrays[c][i] for c in loaded_arrays},
+              index=date_index,
+          )
+          metrics = compute_climate_metrics_from_dataframe(
+              df_basin,
+              baseline_years=None,
+              units_map=units_map,
+              include_fao_pm=True,
+          )
+          results[b_id] = metrics
+          self._metrics_cache[(b_id, baseline_years)] = dict(metrics)
+
+    return results
 
 
 class ERA5ClimateLoader:
@@ -160,9 +626,13 @@ class ERA5ClimateLoader:
       if not line:
         continue
       item = json.loads(line)
-      gid = item.get("gauge_id", "")
+      gid = str(item.get("gauge_id", ""))
       if gid.startswith("hybas_"):
         hid = int(gid.split("_")[1])
+        self.records[hid] = item
+        count += 1
+      elif "HYBAS_ID" in item and item["HYBAS_ID"] is not None:
+        hid = int(item["HYBAS_ID"])
         self.records[hid] = item
         count += 1
     self.loaded_continents.add(continent_code)
@@ -252,6 +722,7 @@ class ERA5ClimateLoader:
     for c in sorted(self._continents_for(hybas_ids)):
       self.ensure_continent(c)
 
+    total_requested_w = sum(float(w) for w in weights)
     valid_weights = []
     valid_records = []
     for hid, w in zip(hybas_ids, weights, strict=True):
@@ -259,22 +730,34 @@ class ERA5ClimateLoader:
         valid_records.append(self.records[hid])
         valid_weights.append(float(w))
 
-    if not valid_records or sum(valid_weights) == 0:
+    if not valid_records or total_requested_w <= 0 or sum(valid_weights) == 0:
       return expand_caravan_climate_aliases({})
 
-    tot_w = sum(valid_weights)
-    norm_w = np.array(valid_weights) / tot_w
+    w_arr = np.array(valid_weights, dtype=float)
+    norm_w = w_arr / total_requested_w
 
     raw_res: Dict[str, float] = {}
     for k in CARAVAN_CLIMATE_STORED_KEYS:
       vals = np.array([r.get(k, np.nan) for r in valid_records], dtype=float)
-      raw_res[k] = float(np.sum(vals * norm_w))
+      finite = np.isfinite(vals)
+      valid_cov = float(np.sum(norm_w[finite])) if np.any(finite) else 0.0
+      if valid_cov >= MIN_VALID_COVERAGE_FRACTION:
+        raw_res[k] = float(
+            np.sum(vals[finite] * norm_w[finite]) / valid_cov
+        )
+      else:
+        raw_res[k] = np.nan
 
     return expand_caravan_climate_aliases(raw_res)
 
 
 class ERA5GriddedExtractor:
-  """Recalculates Caravan climate metrics directly from a gridded ERA5 Zarr dataset."""
+  """Recalculates Caravan climate metrics directly from a gridded ERA5 Zarr dataset.
+
+  Uses :class:`multimet.utils.zonal.ZonalWeightCalculator` for exact spherical
+  polygon-to-grid intersection weights and :func:`compute_climate_metrics_from_dataframe`
+  for the Caravan climate index equations.
+  """
 
   def __init__(
       self,
@@ -314,80 +797,19 @@ class ERA5GriddedExtractor:
   def compute_zonal_weights(
       self, polygon: Any
   ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Computes area-intersection weights between a polygon and grid cells."""
+    """Computes area-intersection weights between a polygon and grid cells via ZonalWeightCalculator."""
     self._open_dataset()
     if not hasattr(polygon, "bounds"):
       polygon = shapely.geometry.shape(polygon)
-
-    minx, miny, maxx, maxy = polygon.bounds
-
-    lat_mask = (self._lats >= miny - self._dlat) & (self._lats <= maxy + self._dlat)
-    lon_mask = (self._lons >= minx - self._dlon) & (self._lons <= maxx + self._dlon)
-
-    lat_indices = np.where(lat_mask)[0]
-    lon_indices = np.where(lon_mask)[0]
-
-    if len(lat_indices) == 0 or len(lon_indices) == 0:
-      return (
-          np.array([], dtype=int),
-          np.array([], dtype=int),
-          np.array([], dtype=np.float32),
-      )
-
-    lat_list = []
-    lon_list = []
-    w_list = []
-
-    half_lat = self._dlat / 2.0
-    half_lon = self._dlon / 2.0
-
-    for li in lat_indices:
-      lat_val = self._lats[li]
-      cell_miny = lat_val - half_lat
-      cell_maxy = lat_val + half_lat
-      lat_cos = max(0.01, np.cos(np.radians(lat_val)))
-
-      for lj in lon_indices:
-        lon_val = self._lons[lj]
-        cell_minx = lon_val - half_lon
-        cell_maxx = lon_val + half_lon
-
-        cell_box = shapely.geometry.box(cell_minx, cell_miny, cell_maxx, cell_maxy)
-        if polygon.intersects(cell_box):
-          inter = polygon.intersection(cell_box)
-          inter_area = inter.area * lat_cos
-          if inter_area > 0.0:
-            lat_list.append(li)
-            lon_list.append(lj)
-            w_list.append(inter_area)
-
-    if not w_list:
-      return (
-          np.array([], dtype=int),
-          np.array([], dtype=int),
-          np.array([], dtype=np.float32),
-      )
-
-    weights = np.array(w_list, dtype=np.float32)
-    tot_w = np.sum(weights)
-    if tot_w > 0:
-      weights = weights / tot_w
-    return np.array(lat_list, dtype=int), np.array(lon_list, dtype=int), weights
-
-  @staticmethod
-  def _depth_to_mm(series: np.ndarray, units: Optional[str], var_name: str) -> np.ndarray:
-    """Converts a precipitation or PET series to mm/day using declared array units."""
-    return depth_to_mm(series, units, var_name)
-
-  @staticmethod
-  def _temp_to_celsius(series: np.ndarray, units: Optional[str], var_name: str) -> np.ndarray:
-    """Converts a temperature series to degrees Celsius using declared array units."""
-    return temp_to_celsius(series, units, var_name)
-
-  @staticmethod
-  def _pressure_to_kpa(series: np.ndarray, units: Optional[str], var_name: str) -> np.ndarray:
-    """Converts a surface pressure series to kPa using declared array units."""
-    return pressure_to_kpa(series, units, var_name)
+    calc = ZonalWeightCalculator(
+        self._lats, self._lons, cell_res_lat=self._dlat, cell_res_lon=self._dlon
+    )
+    lat_idx, lon_idx, weights = calc.compute_weights("_poly", polygon)
+    return (
+        lat_idx.astype(int),
+        lon_idx.astype(int),
+        weights.astype(np.float32),
+    )
 
   @staticmethod
   def _parse_time_coordinate(time_arr: np.ndarray, time_attrs: Dict[str, Any], zarr_uri: str) -> pd.DatetimeIndex:
@@ -420,7 +842,8 @@ class ERA5GriddedExtractor:
     """Extracts Caravan climate metrics for a batch of polygons in a single pass over Zarr time chunks.
 
     Computes spatial grid-cell weights (lat_idx, lon_idx, weights) for all polygons
-    upfront and streams each daily Zarr slice once across all polygons in the batch.
+    upfront using :class:`ZonalWeightCalculator` and streams each daily Zarr slice
+    once across all polygons in the batch.
 
     Args:
       polygons: List of (polygon, catchment_id) tuples.
@@ -432,88 +855,19 @@ class ERA5GriddedExtractor:
     Returns:
       Dictionary mapping each catchment_id to its 18 Caravan climate metrics.
     """
-    nan_result = {
-        "p_mean": np.nan,
-        "pet_mean": np.nan,
-        "pet_mean_FAO_PM": np.nan,
-        "pet_mean_ERA5_LAND": np.nan,
-        "aridity": np.nan,
-        "aridity_FAO_PM": np.nan,
-        "aridity_ERA5_LAND": np.nan,
-        "frac_snow": np.nan,
-        "moisture_index": np.nan,
-        "moisture_index_FAO_PM": np.nan,
-        "moisture_index_ERA5_LAND": np.nan,
-        "seasonality": np.nan,
-        "seasonality_FAO_PM": np.nan,
-        "seasonality_ERA5_LAND": np.nan,
-        "high_prec_freq": np.nan,
-        "high_prec_dur": np.nan,
-        "low_prec_freq": np.nan,
-        "low_prec_dur": np.nan,
-    }
-
     if not polygons:
       return {}
 
     ds = self._open_dataset()
 
-    p_name = next(
-        (
-            v
-            for v in [
-                "era5land_total_precipitation",
-                "total_precipitation_24hr",
-                "total_precipitation",
-                "tp",
-            ]
-            if v in ds
-        ),
-        None,
-    )
-    t_name = next(
-        (
-            v
-            for v in [
-                "era5land_temperature_2m",
-                "2m_temperature",
-                "temperature_2m",
-                "temp",
-                "t2m",
-            ]
-            if v in ds
-        ),
-        None,
-    )
+    p_name = next((v for v in _PRECIP_CANDIDATES if v in ds), None)
+    t_name = next((v for v in _TEMP_CANDIDATES if v in ds), None)
     pet_fao_name = (
-        next(
-            (
-                v
-                for v in [
-                    "era5land_potential_evaporation_FAO_PENMAN_MONTEITH",
-                    "potential_evaporation_sum_FAO_PENMAN_MONTEITH",
-                ]
-                if v in ds
-            ),
-            None,
-        )
+        next((v for v in _PET_FAO_CANDIDATES if v in ds), None)
         if include_fao_pm
         else None
     )
-    pet_era5_name = next(
-        (
-            v
-            for v in [
-                "era5land_potential_evaporation_DEPRECATED",
-                "potential_evaporation_sum_ERA5_LAND",
-                "potential_evaporation",
-                "pev",
-                "pet",
-            ]
-            if v in ds
-        ),
-        None,
-    )
+    pet_era5_name = next((v for v in _PET_ERA5_CANDIDATES if v in ds), None)
 
     if not p_name or not t_name:
       raise ValueError(
@@ -529,92 +883,16 @@ class ERA5GriddedExtractor:
     v10_name = None
     can_compute_fao_pet = False
     if include_fao_pm:
-      d2m_name = next(
-          (
-              v
-              for v in [
-                  "era5land_dewpoint_temperature_2m",
-                  "dewpoint_temperature_2m_mean",
-                  "dewpoint_temperature_2m",
-                  "2m_dewpoint_temperature",
-                  "d2m",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      sp_name = next(
-          (
-              v
-              for v in [
-                  "era5land_surface_pressure",
-                  "surface_pressure_mean",
-                  "surface_pressure",
-                  "sp",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      ssr_name = next(
-          (
-              v
-              for v in [
-                  "era5land_surface_net_solar_radiation",
-                  "surface_net_solar_radiation_mean",
-                  "surface_net_solar_radiation",
-                  "ssr",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      str_name = next(
-          (
-              v
-              for v in [
-                  "era5land_surface_net_thermal_radiation",
-                  "surface_net_thermal_radiation_mean",
-                  "surface_net_thermal_radiation",
-                  "str",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      u10_name = next(
-          (
-              v
-              for v in [
-                  "era5land_u_component_of_wind_10m",
-                  "u_component_of_wind_10m_mean",
-                  "u_component_of_wind_10m",
-                  "10m_u_component_of_wind",
-                  "u10",
-              ]
-              if v in ds
-          ),
-          None,
-      )
-      v10_name = next(
-          (
-              v
-              for v in [
-                  "era5land_v_component_of_wind_10m",
-                  "v_component_of_wind_10m_mean",
-                  "v_component_of_wind_10m",
-                  "10m_v_component_of_wind",
-                  "v10",
-              ]
-              if v in ds
-          ),
-          None,
-      )
+      d2m_name = next((v for v in _D2M_CANDIDATES if v in ds), None)
+      sp_name = next((v for v in _SP_CANDIDATES if v in ds), None)
+      ssr_name = next((v for v in _SSR_CANDIDATES if v in ds), None)
+      str_name = next((v for v in _STR_CANDIDATES if v in ds), None)
+      u10_name = next((v for v in _U10_CANDIDATES if v in ds), None)
+      v10_name = next((v for v in _V10_CANDIDATES if v in ds), None)
       can_compute_fao_pet = all(
           (d2m_name, sp_name, ssr_name, str_name, u10_name, v10_name)
       )
 
-    # Parse time coordinate and restrict to baseline_years before reading any spatial chunks
     time_keys = [k for k in ["time", "date"] if k in ds]
     if not time_keys:
       raise KeyError(f"Time coordinate ('time' or 'date') not found in {self.zarr_uri}")
@@ -633,7 +911,7 @@ class ERA5GriddedExtractor:
             self.zarr_uri,
             baseline_years,
         )
-        return {cid: dict(nan_result) for _, cid in polygons}
+        return {cid: dict(NAN_CLIMATE_METRICS) for _, cid in polygons}
     else:
       t_indices = np.arange(len(full_date_index), dtype=int)
 
@@ -653,7 +931,7 @@ class ERA5GriddedExtractor:
             cid,
             self.zarr_uri,
         )
-        results[cid] = dict(nan_result)
+        results[cid] = dict(NAN_CLIMATE_METRICS)
       else:
         valid_specs.append((cid, lat_idx, lon_idx, weights.reshape(1, -1)))
 
@@ -711,11 +989,17 @@ class ERA5GriddedExtractor:
     )
 
     def _weighted_nanmean(cells: np.ndarray, w_matrix: np.ndarray) -> np.ndarray:
+      total_w = float(np.sum(w_matrix))
+      out = np.full((cells.shape[0],), np.nan, dtype=np.float64)
+      if total_w <= 0.0:
+        return out
       valid_w = np.where(np.isnan(cells), 0.0, w_matrix)
       w_sum = np.sum(valid_w, axis=1)
       num = np.nansum(cells * w_matrix, axis=1)
-      out = np.full(num.shape, np.nan, dtype=np.float64)
-      return np.divide(num, w_sum, out=out, where=w_sum > 0)
+      valid_enough = (w_sum > 0.0) & (
+          (w_sum / total_w) >= MIN_VALID_COVERAGE_FRACTION
+      )
+      return np.divide(num, w_sum, out=out, where=valid_enough)
 
     # 2. Stream through time chunks once across all polygons in the batch
     step = max(1, int(chunk_days))
@@ -816,25 +1100,23 @@ class ERA5GriddedExtractor:
               v10_block[:, r_lat, r_lon], w_matrix
           )
 
-    p_units = dict(ds[p_name].attrs).get("units")
-    t_units = dict(ds[t_name].attrs).get("units")
-    pet_fao_units = dict(ds[pet_fao_name].attrs).get("units") if pet_fao_name else None
-    pet_era5_units = dict(ds[pet_era5_name].attrs).get("units") if pet_era5_name else None
-    d2m_units = dict(ds[d2m_name].attrs).get("units") if d2m_name else None
-    sp_units = dict(ds[sp_name].attrs).get("units") if sp_name else None
-    ssr_units = dict(ds[ssr_name].attrs).get("units") if ssr_name else None
-    str_units = dict(ds[str_name].attrs).get("units") if str_name else None
-
-    if (
-        ssr_units is not None
-        and str_units is not None
-        and str(ssr_units).strip().lower() != str(str_units).strip().lower()
-    ):
-      raise ValueError(
-          f"Mismatched radiation units between {ssr_name!r} ({ssr_units!r}) "
-          f"and {str_name!r} ({str_units!r}) in {self.zarr_uri}."
-      )
-    rad_units = ssr_units or str_units or "W/m^2"
+    var_list = [
+        v
+        for v in (
+            p_name,
+            t_name,
+            pet_fao_name,
+            pet_era5_name,
+            d2m_name,
+            sp_name,
+            ssr_name,
+            str_name,
+            u10_name,
+            v10_name,
+        )
+        if v is not None
+    ]
+    units_map = {v: dict(ds[v].attrs).get("units") for v in var_list}
 
     if include_fao_pm and pet_fao_name is None and not can_compute_fao_pet:
       logger.warning(
@@ -849,7 +1131,7 @@ class ERA5GriddedExtractor:
           self.zarr_uri,
       )
 
-    # 3. Compute Caravan climate indices for each polygon
+    # 3. Compute Caravan climate indices for each polygon via shared DataFrame helper
     for i, (cid, _, _, _) in enumerate(valid_specs):
       p_vals = p_daily_raw[i, rel_t_indices]
       t_vals = t_daily_raw[i, rel_t_indices]
@@ -859,62 +1141,31 @@ class ERA5GriddedExtractor:
             self.zarr_uri,
             cid,
         )
-        results[cid] = dict(nan_result)
+        results[cid] = dict(NAN_CLIMATE_METRICS)
         continue
 
-      p_series = self._depth_to_mm(p_vals, p_units, p_name)
-      t_series = self._temp_to_celsius(t_vals, t_units, t_name)
-
-      pet_fao_s = None
-      if include_fao_pm:
-        if pet_fao_daily_raw is not None and pet_fao_name is not None:
-          fao_vals = pet_fao_daily_raw[i, rel_t_indices]
-          if not np.all(np.isnan(fao_vals)):
-            pet_fao_s = pd.Series(
-                self._depth_to_mm(fao_vals, pet_fao_units, pet_fao_name),
-                index=date_index,
-            )
-        if pet_fao_s is None and can_compute_fao_pet:
-          d2m_c = self._temp_to_celsius(
-              d2m_daily_raw[i, rel_t_indices], d2m_units, d2m_name
-          )
-          sp_kpa = self._pressure_to_kpa(
-              sp_daily_raw[i, rel_t_indices], sp_units, sp_name
-          )
-          ssr_vals = ssr_daily_raw[i, rel_t_indices]
-          str_vals = str_daily_raw[i, rel_t_indices]
-          u10_vals = u10_daily_raw[i, rel_t_indices]
-          v10_vals = v10_daily_raw[i, rel_t_indices]
-          if not any(
-              np.all(np.isnan(arr))
-              for arr in (d2m_c, sp_kpa, ssr_vals, str_vals, u10_vals, v10_vals)
-          ):
-            pet_fao_s = calculate_fao_pm_pet(
-                surface_pressure_kpa=pd.Series(sp_kpa, index=date_index),
-                temperature_2m_c=pd.Series(t_series, index=date_index),
-                dewpoint_temperature_2m_c=pd.Series(d2m_c, index=date_index),
-                u_component_of_wind_10m=pd.Series(u10_vals, index=date_index),
-                v_component_of_wind_10m=pd.Series(v10_vals, index=date_index),
-                surface_net_solar_radiation_mean=pd.Series(ssr_vals, index=date_index),
-                surface_net_thermal_radiation_mean=pd.Series(str_vals, index=date_index),
-                radiation_units=rad_units,
-            )
-
-      pet_era5_s = None
+      cols_dict: Dict[str, np.ndarray] = {
+          p_name: p_vals,
+          t_name: t_vals,
+      }
+      if pet_fao_daily_raw is not None and pet_fao_name is not None:
+        cols_dict[pet_fao_name] = pet_fao_daily_raw[i, rel_t_indices]
       if pet_era5_daily_raw is not None and pet_era5_name is not None:
-        era5_vals = pet_era5_daily_raw[i, rel_t_indices]
-        if not np.all(np.isnan(era5_vals)):
-          era5_mm = self._depth_to_mm(era5_vals, pet_era5_units, pet_era5_name)
-          pet_era5_s = pd.Series(
-              normalize_era5_pet_sign(era5_mm),
-              index=date_index,
-          )
+        cols_dict[pet_era5_name] = pet_era5_daily_raw[i, rel_t_indices]
+      if can_compute_fao_pet:
+        cols_dict[d2m_name] = d2m_daily_raw[i, rel_t_indices]
+        cols_dict[sp_name] = sp_daily_raw[i, rel_t_indices]
+        cols_dict[ssr_name] = ssr_daily_raw[i, rel_t_indices]
+        cols_dict[str_name] = str_daily_raw[i, rel_t_indices]
+        cols_dict[u10_name] = u10_daily_raw[i, rel_t_indices]
+        cols_dict[v10_name] = v10_daily_raw[i, rel_t_indices]
 
-      results[cid] = compute_caravan_climate_metrics(
-          pd.Series(p_series, index=date_index),
-          pd.Series(t_series, index=date_index),
-          pet_era5=pet_era5_s,
-          pet_fao=pet_fao_s,
+      df_poly = pd.DataFrame(cols_dict, index=date_index)
+      results[cid] = compute_climate_metrics_from_dataframe(
+          df_poly,
+          baseline_years=None,
+          units_map=units_map,
+          include_fao_pm=include_fao_pm,
       )
 
     return results

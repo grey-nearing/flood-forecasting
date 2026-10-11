@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Extractor for ECMWF ERA5-Land Daily Surface Reanalysis (0.1 deg, 17 bands).
+"""Extractor for ECMWF ERA5-Land Daily Surface Reanalysis (0.1 deg, 39 bands).
 
 By design, ``ERA5LandExtractor`` reads **exclusively** from a user-supplied
-ERA5-Land gridded Zarr archive (e.g., ``gs://open-multimet/data/era5_land/daily_surface.zarr``).
+ERA5-Land gridded Zarr archive (e.g., ``gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr``).
 Direct extraction from third-party/upstream sources (such as WeatherBench 2's
 0.25 deg atmospheric ERA5 store) is intentionally disabled to prevent silent
 model/resolution substitution.
@@ -44,7 +44,7 @@ _ALLOWED_ERA5_SOURCES = frozenset(
 
 
 class ERA5LandExtractor(BaseExtractor):
-  """Extractor for ECMWF ERA5-Land Reanalysis (0.1 deg, 17 bands).
+  """Extractor for ECMWF ERA5-Land Reanalysis (0.1 deg, 39 bands).
 
   Reads exclusively from a user-supplied ERA5-Land gridded Zarr archive.
   """
@@ -65,8 +65,8 @@ class ERA5LandExtractor(BaseExtractor):
     self.source = "archive"
     self.data_dir = str(data_dir).strip() if data_dir is not None else ""
 
-    # Standard ERA5-Land 0.1 deg grid: 1801 lats (90 -> -90) x 3600 lons (-180 -> 179.9)
-    self.lats = np.linspace(90.0, -90.0, 1801, dtype=np.float64)
+    # Standard ERA5-Land 0.1 deg grid: 1801 lats (-90 -> 90) x 3600 lons (-180 -> 179.9)
+    self.lats = np.linspace(-90.0, 90.0, 1801, dtype=np.float64)
     lons_raw = np.linspace(0.0, 359.9, 3600, dtype=np.float64)
     lons_shifted = np.where(lons_raw >= 180.0, lons_raw - 360.0, lons_raw)
     self.sort_lon_idx = np.argsort(lons_shifted)

@@ -206,7 +206,10 @@ def _point_current(root: Path, run_name: str) -> None:
   if os.path.lexists(tmp_link):
     tmp_link.unlink()
   os.symlink(Path("runs") / run_name, tmp_link, target_is_directory=True)
-  os.replace(tmp_link, root / "current")
+  current_link = root / "current"
+  if os.name == "nt" and os.path.lexists(current_link):
+    current_link.unlink()
+  os.replace(tmp_link, current_link)
 
 
 def _write_model(

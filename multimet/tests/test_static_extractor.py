@@ -261,6 +261,19 @@ def _build_synthetic_hydroatlas_env(tmp_path: Path, include_native_pet: bool = T
       "low_prec_freq": 0.4,
       "low_prec_dur": 2.5,
   }
+  if include_native_pet:
+    rec1.update({
+        "pet_mean_ERA5_LAND": 4.0,
+        "aridity_ERA5_LAND": 1.0,
+        "moisture_index_ERA5_LAND": 0.0,
+        "seasonality_ERA5_LAND": 0.0,
+    })
+    rec2.update({
+        "pet_mean_ERA5_LAND": 4.0,
+        "aridity_ERA5_LAND": 1.0,
+        "moisture_index_ERA5_LAND": 0.0,
+        "seasonality_ERA5_LAND": 0.0,
+    })
   (era5_cache / "na_climate_indices.txt").write_text(
       json.dumps(rec1) + "\n" + json.dumps(rec2) + "\n", encoding="utf-8"
   )
@@ -399,9 +412,24 @@ def test_extract_attributes_for_polygon_end_to_end(tmp_path):
   assert res_filtered.attributes["area_fraction_used_for_aggregation"] == 0.0
   assert np.isnan(res_filtered.attributes["ele_mt_sav"])
 
-  # Omitting era5_source when timeseries_df is not provided must raise ValueError
-  with pytest.raises(ValueError, match="era5_source must be explicitly specified"):
-    extractor.extract_attributes_for_polygon(query_poly, catchment_id="b_err")
+  # Default era5_source="auto" uses priority (timeseries -> hybas -> gridded)
+  res_auto = extractor.extract_attributes_for_polygon(query_poly, catchment_id="b_auto")
+  assert res_auto.era5_source == "hybas"
+  assert np.isclose(res_auto.attributes["p_mean"], 4.5, rtol=1e-3)
+  assert np.isclose(res_auto.attributes["pet_mean_FAO_PM"], 2.25, rtol=1e-3)
+
+  # Override prefer_gridded_over_hybas=True switches auto priority to (timeseries -> gridded -> hybas)
+  res_pref_grid = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_pref_grid", prefer_gridded_over_hybas=True
+  )
+  assert res_pref_grid.era5_source == "gridded"
+  assert np.isclose(res_pref_grid.attributes["p_mean"], 4.0, rtol=1e-3)
+  assert np.isclose(res_pref_grid.attributes["pet_mean_FAO_PM"], 2.0, rtol=1e-3)
+
+  # Extractor with no ERA5 source configured must raise ValueError when timeseries_df is not provided
+  ext_no_era5 = StaticAttributesExtractor(gdb_path=shp_path)
+  with pytest.raises(ValueError, match="At least one ERA5 climate source must be configured"):
+    ext_no_era5.extract_attributes_for_polygon(query_poly, catchment_id="b_err")
 
   # Omitting catchment_id when input is a bare geometry must raise ValueError
   with pytest.raises(ValueError, match="catchment_id must be provided"):
@@ -1456,4 +1484,411 @@ def test_catchment_attributes_container_round_trip():
                         area_fraction_used_for_aggregation=1.0, subbasin_ids=(1,), subbasin_weights_km2=())
   with pytest.raises(ValueError):
     CatchmentAttributes.from_dict({"catchment_id": "x"})
+
+
+def test_era5_source_priority_and_timeseries_zarr(tmp_path):
+  """Verifies default priority (timeseries -> hybas -> gridded) and --prefer-gridded-over-hybas override."""
+  import xarray as xr
+
+  shp_path, era5_cache, zarr_dir = _build_synthetic_hydroatlas_env(
+      tmp_path, include_native_pet=True
+  )
+  # Create a synthetic pre-extracted ERA5_LAND/timeseries.zarr with one basin ("b_in_ts")
+  ts_zarr_dir = tmp_path / "era5_timeseries.zarr"
+  dates = pd.date_range("2000-01-01", periods=60, freq="D")
+  ds_ts = xr.Dataset(
+      data_vars={
+          "era5land_total_precipitation": (
+              ["basin", "date"],
+              np.full((1, 60), 6.0, dtype=np.float32),
+          ),
+          "era5land_temperature_2m": (
+              ["basin", "date"],
+              np.full((1, 60), 14.0, dtype=np.float32),
+          ),
+          "era5land_potential_evaporation_FAO_PENMAN_MONTEITH": (
+              ["basin", "date"],
+              np.full((1, 60), 3.0, dtype=np.float32),
+          ),
+          "era5land_potential_evaporation_DEPRECATED": (
+              ["basin", "date"],
+              np.full((1, 60), -5.0, dtype=np.float32),
+          ),
+      },
+      coords={"basin": ["b_in_ts"], "date": dates.values},
+  )
+  ds_ts.to_zarr(str(ts_zarr_dir), mode="w", zarr_format=2)
+
+  extractor = StaticAttributesExtractor(
+      gdb_path=shp_path,
+      era5_cache_dir=era5_cache,
+      gridded_era5_uri=str(zarr_dir),
+      era5_timeseries_zarr=str(ts_zarr_dir),
+  )
+
+  query_poly = shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)
+
+  # 1. Basin present in timeseries.zarr uses 'timeseries' (p_mean=6.0, pet_fao=3.0, pet_era5=5.0)
+  out_ts = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_in_ts"
+  )
+  assert out_ts.era5_source == "timeseries"
+  res_ts = out_ts.attributes
+  assert np.isclose(res_ts["p_mean"], 6.0, rtol=1e-3)
+  assert np.isclose(res_ts["pet_mean_FAO_PM"], 3.0, rtol=1e-3)
+  assert np.isclose(res_ts["pet_mean_ERA5_LAND"], 5.0, rtol=1e-3)
+  assert np.isclose(res_ts["aridity_FAO_PM"], 0.5, rtol=1e-3)
+
+  # 2. Basin NOT in timeseries.zarr falls back to 'hybas' by default (p_mean=4.5, pet_fao=2.25)
+  out_fallback_hybas = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_not_in_ts"
+  )
+  assert out_fallback_hybas.era5_source == "hybas"
+  res_fallback_hybas = out_fallback_hybas.attributes
+  assert np.isclose(res_fallback_hybas["p_mean"], 4.5, rtol=1e-3)
+  assert np.isclose(res_fallback_hybas["pet_mean_FAO_PM"], 2.25, rtol=1e-3)
+
+  # 3. With prefer_gridded_over_hybas=True, basin in timeseries still uses 'timeseries',
+  #    while basin NOT in timeseries falls back to 'gridded' ahead of 'hybas' (p_mean=4.0, pet_fao=2.0)
+  out_ts_override = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_in_ts", prefer_gridded_over_hybas=True
+  )
+  assert out_ts_override.era5_source == "timeseries"
+  res_ts_override = out_ts_override.attributes
+  assert np.isclose(res_ts_override["p_mean"], 6.0, rtol=1e-3)
+
+  out_fallback_gridded = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="b_not_in_ts", prefer_gridded_over_hybas=True
+  )
+  assert out_fallback_gridded.era5_source == "gridded"
+  res_fallback_gridded = out_fallback_gridded.attributes
+  assert np.isclose(res_fallback_gridded["p_mean"], 4.0, rtol=1e-3)
+  assert np.isclose(res_fallback_gridded["pet_mean_FAO_PM"], 2.0, rtol=1e-3)
+
+  # 4. Mixed-basin file extraction via CLI under default and --prefer-gridded-over-hybas
+  mixed_gdf = gpd.GeoDataFrame(
+      {"gauge_id": ["b_in_ts", "b_not_in_ts"]},
+      geometry=[query_poly, query_poly],
+      crs="EPSG:4326",
+  )
+  mixed_geojson = tmp_path / "mixed_basins.geojson"
+  mixed_gdf.to_file(mixed_geojson, driver="GeoJSON")
+
+  out_default_csv = tmp_path / "mixed_default.csv"
+  cli_main([
+      "--input", str(mixed_geojson),
+      "--output", str(out_default_csv),
+      "--gdb-path", str(shp_path),
+      "--era5-timeseries-zarr", str(ts_zarr_dir),
+      "--era5-cache-dir", str(era5_cache),
+      "--gridded-era5-uri", str(zarr_dir),
+  ])
+  df_default = pd.read_csv(out_default_csv, index_col=0)
+  assert np.isclose(df_default.loc["b_in_ts", "p_mean"], 6.0, rtol=1e-3)
+  assert np.isclose(df_default.loc["b_not_in_ts", "p_mean"], 4.5, rtol=1e-3)
+
+  out_pref_gridded_csv = tmp_path / "mixed_pref_gridded.csv"
+  cli_main([
+      "--input", str(mixed_geojson),
+      "--output", str(out_pref_gridded_csv),
+      "--gdb-path", str(shp_path),
+      "--era5-timeseries-zarr", str(ts_zarr_dir),
+      "--era5-cache-dir", str(era5_cache),
+      "--gridded-era5-uri", str(zarr_dir),
+      "--prefer-gridded-over-hybas",
+  ])
+  df_pref_gridded = pd.read_csv(out_pref_gridded_csv, index_col=0)
+  assert np.isclose(df_pref_gridded.loc["b_in_ts", "p_mean"], 6.0, rtol=1e-3)
+  assert np.isclose(df_pref_gridded.loc["b_not_in_ts", "p_mean"], 4.0, rtol=1e-3)
+
+  # 5. Strict era5_source='timeseries' raises KeyError when basin is missing from timeseries.zarr
+  with pytest.raises(KeyError, match="not found in era5_timeseries_zarr"):
+    extractor.extract_attributes_for_polygon(
+        query_poly, catchment_id="b_not_in_ts", era5_source="timeseries"
+    )
+
+
+def test_workers_multiprocessing_extraction(tmp_path):
+  """Verifies CatchmentAttributes pickles across ProcessPoolExecutor when workers > 1."""
+  import pickle
+  import xarray as xr
+
+  shp_path, era5_cache, zarr_dir = _build_synthetic_hydroatlas_env(
+      tmp_path, include_native_pet=True
+  )
+  ts_zarr_dir = tmp_path / "era5_ts_mp.zarr"
+  dates = pd.date_range("2000-01-01", periods=60, freq="D")
+  ds_ts = xr.Dataset(
+      data_vars={
+          "era5land_total_precipitation": (
+              ["basin", "date"],
+              np.full((1, 60), 6.0, dtype=np.float32),
+          ),
+          "era5land_temperature_2m": (
+              ["basin", "date"],
+              np.full((1, 60), 14.0, dtype=np.float32),
+          ),
+          "era5land_potential_evaporation_FAO_PENMAN_MONTEITH": (
+              ["basin", "date"],
+              np.full((1, 60), 3.0, dtype=np.float32),
+          ),
+          "era5land_potential_evaporation_DEPRECATED": (
+              ["basin", "date"],
+              np.full((1, 60), -5.0, dtype=np.float32),
+          ),
+      },
+      coords={"basin": ["mp_ts"], "date": dates.values},
+  )
+  ds_ts.to_zarr(str(ts_zarr_dir), mode="w", zarr_format=2)
+
+  query_poly = shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)
+  gdf = gpd.GeoDataFrame(
+      {"gauge_id": ["mp_ts", "mp_hybas"]},
+      geometry=[query_poly, query_poly],
+      crs="EPSG:4326",
+  )
+  geojson_path = tmp_path / "mp_basins.geojson"
+  gdf.to_file(geojson_path, driver="GeoJSON")
+
+  extractor = StaticAttributesExtractor(
+      gdb_path=shp_path,
+      era5_cache_dir=era5_cache,
+      gridded_era5_uri=str(zarr_dir),
+      era5_timeseries_zarr=str(ts_zarr_dir),
+  )
+  # Direct pickle round-trip on CatchmentAttributes
+  single = extractor.extract_attributes_for_polygon(
+      query_poly, catchment_id="mp_ts", baseline_years=(1999, 2005)
+  )
+  unpickled = pickle.loads(pickle.dumps(single))
+  assert unpickled.catchment_id == "mp_ts"
+  assert unpickled.era5_source == "timeseries"
+  assert unpickled.baseline_years == (1999, 2005)
+  assert np.isclose(unpickled.attributes["p_mean"], 6.0, rtol=1e-3)
+
+  # Multi-worker ProcessPoolExecutor extraction
+  df_res = extractor.extract_attributes_from_file(
+      geojson_path, workers=2, show_progress=False
+  )
+  assert len(df_res) == 2
+  assert np.isclose(df_res.loc["mp_ts", "p_mean"], 6.0, rtol=1e-3)
+  assert np.isclose(df_res.loc["mp_hybas", "p_mean"], 4.5, rtol=1e-3)
+
+
+def test_era5_coverage_threshold_and_baseline_window(tmp_path):
+  """Verifies 80% valid coverage rule in hybas/gridded and non-overlapping baseline_years -> NaN."""
+  from multimet.static_extractor.climate import (
+      ERA5ClimateLoader,
+      ERA5GriddedExtractor,
+      compute_climate_metrics_from_dataframe,
+  )
+
+  # 1. ERA5ClimateLoader 80% coverage threshold
+  era5_cache = tmp_path / "cov_cache"
+  era5_cache.mkdir(parents=True, exist_ok=True)
+  rec_valid = {
+      "HYBAS_ID": 712000001,
+      "p_mean": 4.0,
+      "pet_mean_FAO_PM": 2.0,
+      "pet_mean_ERA5_LAND": 3.0,
+      "aridity_FAO_PM": 0.5,
+      "aridity_ERA5_LAND": 0.75,
+      "frac_snow": 0.1,
+      "moisture_index_FAO_PM": 0.5,
+      "moisture_index_ERA5_LAND": 0.25,
+      "seasonality_FAO_PM": 0.2,
+      "seasonality_ERA5_LAND": 0.3,
+      "high_prec_freq": 10.0,
+      "high_prec_dur": 1.2,
+      "low_prec_freq": 200.0,
+      "low_prec_dur": 3.5,
+  }
+  rec_nan = {"HYBAS_ID": 712000002, "p_mean": None}
+  (era5_cache / "na_climate_indices.txt").write_text(
+      json.dumps(rec_valid) + "\n" + json.dumps(rec_nan) + "\n", encoding="utf-8"
+  )
+  loader = ERA5ClimateLoader(era5_cache)
+  # 50% valid coverage (< 80%) -> all NaN
+  res_50 = loader.get_indices_for_subbasins(
+      [712000001, 712000002], [50.0, 50.0]
+  )
+  assert np.isnan(res_50["p_mean"])
+  # 85% valid coverage (>= 80%) -> valid weighted average
+  res_85 = loader.get_indices_for_subbasins(
+      [712000001, 712000002], [85.0, 15.0]
+  )
+  assert np.isclose(res_85["p_mean"], 4.0)
+  assert np.isclose(res_85["pet_mean_ERA5_LAND"], 3.0)
+
+  # 2. ERA5GriddedExtractor 80% coverage threshold on polygon extraction
+  g_dir = tmp_path / "cov_grid.zarr"
+  root = zarr.open_group(str(g_dir), mode="w", zarr_format=2)
+  lats = np.linspace(40.05, 40.95, 10, dtype=np.float64)
+  lons = np.linspace(-86.95, -86.05, 10, dtype=np.float64)
+  n_times = 30
+  root.create_array("latitude", data=lats)
+  root.create_array("longitude", data=lons)
+  t_arr = root.create_array("time", data=np.arange(n_times, dtype=np.int64))
+  t_arr.attrs["units"] = "days since 2000-01-01"
+
+  shape = (n_times, len(lats), len(lons))
+  p_arr = np.full(shape, 10.0, dtype=np.float32)
+  # Mask out 5 of 10 longitude columns (50% valid < 80%)
+  p_arr[:, :, :5] = np.nan
+  root.create_array("era5land_total_precipitation", data=p_arr)
+  root.create_array("era5land_temperature_2m", data=np.full(shape, 15.0, dtype=np.float32))
+  root.create_array("era5land_potential_evaporation_FAO_PENMAN_MONTEITH", data=np.full(shape, 2.0, dtype=np.float32))
+  root.create_array("era5land_potential_evaporation_DEPRECATED", data=np.full(shape, -2.5, dtype=np.float32))
+  zarr.consolidate_metadata(str(g_dir))
+
+  g_ext = ERA5GriddedExtractor(str(g_dir))
+  box_50 = shapely.geometry.box(-87.0, 40.0, -86.0, 41.0)
+  out_50 = g_ext.extract_climate_metrics_for_polygon(box_50, baseline_years=(2000, 2000))
+  assert np.isnan(out_50["p_mean"])
+
+  # Box covering the eastern 5 columns where 100% of cells are valid (>= 80%)
+  box_100 = shapely.geometry.box(-86.5, 40.0, -86.0, 41.0)
+  out_100 = g_ext.extract_climate_metrics_for_polygon(box_100, baseline_years=(2000, 2000))
+  assert np.isclose(out_100["p_mean"], 10.0)
+
+  # 3. compute_climate_metrics_from_dataframe empty and non-overlapping baseline_years
+  with pytest.raises(ValueError, match="empty"):
+    compute_climate_metrics_from_dataframe(pd.DataFrame())
+
+  dates_2000 = pd.date_range("2000-01-01", periods=30, freq="D")
+  df_2000 = pd.DataFrame(
+      {"prcp": 5.0, "t2m": 15.0, "pet": 2.0}, index=dates_2000
+  )
+  out_no_overlap = compute_climate_metrics_from_dataframe(
+      df_2000, baseline_years=(1981, 1990)
+  )
+  assert all(np.isnan(v) for v in out_no_overlap.values())
+
+
+def test_era5_explicit_priority_and_duplicate_basins(tmp_path):
+  """Verifies explicit priority validation and duplicate basin rejection in ERA5TimeseriesZarrLoader."""
+  import xarray as xr
+  from multimet.static_extractor.climate import ERA5TimeseriesZarrLoader
+
+  shp_path, era5_cache, _ = _build_synthetic_hydroatlas_env(tmp_path)
+  extractor = StaticAttributesExtractor(
+      gdb_path=shp_path, era5_cache_dir=era5_cache
+  )
+  query_poly = shapely.geometry.box(-86.25, 40.1, -85.25, 40.9)
+  # Explicit priority list naming unconfigured 'gridded' must raise ValueError
+  with pytest.raises(ValueError, match="gridded_era5_uri"):
+    extractor.extract_attributes_for_polygon(
+        query_poly, catchment_id="b1", era5_source="gridded,hybas"
+    )
+
+  # Duplicate basin ID across two timeseries stores must raise ValueError
+  dates = pd.date_range("2000-01-01", periods=10, freq="D")
+  ds_dup = xr.Dataset(
+      data_vars={
+          "era5land_total_precipitation": (
+              ["basin", "date"],
+              np.ones((1, 10), dtype=np.float32),
+          ),
+          "era5land_temperature_2m": (
+              ["basin", "date"],
+              np.ones((1, 10), dtype=np.float32),
+          ),
+          "era5land_potential_evaporation_FAO_PENMAN_MONTEITH": (
+              ["basin", "date"],
+              np.ones((1, 10), dtype=np.float32),
+          ),
+      },
+      coords={"basin": ["dup_basin"], "date": dates.values},
+  )
+  s1 = tmp_path / "ts1.zarr"
+  s2 = tmp_path / "ts2.zarr"
+  ds_dup.to_zarr(str(s1), mode="w", zarr_format=2)
+  ds_dup.to_zarr(str(s2), mode="w", zarr_format=2)
+  with pytest.raises(ValueError, match="Duplicate basin ID"):
+    ERA5TimeseriesZarrLoader([str(s1), str(s2)])
+
+
+def test_era5_gridded_native_resolution_cosine_latitude_weighting(tmp_path):
+  """Verifies ERA5GriddedExtractor on a native 0.1-deg grid with latitude-dependent gradient."""
+  from multimet.static_extractor.climate import ERA5GriddedExtractor
+
+  zarr_dir = tmp_path / "native_grid_era5.zarr"
+  root = zarr.open_group(str(zarr_dir), mode="w", zarr_format=2)
+  # 0.1-deg ascending latitude slice around 60 deg N where cos(lat) changes rapidly
+  lats = np.round(np.arange(55.0, 65.01, 0.1), 1).astype(np.float64)
+  lons = np.round(np.arange(10.0, 12.01, 0.1), 1).astype(np.float64)
+  n_times = 30
+  root.create_array("latitude", data=lats)
+  root.create_array("longitude", data=lons)
+  t_arr = root.create_array("time", data=np.arange(n_times, dtype=np.int64))
+  t_arr.attrs["units"] = "days since 2000-01-01"
+
+  # Precipitation varies linearly with latitude: p(lat) = lat (mm/day)
+  p_grid = np.broadcast_to(
+      lats[None, :, None], (n_times, len(lats), len(lons))
+  ).astype(np.float32)
+  shape = (n_times, len(lats), len(lons))
+  root.create_array("era5land_total_precipitation", data=p_grid)
+  root.create_array("era5land_temperature_2m", data=np.full(shape, 10.0, dtype=np.float32))
+  root.create_array("era5land_potential_evaporation_FAO_PENMAN_MONTEITH", data=np.full(shape, 2.0, dtype=np.float32))
+  root.create_array("era5land_potential_evaporation_DEPRECATED", data=np.full(shape, -2.5, dtype=np.float32))
+  zarr.consolidate_metadata(str(zarr_dir))
+
+  g_ext = ERA5GriddedExtractor(str(zarr_dir))
+  poly = shapely.geometry.box(10.25, 56.05, 11.75, 63.95)
+  metrics = g_ext.extract_climate_metrics_for_polygon(
+      poly, baseline_years=(2000, 2000)
+  )
+  # Because cos(lat) is larger at 56N than at 64N, the cosine-latitude weighted p_mean
+  # must be strictly less than the unweighted midpoint (60.0) and match analytical cos-lat weighting
+  interior_lats = lats[(lats > 56.05) & (lats < 63.95)]
+  cos_w = np.cos(np.deg2rad(interior_lats))
+  expected_p_mean = float(np.sum(interior_lats * cos_w) / np.sum(cos_w))
+  assert metrics["p_mean"] < 60.0
+  assert np.isclose(metrics["p_mean"], expected_p_mean, atol=1e-2)
+
+
+def test_regenerate_era5_climate_tables_vectorized_parity(tmp_path):
+  """Verifies vectorized compute_climate_metrics_2d and rounding helpers in tools/."""
+  from multimet.static_extractor.tools.regenerate_era5_climate_tables import (
+      compute_climate_metrics_2d,
+      round_jsonl_climate_records,
+      update_subdataset_climate_tables,
+  )
+  from multimet.utils.climate import compute_caravan_climate_metrics
+
+  dates = pd.date_range("1995-01-01", "1996-12-31", freq="D")
+  rng = np.random.default_rng(42)
+  prcp = rng.gamma(shape=1.5, scale=3.0, size=(len(dates), 2))
+  t2m = rng.normal(loc=12.0, scale=8.0, size=(len(dates), 2))
+  pev = rng.uniform(0.5, 4.0, size=(len(dates), 2))
+  fao = rng.uniform(0.6, 4.5, size=(len(dates), 2))
+
+  metrics_2d, valid_mask = compute_climate_metrics_2d(
+      dates, prcp, t2m, pev, fao, baseline_years=(1995, 1996), round_decimals=4
+  )
+  assert valid_mask.tolist() == [True, True]
+  for b_idx in range(2):
+    ref = compute_caravan_climate_metrics(
+        pd.Series(prcp[:, b_idx], index=dates),
+        pd.Series(t2m[:, b_idx], index=dates),
+        pd.Series(pev[:, b_idx], index=dates),
+        pd.Series(fao[:, b_idx], index=dates),
+    )
+    for k, ref_val in ref.items():
+      assert np.isclose(metrics_2d[k][b_idx], ref_val, atol=1e-4), f"Mismatch on {k}"
+
+  raw_jsonl = [json.dumps({"HYBAS_ID": 101, "p_mean": 3.1234567, "aridity": None})]
+  norm_jsonl = round_jsonl_climate_records(raw_jsonl, round_decimals=4)
+  parsed = json.loads(norm_jsonl[0])
+  assert parsed["HYBAS_ID"] == 101
+  assert parsed["p_mean"] == 3.1235
+  assert parsed["aridity"] is None
+
+  df_csv = pd.DataFrame({"gauge_id": ["b_0"], "p_mean": [0.0]})
+  df_pq = pd.DataFrame({"p_mean": [0.0]}, index=pd.Index(["b_0"], name="gauge_id"))
+  b0_map = {"b_0": {k: float(metrics_2d[k][0]) for k in metrics_2d}}
+  u_csv, u_pq = update_subdataset_climate_tables(df_csv, df_pq, b0_map, round_decimals=4)
+  assert np.isclose(u_csv.loc[0, "p_mean"], b0_map["b_0"]["p_mean"])
+  assert np.isclose(u_pq.loc["b_0", "p_mean"], b0_map["b_0"]["p_mean"])
 
