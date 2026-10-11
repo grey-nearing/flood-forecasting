@@ -27,6 +27,7 @@ import pandas as pd
 import xarray
 
 from model.utils.tqdm import AutoRefreshTqdm as tqdm
+from utils.file_paths import ATTRIBUTES_ZARR_NAME, STREAMFLOW_ZARR_NAME
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ def load_caravan_attributes(
         A basin indexed Dataset with all attributes as coordinates.
     """
     LOGGER.debug('load caravan attributes')
-    zarr_store = _resolve_zarr_store(data_dir, 'attributes.zarr')
+    zarr_store = _resolve_zarr_store(data_dir, ATTRIBUTES_ZARR_NAME)
     if zarr_store is not None:
         LOGGER.debug('Loading attributes from Zarr store: %s', zarr_store)
         # `chunks={}` keeps the on-disk Zarr chunks for lazy loading.
@@ -194,7 +195,7 @@ def load_caravan_timeseries(
         A combined Dataset with 'basin' and 'date' coordinates.
     """
     LOGGER.debug('load caravan timeseries')
-    zarr_store = _resolve_zarr_store(data_dir, 'streamflow.zarr')
+    zarr_store = _resolve_zarr_store(data_dir, STREAMFLOW_ZARR_NAME)
     if zarr_store is not None:
         LOGGER.debug('Loading timeseries from Zarr store: %s', zarr_store)
         # `chunks={}` keeps the on-disk Zarr chunks for lazy loading.

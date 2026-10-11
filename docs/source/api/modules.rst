@@ -9,5 +9,5 @@ Modules
    static_extractor
    gridded_archive_builders
    timeseries_extractors
+   weather_fetcher
    return_periods
-   benchmarks

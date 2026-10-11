@@ -22,6 +22,7 @@ import os
 from multimet.utils.http import download_http_file
 import numpy as np
 import pandas as pd
+from utils.file_paths import NOAA_PSL_CPC_URL_TEMPLATE
 import xarray as xr
 
 CPC_LATS = np.linspace(-89.75, 89.75, 360, dtype=np.float32)
@@ -29,9 +30,7 @@ CPC_LONS = np.linspace(-179.75, 179.75, 720, dtype=np.float32)
 EXPECTED_PSL_LATS = np.linspace(89.75, -89.75, 360, dtype=np.float32)
 EXPECTED_PSL_LONS = np.linspace(0.25, 359.75, 720, dtype=np.float32)
 CPC_VARIABLE = "cpc_precipitation"
-NOAA_PSL_URL_TEMPLATE = (
-    "https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/precip.{year}.nc"
-)
+NOAA_PSL_URL_TEMPLATE = NOAA_PSL_CPC_URL_TEMPLATE
 
 
 def _is_cached_cpc_netcdf_usable(

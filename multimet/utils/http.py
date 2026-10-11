@@ -26,10 +26,11 @@ import urllib.parse
 
 import pandas as pd
 import requests
+from utils.file_paths import NASA_CMR_GRANULES_URL
 
 _logger = logging.getLogger(__name__)
 
-DEFAULT_CMR_GRANULES_URL = "https://cmr.earthdata.nasa.gov/search/granules.json"
+DEFAULT_CMR_GRANULES_URL = NASA_CMR_GRANULES_URL
 
 
 def download_http_file(

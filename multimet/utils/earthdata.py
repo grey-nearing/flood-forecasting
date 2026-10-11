@@ -29,11 +29,10 @@ from multimet.utils.http import (
 import numpy as np
 import pandas as pd
 import requests
+from utils.file_paths import NASA_GESDISC_IMERG_DAILY_URL
 import xarray as xr
 
-DEFAULT_GESDISC_URL = (
-    "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGDE.07"
-)
+DEFAULT_GESDISC_URL = NASA_GESDISC_IMERG_DAILY_URL
 IMERG_HHR_SHORT_NAME = "GPM_3IMERGHHE"
 IMERG_DAILY_SHORT_NAME = "GPM_3IMERGDE"
 

@@ -13,9 +13,12 @@ This module creates watershed boundary polygons and calculates drainage areas ($
 
 | Command / Class | Purpose | Spatial Grid | Coordinate System & Coverage |
 | :--- | :--- | :--- | :--- |
-| `delineate-catchment` | Delineate one or many watershed polygons from gauge coordinates | 90 m (`3-arc-second`, `5° × 5°` tiles of `6000 × 6000` pixels) | `EPSG:4326` (WGS84), `-56°S` to `60°N`, `-180°W` to `180°E` |
-| `DemDelineator` | Python class for single-gauge and batch watershed delineation | 90 m (`3-arc-second`, `5° × 5°` tiles of `6000 × 6000` pixels) | `EPSG:4326` (WGS84), `-56°S` to `60°N`, `-180°W` to `180°E` |
-| `benchmark-catchment` | Compare delineated polygons against reference polygons (IoU, Dice, area error) | 90 m (`3-arc-second`) | `EPSG:4326` (WGS84), `-56°S` to `60°N` |
+| `delineate-catchment` | Delineate one or many watershed polygons from gauge coordinates (`--dem`, `--mode dem\|hybrid\|vector_pour_point\|vector_ridgeline`) | 90 m (`3-arc-second`, `5° × 5°` tiles of `6000 × 6000` pixels) | `EPSG:4326` (WGS84), `-56°S` to `60°N` (`hydrosheds_90m`) or `-60°S` to `90°N` (`merit_hydro_90m`) |
+| `DemDelineator` | Python class for single-gauge and batch D8 raster watershed delineation across HydroSHEDS 90m and MERIT-Hydro 90m | 90 m (`3-arc-second`, `5° × 5°` tiles of `6000 × 6000` pixels) | `EPSG:4326` (WGS84), `-56°S` to `60°N` (`hydrosheds_90m`) or `-60°S` to `90°N` (`merit_hydro_90m`) |
+| `RiverNetwork` / `UnitCatchmentDelineator` / `delineate_hybrid` | Vector reach querying, pour-point snapping, upstream unit-catchment dissolution/clipping, and hybrid vector+DEM delineation | HydroRIVERS / HydroBASINS Level 12 & MERIT-Basins | `EPSG:4326` (WGS84) |
+| `ElevationTiles` / `GlobalElevationGrid` | 3-arc-second (`5° × 5°` `.npy`) and global overview DEM elevation sampling | 90 m (`3-arc-second`) & global overview | `EPSG:4326` (WGS84) |
+| `download-merit-d8-tiles` | Download `5° × 5°` (`6000 × 6000` uint8) MERIT-Hydro 90m D8 flow-direction tiles from Earth Engine (`MERIT/Hydro/v1_0_1`) | `6000 × 6000` uint8 D8 flow-direction tiles | `EPSG:4326` (WGS84), `-60°S` to `90°N` |
+| `benchmark-catchment` | Compare delineated polygons against reference polygons (IoU, Dice, area error) | 90 m (`3-arc-second`) | `EPSG:4326` (WGS84) |
 | `slice_continental_dems.py` | Slice raw HydroSHEDS or MERIT GeoTIFF files into `5° × 5°` `.npy` tiles | `6000 × 6000` uint8 D8 flow-direction tiles | `EPSG:4326` (WGS84) |
 | `build_benchmark_dataset.py` | Build a stratified multi-continent reference benchmark Parquet file | Vector reference polygons (WKT) | `EPSG:4326` (WGS84) |
 
@@ -139,17 +142,17 @@ delineate-catchment \
 ```python
 from multimet.catchment_delineation import DemDelineator
 
-delineator = DemDelineator(tiles_dir="/path/to/tiles_5deg")
+delineator = DemDelineator(tiles_dir='/path/to/tiles_5deg')
 
 feature = delineator.delineate(
     lat=39.6828,
     lon=-88.7729,
-    catchment_id="USGS_05592500",
+    catchment_id='USGS_05592500',
     expected_area_km2=480.0,  # optional expected area in km²
 )
 
-print("Gauge ID:", feature["properties"]["catchment_id"])
-print("Area (km²):", feature["properties"]["area_km2"])
+print('Gauge ID:', feature['properties']['catchment_id'])
+print('Area (km²):', feature['properties']['area_km2'])
 ```
 
 ---

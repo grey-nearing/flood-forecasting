@@ -17,7 +17,7 @@ This skill defines the package layout, subpackage boundaries, helper-tool placem
 
 ## 1. Top-Level Repository Layout
 
-The repository is organized into self-contained top-level Python packages (`model/`, `multimet/`, `return_periods/`, `benchmarks/`) plus shared documentation, environment specifications, agent skills, and CI workflows:
+The repository is organized into self-contained top-level Python packages (`model/`, `multimet/`, `return_periods/`, `utils/`, `benchmarks/`) plus shared documentation, environment specifications, agent skills, and CI workflows:
 
 ```text
 flood-forecasting/
@@ -52,6 +52,9 @@ flood-forecasting/
 │   └── tests/                     # Co-located unit, integration, and canary tests for all of multimet
 ├── return_periods/                # USGS Bulletin 17C flood frequency (MGBT + EMA) calculator
 │   └── tests/                     # Co-located unit & USGS Bulletin 17C verification tests
+├── utils/                         # Global cross-package utilities
+│   ├── file_paths.py              # Single source of truth for all GCS URIs, external API URLs & canonical file names
+│   └── tests/                     # Unit tests for global utilities
 ├── docs/                          # Sphinx ReadTheDocs documentation (source/usage/ and source/api/)
 ├── environments/                  # Conda (conda.yml, environment_cpu.yml) & RTD requirements
 ├── skills/                        # Project-level AI agent skills

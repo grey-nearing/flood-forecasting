@@ -325,11 +325,9 @@ def _worker_evaluate_basin(args: tuple) -> Dict[str, Any]:
   )
   elapsed = time.time() - t0
 
-  extracted_attrs = res.get("caravan_attributes", {})
-  calc_area = float(
-      extracted_attrs.get("basin_area", res.get("total_area_km2", np.nan))
-  )
-  subbasins_count = int(res.get("intersected_subbasins_count", 0))
+  extracted_attrs = dict(res.attributes)
+  calc_area = float(extracted_attrs.get("basin_area", res.area_km2))
+  subbasins_count = int(res.n_subbasins)
 
   area_bias_pct = (
       float((calc_area - ref_area_km2) / ref_area_km2 * 100.0)

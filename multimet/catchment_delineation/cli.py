@@ -40,17 +40,29 @@ import fsspec
 import geopandas as gpd
 import pandas as pd
 
+from multimet.catchment_delineation.datasets import resolve_dem_dataset
 from multimet.catchment_delineation.delineator import (
+    CatchmentCoverageError,
     DemDelineator,
     build_missing_feature,
 )
 from multimet.catchment_delineation.gcs import download_tile_from_gcs
+from multimet.catchment_delineation.hybrid import delineate_hybrid
+from multimet.catchment_delineation.hydrography import (
+    HydroBasinsLayer,
+    MeritBasinsLayer,
+    RiverNetwork,
+    RiverSnapError,
+)
 from multimet.catchment_delineation.tiles import (
     is_coord_in_coverage,
     is_tile_in_coverage,
     latlon_to_tile_key,
     list_available_tiles,
     tile_key_to_filename,
+)
+from multimet.catchment_delineation.vector_delineator import (
+    UnitCatchmentDelineator,
 )
 from multimet.utils.gcs import (
     is_gcs_path,
@@ -103,6 +115,7 @@ def _delineate_worker(
         int | None,
         float | None,
         float,
+        str,
     ],
 ) -> tuple[dict[str, Any], list[str]]:
     """Run single-basin delineation in a worker process."""
@@ -117,12 +130,15 @@ def _delineate_worker(
         max_cells,
         expected_area,
         area_tolerance,
+        dataset_id,
     ) = task
+    dataset = resolve_dem_dataset(dataset_id)
     delineator = DemDelineator(
         tiles_dir=Path(tiles_dir) if tiles_dir else None,
         gcs_uri=gcs_uri,
         cache_dir=Path(cache_dir) if cache_dir else None,
         cache_tiles=True,
+        dataset=dataset,
     )
     feat, err_msg = delineator._delineate_safe(
         lat=lat,
@@ -142,7 +158,9 @@ def _delineate_worker(
             lon,
             reason,
         )
-        feature = build_missing_feature(lat, lon, cid, reason)
+        feature = build_missing_feature(
+            lat, lon, cid, reason, dataset=dataset
+        )
     else:
         feature = feat
     created = [str(p) for p in delineator.created_cache_files]
@@ -521,6 +539,32 @@ def _build_parser() -> argparse.ArgumentParser:
 
     config_group = parser.add_argument_group('Algorithm & Tile Settings')
     config_group.add_argument(
+        '--dem',
+        type=str,
+        default='hydrosheds_90m',
+        help=(
+            'DEM dataset identifier or alias (e.g. hydrosheds_90m, '
+            'merit_hydro_90m; default: hydrosheds_90m).'
+        ),
+    )
+    config_group.add_argument(
+        '--mode',
+        choices=[
+            'dem',
+            'hybrid',
+            'ridgeline',
+            'exact_pour_point',
+            'unit_catchment',
+        ],
+        default='dem',
+        help=(
+            'Delineation mode: dem (pure 90m D8 flow-direction), hybrid '
+            '(vector reach snap + 90m D8), ridgeline (dissolved upstream '
+            'unit catchments), exact_pour_point (upstream unit catchments + '
+            'clipped outlet unit), or unit_catchment (local unit polygon).'
+        ),
+    )
+    config_group.add_argument(
         '--tiles-dir',
         type=str,
         default=None,
@@ -540,6 +584,33 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help='Explicit local cache directory when downloading from --gcs-uri.',
+    )
+    config_group.add_argument(
+        '--hydrorivers-shp',
+        type=str,
+        default=None,
+        help='Explicit path to HydroRIVERS_v10.shp (for hybrid/vector modes).',
+    )
+    config_group.add_argument(
+        '--hydrobasins-dir',
+        type=str,
+        default=None,
+        help=(
+            'Explicit directory containing HydroBASINS Level 12 shapefiles '
+            '(for ridgeline/exact_pour_point/unit_catchment modes).'
+        ),
+    )
+    config_group.add_argument(
+        '--merit-rivers-dir',
+        type=str,
+        default=None,
+        help='Explicit directory containing MERIT-Basins riv_pfaf_*.shp files.',
+    )
+    config_group.add_argument(
+        '--merit-catchments-dir',
+        type=str,
+        default=None,
+        help='Explicit directory containing MERIT-Basins cat_pfaf_*.shp files.',
     )
     config_group.add_argument(
         '--snap-window',
@@ -618,10 +689,135 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _build_hydrography_for_cli(
+    args: argparse.Namespace, is_merit: bool
+) -> tuple[RiverNetwork | None, UnitCatchmentDelineator | None]:
+    """Instantiate RiverNetwork and/or UnitCatchmentDelineator from CLI args."""
+    need_river = args.mode in ('hybrid', 'exact_pour_point')
+    need_vector = args.mode in (
+        'ridgeline',
+        'exact_pour_point',
+        'unit_catchment',
+    )
+    network: RiverNetwork | None = None
+    vec_delin: UnitCatchmentDelineator | None = None
+
+    if is_merit:
+        if need_river or (need_vector and args.merit_rivers_dir):
+            if not args.merit_rivers_dir:
+                raise ValueError(
+                    f"--merit-rivers-dir is required for --mode {args.mode} "
+                    "with MERIT-Hydro."
+                )
+            network = RiverNetwork.from_merit_basins(args.merit_rivers_dir)
+        if need_vector:
+            merit_dir = args.merit_catchments_dir or args.merit_rivers_dir
+            if not merit_dir:
+                raise ValueError(
+                    '--merit-catchments-dir (or --merit-rivers-dir) is '
+                    f'required for --mode {args.mode} with MERIT-Hydro.'
+                )
+            layer = MeritBasinsLayer(merit_dir)
+            vec_delin = UnitCatchmentDelineator(layer)
+    else:
+        if need_river or (need_vector and args.hydrorivers_shp):
+            if not args.hydrorivers_shp:
+                raise ValueError(
+                    f"--hydrorivers-shp is required for --mode {args.mode} "
+                    "with HydroSHEDS."
+                )
+            network = RiverNetwork.from_hydrorivers(args.hydrorivers_shp)
+        if need_vector:
+            if not args.hydrobasins_dir:
+                raise ValueError(
+                    f"--hydrobasins-dir is required for --mode {args.mode} "
+                    "with HydroSHEDS."
+                )
+            layer = HydroBasinsLayer(args.hydrobasins_dir)
+            vec_delin = UnitCatchmentDelineator(layer)
+
+    return network, vec_delin
+
+
+def _delineate_non_dem_single(
+    args: argparse.Namespace,
+    lat: float,
+    lon: float,
+    cid: str | None,
+    delineator: DemDelineator | None,
+    network: RiverNetwork | None,
+    vec_delin: UnitCatchmentDelineator | None,
+) -> dict[str, Any]:
+    """Run hybrid or vector delineation for a single coordinate."""
+    if args.mode == 'hybrid':
+        assert delineator is not None and network is not None
+        return delineate_hybrid(
+            dem=delineator,
+            network=network,
+            lat=lat,
+            lon=lon,
+            max_cells=args.max_cells,
+            catchment_id=cid,
+        )
+
+    assert vec_delin is not None
+    snap = None
+    unit_id: int | None = None
+    if network is not None:
+        snap = network.try_snap_to_reach(lat, lon)
+        if snap is not None:
+            if snap.reach.dataset == 'merit-hydro':
+                unit_id = snap.reach.reach_id
+            else:
+                unit_id = (
+                    int(snap.reach.extra.get('hydrobasins_unit', 0)) or None
+                )
+    if unit_id is None:
+        unit_id = vec_delin.layer.try_locate_unit(lat, lon)
+        if unit_id is None:
+            raise CatchmentCoverageError(
+                f'No unit catchment found at ({lat:.4f}, {lon:.4f}).'
+            )
+
+    snapped_lat = snap.lat if snap is not None else lat
+    snapped_lon = snap.lon if snap is not None else lon
+    if args.mode == 'ridgeline':
+        vc = vec_delin.delineate_ridgeline(unit_id)
+    elif args.mode == 'unit_catchment':
+        vc = vec_delin.delineate_unit_catchment(unit_id)
+    else:
+        if snap is None or snap.reach.geometry is None:
+            raise ValueError(
+                f'Exact pour-point mode requires a snapped river reach '
+                f'at ({lat:.4f}, {lon:.4f}).'
+            )
+        vc = vec_delin.delineate_exact_pour_point(
+            unit_id, snapped_lat, snapped_lon, snap.reach.geometry
+        )
+
+    outlet = {
+        'input_latitude': lat,
+        'input_longitude': lon,
+        'latitude': snapped_lat,
+        'longitude': snapped_lon,
+        'reach_id': (
+            f'{snap.reach.dataset.upper()}_{snap.reach.reach_id}'
+            if snap is not None
+            else f'UNIT_{unit_id}'
+        ),
+        'snap_distance_m': (
+            round(snap.distance_m, 1) if snap is not None else 0.0
+        ),
+    }
+    return vc.to_feature(catchment_id=cid, outlet=outlet)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the DEM catchment delineation CLI."""
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    dataset = resolve_dem_dataset(args.dem)
 
     if args.list_tiles:
         if not args.tiles_dir:
@@ -695,32 +891,60 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    if args.tiles_dir is not None and args.gcs_uri is not None:
-        sys.stderr.write(
-            'Error: Provide either --tiles-dir or --gcs-uri, not both.\n'
+    need_dem = args.mode in ('dem', 'hybrid')
+    delineator: DemDelineator | None = None
+    if need_dem:
+        if args.tiles_dir is not None and args.gcs_uri is not None:
+            sys.stderr.write(
+                'Error: Provide either --tiles-dir or --gcs-uri, not both.\n'
+            )
+            return 1
+        if args.tiles_dir is None and args.gcs_uri is None:
+            sys.stderr.write(
+                'Error: An explicit tile source is required: pass --tiles-dir '
+                'or --gcs-uri + --cache-dir.\n'
+            )
+            return 1
+        uses_gcs = args.gcs_uri is not None or (
+            args.tiles_dir is not None and is_gcs_path(args.tiles_dir)
         )
-        return 1
-    if args.tiles_dir is None and args.gcs_uri is None:
-        sys.stderr.write(
-            'Error: An explicit tile source is required: pass --tiles-dir '
-            'or --gcs-uri + --cache-dir.\n'
-        )
-        return 1
-    uses_gcs = args.gcs_uri is not None or (
-        args.tiles_dir is not None and is_gcs_path(args.tiles_dir)
-    )
-    if uses_gcs and args.cache_dir is None:
-        sys.stderr.write(
-            'Error: An explicit --cache-dir is required when using --gcs-uri.\n'
-        )
-        return 1
+        if uses_gcs and args.cache_dir is None:
+            sys.stderr.write(
+                'Error: An explicit --cache-dir is required when using '
+                '--gcs-uri.\n'
+            )
+            return 1
 
-    delineator = DemDelineator(
-        tiles_dir=args.tiles_dir,
-        gcs_uri=args.gcs_uri,
-        cache_dir=args.cache_dir,
-    )
+        delineator = DemDelineator(
+            tiles_dir=args.tiles_dir,
+            gcs_uri=args.gcs_uri,
+            cache_dir=args.cache_dir,
+            dataset=dataset,
+        )
 
+    if args.mode != 'dem':
+        network, vec_delin = _build_hydrography_for_cli(
+            args, is_merit=(dataset.id == 'merit_hydro_90m')
+        )
+        features: list[dict[str, Any]] = [
+            _delineate_non_dem_single(
+                args, lat, lon, cid, delineator, network, vec_delin
+            )
+            for (lat, lon), cid in zip(
+                coords_to_process, ids_to_process, strict=True
+            )
+        ]
+        result = (
+            features[0]
+            if len(coords_to_process) == 1 and not args.coords and not args.csv
+            else {'type': 'FeatureCollection', 'features': features}
+        )
+        if args.clean_cache and delineator is not None:
+            delineator.clean_created_cache()
+        _write_cli_outputs(args, result)
+        return 0
+
+    assert delineator is not None
     created_cache_files: set[Path] = set()
     if len(coords_to_process) == 1 and not args.coords and not args.csv:
         lat, lon = coords_to_process[0]
@@ -749,9 +973,9 @@ def main(argv: list[str] | None = None) -> int:
             delineator.cache_dir.mkdir(parents=True, exist_ok=True)
             needed_tile_keys: set[tuple[int, int]] = set()
             for lat, lon in coords_to_process:
-                if is_coord_in_coverage(lat, lon):
+                if is_coord_in_coverage(lat, lon, dataset=dataset):
                     tk = latlon_to_tile_key(lat, lon)
-                    if is_tile_in_coverage(tk[0], tk[1]):
+                    if is_tile_in_coverage(tk[0], tk[1], dataset=dataset):
                         needed_tile_keys.add(tk)
             missing_tiles = [
                 tk
@@ -789,6 +1013,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.max_cells,
                 exp_area,
                 args.area_tolerance,
+                dataset.id,
             )
             for (lat, lon), cid, exp_area in zip(
                 coords_to_process,

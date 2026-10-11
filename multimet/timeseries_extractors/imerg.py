@@ -40,6 +40,7 @@ from multimet.timeseries_extractors.base import BaseExtractor
 from multimet.timeseries_extractors.config import DEFAULT_STORAGE_PATHS, Product
 from multimet.utils.zonal import ZonalWeightCalculator, ZonalWeightMatrix
 from multimet.utils.earthdata import (
+    DEFAULT_GESDISC_URL,
     EarthdataSession,
     download_daily_imerg,
     get_earthdata_credentials_from_netrc,
@@ -85,7 +86,7 @@ class IMERGExtractor(BaseExtractor):
     super().__init__(Product.IMERG, data_dir)
     default_url = DEFAULT_STORAGE_PATHS[Product.IMERG].get(
         "gesdisc_url",
-        "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGDE.07/",
+        f"{DEFAULT_GESDISC_URL}/",
     )
 
     source_lower = source.lower().strip()
@@ -179,7 +180,7 @@ class IMERGExtractor(BaseExtractor):
             self.data_dir.startswith("http://")
             or self.data_dir.startswith("https://")
         )
-        else "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGDE.07"
+        else DEFAULT_GESDISC_URL
     )
     url = f"{base_url.rstrip('/')}/{year}/{month:02d}/{filename}"
 

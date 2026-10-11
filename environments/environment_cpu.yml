@@ -31,6 +31,7 @@ dependencies:
   - google-cloud-storage
   - h5netcdf=1.7.*
   - h5py=3.15.*
+  - icechunk=2.*  # dynamical.org forecast stores (multimet.weather_fetcher)
   - libprotobuf
   - matplotlib=3.10.*
   - more-itertools=10.8.*
@@ -42,9 +43,11 @@ dependencies:
   - pydantic=2.12.*
   - pyogrio
   - pyproj
+  - pystac=1.*  # dynamical.org STAC catalog (multimet.weather_fetcher)
   - pytest
   - pytest-cov
   - pytest-xdist
+  - python-eccodes=2.*  # GRIB2 decoding of ECMWF Open Data (import eccodes)
   - rasterio=1.5.*
   - requests
   - ruamel.yaml=0.18.*

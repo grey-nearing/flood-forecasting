@@ -24,25 +24,51 @@ from multimet.catchment_delineation.config import (
     DEM_MIN_LON,
     TILE_DEG,
 )
+from multimet.catchment_delineation.datasets import DemDataset
 
 MIN_TILE_LAT_TOP: int = -55
 
 
-def is_coord_in_coverage(lat: float, lon: float) -> bool:
-    """Return whether (lat, lon) lies within the global DEM coverage domain."""
+def is_coord_in_coverage(
+    lat: float,
+    lon: float,
+    *,
+    dataset: DemDataset | None = None,
+) -> bool:
+    """Return whether (lat, lon) lies within the DEM dataset coverage domain."""
     if not (math.isfinite(lat) and math.isfinite(lon)):
         return False
-    return (
-        DEM_MIN_LAT <= lat <= DEM_MAX_LAT and DEM_MIN_LON <= lon <= DEM_MAX_LON
-    )
+    if dataset is None:
+        min_lat, max_lat = DEM_MIN_LAT, DEM_MAX_LAT
+        min_lon, max_lon = DEM_MIN_LON, DEM_MAX_LON
+    else:
+        min_lat, max_lat = dataset.min_lat, dataset.max_lat
+        min_lon, max_lon = dataset.min_lon, dataset.max_lon
+    return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
 
 
-def is_tile_in_coverage(lat_top: int, lon_left: int) -> bool:
+def is_tile_in_coverage(
+    lat_top: int,
+    lon_left: int,
+    *,
+    dataset: DemDataset | None = None,
+) -> bool:
     """Return whether a 5x5 degree tile key lies within DEM coverage."""
-    max_lon_left = int(DEM_MAX_LON - TILE_DEG)
+    if dataset is None:
+        max_lat = int(DEM_MAX_LAT)
+        min_lon = int(DEM_MIN_LON)
+        max_lon_left = int(DEM_MAX_LON - TILE_DEG)
+        min_tile_lat_top = MIN_TILE_LAT_TOP
+    else:
+        max_lat = int(dataset.max_lat)
+        min_lon = int(dataset.min_lon)
+        max_lon_left = int(dataset.max_lon - TILE_DEG)
+        min_tile_lat_top = int(
+            round(math.ceil((dataset.min_lat + 1e-9) / TILE_DEG) * TILE_DEG)
+        )
     return (
-        MIN_TILE_LAT_TOP <= lat_top <= int(DEM_MAX_LAT)
-        and int(DEM_MIN_LON) <= lon_left <= max_lon_left
+        min_tile_lat_top <= lat_top <= max_lat
+        and min_lon <= lon_left <= max_lon_left
     )
 
 
@@ -58,6 +84,24 @@ def tile_key_to_filename(lat_top: int, lon_left: int) -> str:
     lat_str = f'n{lat_top:02d}' if lat_top >= 0 else f's{abs(lat_top):02d}'
     lon_str = f'w{abs(lon_left):03d}' if lon_left < 0 else f'e{lon_left:03d}'
     return f'{lat_str}{lon_str}.npy'
+
+
+def filename_to_tile_key(name: str | Path) -> tuple[int, int]:
+    """Parse a tile filename or stem (e.g. 'n40w090.npy' or 'n40w090') into (lat_top, lon_left)."""
+    stem = Path(str(name).strip()).stem.lower()
+    if (
+        len(stem) != 7
+        or stem[0] not in ('n', 's')
+        or stem[3] not in ('e', 'w')
+        or not stem[1:3].isdigit()
+        or not stem[4:7].isdigit()
+    ):
+        raise ValueError(f'Invalid 5x5 degree tile name: {name!r}')
+    lat_mag = int(stem[1:3])
+    lon_mag = int(stem[4:7])
+    lat_top = lat_mag if stem[0] == 'n' else -lat_mag
+    lon_left = lon_mag if stem[3] == 'e' else -lon_mag
+    return lat_top, lon_left
 
 
 def get_required_tiles_for_bbox(
