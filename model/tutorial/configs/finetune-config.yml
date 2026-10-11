@@ -83,6 +83,14 @@ finetune_modules:
 # over time. They are generally robust and don't need basin-specific retraining.
 #- hindcast_lstm
 #- forecast_lstm
+#
+# NOTE: When fine-tuning with specific per-product dynamic embeddings, you can
+# alternatively pass a dictionary to unfreeze only selected product keys inside
+# hindcast_embeddings_fc, forecast_embeddings_fc, or shared_embeddings_fc:
+# finetune_modules:
+#   hindcast_embeddings_fc: [cpc]
+#   static_embedding_fc: true
+#   head: true
 
 
 # --- 4. Training Hyperparameters ----------------------------------------------

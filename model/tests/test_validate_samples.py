@@ -1335,3 +1335,140 @@ def test_validate_samples_windows_account_for_min_lead_time():
         list(range(2, 11)),
     )
 
+
+@pytest.mark.unit
+def test_validate_samples_per_product_groups_masked_mean_and_strict() -> None:
+    """Verify per-product group NaN handling across methods."""
+    basins = ['basin_A']
+    dates = pd.date_range('2020-01-01', periods=8, freq='D')
+    lead_times = [1, 2]
+
+    # Product 1 (global): 2 bands, valid on all dates except date index 4
+    g1_b1 = np.ones((1, 8))
+    g1_b2 = np.ones((1, 8))
+    g1_b1[0, 4] = np.nan
+    g1_b2[0, 4] = np.nan
+
+    # Product 2 (local): partial-band NaN on date 1, all-NaN on date 4
+    g2_b1 = np.ones((1, 8))
+    g2_b2 = np.ones((1, 8))
+    g2_b1[0, 1] = np.nan
+    g2_b1[0, 4] = np.nan
+    g2_b2[0, 4] = np.nan
+
+    # Forecast product: 2 bands, valid everywhere
+    f1_b1 = np.ones((1, 8, 2))
+    f1_b2 = np.ones((1, 8, 2))
+
+    dataset = xr.Dataset(
+        {
+            'g1_b1': (('basin', 'date'), g1_b1),
+            'g1_b2': (('basin', 'date'), g1_b2),
+            'g2_b1': (('basin', 'date'), g2_b1),
+            'g2_b2': (('basin', 'date'), g2_b2),
+            'f1_b1': (('basin', 'date', 'lead_time'), f1_b1),
+            'f1_b2': (('basin', 'date', 'lead_time'), f1_b2),
+        },
+        coords={'basin': basins, 'date': dates, 'lead_time': lead_times},
+    )
+    hindcast_features = ['g1_b1', 'g1_b2', 'g2_b1', 'g2_b2']
+    forecast_features = ['f1_b1', 'f1_b2']
+    hindcast_groups = [['g1_b1', 'g1_b2'], ['g2_b1', 'g2_b2']]
+    forecast_groups = [['f1_b1', 'f1_b2']]
+
+    # 1 & 2: Under masked_mean (and attention), date 1 is valid via Product 1
+    # despite partial-band NaN in Product 2, while date 4 has ALL product
+    # groups NaN and drops seq_length=2 windows (issue dates 5 and 6).
+    for method in ('masked_mean', 'attention'):
+        valid_mask, _ = validate_samples(
+            is_train=False,
+            dataset=dataset,
+            sample_dates=dates,
+            nan_handling_method=method,
+            feature_groups=[hindcast_groups, forecast_groups],
+            hindcast_features=hindcast_features,
+            forecast_features=forecast_features,
+            seq_length=2,
+            lead_time=2,
+            min_lead_time=1,
+        )
+        np.testing.assert_array_equal(
+            np.flatnonzero(valid_mask.sel(basin='basin_A').values),
+            [2, 3, 4, 7],
+        )
+
+    # 3: Under nan_handling_method=None, partial NaN in Product 2 on date 1
+    # also invalidates windows touching date 1 (issue dates D=2 and D=3).
+    valid_strict, _ = validate_samples(
+        is_train=False,
+        dataset=dataset,
+        sample_dates=dates,
+        nan_handling_method=None,
+        feature_groups=[hindcast_groups, forecast_groups],
+        hindcast_features=hindcast_features,
+        forecast_features=forecast_features,
+        seq_length=2,
+        lead_time=2,
+        min_lead_time=1,
+    )
+    np.testing.assert_array_equal(
+        np.flatnonzero(valid_strict.sel(basin='basin_A').values),
+        [4, 7],
+    )
+
+    # 4: Under unioning (all_any_group), every group needs >= 1 valid band:
+    # on date 1, Product 2 still has g2_b2 valid, so date 1 passes; on date 4,
+    # both bands of both groups are NaN, so D=5,6 are dropped.
+    valid_union, _ = validate_samples(
+        is_train=False,
+        dataset=dataset,
+        sample_dates=dates,
+        nan_handling_method='unioning',
+        hindcast_groups=hindcast_groups,
+        forecast_groups=forecast_groups,
+        hindcast_features=hindcast_features,
+        forecast_features=forecast_features,
+        seq_length=2,
+        lead_time=2,
+        min_lead_time=1,
+    )
+    np.testing.assert_array_equal(
+        np.flatnonzero(valid_union.sel(basin='basin_A').values),
+        [2, 3, 4, 7],
+    )
+
+
+@pytest.mark.unit
+def test_validate_samples_non_subset_feature_groups_raises_value_error(
+    basins_fixture: list[str],
+    sample_dates_fixture: pd.DatetimeIndex,
+) -> None:
+    """Raise ValueError when feature_groups are not a subset of inputs."""
+    dummy_dataset = create_test_dataset(
+        {
+            'h1': np.ones((len(basins_fixture), len(sample_dates_fixture))),
+            'h2': np.ones((len(basins_fixture), len(sample_dates_fixture))),
+        },
+        basins_fixture,
+        sample_dates_fixture,
+    )
+    with pytest.raises(ValueError, match='not a subset'):
+        validate_samples(
+            is_train=False,
+            dataset=dummy_dataset,
+            sample_dates=sample_dates_fixture,
+            nan_handling_method='masked_mean',
+            feature_groups=[['h1', 'unknown_feature']],
+            hindcast_features=['h1', 'h2'],
+            seq_length=2,
+        )
+    with pytest.raises(ValueError, match='not a subset'):
+        validate_samples(
+            is_train=False,
+            dataset=dummy_dataset,
+            sample_dates=sample_dates_fixture,
+            nan_handling_method='masked_mean',
+            feature_groups=[[['unknown_feature']], []],
+            hindcast_features=['h1', 'h2'],
+            seq_length=2,
+        )

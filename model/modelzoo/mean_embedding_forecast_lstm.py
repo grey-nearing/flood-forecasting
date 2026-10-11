@@ -97,6 +97,12 @@ class MeanEmbeddingForecastLSTM(BaseModel):
         'head',
     ]
 
+    dynamic_embedding_modules: ClassVar[tuple[str, ...]] = (
+        'hindcast_embeddings_fc',
+        'forecast_embeddings_fc',
+        'shared_embeddings_fc',
+    )
+
     # Embeddings returned by `forward(..., return_embeddings=True)` that may be
     # overridden for data assimilation via the keyword argument
     # `assimilation_overrides`.

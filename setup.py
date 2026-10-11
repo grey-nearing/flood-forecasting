@@ -11,23 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Package setup configuration for OpenHydroNet."""
 
+import re
 from pathlib import Path
 
 from setuptools import setup
 
-# read the description from the README.md
-readme_file = Path(__file__).absolute().parent / 'README.md'
-with readme_file.open('r') as fp:
-    long_description = fp.read()
+readme_file = Path(__file__).resolve().parent / 'README.md'
+long_description = readme_file.read_text(encoding='utf-8')
 
-about = {}
-with open('model/__about__.py') as fp:
-    exec(fp.read(), about)
+about_file = Path(__file__).resolve().parent / 'model' / '__about__.py'
+version_match = re.search(
+    r"^__version__\s*=\s*['\"]([^'\"]+)['\"]",
+    about_file.read_text(encoding='utf-8'),
+    re.MULTILINE,
+)
+if version_match is None:
+    raise RuntimeError('Unable to find __version__ in model/__about__.py')
+package_version = version_match.group(1)
 
 setup(
     name='openhydronet',
-    version=about['__version__'],
+    version=package_version,
     packages=[
         'model',
         'model.datasetzoo',
@@ -50,47 +56,83 @@ setup(
         'utils',
         'benchmarks',
         'benchmarks.tools',
+        'frontend',
+        'frontend.maas_viewer',
+        'frontend.tools',
+        'frontend.weather_viewer',
     ],
     package_data={
         'return_periods': ['*.csv'],
+        'frontend': ['static/*'],
     },
     url='https://openhydronet.readthedocs.io',
     project_urls={
         'Documentation': 'https://openhydronet.readthedocs.io',
         'Source': 'https://github.com/google-research/flood-forecasting',
     },
-    author='Amit Markel, Frederik Kratzert, Grey Nearing, Martin Gauch, Omri Shefi',
+    author=(
+        'Amit Markel, Frederik Kratzert, Grey Nearing, Martin Gauch, Omri Shefi'
+    ),
     author_email='flood-forecasting-open-source@google.com',
-    description='Library for training deep learning models with environmental focus',
+    description=(
+        'Library for training deep learning models with environmental focus'
+    ),
     long_description=long_description,
     long_description_content_type='text/markdown',
     entry_points={
         'console_scripts': [
             'schedule-runs=model.run_scheduler:_main',
             'run=model.run:_main',
-            'build-cpc-archive=multimet.gridded_archive_builders.build_cpc_archive:main',
-            'build-imerg-archive=multimet.gridded_archive_builders.build_imerg_archive:main',
+            (
+                'build-cpc-archive='
+                'multimet.gridded_archive_builders.build_cpc_archive:main'
+            ),
+            (
+                'build-imerg-archive='
+                'multimet.gridded_archive_builders.build_imerg_archive:main'
+            ),
             'extract-multimet=multimet.timeseries_extractors.runner:main',
-            'extract-multimet-dask=multimet.timeseries_extractors.dask_runner:main',
+            (
+                'extract-multimet-dask='
+                'multimet.timeseries_extractors.dask_runner:main'
+            ),
             'multimet-realtime=multimet.timeseries_extractors.realtime:main',
             'sync-weather-forecasts=multimet.weather_fetcher.cli:main',
             'delineate-catchment=multimet.catchment_delineation.cli:main',
-            'download-merit-d8-tiles=multimet.catchment_delineation.tools.download_merit_d8_tiles:main',
+            (
+                'download-merit-d8-tiles='
+                'multimet.catchment_delineation.tools.'
+                'download_merit_d8_tiles:main'
+            ),
             'extract-caravan-static=multimet.static_extractor.cli:main',
             'extract-static-attributes=multimet.static_extractor.cli:main',
-            'extract-caravan-static-batch=multimet.static_extractor.batch_runner:main',
-            'extract-static-attributes-batch=multimet.static_extractor.batch_runner:main',
+            (
+                'extract-caravan-static-batch='
+                'multimet.static_extractor.batch_runner:main'
+            ),
+            (
+                'extract-static-attributes-batch='
+                'multimet.static_extractor.batch_runner:main'
+            ),
             'fetch-maas-forecast=maas.cli:main',
+            'openhydronet-ui=frontend.server:main',
             'benchmark-catchment=benchmarks.catchment_delineation:main',
             'benchmark-static-extractor=benchmarks.static_extractor:main',
-            'benchmark-gridded-archive=benchmarks.gridded_archive_builders:main',
-            'benchmark-timeseries-extractor=benchmarks.timeseries_extractors:main',
+            (
+                'benchmark-gridded-archive='
+                'benchmarks.gridded_archive_builders:main'
+            ),
+            (
+                'benchmark-timeseries-extractor='
+                'benchmarks.timeseries_extractors:main'
+            ),
             'benchmark-return-periods=benchmarks.return_periods:main',
             'benchmark-model=benchmarks.model:main',
         ]
     },
     python_requires='>=3.12',
     install_requires=[
+        'Pillow',
         'absl-py',
         'bokeh',
         'cachey',
@@ -145,5 +187,8 @@ setup(
         'Topic :: Scientific/Engineering :: Hydrology',
         'License :: OSI Approved :: Apache Software License',
     ],
-    keywords='deep learning hydrology lstm neural network streamflow discharge rainfall-runoff',
+    keywords=(
+        'deep learning hydrology lstm neural network streamflow discharge'
+        ' rainfall-runoff'
+    ),
 )
