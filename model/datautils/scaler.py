@@ -13,11 +13,12 @@
 # limitations under the License.
 
 import os
+from collections.abc import Hashable, Iterator
 from pathlib import Path
-from typing import Hashable, Iterator
 
 import dask
 import dask.array
+import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -94,6 +95,11 @@ def _calc_types(
 class Scaler:
     """Scaler for a dataset that contains multiple features.
 
+    Note that training normalization statistics (both base pretraining and fine-tuning
+    new-variable extension) are computed over the loaded training slice, which extends
+    `seq_length` days before `train_start_date` and `lead_time` days after
+    `train_end_date` to cover full lookback/forecast windows.
+
     Parameters
     ----------
     scaler_dir : pathlib.Path
@@ -107,7 +113,7 @@ class Scaler:
         Dataset to use for calculating a new scaler. Cannot be supplied if `calculate_scaler` is False.
 
     Raises
-    -------
+    ------
     ValueError for incompatible loading/calculating instructions.
     """
 
@@ -133,9 +139,8 @@ class Scaler:
         if not calculate_scaler:
             self.load()
             self.check_zero_scale()
-        else:
-            if dataset is not None:
-                self.calculate(dataset)
+        elif dataset is not None:
+            self.calculate(dataset)
 
     def load(self):
         scaler_zarr = self.scaler_dir / SCALER_FILE_NAME
@@ -148,8 +153,8 @@ class Scaler:
         dataset: xr.Dataset,
     ):
         # Option for custom scaling for each feature.
-        centering_types = {feature: 'mean' for feature in dataset.data_vars}
-        scaling_types = {feature: 'std' for feature in dataset.data_vars}
+        centering_types = dict.fromkeys(dataset.data_vars, 'mean')
+        scaling_types = dict.fromkeys(dataset.data_vars, 'std')
         for feature, norm in self._custom_normalization.items():
             if 'centering' in norm:
                 centering_types[feature] = norm['centering']
@@ -167,8 +172,7 @@ class Scaler:
         param_names = ['center', 'scale', 'mean', 'std']
         param_index = pd.Index(param_names, name='parameter', dtype=object)
         scaler = xr.concat(
-            [center, scale, stats['mean'], stats['std']], 
-            dim=param_index
+            [center, scale, stats['mean'], stats['std']], dim=param_index
         )
 
         # Expand the scaler dataset to include 'obs' and 'sim' versions of all variables.
@@ -207,10 +211,20 @@ class Scaler:
 
         scales_to_check = self.scaler.sel(parameter=['scale', 'std'])
         is_zero = (scales_to_check == 0).any('parameter').to_dataarray()
-        features = is_zero['variable'][is_zero]
-        if any(features):
+        zero_features = is_zero['variable'][is_zero]
+        if any(zero_features):
             raise ValueError(
-                f'Zero scale values found for features: {list(features)}.'
+                f'Zero scale values found for features: '
+                f'{list(zero_features.values)}.'
+            )
+
+        # Check for NaN / Inf in all scaler parameters
+        is_invalid = (~np.isfinite(self.scaler.to_dataarray())).any('parameter')
+        invalid_features = is_invalid['variable'][is_invalid]
+        if any(invalid_features):
+            raise ValueError(
+                f'NaN or Inf values found in scaler parameters for features: '
+                f'{list(invalid_features.values)}.'
             )
 
     def scale(
@@ -294,6 +308,7 @@ def is_any_lazy(dataset: xr.Dataset) -> bool:
         isinstance(var.data, dask.array.Array)
         for var in dataset.data_vars.values()
     )
+
 
 def _assert_computed(da: xr.DataArray | xr.Dataset | None):
     assert da is not None

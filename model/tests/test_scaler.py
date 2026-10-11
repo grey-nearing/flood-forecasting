@@ -22,10 +22,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from model.datautils import scaler
 from model.datautils.scaler import (
-    Scaler,
     SCALER_FILE_NAME,
+    Scaler,
     _calc_stats,
     _calc_types,
 )
@@ -92,7 +91,7 @@ def _calc_types_wrapper(
 ) -> float:
     dataset = da.rename('da').to_dataset()
     stats = _calc_stats(dataset, {a_type})
-    types = {feature: a_type for feature in dataset.data_vars}
+    types = dict.fromkeys(dataset.data_vars, a_type)
     calc = xr.merge(_calc_types(dataset, types, none_value, stats))
     return calc.da.item()
 
@@ -575,4 +574,84 @@ def test_scaler_load_missing_zarr_raises_file_not_found(
     # Even if a legacy scaler.nc file is present, Scaler must require scaler.zarr
     sample_dataset_basic.to_netcdf(tmp_scaler_dir / 'scaler.nc')
     with pytest.raises(FileNotFoundError, match='Scaler file not found at'):
+        Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
+
+
+def test_check_zero_scale_method_raises_error_for_nan(tmp_scaler_dir):
+    """Test that NaN scale raises ValueError."""
+    scaler_obj = Scaler(
+        scaler_dir=tmp_scaler_dir, calculate_scaler=True, dataset=None
+    )
+    # scale is NaN
+    scaler_obj.scaler = xr.Dataset(
+        {
+            'feature_a': (('parameter',), np.array([0.0, np.nan, 1.0, 1.0])),
+            'feature_b': (('parameter',), np.array([0.0, 5.0, 1.0, 1.0])),
+        },
+        coords={'parameter': ['center', 'scale', 'mean', 'std']},
+    )
+    with pytest.raises(
+        ValueError,
+        match='NaN or Inf values found in scaler parameters for features:',
+    ):
+        scaler_obj.check_zero_scale()
+
+
+def test_check_zero_scale_method_raises_error_for_inf(tmp_scaler_dir):
+    """Test that Inf center raises ValueError."""
+    scaler_obj = Scaler(
+        scaler_dir=tmp_scaler_dir, calculate_scaler=True, dataset=None
+    )
+    # center is Inf
+    scaler_obj.scaler = xr.Dataset(
+        {
+            'feature_a': (('parameter',), np.array([np.inf, 1.0, 1.0, 1.0])),
+            'feature_b': (('parameter',), np.array([0.0, 5.0, 1.0, 1.0])),
+        },
+        coords={'parameter': ['center', 'scale', 'mean', 'std']},
+    )
+    with pytest.raises(
+        ValueError,
+        match='NaN or Inf values found in scaler parameters for features:',
+    ):
+        scaler_obj.check_zero_scale()
+
+
+def test_scaler_load_from_file_raises_error_for_nan_scale(tmp_scaler_dir):
+    """Test loading a scaler file with NaN scale."""
+    scaler_file_path = tmp_scaler_dir / SCALER_FILE_NAME
+    nan_scale_ds = xr.Dataset(
+        {'test_var': (('parameter',), np.array([0.0, np.nan, 1.0, 1.0]))},
+        coords={'parameter': ['center', 'scale', 'mean', 'std']},
+    )
+    import os
+
+    os.makedirs(tmp_scaler_dir, exist_ok=True)
+    nan_scale_ds.to_zarr(scaler_file_path, mode='w')
+    nan_scale_ds.close()
+
+    with pytest.raises(
+        ValueError,
+        match='NaN or Inf values found in scaler parameters for features:',
+    ):
+        Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
+
+
+def test_scaler_load_from_file_raises_error_for_inf_center(tmp_scaler_dir):
+    """Test loading a scaler file with Inf center."""
+    scaler_file_path = tmp_scaler_dir / SCALER_FILE_NAME
+    inf_center_ds = xr.Dataset(
+        {'test_var': (('parameter',), np.array([np.inf, 1.0, 1.0, 1.0]))},
+        coords={'parameter': ['center', 'scale', 'mean', 'std']},
+    )
+    import os
+
+    os.makedirs(tmp_scaler_dir, exist_ok=True)
+    inf_center_ds.to_zarr(scaler_file_path, mode='w')
+    inf_center_ds.close()
+
+    with pytest.raises(
+        ValueError,
+        match='NaN or Inf values found in scaler parameters for features:',
+    ):
         Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
