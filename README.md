@@ -1,6 +1,5 @@
 # OpenHydroNet: Riverine Flood Forecasting
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/model/tutorial/OpenHydroNet_Tutorial.ipynb)
 [![Documentation](https://img.shields.io/badge/docs-readthedocs-blue.svg)](https://openhydronet.readthedocs.io/)
 
 OpenHydroNet (`google-research/flood-forecasting`) provides open-source implementations of the deep learning streamflow forecasting models and hydrological data pipelines that power [Google FloodHub](https://sites.research.google/floods/). Built on [NeuralHydrology](https://github.com/neuralhydrology/neuralhydrology), it trains and runs sequence models that combine historical weather (*hindcasts*) and predicted future weather (*forecasts*) from multiple meteorological sources across global watersheds.
@@ -10,7 +9,7 @@ OpenHydroNet (`google-research/flood-forecasting`) provides open-source implemen
 ## Quick Links
 
 - **Documentation:** [openhydronet.readthedocs.io](https://openhydronet.readthedocs.io/)
-- **Interactive Colab Tutorial:** [`model/tutorial/OpenHydroNet_Tutorial.ipynb`](https://colab.research.google.com/github/google-research/flood-forecasting/blob/main/model/tutorial/OpenHydroNet_Tutorial.ipynb) ([YouTube Video Walkthrough](https://www.youtube.com/watch?v=431Kr3mxidU))
+- **Interactive Web UI:** [`frontend/README.md`](./frontend/README.md) (`openhydronet-ui`)
 - **Pre-Built Caravan-MultiMet Dataset:** `gs://caravan-multimet/v1.1` ([Shalev et al., 2026](https://arxiv.org/abs/2601.04886))
 - **Pre-Trained Global FloodHub Weights:** [`model/pretrained-models/Pretrained-Models-README.md`](./model/pretrained-models/Pretrained-Models-README.md)
 
@@ -25,6 +24,7 @@ OpenHydroNet (`google-research/flood-forecasting`) provides open-source implemen
 | **Catchment Delineation** | [`multimet/catchment_delineation/`](./multimet/catchment_delineation/) | Global 90m (`3-arcsec`) flow-direction watershed polygon delineation and pour-point snapping (`delineate-catchment`) ([`README.md`](./multimet/catchment_delineation/README.md)). |
 | **Return Periods** | [`return_periods/`](./return_periods/) | USGS Bulletin 17C flood frequency analysis (`MGBT` low-outlier screening and `EMA` Log-Pearson Type III fitting) ([`README.md`](./return_periods/README.md)). |
 | **Canonical Benchmarks** | [`benchmarks/`](./benchmarks/) | Standalone canonical benchmark suite (`benchmark-catchment`, `benchmark-static-extractor`, `benchmark-gridded-archive`, `benchmark-timeseries-extractor`, `benchmark-return-periods`, `benchmark-model`) ([`README.md`](./benchmarks/README.md)). |
+| **Interactive Web UI** | [`frontend/`](./frontend/) | Local web server and browser interface (`openhydronet-ui`) for basin delineation, static attributes, weather and MaaS forecast viewing, model training and fine-tuning, and real-time Cold-Start / Hot-Start forecasting ([`README.md`](./frontend/README.md)). |
 
 ---
 
@@ -56,25 +56,24 @@ pip install -e .
 
 ## Data Setup
 
-1. **Tutorial Sample Data:** A 5-basin Caravan sample dataset in Zarr format is included at `model/tutorial/Caravan-zarr` for running the tutorial notebook and quickstart configurations.
-2. **Full Caravan Dataset:** Download the Caravan NetCDF dataset from [Zenodo](https://doi.org/10.5281/zenodo.6522634). To convert Caravan NetCDF/CSV folders into Zarr stores (`attributes.zarr` and `streamflow.zarr`), run:
+1. **Caravan Dataset:** Download the Caravan NetCDF dataset from [Zenodo](https://doi.org/10.5281/zenodo.6522634). To convert Caravan NetCDF/CSV folders into Zarr stores (`attributes.zarr` and `streamflow.zarr`), run:
    ```bash
    run convert-caravan --caravan-dir ~/data/Caravan-nc --output-dir ~/data/Caravan-zarr
    ```
-3. **MultiMet Dynamic Forcings:** Stream meteorological forcings directly from Google Cloud Storage by setting `dynamics_data_dir: gs://caravan-multimet/v1.1` in your YAML configuration file (or point to a local Zarr directory).
+2. **MultiMet Dynamic Forcings:** Stream meteorological forcings directly from Google Cloud Storage by setting `dynamics_data_dir: gs://caravan-multimet/v1.1` in your YAML configuration file (or point to a local Zarr directory).
 
 ---
 
 ## Training, Evaluation, and Inference
 
-Experiments are configured with YAML files (see [`model/tutorial/configs/train-config.yml`](./model/tutorial/configs/train-config.yml)):
+Experiments are configured with YAML files (see [`model/example-configs/floodhub-settings-config.yml`](./model/example-configs/floodhub-settings-config.yml)):
 
 ```bash
 # Train a model
-run train --config-file model/tutorial/configs/train-config.yml
+run train --config-file model/example-configs/floodhub-settings-config.yml
 
-# Fine-tune a pre-trained model
-run finetune --config-file model/tutorial/configs/finetune-config.yml
+# Fine-tune a pre-trained model (example config in model/pretrained-models/Pretrained-Models-README.md)
+run finetune --config-file /path/to/your/finetune-config.yml
 
 # Evaluate performance metrics (NSE, KGE) on the test split (pass --assimilate to enable latent embedding data assimilation)
 run evaluate --run-dir /path/to/your/model_run/

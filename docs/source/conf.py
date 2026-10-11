@@ -26,9 +26,7 @@
 #
 import datetime
 import os
-import shutil
 import sys
-from pathlib import Path
 
 sys.path.insert(0, os.path.abspath('.'))
 sys.path.insert(0, os.path.abspath('../../'))
@@ -53,7 +51,6 @@ extensions = [
     'sphinx.ext.autodoc',  # autodocument
     'sphinx.ext.napoleon',  # google and numpy doc string support
     'sphinx.ext.mathjax',  # latex rendering of equations using MathJax
-    'nbsphinx'
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -86,30 +83,3 @@ html_static_path = []
 # -- Napoleon autodoc options -------------------------------------------------
 napoleon_numpy_docstring = True
 napoleon_use_ivar = True
-nbsphinx_execute = 'never'
-
-def copy_notebooks(app):
-    """Copies notebooks from the tutorial directory to the source directory."""
-    root = Path(__file__).parent.parent.parent
-    examples_dir = root / 'model' / 'tutorial'
-    tutorial_dir = root / 'docs' / 'source' / 'tutorial'
-    
-    # Mapping: Source relative to tutorial/ -> Destination relative to tutorial/
-    notebooks = {
-        'OpenHydroNet_Tutorial.ipynb': 'OpenHydroNet_Tutorial.ipynb',
-    }
-
-    if not tutorial_dir.exists():
-        tutorial_dir.mkdir(parents=True)
-
-    for src, dst in notebooks.items():
-        src_path = examples_dir / src
-        dst_path = tutorial_dir / dst
-        if src_path.exists():
-            print(f"Copying {src_path} to {dst_path}")
-            shutil.copyfile(src_path, dst_path)
-        else:
-            print(f"Warning: Notebook {src_path} not found.")
-
-def setup(app):
-    app.connect('builder-inited', copy_notebooks)

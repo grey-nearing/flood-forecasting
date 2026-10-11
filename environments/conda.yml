@@ -41,7 +41,6 @@ dependencies:
   - conda-forge::libprotobuf
   - matplotlib=3.10.*
   - more-itertools=10.8.*
-  - nbsphinx=0.9.8
   - netcdf4=1.7.3
   - numpy=2.4.*
   - conda-forge::orc

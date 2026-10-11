@@ -10,7 +10,6 @@ This is the documentation for the OpenHydroNet Python package.
 The source code is available on `GitHub <https://github.com/google-research/flood-forecasting/>`_.
 
 On this documentation page, you'll find a :doc:`quickstart guide <usage/quickstart>` with step-by-step instructions on installation, required datasets, and command-line usage.
-There is also a :doc:`tutorial <tutorial/tutorial>` that walks you through training your first model.
 The :doc:`modelzoo <usage/models>` lists the models available in this repository.
 The :doc:`catchment delineation guide <usage/catchment_delineation>` explains how to extract watershed boundary polygons directly from DEM flow direction grids.
 If you are working with your own watersheds, the :doc:`static attribute extractor guide <usage/static_extractor>` shows how to create Caravan-compatible static attribute tables from watershed boundary files.
@@ -35,7 +34,6 @@ You might also be interested in our `team's webpage <https://sites.research.goog
    usage/weather_fetcher
    usage/return_periods
    usage/benchmarks
-   tutorial/tutorial
    usage/config
    api/modules
    example-configs/example-configs
