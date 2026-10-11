@@ -148,6 +148,81 @@ class BaseTrainer(object):
             collate_fn=ds.collate_fn,
         )
 
+    @staticmethod
+    def _unfreeze_module_dict(
+        group_obj: torch.nn.ModuleDict,
+        module_group: str,
+        module_parts: object,
+    ) -> None:
+        """Validate and unfreeze submodules inside a ModuleDict."""
+        if isinstance(module_parts, bool):
+            if module_parts:
+                for param in group_obj.parameters():
+                    param.requires_grad = True
+            return
+        if isinstance(module_parts, str):
+            parts_list: list[str] = [module_parts]
+        elif isinstance(module_parts, list) and all(
+            isinstance(p, str) for p in module_parts
+        ):
+            parts_list = module_parts
+        else:
+            raise ValueError(
+                f'Invalid value {module_parts!r} for ModuleDict '
+                f"'{module_group}' in 'finetune_modules'; expected bool, "
+                'str, or list[str].'
+            )
+        for module_part in parts_list:
+            if module_part not in group_obj:
+                raise KeyError(
+                    f"Submodule '{module_part}' not found in "
+                    f"'{module_group}'. Available keys: "
+                    f'{list(group_obj.keys())}'
+                )
+            for param in group_obj[module_part].parameters():
+                param.requires_grad = True
+
+    def _unfreeze_module_group(
+        self,
+        group_obj: torch.nn.Module,
+        module_group: str,
+        module_parts: object,
+    ) -> None:
+        """Validate and unfreeze a module or ModuleDict entry."""
+        if isinstance(group_obj, torch.nn.ModuleDict):
+            self._unfreeze_module_dict(group_obj, module_group, module_parts)
+            return
+        if not isinstance(module_parts, bool):
+            raise ValueError(  # noqa: TRY004
+                f'Invalid value {module_parts!r} for non-ModuleDict module '
+                f"'{module_group}' in 'finetune_modules'; expected a bool "
+                '(True or False).'
+            )
+        if module_parts:
+            for param in group_obj.parameters():
+                param.requires_grad = True
+
+    def _validate_newly_initialized_embeddings_unfrozen(self) -> None:
+        """Raise ValueError if a newly initialized embedding is frozen."""
+        target_model = getattr(self.model, '_orig_mod', self.model)
+        newly_init = getattr(
+            target_model, '_newly_initialized_embeddings', set()
+        )
+        for module_group, product_key in sorted(newly_init):
+            group_obj = getattr(target_model, module_group, None)
+            if (
+                isinstance(group_obj, torch.nn.ModuleDict)
+                and product_key in group_obj
+            ):
+                submodule = group_obj[product_key]
+                if not any(p.requires_grad for p in submodule.parameters()):
+                    raise ValueError(
+                        'Newly added product embedding '
+                        f"'{module_group}.{product_key}' is randomly "
+                        'initialized (not present in checkpoint) and must '
+                        "be unfrozen in 'finetune_modules'."
+                    )
+
     def _freeze_model_parts(self):
         # freeze all model weights
         for param in self.model.parameters():
@@ -169,36 +244,16 @@ class BaseTrainer(object):
             for module_group, module_parts in self.cfg.finetune_modules.items():
                 if module_group in self.model.module_parts:
                     group_obj = getattr(self.model, module_group)
-                    if (
-                        module_parts is None
-                        or isinstance(module_parts, bool)
-                        or not isinstance(group_obj, torch.nn.ModuleDict)
-                    ):
-                        if module_parts is not False:
-                            for param in group_obj.parameters():
-                                param.requires_grad = True
-                    else:
-                        parts_list = (
-                            [module_parts]
-                            if isinstance(module_parts, str)
-                            else module_parts
-                        )
-                        for module_part in parts_list:
-                            if module_part not in group_obj:
-                                raise KeyError(
-                                    f"Submodule '{module_part}' not found in "
-                                    f"'{module_group}'. Available keys: "
-                                    f'{list(group_obj.keys())}'
-                                )
-                            module = group_obj[module_part]
-                            for param in module.parameters():
-                                param.requires_grad = True
+                    self._unfreeze_module_group(
+                        group_obj, module_group, module_parts
+                    )
                 else:
                     unresolved_modules.append(module_group)
         if unresolved_modules:
             LOGGER.warning(
                 f'Could not resolve the following module parts for finetuning: {unresolved_modules}'
             )
+        self._validate_newly_initialized_embeddings_unfrozen()
 
     def initialize_training(self):
         """Initialize the training class.
@@ -221,7 +276,10 @@ class BaseTrainer(object):
                 'Starting training from Checkpoint %s',
                 self.cfg.checkpoint_path,
             )
-            self._load_model_weights(self.cfg.checkpoint_path)
+            self._load_model_weights(
+                self.cfg.checkpoint_path,
+                allow_new_embeddings=self.cfg.is_finetuning,
+            )
         elif self.cfg.checkpoint_path is None and self.cfg.is_finetuning:
             # the default for finetuning is the last model state
             checkpoint_path = [
@@ -231,7 +289,10 @@ class BaseTrainer(object):
                 )
             ][-1]
             LOGGER.info('Starting training from checkpoint %s', checkpoint_path)
-            self._load_model_weights(checkpoint_path)
+            self._load_model_weights(
+                checkpoint_path,
+                allow_new_embeddings=True,
+            )
 
         # Freeze model parts from pre-trained model.
         if self.cfg.is_finetuning:
@@ -418,13 +479,18 @@ class BaseTrainer(object):
             )
         )
 
-    def _load_model_weights(self, checkpoint_path: Path | str) -> None:
+    def _load_model_weights(
+        self,
+        checkpoint_path: Path | str,
+        *,
+        allow_new_embeddings: bool = False,
+    ) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
         """Loads model state_dict while handling torch.compile prefixes."""
-        load_model_weights(
+        return load_model_weights(
             self.model,
             checkpoint_path,
             self.device,
-            allow_new_embeddings=self.cfg.is_finetuning,
+            allow_new_embeddings=allow_new_embeddings,
         )
 
     def _save_weights_and_optimizer(self, epoch: int):

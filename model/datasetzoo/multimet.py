@@ -36,7 +36,10 @@ from model.datasetzoo.caravan import (
     load_caravan_timeseries,
     load_caravan_timeseries_together,
 )
-from model.datautils.scaler import Scaler
+from model.datautils.scaler import (
+    Scaler,
+    resolve_scaler_dir as _resolve_scaler_dir,
+)
 from model.datautils.union_features import union_features
 from model.datautils.utils import load_basin_file
 from model.datautils.validate_samples import validate_samples
@@ -52,7 +55,7 @@ from model.utils.configutils import (
 )
 from model.utils.errors import NoEvaluationDataError, NoTrainDataError
 from model.utils.tqdm import AutoRefreshTqdm as tqdm
-from utils.file_paths import TIMESERIES_ZARR_NAME
+from utils.file_paths import SCALER_ZARR_NAME, TIMESERIES_ZARR_NAME
 
 LOGGER = logging.getLogger(__name__)
 
@@ -195,36 +198,7 @@ class Multimet(Dataset):
         self._targets_data_path = cfg.targets_data_dir
 
         # NaN-handling options are required to apply the correct sample validation algorithms.
-        self._nan_handling_method = cfg.nan_handling_method
-        hindcast_is_flat = isinstance(cfg.hindcast_inputs, list) and (
-            not cfg.hindcast_inputs or isinstance(cfg.hindcast_inputs[0], str)
-        )
-        forecast_is_flat = bool(cfg.forecast_inputs) and (
-            isinstance(cfg.forecast_inputs, list)
-            and isinstance(cfg.forecast_inputs[0], str)
-        )
-        if (
-            hindcast_is_flat or forecast_is_flat
-        ) and self._nan_handling_method in [
-            'masked_mean',
-            'attention',
-            'unioning',
-        ]:
-            raise ValueError(
-                f'Feature groups are required for {self._nan_handling_method} NaN-handling.'
-            )
-        hindcast_groups = list(
-            group_features_list(cfg.hindcast_inputs).values()
-        )
-        forecast_groups = (
-            list(group_features_list(cfg.forecast_inputs).values())
-            if cfg.forecast_inputs
-            else []
-        )
-        self._feature_groups = [
-            hindcast_groups,
-            forecast_groups,
-        ]
+        self._configure_feature_groups(cfg)
 
         # Validating samples depends on whether we are training or testing.
         self.is_train = is_train
@@ -332,75 +306,8 @@ class Multimet(Dataset):
             LOGGER.debug('union features')
             self._dataset = union_features(self._dataset, self._union_mapping)
 
-        # Scale the dataset AFTER cropping dates so that we do not calcualte scalers using test or eval data.
-        LOGGER.debug('init scaler')
-        if cfg.is_finetuning:
-            if self.is_train:
-                scaler_dir = cfg.base_run_dir
-            else:
-                scaler_dir = (
-                    cfg.run_dir
-                    if (
-                        cfg.run_dir is not None
-                        and (cfg.run_dir / 'scaler.zarr').exists()
-                    )
-                    else cfg.base_run_dir
-                )
-        else:
-            scaler_dir = cfg.run_dir
-
-        self.scaler = Scaler(
-            scaler_dir=scaler_dir,
-            calculate_scaler=compute_scaler,
-            custom_normalization=cfg.custom_normalization,
-            dataset=(self._dataset if compute_scaler else None),
-        )
-        if (
-            cfg.is_finetuning
-            and self.is_train
-            and isinstance(self.scaler.scaler, xr.Dataset)
-        ):
-            new_vars = [
-                v
-                for v in self._dataset.data_vars
-                if v not in self.scaler.scaler.data_vars
-            ]
-            if new_vars:
-                LOGGER.info(
-                    'Extending base scaler with new fine-tuning features: %s',
-                    new_vars,
-                )
-                self.scaler.calculate(self._dataset[new_vars])
-
-        # Note: dep chain to avoid multi passes on all data (lazy mode)
-        # scaler computed  1>  scale dataset  2>  create valid masks
-        # 1>  else sampling from dataset needs re-scaling on everything,
-        # 2>  else calcuation wouldn't be equivalent to as originally done.
-        # TODO(future): Invariant 2> may be unneeded.
-        # Note: keep materialized `self.scaler.scaler` as also trainer uses it.
-        # Note: in non-lazy_mode, dataset is scaled with the non-materialized
-        #       scaler, computing scaler needs going over all data, and
-        #       computing indices needs going over all data (scaled) - so -
-        #       those 3 are computed together.
-
-        LOGGER.debug('compute scaler')
-        (self.scaler.scaler,) = dask.compute(self.scaler.scaler)
-        memory.release()
-
-        LOGGER.debug('scaler check zero scale')
-        self.scaler.check_zero_scale()
-        if compute_scaler or (
-            cfg.is_finetuning
-            and self.is_train
-            and cfg.run_dir is not None
-            and isinstance(self.scaler.scaler, xr.Dataset)
-        ):
-            LOGGER.debug('scaler save')
-            self.scaler.scaler_dir = cfg.run_dir
-            self.scaler.save()
-
-        LOGGER.debug('scale data')
-        self._dataset = self.scaler.scale(self._dataset)
+        # Scale the dataset AFTER cropping dates.
+        self._setup_normalization(cfg, compute_scaler=compute_scaler)
 
         if not cfg.lazy_load:
             LOGGER.debug('[eager load] compute dataset')
@@ -447,6 +354,123 @@ class Multimet(Dataset):
         self._data_cache: dict[str, xr.DataArray] = {}
 
         LOGGER.debug('forecast dataset init complete (%s)', self._period)
+
+    def _configure_feature_groups(self, cfg: Config) -> None:
+        """Validate NaN-handling configuration and build per-product groups."""
+        self._nan_handling_method = cfg.nan_handling_method
+        hindcast_is_flat = isinstance(cfg.hindcast_inputs, list) and (
+            not cfg.hindcast_inputs or isinstance(cfg.hindcast_inputs[0], str)
+        )
+        forecast_is_flat = bool(cfg.forecast_inputs) and (
+            isinstance(cfg.forecast_inputs, list)
+            and isinstance(cfg.forecast_inputs[0], str)
+        )
+        if (
+            hindcast_is_flat or forecast_is_flat
+        ) and self._nan_handling_method in [
+            'masked_mean',
+            'attention',
+            'unioning',
+        ]:
+            raise ValueError(
+                'Feature groups are required for '
+                f'{self._nan_handling_method} NaN-handling.'
+            )
+        self._hindcast_groups = list(
+            group_features_list(cfg.hindcast_inputs).values()
+        )
+        self._forecast_groups = (
+            list(group_features_list(cfg.forecast_inputs).values())
+            if cfg.forecast_inputs
+            else []
+        )
+        self._feature_groups = [
+            self._hindcast_groups,
+            self._forecast_groups,
+        ]
+
+    def _extend_scaler_with_new_features(self, new_vars: list[str]) -> None:
+        """Calculate and validate scaler stats for new fine-tune features."""
+        LOGGER.info(
+            'Extending base scaler with new fine-tuning features: %s',
+            new_vars,
+        )
+        self.scaler.calculate(self._dataset[new_vars])
+        (self.scaler.scaler,) = dask.compute(self.scaler.scaler)
+        invalid_vars: list[str] = []
+        for var in new_vars:
+            stats_da = self.scaler.scaler[var]
+            vals = np.asarray(
+                stats_da.sel(
+                    parameter=['center', 'scale', 'mean', 'std']
+                ).values,
+                dtype=np.float64,
+            )
+            scale_vals = np.asarray(
+                stats_da.sel(parameter=['scale', 'std']).values,
+                dtype=np.float64,
+            )
+            if not np.all(np.isfinite(vals)) or np.any(scale_vals == 0):
+                invalid_vars.append(var)
+        if invalid_vars:
+            raise ValueError(
+                'Non-finite or zero normalization statistics '
+                '(center/scale/mean/std) computed for new fine-tuning '
+                f'features: {invalid_vars}. Ensure each new product has '
+                'valid (non-NaN) observations with non-zero variance.'
+            )
+
+    def _setup_normalization(
+        self, cfg: Config, *, compute_scaler: bool
+    ) -> None:
+        """Initialize, extend, validate, save, and apply the dataset scaler."""
+        LOGGER.debug('init scaler')
+        scaler_dir = _resolve_scaler_dir(cfg, is_train=self.is_train)
+        self.scaler = Scaler(
+            scaler_dir=scaler_dir,
+            calculate_scaler=compute_scaler,
+            custom_normalization=cfg.custom_normalization,
+            dataset=(self._dataset if compute_scaler else None),
+        )
+        if cfg.is_finetuning and isinstance(self.scaler.scaler, xr.Dataset):
+            missing_vars = [
+                v
+                for v in self._dataset.data_vars
+                if v not in self.scaler.scaler.data_vars
+            ]
+            if self.is_train and missing_vars:
+                self._extend_scaler_with_new_features(missing_vars)
+            elif not self.is_train and missing_vars:
+                expected_scaler = (
+                    cfg.run_dir / SCALER_ZARR_NAME
+                    if cfg.run_dir is not None
+                    else Path(SCALER_ZARR_NAME)
+                )
+                raise ValueError(
+                    'Fine-tuning evaluation dataset contains features '
+                    f'{missing_vars} missing from scaler loaded at '
+                    f'{self.scaler.scaler_dir}. Ensure fine-tuning training '
+                    f'has written the extended scaler to {expected_scaler}.'
+                )
+
+        LOGGER.debug('compute scaler')
+        (self.scaler.scaler,) = dask.compute(self.scaler.scaler)
+        memory.release()
+
+        LOGGER.debug('scaler check zero scale')
+        self.scaler.check_zero_scale()
+        if compute_scaler or (
+            cfg.is_finetuning
+            and self.is_train
+            and cfg.run_dir is not None
+            and isinstance(self.scaler.scaler, xr.Dataset)
+        ):
+            LOGGER.debug('scaler save')
+            self.scaler.scaler_dir = cfg.run_dir
+            self.scaler.save()
+
+        LOGGER.debug('scale data')
+        self._dataset = self.scaler.scale(self._dataset)
 
     def __len__(self) -> int:
         return self._num_samples
@@ -853,9 +877,9 @@ class Multimet(Dataset):
             missing = sorted(set(bands) - set(product_ds.data_vars))
             if missing:
                 raise ValueError(
-                    f"Requested features {missing} not found in product "
+                    f'Requested features {missing} not found in product '
                     f"'{product}'. Available variables: "
-                    f"{list(product_ds.data_vars)}"
+                    f'{list(product_ds.data_vars)}'
                 )
 
             if 'lead_time' in product_ds:
@@ -937,9 +961,9 @@ class Multimet(Dataset):
             missing = sorted(set(bands) - set(product_ds.data_vars))
             if missing:
                 raise ValueError(
-                    f"Requested features {missing} not found in product "
+                    f'Requested features {missing} not found in product '
                     f"'{product}'. Available variables: "
-                    f"{list(product_ds.data_vars)}"
+                    f'{list(product_ds.data_vars)}'
                 )
 
             # If this is a forecast product, extract only leadtime 0.
@@ -1093,23 +1117,37 @@ def _find_product_zarr_path(
         dynamics_path if isinstance(dynamics_path, list) else [dynamics_path]
     )
     checked: list[Path] = []
+    local_matches: list[Path] = []
     cloud_candidates: list[Path] = []
     for dp in paths:
         path_str = str(dp)
         if path_str.startswith(('gs://', 'gs:/')):
             cloud_candidates.append(
-                Path(
-                    f"{path_str.rstrip('/')}/{product}/{TIMESERIES_ZARR_NAME}"
-                )
+                Path(f'{path_str.rstrip("/")}/{product}/{TIMESERIES_ZARR_NAME}')
             )
             continue
         p = Path(dp)
+        if not p.exists():
+            raise FileNotFoundError(f'Dynamics data path not found: {p}')
         candidate = p / product / TIMESERIES_ZARR_NAME
         checked.append(candidate)
         if candidate.exists():
-            return candidate
+            local_matches.append(candidate)
+    if local_matches:
+        resolved = local_matches[0]
+        if len(local_matches) > 1:
+            LOGGER.warning(
+                "Product '%s' found in multiple local directories %s; using %s",
+                product,
+                [str(m) for m in local_matches],
+                resolved,
+            )
+        LOGGER.info("Resolved product '%s' Zarr store to %s", product, resolved)
+        return resolved
     if cloud_candidates:
-        return cloud_candidates[0]
+        resolved = cloud_candidates[0]
+        LOGGER.info("Resolved product '%s' Zarr store to %s", product, resolved)
+        return resolved
     if len(checked) == 1:
         raise FileNotFoundError(
             f"Zarr store for product '{product}' not found at {checked[0]}"

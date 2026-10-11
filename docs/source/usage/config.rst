@@ -123,7 +123,7 @@ Data settings
 
 -  ``dataset``: Dataset class to use (currently ``multimet`` is built-in, and custom classes can be registered via :py:func:`model.datasetzoo.register_dataset`).
 -  ``data_dir``: Root directory of the dataset.
--  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir``: Directory overrides for static attributes (containing ``attributes.zarr``), dynamic forcings, and target streamflow data (containing ``streamflow.zarr``). ``dynamics_data_dir`` can also be a list of directories or cloud paths (for example, ``[gs://caravan-multimet/v1.1, /path/to/local_weather_zarrs]``); the loader checks local directories first for each ``<PRODUCT>/timeseries.zarr`` store before falling back to cloud paths.
+-  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir``: Directory overrides for static attributes (containing ``attributes.zarr``), dynamic forcings, and target streamflow data (containing ``streamflow.zarr``). ``dynamics_data_dir`` can also be a list of per-product root directories or cloud paths (for example, ``[gs://caravan-multimet/v1.1, /path/to/local_weather_zarrs]``); a list ``dynamics_data_dir`` cannot contain a single unified ``.zarr`` store, and every local directory in the list must exist on disk. The loader checks local directories first for each ``<PRODUCT>/timeseries.zarr`` store (where ``<PRODUCT>`` is the canonical uppercase product name and feature names start with the lowercase ``<product>_<band>`` prefix; data variables must be ``float32``, ``date`` daily ``datetime64[ns]``, and forecast ``lead_time`` 1-indexed ``timedelta64[ns]`` starting at ``1 day``) before falling back to cloud paths.
 -  ``hindcast_inputs``: Nested dictionary mapping meteorological product names to lists of dynamic input variables used during the historical hindcast period.
 -  ``forecast_inputs``: Nested dictionary mapping meteorological forecast product names to lists of dynamic input variables used during the forecast rollout period.
 -  ``union_mapping``: Optional dictionary mapping primary dynamic features (keys) to fallback features (values) used to fill missing (``NaN``) timestamps, for example ``{cpc_precipitation: era5land_total_precipitation}``.
@@ -171,7 +171,7 @@ Data settings
 -  ``lead_time``: Forecast lead time (integer). See `Temporal alignment of forecasts`_ below.
 -  ``predict_last_n``: Number of time steps (counted backwards from the end of the combined sequence) used for loss and evaluation calculation.
 -  ``timestep_counter``: True/False. Adds a counting integer sequence as input for forecasts.
--  ``nan_handling_method``: ``masked_mean``, ``input_replacing``, or ``attention``. Strategy for handling missing input data.
+-  ``nan_handling_method``: ``masked_mean``, ``input_replacing``, ``attention``, or ``unioning``. Strategy for handling missing input data. When ``hindcast_inputs`` and ``forecast_inputs`` are grouped by product, ``masked_mean`` and ``attention`` validate per product group (a timestep is valid if at least one product group has all of its bands non-``NaN``), whereas ``unioning`` requires every product group to have at least one non-``NaN`` band.
 -  ``nan_handling_pos_encoding_size``: Size of positional encoding for NaN handling methods.
 -  ``lazy_load``: Whether to access data lazily rather than load all in-memory. Each batch is loaded dynamically. Default: ``False``.
 
@@ -223,7 +223,7 @@ Ignored if ``mode != finetune``
            static_embedding_fc: true
            head: true
 
-   -  **Adding new local weather products during fine-tuning:** You can add new local hindcast or forecast products to ``hindcast_inputs`` and ``forecast_inputs`` in your fine-tuning config. During fine-tuning, ``model`` keeps all pre-trained normalization statistics from ``base_run_dir/scaler.zarr`` unchanged, calculates ``center`` and ``scale`` statistics for the new variables over the fine-tuning training split, and saves the combined scaler to ``<run_dir>/scaler.zarr``.
+   -  **Adding new local weather products during fine-tuning:** You can add new local hindcast or forecast products to ``hindcast_inputs`` and ``forecast_inputs`` in your fine-tuning config. Setting ``hindcast_inputs`` or ``forecast_inputs`` in the fine-tuning config replaces the base run's lists, so all retained base products and their exact band lists must be included (and pretrained products cannot be migrated between hindcast-only, forecast-only, and shared embedding groups). Every newly added product key must be unfrozen in ``finetune_modules``. During fine-tuning, ``model`` keeps all pre-trained normalization statistics from ``base_run_dir/scaler.zarr`` unchanged, calculates finite non-zero ``center`` and ``scale`` statistics for any new variables over the date-extended training window, and always writes ``<run_dir>/scaler.zarr``.
 
 Logger settings
 ---------------

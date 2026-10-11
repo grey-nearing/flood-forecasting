@@ -110,9 +110,9 @@ run finetune --config-file finetune_config.yml
 
 You can also add local historical weather observations (such as rain gauge or radar QPE) and local weather forecasts (QPF) alongside the global Caravan-MultiMet inputs:
 
-1. Store each local product in `<local_dynamics_dir>/<PRODUCT>/timeseries.zarr` (using the same `(basin, date)` or `(basin, date, lead_time)` Zarr layout as MultiMet).
-2. Pass a list of directories to `dynamics_data_dir` so the loader reads global products from `gs://caravan-multimet/v1.1` and local products from your local directory.
-3. Add the new products to `hindcast_inputs` and/or `forecast_inputs`, and use the dictionary syntax in `finetune_modules` to train the new product embeddings alongside `static_embedding_fc` and `head`:
+1. **Zarr Layout & Naming Contract:** Store each local product in `<local_dynamics_dir>/<PRODUCT>/timeseries.zarr`, where `<PRODUCT>` is the canonical uppercase product name (e.g., `DAYMET`, `GEFS_REFORECAST`) and variable names start with the lowercase product prefix (`<product>_<band>`). For compound product names containing underscores (such as `gefs_reforecast`), use the dictionary form of `hindcast_inputs` / `forecast_inputs`. All floating-point variables must have dtype `float32`, `date` must be daily `datetime64[ns]`, and forecast products must have a 1-indexed `lead_time` coordinate (`timedelta64[ns]`) starting at `1 day`.
+2. **Multi-Directory `dynamics_data_dir`:** Pass a list of per-product root directories to `dynamics_data_dir` (every local directory in the list must exist on disk; a list `dynamics_data_dir` cannot contain a single unified `.zarr` store). The loader resolves local product stores first and falls back to cloud paths (`gs://caravan-multimet/v1.1`) for global products.
+3. **Preserve Base Products & Unfreeze New Embeddings:** Setting `hindcast_inputs` or `forecast_inputs` in `finetune_config.yml` **replaces** the lists from `base_run_dir/config.yml`. Include all retained base products with their exact band lists (and do not move a pretrained product between hindcast-only, forecast-only, and shared groups). Every newly added product key **must** be listed in `finetune_modules` (leaving a randomly initialized new product embedding frozen raises a `ValueError`):
 
 ```yaml
 dynamics_data_dir:
@@ -120,16 +120,19 @@ dynamics_data_dir:
   - /path/to/your/local_dynamics_zarr
 
 hindcast_inputs:
-  era5_land:
-    - era5land_total_precipitation
-    - era5land_temperature_2m
-  cpc:
-    - cpc_precipitation
+  hres:
+    - hres_surface_net_solar_radiation
+    - hres_surface_net_thermal_radiation
+    - hres_surface_pressure
+    - hres_temperature_2m
+    - hres_total_precipitation
+  graphcast:
+    - graphcast_temperature_2m
+    - graphcast_total_precipitation
   imerg:
     - imerg_precipitation
-  hres:
-    - hres_total_precipitation
-    - hres_temperature_2m
+  cpc:
+    - cpc_precipitation
   daymet:
     - daymet_prcp
     - daymet_tmax
@@ -137,8 +140,14 @@ hindcast_inputs:
 
 forecast_inputs:
   hres:
-    - hres_total_precipitation
+    - hres_surface_net_solar_radiation
+    - hres_surface_net_thermal_radiation
+    - hres_surface_pressure
     - hres_temperature_2m
+    - hres_total_precipitation
+  graphcast:
+    - graphcast_temperature_2m
+    - graphcast_total_precipitation
   gefs_reforecast:
     - gefs_reforecast_apcp_sfc
     - gefs_reforecast_tmp_2m
@@ -154,4 +163,4 @@ finetune_modules:
 
 ### Note on Data Scaling
 
-When fine-tuning with `base_run_dir`, the `model` package loads `scaler.zarr` from `base_run_dir` so all pre-trained global dynamic features, static attributes, and target variables use their exact pre-trained normalization statistics. If you add new local dynamic variables in `hindcast_inputs` or `forecast_inputs`, `model` automatically computes `center` and `scale` statistics for the new variables over your fine-tuning training split and saves the combined scaler to `<run_dir>/scaler.zarr`.
+When fine-tuning with `base_run_dir`, the `model` package loads `scaler.zarr` from `base_run_dir` so all pre-trained global dynamic features, static attributes, and target variables use their exact pre-trained normalization statistics. If you add new local dynamic variables in `hindcast_inputs` or `forecast_inputs`, `model` automatically computes finite, non-zero `center` and `scale` statistics for the new variables over the fine-tuning training window (`[train_start_date - seq_length, train_end_date + lead_time]`) and always writes the resulting scaler to `<run_dir>/scaler.zarr` so the fine-tuned run directory is self-contained for validation and evaluation.

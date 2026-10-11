@@ -14,6 +14,7 @@
 
 """Unit and integration tests for local input fine-tuning."""
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -24,10 +25,12 @@ import xarray as xr
 import yaml
 
 from model.datasetzoo.multimet import Multimet, _find_product_zarr_path
+from model.datautils.scaler import Scaler
 from model.modelzoo import get_model, load_model_weights
 from model.run import eval_run, finetune, start_run
 from model.training.basetrainer import BaseTrainer
 from model.utils.config import Config
+from utils.file_paths import SCALER_ZARR_NAME
 
 
 def _create_synthetic_datasets(tmp_path: Path) -> dict[str, Path]:
@@ -241,6 +244,83 @@ def _make_base_pretrain_cfg(
     }
 
 
+def _write_minimal_scaler(run_dir: Path) -> None:
+    """Write a real minimal scaler.zarr to run_dir for unit tests."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    ds = xr.Dataset(
+        {
+            'streamflow': (
+                ('basin', 'date'),
+                np.array([[1.0, 3.0], [2.0, 4.0]], dtype=np.float32),
+            ),
+            'area': (('basin',), np.array([100.0, 200.0], dtype=np.float32)),
+            'p_mean': (('basin',), np.array([3.0, 5.0], dtype=np.float32)),
+        },
+        coords={
+            'basin': ['camels_01013500', 'camels_01022500'],
+            'date': pd.date_range('2000-01-01', periods=2, freq='D'),
+        },
+    )
+    scaler = Scaler(
+        scaler_dir=run_dir,
+        calculate_scaler=True,
+        dataset=ds,
+    )
+    scaler.scaler = scaler.scaler.compute()
+    scaler.save()
+
+
+def _assert_extended_scaler_matches_raw_slice(
+    ft_scaler: xr.Dataset,
+    base_scaler: xr.Dataset,
+    local_dyn_dir: Path,
+) -> None:
+    """Verify extended scaler preserves base stats and matches raw slice."""
+    for base_var in base_scaler.data_vars:
+        xr.testing.assert_equal(ft_scaler[base_var], base_scaler[base_var])
+
+    raw_daymet = (
+        xr.open_zarr(local_dyn_dir / 'DAYMET' / 'timeseries.zarr')
+        .sel(
+            basin=['camels_01013500'],
+            date=slice('2000-01-01', '2000-05-03'),
+        )
+        .load()
+    )
+    for var in ('daymet_prcp', 'daymet_tmax', 'daymet_tmin'):
+        np.testing.assert_allclose(
+            float(ft_scaler[var].sel(parameter='center').values),
+            float(np.nanmean(raw_daymet[var].values)),
+            rtol=1e-4,
+        )
+        np.testing.assert_allclose(
+            float(ft_scaler[var].sel(parameter='scale').values),
+            float(np.nanstd(raw_daymet[var].values)),
+            rtol=1e-4,
+        )
+
+    raw_gefs = (
+        xr.open_zarr(local_dyn_dir / 'GEFS_REFORECAST' / 'timeseries.zarr')
+        .sel(
+            basin=['camels_01013500'],
+            date=slice('2000-01-01', '2000-05-03'),
+            lead_time=slice(pd.Timedelta(days=1), pd.Timedelta(days=3)),
+        )
+        .load()
+    )
+    for var in ('gefs_reforecast_apcp_sfc', 'gefs_reforecast_tmp_2m'):
+        np.testing.assert_allclose(
+            float(ft_scaler[var].sel(parameter='center').values),
+            float(np.nanmean(raw_gefs[var].values)),
+            rtol=1e-4,
+        )
+        np.testing.assert_allclose(
+            float(ft_scaler[var].sel(parameter='scale').values),
+            float(np.nanstd(raw_gefs[var].values)),
+            rtol=1e-4,
+        )
+
+
 @pytest.mark.integration
 def test_pretrain_and_local_input_finetune_end_to_end(tmp_path: Path) -> None:
     """Verify end-to-end pretraining, local input fine-tuning, and eval."""
@@ -254,15 +334,16 @@ def test_pretrain_and_local_input_finetune_end_to_end(tmp_path: Path) -> None:
     base_ckpt = torch.load(
         base_run_dir / 'model_epoch001.pt', weights_only=True
     )
-    base_scaler = xr.open_zarr(base_run_dir / 'scaler.zarr').load()
+    base_scaler = xr.open_zarr(base_run_dir / SCALER_ZARR_NAME).load()
 
-    # Fine-tune Mode A: only the newly added local embeddings (daymet + gefs)
+    # Fine-tune Mode A for 2 epochs: only the newly added local embeddings
     ft_cfg_a = {
         'experiment_name': 'ft_local_only',
         'base_run_dir': str(base_run_dir),
         'run_dir': str(tmp_path / 'runs'),
-        'epochs': 1,
-        'initial_learning_rate': 0.005,
+        'epochs': 2,
+        'save_weights_every': 1,
+        'initial_learning_rate': 0.01,
         'train_basin_file': str(paths['single_basin_file']),
         'validation_basin_file': str(paths['single_basin_file']),
         'test_basin_file': str(paths['single_basin_file']),
@@ -296,57 +377,51 @@ def test_pretrain_and_local_input_finetune_end_to_end(tmp_path: Path) -> None:
 
     finetune(ft_cfg_a_path, gpu=-1)
     ft_a_dir = next((tmp_path / 'runs').glob('ft_local_only*'))
-    ft_a_ckpt = torch.load(ft_a_dir / 'model_epoch001.pt', weights_only=True)
+    ft_a_ckpt_ep1 = torch.load(
+        ft_a_dir / 'model_epoch001.pt', weights_only=True
+    )
+    ft_a_ckpt = torch.load(ft_a_dir / 'model_epoch002.pt', weights_only=True)
 
-    # Verify scaler extended with local features while keeping base stats exact
-    ft_scaler = xr.open_zarr(ft_a_dir / 'scaler.zarr').load()
-    for base_var in base_scaler.data_vars:
-        xr.testing.assert_equal(ft_scaler[base_var], base_scaler[base_var])
-    for new_var in (
-        'daymet_prcp',
-        'daymet_tmax',
-        'daymet_tmin',
-        'gefs_reforecast_apcp_sfc',
-        'gefs_reforecast_tmp_2m',
-    ):
-        assert new_var in ft_scaler.data_vars
-        scale_val = float(ft_scaler[new_var].sel(parameter='scale').values)
-        assert np.isfinite(scale_val)
-        assert scale_val > 0.0
+    ft_scaler = xr.open_zarr(ft_a_dir / SCALER_ZARR_NAME).load()
+    _assert_extended_scaler_matches_raw_slice(
+        ft_scaler, base_scaler, paths['local_dyn_dir']
+    )
 
-    # Verify frozen vs unfrozen parameters in Mode A
+    # Verify frozen vs unfrozen parameters in Mode A, and verify that the
+    # fine-tuned local embeddings numerically changed across epochs!
     for key, base_val in base_ckpt.items():
         assert torch.equal(base_val, ft_a_ckpt[key]), (
             f'Pretrained parameter {key} should be frozen in Mode A'
         )
     daymet_key = '_orig_mod.hindcast_embeddings_fc.daymet.net.0.weight'
     gefs_key = '_orig_mod.forecast_embeddings_fc.gefs_reforecast.net.0.weight'
-    assert daymet_key in ft_a_ckpt
     assert torch.isfinite(ft_a_ckpt[daymet_key]).all()
-    assert gefs_key in ft_a_ckpt
     assert torch.isfinite(ft_a_ckpt[gefs_key]).all()
+    assert not torch.allclose(ft_a_ckpt_ep1[daymet_key], ft_a_ckpt[daymet_key])
+    assert not torch.allclose(ft_a_ckpt_ep1[gefs_key], ft_a_ckpt[gefs_key])
 
     # Verify evaluation works on the fine-tuned run and writes finite metrics
     eval_run(
         Config(ft_a_dir / 'config.yml'),
         run_dir=ft_a_dir,
         period='test',
-        epoch=1,
+        epoch=2,
         gpu=-1,
     )
-    metrics_file = ft_a_dir / 'test' / 'model_epoch001' / 'test_metrics.csv'
+    metrics_file = ft_a_dir / 'test' / 'model_epoch002' / 'test_metrics.csv'
     assert metrics_file.exists()
     metrics_df = pd.read_csv(metrics_file)
     assert np.isfinite(metrics_df['NSE']).all()
     results_ds = xr.open_zarr(
-        ft_a_dir / 'test' / 'model_epoch001' / 'test_results.zarr',
+        ft_a_dir / 'test' / 'model_epoch002' / 'test_results.zarr',
         consolidated=False,
     ).load()
-    assert np.isfinite(results_ds['streamflow_sim'].values).any()
+    assert np.isfinite(results_ds['streamflow_sim'].values).all()
 
     # Fine-tune Mode C: local embeddings + static_embedding_fc + head
     ft_cfg_c = dict(ft_cfg_a)
     ft_cfg_c['experiment_name'] = 'ft_local_static_head'
+    ft_cfg_c['epochs'] = 1
     ft_cfg_c['finetune_modules'] = {
         'hindcast_embeddings_fc': ['daymet'],
         'forecast_embeddings_fc': ['gefs_reforecast'],
@@ -388,8 +463,11 @@ def test_pretrain_and_local_input_finetune_end_to_end(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('lazy_load', [False, True])
 def test_multimet_masked_mean_allows_partial_local_product_record(
     tmp_path: Path,
+    *,
+    lazy_load: bool,
 ) -> None:
     """Retain samples under masked_mean when a local product has early NaNs."""
     paths = _create_synthetic_datasets(tmp_path)
@@ -402,7 +480,8 @@ def test_multimet_masked_mean_allows_partial_local_product_record(
     daymet_ds.to_zarr(daymet_zarr, mode='w')
 
     cfg_dict = _make_base_pretrain_cfg(tmp_path, paths)
-    cfg_dict['run_dir'] = str(tmp_path / 'run_partial')
+    cfg_dict['lazy_load'] = lazy_load
+    cfg_dict['run_dir'] = str(tmp_path / f'run_partial_{lazy_load}')
     Path(cfg_dict['run_dir']).mkdir(parents=True, exist_ok=True)
     cfg_dict['dynamics_data_dir'] = [
         str(paths['global_dyn_dir']),
@@ -418,10 +497,8 @@ def test_multimet_masked_mean_allows_partial_local_product_record(
     cfg = Config(cfg_dict)
 
     ds_masked = Multimet(cfg=cfg, is_train=True, period='train')
-    # Compare against global-only dataset sample count: masked_mean must retain
-    # all dates because the era5_land group is completely valid on every date.
     cfg_global_dict = dict(cfg_dict)
-    cfg_global_dict['run_dir'] = str(tmp_path / 'run_global_only')
+    cfg_global_dict['run_dir'] = str(tmp_path / f'run_global_only_{lazy_load}')
     Path(cfg_global_dict['run_dir']).mkdir(parents=True, exist_ok=True)
     cfg_global_dict['hindcast_inputs'] = {
         'era5_land': [
@@ -434,20 +511,124 @@ def test_multimet_masked_mean_allows_partial_local_product_record(
     )
     assert len(ds_masked) == len(ds_global)
 
+    # Under nan_handling_method=None, NaN days drop touching samples
+    cfg_strict_dict = dict(cfg_dict)
+    cfg_strict_dict['run_dir'] = str(tmp_path / f'run_strict_{lazy_load}')
+    Path(cfg_strict_dict['run_dir']).mkdir(parents=True, exist_ok=True)
+    cfg_strict_dict['nan_handling_method'] = None
+    ds_strict = Multimet(
+        cfg=Config(cfg_strict_dict), is_train=True, period='train'
+    )
+    assert len(ds_strict) < len(ds_masked)
+
 
 @pytest.mark.unit
-def test_load_model_weights_allow_new_embeddings_rejects_corrupted_core_weights(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_multimet_finetune_scaler_extension_rejects_all_nan_new_variable(
+    tmp_path: Path,
 ) -> None:
-    """Reject missing core or unexpected keys under allow_new_embeddings."""
-    monkeypatch.setattr(
-        'model.modelzoo.basemodel.Scaler', lambda **_kwargs: None
+    """Raise ValueError when a new fine-tuning variable is all-NaN."""
+    paths = _create_synthetic_datasets(tmp_path)
+    base_cfg_dict = _make_base_pretrain_cfg(tmp_path, paths)
+    base_run_dir = tmp_path / 'base_run'
+    base_cfg_dict['run_dir'] = str(base_run_dir)
+    base_run_dir.mkdir(parents=True, exist_ok=True)
+    # Build base dataset to persist base scaler.zarr
+    Multimet(cfg=Config(base_cfg_dict), is_train=True, period='train')
+
+    # Verify lazy_load=True works on the valid scaler-extension path
+    ft_lazy_cfg = dict(base_cfg_dict)
+    ft_lazy_cfg['is_finetuning'] = True
+    ft_lazy_cfg['lazy_load'] = True
+    ft_lazy_cfg['base_run_dir'] = str(base_run_dir)
+    ft_lazy_cfg['run_dir'] = str(tmp_path / 'ft_run_lazy')
+    Path(ft_lazy_cfg['run_dir']).mkdir(parents=True, exist_ok=True)
+    ft_lazy_cfg['dynamics_data_dir'] = [
+        str(paths['global_dyn_dir']),
+        str(paths['local_dyn_dir']),
+    ]
+    ft_lazy_cfg['hindcast_inputs'] = {
+        'era5_land': [
+            'era5land_total_precipitation',
+            'era5land_temperature_2m',
+        ],
+        'cpc': ['cpc_precipitation'],
+        'hres': ['hres_total_precipitation', 'hres_temperature_2m'],
+        'daymet': ['daymet_prcp', 'daymet_tmax', 'daymet_tmin'],
+    }
+    ds_lazy = Multimet(
+        cfg=Config(ft_lazy_cfg),
+        is_train=True,
+        period='train',
+        compute_scaler=False,
     )
+    assert 'daymet_prcp' in ds_lazy.scaler.scaler.data_vars
+
+    # Make local daymet_prcp all-NaN across the training split
+    daymet_zarr = paths['local_dyn_dir'] / 'DAYMET' / 'timeseries.zarr'
+    daymet_ds = xr.open_zarr(daymet_zarr).load()
+    daymet_ds['daymet_prcp'][:] = np.nan
+    daymet_ds.to_zarr(daymet_zarr, mode='w')
+
+    ft_cfg_dict = dict(base_cfg_dict)
+    ft_cfg_dict['is_finetuning'] = True
+    ft_cfg_dict['base_run_dir'] = str(base_run_dir)
+    ft_cfg_dict['run_dir'] = str(tmp_path / 'ft_run_nan')
+    Path(ft_cfg_dict['run_dir']).mkdir(parents=True, exist_ok=True)
+    ft_cfg_dict['dynamics_data_dir'] = [
+        str(paths['global_dyn_dir']),
+        str(paths['local_dyn_dir']),
+    ]
+    ft_cfg_dict['hindcast_inputs'] = {
+        'era5_land': [
+            'era5land_total_precipitation',
+            'era5land_temperature_2m',
+        ],
+        'cpc': ['cpc_precipitation'],
+        'hres': ['hres_total_precipitation', 'hres_temperature_2m'],
+        'daymet': ['daymet_prcp', 'daymet_tmax', 'daymet_tmin'],
+    }
+    with pytest.raises(
+        ValueError,
+        match=r'Non-finite or zero normalization statistics.*daymet_prcp',
+    ):
+        Multimet(
+            cfg=Config(ft_cfg_dict),
+            is_train=True,
+            period='train',
+            compute_scaler=False,
+        )
+
+    # Verify evaluation fails if run_dir/scaler.zarr lacks new vars
+    with pytest.raises(
+        ValueError,
+        match=(
+            r'Fine-tuning evaluation dataset contains features'
+            r'.*missing from scaler'
+        ),
+    ):
+        Multimet(
+            cfg=Config(ft_cfg_dict),
+            is_train=False,
+            period='test',
+            compute_scaler=False,
+        )
+
+
+@pytest.mark.unit
+def test_load_model_weights_validation_and_prefix_migration(
+    tmp_path: Path,
+) -> None:
+    """Reject corrupted core weights, band mismatches, and prefix migration."""
     paths = _create_synthetic_datasets(tmp_path)
     cfg_dict = _make_base_pretrain_cfg(tmp_path, paths)
+    run_dir = tmp_path / 'model_run'
+    cfg_dict['run_dir'] = str(run_dir)
     cfg_dict['compile'] = False
+    _write_minimal_scaler(run_dir)
     cfg = Config(cfg_dict)
     model = get_model(cfg)
+    base_ckpt = tmp_path / 'base_model.pt'
+    torch.save(model.state_dict(), base_ckpt)
 
     # 1. Missing non-embedding core weight must raise RuntimeError
     corrupted_state = dict(model.state_dict())
@@ -469,40 +650,142 @@ def test_load_model_weights_allow_new_embeddings_rejects_corrupted_core_weights(
             model, ckpt_unexpected, device='cpu', allow_new_embeddings=True
         )
 
+    # 3. Prefix migration ('hres' from shared to hindcast_embeddings_fc)
+    migrated_cfg_dict = dict(cfg_dict)
+    migrated_cfg_dict['forecast_inputs'] = {
+        'gefs_reforecast': [
+            'gefs_reforecast_apcp_sfc',
+            'gefs_reforecast_tmp_2m',
+        ],
+    }
+    migrated_model = get_model(Config(migrated_cfg_dict))
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Product 'hres' moved from 'shared_embeddings_fc' "
+            "in checkpoint to 'hindcast_embeddings_fc'"
+        ),
+    ):
+        load_model_weights(
+            migrated_model,
+            base_ckpt,
+            device='cpu',
+            allow_new_embeddings=True,
+        )
+
+    # 4. Changing an existing product's band count raises RuntimeError
+    band_mismatch_cfg_dict = dict(cfg_dict)
+    band_mismatch_cfg_dict['hindcast_inputs'] = {
+        'era5_land': ['era5land_total_precipitation'],  # 1 band instead of 2
+        'cpc': ['cpc_precipitation'],
+        'hres': ['hres_total_precipitation', 'hres_temperature_2m'],
+    }
+    band_mismatch_model = get_model(Config(band_mismatch_cfg_dict))
+    with pytest.raises(RuntimeError, match='size mismatch'):
+        load_model_weights(
+            band_mismatch_model,
+            base_ckpt,
+            device='cpu',
+            allow_new_embeddings=True,
+        )
+
 
 @pytest.mark.unit
-def test_freeze_model_parts_unknown_submodule_key_raises_key_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_freeze_model_parts_validation_and_frozen_new_embedding_guard(
+    tmp_path: Path,
 ) -> None:
-    """Raise KeyError when finetune_modules has an unknown product key."""
-    monkeypatch.setattr(
-        'model.modelzoo.basemodel.Scaler', lambda **_kwargs: None
-    )
+    """Validate finetune_modules dict values and frozen new embeddings."""
     paths = _create_synthetic_datasets(tmp_path)
-    cfg_dict = _make_base_pretrain_cfg(tmp_path, paths)
-    cfg_dict['compile'] = False
-    cfg_dict['finetune_modules'] = {
-        'hindcast_embeddings_fc': ['nonexistent_local_product'],
-    }
-    cfg = Config(cfg_dict)
-    model = get_model(cfg)
+    base_cfg_dict = _make_base_pretrain_cfg(tmp_path, paths)
+    base_run_dir = tmp_path / 'base_run'
+    base_cfg_dict['run_dir'] = str(base_run_dir)
+    base_cfg_dict['compile'] = False
+    _write_minimal_scaler(base_run_dir)
+    base_model = get_model(Config(base_cfg_dict))
+    base_ckpt = base_run_dir / 'model_epoch001.pt'
+    torch.save(base_model.state_dict(), base_ckpt)
 
-    trainer = BaseTrainer.__new__(BaseTrainer)
-    trainer.cfg = cfg
-    trainer.model = model
-    expected_msg = (
-        "Submodule 'nonexistent_local_product' not found in "
-        "'hindcast_embeddings_fc'"
+    run_idx = 0
+
+    def _make_trainer(
+        finetune_modules: object,
+        *,
+        add_daymet: bool = False,
+    ) -> BaseTrainer:
+        nonlocal run_idx
+        run_idx += 1
+        cfg_dict = dict(base_cfg_dict)
+        cfg_dict['run_dir'] = str(tmp_path / f'trainer_runs_{run_idx}')
+        cfg_dict['is_finetuning'] = True
+        cfg_dict['base_run_dir'] = str(base_run_dir)
+        cfg_dict['finetune_modules'] = finetune_modules
+        if add_daymet:
+            cfg_dict['hindcast_inputs'] = {
+                **base_cfg_dict['hindcast_inputs'],  # type: ignore[dict-item]
+                'daymet': ['daymet_prcp', 'daymet_tmax', 'daymet_tmin'],
+            }
+        cfg = Config(cfg_dict)
+        trainer = BaseTrainer(cfg)
+        trainer.model = trainer._get_model().to(trainer.device)  # noqa: SLF001
+        trainer._load_model_weights(base_ckpt, allow_new_embeddings=True)  # noqa: SLF001
+        return trainer
+
+    # 1. Unknown submodule key in ModuleDict raises KeyError
+    trainer_unknown = _make_trainer(
+        {'hindcast_embeddings_fc': ['nonexistent_local_product']}
     )
-    with pytest.raises(KeyError, match=expected_msg):
-        trainer._freeze_model_parts()  # noqa: SLF001
+    with pytest.raises(
+        KeyError,
+        match=(
+            "Submodule 'nonexistent_local_product' not found in "
+            "'hindcast_embeddings_fc'"
+        ),
+    ):
+        trainer_unknown._freeze_model_parts()  # noqa: SLF001
+
+    # 2. Invalid non-bool values on non-ModuleDict module raise ValueError (B4)
+    for bad_spec in (
+        {'head': ['nonexistent_part']},
+        {'hindcast_lstm': 0},
+        {'head': 'sub'},
+    ):
+        trainer_bad_non_dict = _make_trainer(bad_spec)
+        with pytest.raises(
+            ValueError,
+            match=r'Invalid value .* for non-ModuleDict module',
+        ):
+            trainer_bad_non_dict._freeze_model_parts()  # noqa: SLF001
+
+    # 3. Invalid value type on ModuleDict module raises ValueError (B4)
+    for bad_dict_spec in (
+        {'hindcast_embeddings_fc': 123},
+        {'hindcast_embeddings_fc': None},
+        {'hindcast_embeddings_fc': [123]},
+    ):
+        trainer_bad_dict = _make_trainer(bad_dict_spec)
+        with pytest.raises(
+            ValueError,
+            match=r"Invalid value .* for ModuleDict 'hindcast_embeddings_fc'",
+        ):
+            trainer_bad_dict._freeze_model_parts()  # noqa: SLF001
+
+    # 4. New product omitted from finetune_modules raises ValueError (B2)
+    trainer_frozen_new = _make_trainer({'head': True}, add_daymet=True)
+    with pytest.raises(
+        ValueError,
+        match=(
+            r'Newly added product embedding '
+            r"'hindcast_embeddings_fc\.daymet' is randomly initialized"
+        ),
+    ):
+        trainer_frozen_new._freeze_model_parts()  # noqa: SLF001
 
 
 @pytest.mark.unit
 def test_find_product_zarr_path_multi_directory_and_cloud_fallback(
-    tmp_path: Path,
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Resolve local directories before cloud paths and fail if absent."""
+    """Resolve local dirs before cloud, warn on dupes, and fail if missing."""
     paths = _create_synthetic_datasets(tmp_path)
     global_dir = paths['global_dyn_dir']
     local_dir = paths['local_dyn_dir']
@@ -517,7 +800,29 @@ def test_find_product_zarr_path_multi_directory_and_cloud_fallback(
     resolved_cloud = _find_product_zarr_path(
         ['gs://caravan-multimet/v1.1', local_dir], 'ERA5_LAND'
     )
-    assert str(resolved_cloud).endswith('ERA5_LAND/timeseries.zarr')
+    assert resolved_cloud == Path(
+        'gs://caravan-multimet/v1.1/ERA5_LAND/timeseries.zarr'
+    )
+
+    # Missing local dir in dynamics_data_dir raises FileNotFoundError (H1)
+    missing_local_dir = tmp_path / 'nonexistent_local_dir'
+    with pytest.raises(
+        FileNotFoundError,
+        match=f'Dynamics data path not found: {missing_local_dir}',
+    ):
+        _find_product_zarr_path(
+            ['gs://caravan-multimet/v1.1', missing_local_dir], 'CPC'
+        )
+
+    # Duplicate product across local dirs logs WARNING and selects first
+    second_local_dir = tmp_path / 'second_local_dir'
+    (second_local_dir / 'DAYMET' / 'timeseries.zarr').mkdir(parents=True)
+    with caplog.at_level(logging.WARNING):
+        dup_resolved = _find_product_zarr_path(
+            [local_dir, second_local_dir], 'DAYMET'
+        )
+    assert dup_resolved == local_dir / 'DAYMET' / 'timeseries.zarr'
+    assert "Product 'DAYMET' found in multiple local directories" in caplog.text
 
     # Product absent from all local directories with no cloud path raises
     with pytest.raises(

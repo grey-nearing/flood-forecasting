@@ -21,7 +21,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from model.datautils.scaler import Scaler
+from model.datautils.scaler import (
+    Scaler,
+    resolve_scaler_dir as _resolve_scaler_dir,
+)
 from model.utils.config import Config
 from model.utils.samplingutils import sample_pointpredictions
 
@@ -42,6 +45,10 @@ class BaseModel(nn.Module):
     # specify submodules of the model that can later be used for finetuning. Names must match class attributes
     module_parts = []
 
+    # Per-product ModuleDict attribute names that may gain new product keys
+    # during fine-tuning.
+    dynamic_embedding_modules: ClassVar[tuple[str, ...]] = ()
+
     # Names of internal tensors that a data assimilation (DA) procedure may
     # read from the forward output dict and override via the keyword argument
     # `assimilation_overrides={name: tensor}` of `forward`.
@@ -54,14 +61,7 @@ class BaseModel(nn.Module):
         self.output_size = len(cfg.target_variables)
         if cfg.head.lower() in ['cmal', 'cmal_deterministic']:
             self.output_size *= 4 * cfg.n_distributions
-        scaler_dir = (
-            cfg.run_dir
-            if (
-                cfg.run_dir is not None
-                and (cfg.run_dir / 'scaler.zarr').exists()
-            )
-            else (cfg.base_run_dir if cfg.is_finetuning else cfg.run_dir)
-        )
+        scaler_dir = _resolve_scaler_dir(cfg, is_train=False)
         self._scaler = Scaler(
             scaler_dir=scaler_dir,
             calculate_scaler=False,

@@ -27,12 +27,120 @@ def _skip_all_zero_samples(dataset: xr.Dataset) -> xr.DataArray:
     return mask
 
 
+def _is_split_group_pair(
+    feature_groups: list[list[str]] | list[list[list[str]]] | None,
+) -> bool:
+    """Return True if feature_groups is [hindcast_groups, forecast_groups]."""
+    return (
+        isinstance(feature_groups, list)
+        and len(feature_groups) == 2  # noqa: PLR2004
+        and all(
+            isinstance(sub, list) and (not sub or isinstance(sub[0], list))
+            for sub in feature_groups
+        )
+    )
+
+
+def _validate_group_subsets(
+    groups: list[list[str]],
+    allowed_features: set[str],
+    label: str,
+) -> None:
+    """Raise ValueError if a group has features outside allowed_features."""
+    for group in groups:
+        if not set(group) <= allowed_features:
+            allowed = sorted(allowed_features)
+            raise ValueError(
+                f'{label} feature group {group} is not a subset of '
+                f'configured {label.lower()} features {allowed}.'
+            )
+
+
+def _resolve_single_side_groups(
+    explicit_groups: list[list[str]] | None,
+    features: list[str] | None,
+    label: str,
+) -> list[list[str]]:
+    """Validate explicit feature groups or default to [features]."""
+    groups = list(explicit_groups or [])
+    if groups:
+        _validate_group_subsets(groups, set(features or []), label)
+        return groups
+    return [features] if features else []
+
+
+def _partition_flat_feature_groups(
+    feature_groups: list[list[str]],
+    hindcast_features: list[str] | None,
+    forecast_features: list[str] | None,
+) -> tuple[list[list[str]], list[list[str]]]:
+    """Partition flat feature groups into hindcast and forecast groups."""
+    hind_set = set(hindcast_features or [])
+    fore_set = set(forecast_features or [])
+    has_configured = bool(hindcast_features or forecast_features)
+    h_groups: list[list[str]] = []
+    f_groups: list[list[str]] = []
+    for group in feature_groups:
+        if not group:
+            continue
+        group_set = set(group)
+        in_hind = bool(hindcast_features) and group_set <= hind_set
+        in_fore = bool(forecast_features) and group_set <= fore_set
+        if has_configured and not (in_hind or in_fore):
+            raise ValueError(
+                f'Feature group {group} is not a subset of '
+                f'hindcast_features ({hindcast_features}) or '
+                f'forecast_features ({forecast_features}).'
+            )
+        if in_hind:
+            h_groups.append(group)
+        if in_fore:
+            f_groups.append(group)
+    return h_groups, f_groups
+
+
+def _resolve_feature_groups(
+    feature_groups: list[list[str]] | list[list[list[str]]] | None,
+    hindcast_features: list[str] | None,
+    forecast_features: list[str] | None,
+    hindcast_groups: list[list[str]] | None = None,
+    forecast_groups: list[list[str]] | None = None,
+) -> tuple[list[list[str]], list[list[str]]]:
+    """Resolve and validate per-product hindcast and forecast feature groups."""
+    if hindcast_groups is not None or forecast_groups is not None:
+        return (
+            _resolve_single_side_groups(
+                hindcast_groups, hindcast_features, 'Hindcast'
+            ),
+            _resolve_single_side_groups(
+                forecast_groups, forecast_features, 'Forecast'
+            ),
+        )
+
+    if _is_split_group_pair(feature_groups):
+        raw_h, raw_f = feature_groups  # type: ignore[misc]
+        return (
+            _resolve_single_side_groups(raw_h, hindcast_features, 'Hindcast'),
+            _resolve_single_side_groups(raw_f, forecast_features, 'Forecast'),
+        )
+
+    h_groups, f_groups = _partition_flat_feature_groups(
+        list(feature_groups or []),  # type: ignore[arg-type]
+        hindcast_features,
+        forecast_features,
+    )
+    return (
+        h_groups or ([hindcast_features] if hindcast_features else []),
+        f_groups or ([forecast_features] if forecast_features else []),
+    )
+
+
 def validate_samples(
     is_train: bool,
     dataset: xr.Dataset,
     sample_dates: pd.DatetimeIndex,
     nan_handling_method: str | None,
-    feature_groups: list[list[str]] | list[list[list[str]]],
+    feature_groups: list[list[str]] | list[list[list[str]]] | None = None,
     lead_time: int = 0,
     seq_length: int | None = None,
     predict_last_n: int | None = None,
@@ -43,6 +151,9 @@ def validate_samples(
     target_features: list[str] | None = None,
     static_features: list[str] | None = None,
     allzero_samples_are_invalid: bool = False,
+    *,
+    hindcast_groups: list[list[str]] | None = None,
+    forecast_groups: list[list[str]] | None = None,
 ) -> tuple[xr.DataArray, list[xr.DataArray]]:
     """Validates samples based on the NaN-handling method.
 
@@ -56,7 +167,7 @@ def validate_samples(
         Sample dates.
     nan_handling_method : str | None
         Name of the NaN-handling method. This can be None, but we require that to be passed explicitly.
-    feature_groups : list[list[str]] | list[list[list[str]]]
+    feature_groups : list[list[str]] | list[list[list[str]]] | None, optional
         A list of feature groups where each group is a list of features, or a
         two-element ``[hindcast_groups, forecast_groups]`` list of group lists.
         Used in group-aware NaN-handling methods such as ``masked_mean``.
@@ -83,6 +194,10 @@ def validate_samples(
         List of static features to validate. Defaults to None. At least one feature list is required.
     allzero_samples_are_invalid : bool
         Whether to skip all-zero samples (via a mask).
+    hindcast_groups : list[list[str]] | None, optional
+        Explicit per-product feature groups for hindcast validation.
+    forecast_groups : list[list[str]] | None, optional
+        Explicit per-product feature groups for forecast validation.
 
     Returns
     -------
@@ -97,7 +212,7 @@ def validate_samples(
     ValueError if a forecast overlap sequence length (`forecast_overlap`) is provided
         without a minimum lead time (`min_lead_time`).
     ValueError if a target sequence length (`predict_last_n`) is not provided for targets.
-    ValueError if a hindcast or forecast feature is missing from the feature groups.
+    ValueError if a feature group is not a subset of configured features.
     """
     if (
         forecast_features is None
@@ -120,35 +235,13 @@ def validate_samples(
             )
         )
 
-    is_split_groups = (
-        isinstance(feature_groups, list)
-        and bool(feature_groups)
-        and all(
-            isinstance(sub, list) and (not sub or isinstance(sub[0], list))
-            for sub in feature_groups
-        )
+    hindcast_groups, forecast_groups = _resolve_feature_groups(
+        feature_groups=feature_groups,
+        hindcast_features=hindcast_features,
+        forecast_features=forecast_features,
+        hindcast_groups=hindcast_groups,
+        forecast_groups=forecast_groups,
     )
-    if is_split_groups:
-        hindcast_groups, forecast_groups = feature_groups
-    else:
-        hindcast_groups = (
-            [
-                g
-                for g in (feature_groups or [])
-                if hindcast_features and set(g) <= set(hindcast_features)
-            ]
-            if feature_groups
-            else None
-        ) or ([hindcast_features] if hindcast_features else [])
-        forecast_groups = (
-            [
-                g
-                for g in (feature_groups or [])
-                if forecast_features and set(g) <= set(forecast_features)
-            ]
-            if feature_groups
-            else None
-        ) or ([forecast_features] if forecast_features else [])
 
     # Hindcasts must pass a check that depends on the NaN-handling.
     if hindcast_features:

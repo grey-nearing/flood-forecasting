@@ -75,14 +75,6 @@ finetune_modules:
 # general knowledge they learned from the large base dataset.
 #
 # Input Embeddings: These layers learned how to interpret raw weather data.
-# When adding new local meteorological input products (QPE/QPF), you can use
-# a dictionary to unfreeze only specific product embeddings alongside the
-# static embedding and head:
-# finetune_modules:
-#   hindcast_embeddings_fc: [daymet]
-#   forecast_embeddings_fc: [gefs_reforecast]
-#   static_embedding_fc: true
-#   head: true
 #- hindcast_embeddings_fc
 #- forecast_embeddings_fc
 #- shared_embeddings_fc
@@ -91,6 +83,14 @@ finetune_modules:
 # over time. They are generally robust and don't need basin-specific retraining.
 #- hindcast_lstm
 #- forecast_lstm
+#
+# NOTE: When fine-tuning with specific per-product dynamic embeddings, you can
+# alternatively pass a dictionary to unfreeze only selected product keys inside
+# hindcast_embeddings_fc, forecast_embeddings_fc, or shared_embeddings_fc:
+# finetune_modules:
+#   hindcast_embeddings_fc: [cpc]
+#   static_embedding_fc: true
+#   head: true
 
 
 # --- 4. Training Hyperparameters ----------------------------------------------

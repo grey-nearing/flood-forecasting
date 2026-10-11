@@ -17,13 +17,13 @@ import itertools
 import more_itertools
 
 
-# Canonical aliases for multimet products with compound or inconsistent names.
+# Canonical aliases for MultiMet products and compound local product prefixes
+# whose directory names contain underscores (single-token local product keys
+# such as 'daymet' -> 'DAYMET' are upper-cased by canonical_product_name).
 PRODUCT_ALIASES: dict[str, str] = {
-    'aorc': 'AORC',
     'chirps': 'CHIRPS',
     'chirpsgefs': 'CHIRPS_GEFS',
     'cpc': 'CPC',
-    'daymet': 'DAYMET',
     'era5land': 'ERA5_LAND',
     'era5landfc': 'ERA5_LAND_FC',
     'gefsreforecast': 'GEFS_REFORECAST',
@@ -31,9 +31,6 @@ PRODUCT_ALIASES: dict[str, str] = {
     'hres': 'HRES',
     'imerg': 'IMERG',
     'localgauges': 'LOCAL_GAUGES',
-    'maurer': 'MAURER',
-    'nldas': 'NLDAS',
-    'stage4': 'STAGE4',
 }
 
 

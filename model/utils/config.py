@@ -489,7 +489,8 @@ class Config(object):
     @property
     def finetune_modules(
         self,
-    ) -> list[str] | dict[str, str | list[str] | bool | None]:
+    ) -> list[str] | dict[str, str | list[str] | bool]:
+        """Return modules configured for fine-tuning."""
         finetune_modules = self._cfg.get('finetune_modules', [])
         if finetune_modules is None:
             return []
@@ -518,6 +519,7 @@ class Config(object):
 
     @property
     def dynamics_data_dir(self) -> Path | list[Path]:
+        """Return directory or list of directories for dynamic forcings."""
         return self._get_value_verbose('dynamics_data_dir')
 
     @property

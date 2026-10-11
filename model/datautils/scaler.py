@@ -26,6 +26,24 @@ from utils.file_paths import SCALER_ZARR_NAME
 SCALER_FILE_NAME = SCALER_ZARR_NAME
 
 
+def resolve_scaler_dir(cfg: object, *, is_train: bool = False) -> Path | None:
+    """Resolve the directory used to load ``scaler.zarr``.
+
+    During fine-tuning, training starts from ``cfg.base_run_dir`` (and later
+    saves the extended scaler to ``cfg.run_dir``), whereas validation/test
+    loads the extended scaler from ``cfg.run_dir`` if it exists and falls back
+    to ``cfg.base_run_dir`` for legacy fine-tuned runs.
+    """
+    run_dir: Path | None = getattr(cfg, 'run_dir', None)
+    if getattr(cfg, 'is_finetuning', False):
+        if is_train:
+            return cfg.base_run_dir
+        if run_dir is not None and (run_dir / SCALER_ZARR_NAME).exists():
+            return run_dir
+        return cfg.base_run_dir
+    return run_dir
+
+
 def _calc_stats(dataset: xr.Dataset, needed: set[str]):
     stats = {
         'mean': dataset.mean(skipna=True),
