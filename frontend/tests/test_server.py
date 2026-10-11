@@ -344,13 +344,15 @@ class ServerApiIntegrationTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         """Provision synthetic fixtures and start the local HTTP server."""
         super().setUpClass()
-        cls._temp_dir = tempfile.TemporaryDirectory()
+        cls._temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         cls._stack = ExitStack()
         fixtures = _build_hermetic_fixtures(Path(cls._temp_dir.name))
 
         delineator_mod.reset_delineator_caches()
         river_indexer_mod.reset_river_indexer_caches()
         static_attr_mod.reset_attributes_extractor()
+        server_mod._river_indexers.clear()  # noqa: SLF001
+        server_mod._delineators.clear()  # noqa: SLF001
 
         dem_tile_srv = DemTileServer(tiles_dir=fixtures['elv_dir'])
         dem_hs = DemDelineator(
@@ -433,6 +435,8 @@ class ServerApiIntegrationTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         """Shut down the server and restore module caches."""
+        import gc
+
         cls.server.shutdown()
         cls.server.server_close()
         WEATHER_SOURCES['era5'].zarr_path = cls._orig_era5_zarr_path
@@ -440,6 +444,9 @@ class ServerApiIntegrationTest(unittest.TestCase):
         static_attr_mod.reset_attributes_extractor()
         delineator_mod.reset_delineator_caches()
         river_indexer_mod.reset_river_indexer_caches()
+        server_mod._river_indexers.clear()  # noqa: SLF001
+        server_mod._delineators.clear()  # noqa: SLF001
+        gc.collect()
         cls._temp_dir.cleanup()
         super().tearDownClass()
 
