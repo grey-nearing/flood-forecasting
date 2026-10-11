@@ -249,7 +249,7 @@ extract-caravan-static \
 | `--input`, `-i` | **Yes** | — | Path to your input watershed boundary file (`.geojson`, `.shp`, `.gpkg`, or `.parquet`). |
 | `--output`, `-o` | **Yes** | — | Path where the output CSV file will be saved. |
 | `--gdb-path`, `-g` | Required unless `--no-download` | `None` | Local path to `BasinATLAS_v10.gdb`, shapefile, or GeoParquet file. |
-| `--era5-source` | No | `auto` | How to calculate ERA5 climate numbers: `auto` (`timeseries -> hybas -> gridded`, or `timeseries -> gridded -> hybas` with `--prefer-gridded-over-hybas`), `timeseries`, `hybas`, `gridded`, `none`, or a comma-separated priority list. |
+| `--era5-source` | No | `auto` | How to calculate ERA5 climate numbers: `auto` (`timeseries -> hybas -> gridded`, or `timeseries -> gridded -> hybas` with `--prefer-gridded-over-hybas`), `timeseries`, `hybas`, `gridded`, or a comma-separated priority list. |
 | `--prefer-gridded-over-hybas` | No | Disabled | When `--era5-source` is `auto`, prioritize `gridded` ahead of `hybas` (`timeseries -> gridded -> hybas`). |
 | `--era5-timeseries-zarr` | Required if `timeseries` | `None` | One or more local paths or `gs://` URIs to pre-extracted `ERA5_LAND/timeseries.zarr` basin stores. |
 | `--era5-cache-dir` | Required if `hybas` (unless `--no-download`) | `None` | Local folder where continental ERA5 climate tables (`<continent>_climate_indices.txt`) are stored. |
@@ -301,7 +301,7 @@ extract-caravan-static-batch \
 | `--input-files`, `-f` | One input flag required | — | Space-separated list of specific polygon files (`.shp`, `.geojson`, `.gpkg`, `.parquet`) to process. |
 | `--output-dir`, `-o` | **Yes** | — | Local folder or Google Cloud Storage (`gs://...`) path where output files will be written. |
 | `--gdb-path`, `-g` | Required unless `--no-download` | `None` | Local path to `BasinATLAS_v10.gdb`, shapefile, or GeoParquet file. |
-| `--era5-source` | No | `auto` | How to calculate ERA5 climate numbers: `auto` (`timeseries -> hybas -> gridded`, or `timeseries -> gridded -> hybas` with `--prefer-gridded-over-hybas`), `timeseries`, `hybas`, `gridded`, `none`, or a comma-separated priority list. |
+| `--era5-source` | No | `auto` | How to calculate ERA5 climate numbers: `auto` (`timeseries -> hybas -> gridded`, or `timeseries -> gridded -> hybas` with `--prefer-gridded-over-hybas`), `timeseries`, `hybas`, `gridded`, or a comma-separated priority list. |
 | `--prefer-gridded-over-hybas` | No | Disabled | When `--era5-source` is `auto`, prioritize `gridded` ahead of `hybas` (`timeseries -> gridded -> hybas`). |
 | `--era5-timeseries-zarr` | Required if `timeseries` | `None` | One or more local paths or `gs://` URIs to pre-extracted `ERA5_LAND/timeseries.zarr` basin stores. |
 | `--era5-cache-dir` | Required if `hybas` (unless `--no-download`) | `None` | Local folder where continental ERA5 climate tables are stored. |

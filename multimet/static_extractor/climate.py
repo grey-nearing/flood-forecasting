@@ -47,7 +47,10 @@ from multimet.utils.climate import (
     pressure_to_kpa,
     temp_to_celsius,
 )
-from multimet.utils.zonal import ZonalWeightCalculator
+from multimet.utils.zonal import (
+    MIN_VALID_COVERAGE_FRACTION,
+    ZonalWeightCalculator,
+)
 
 __all__ = [
     "CARAVAN_CLIMATE_ALIASES",
@@ -149,7 +152,6 @@ _PET_FAO_CANDIDATES: Tuple[str, ...] = (
     "era5land_potential_evaporation_FAO_PENMAN_MONTEITH",
     "potential_evaporation_sum_FAO_PENMAN_MONTEITH",
     "pet_fao",
-    "pet_mean_FAO_PM",
     "fao_pet",
 )
 _D2M_CANDIDATES: Tuple[str, ...] = (
@@ -203,8 +205,9 @@ def compute_climate_metrics_from_dataframe(
 
   Args:
     timeseries_df: Daily DataFrame indexed by ``pd.DatetimeIndex``.
-    baseline_years: Optional ``(start_year, end_year)`` filter. If the DataFrame
-      contains dates within ``baseline_years``, it is restricted to that window.
+    baseline_years: Optional ``(start_year, end_year)`` filter. Restricted to
+      that inclusive window; if no rows fall within ``baseline_years``, all
+      18 climate metrics are returned as ``NaN``.
     units_map: Optional mapping from column name to CF unit string (e.g. ``'m'``,
       ``'K'``, ``'Pa'``).
     include_fao_pm: Whether to compute FAO-56 Penman-Monteith PET indices.
@@ -213,35 +216,38 @@ def compute_climate_metrics_from_dataframe(
     Dictionary of 18 Caravan climate metrics.
   """
   if timeseries_df is None or timeseries_df.empty:
-    return dict(NAN_CLIMATE_METRICS)
+    raise ValueError("timeseries_df must be a non-empty DataFrame.")
 
-  ts_df = timeseries_df
-  if baseline_years is not None and isinstance(
-      timeseries_df.index, pd.DatetimeIndex
-  ):
-    sliced = timeseries_df.loc[
-        (timeseries_df.index.year >= baseline_years[0])
-        & (timeseries_df.index.year <= baseline_years[1])
-    ]
-    if not sliced.empty:
-      ts_df = sliced
-
-  u_map = units_map or {}
-  cols = ts_df.columns
+  cols = timeseries_df.columns
   p_col = next((c for c in _PRECIP_CANDIDATES if c in cols), None)
   t_col = next((c for c in _TEMP_CANDIDATES if c in cols), None)
+  if not p_col or not t_col:
+    raise ValueError(
+        "timeseries_df is missing required precipitation/temperature columns "
+        f"(found {list(cols)})."
+    )
+
+  ts_df = timeseries_df
+  if not isinstance(ts_df.index, pd.DatetimeIndex):
+    ts_df = ts_df.copy()
+    ts_df.index = pd.to_datetime(ts_df.index)
+
+  if baseline_years is not None:
+    sliced = ts_df.loc[
+        (ts_df.index.year >= baseline_years[0])
+        & (ts_df.index.year <= baseline_years[1])
+    ]
+    if sliced.empty:
+      return dict(NAN_CLIMATE_METRICS)
+    ts_df = sliced
+
+  u_map = units_map or {}
   pet_era5_col = next((c for c in _PET_ERA5_CANDIDATES if c in cols), None)
   pet_fao_col = (
       next((c for c in _PET_FAO_CANDIDATES if c in cols), None)
       if include_fao_pm
       else None
   )
-
-  if not p_col or not t_col:
-    raise ValueError(
-        "timeseries_df is missing required precipitation/temperature columns "
-        f"(found {list(cols)})."
-    )
 
   if ts_df[p_col].isna().all() or ts_df[t_col].isna().all():
     return dict(NAN_CLIMATE_METRICS)
@@ -382,8 +388,13 @@ class ERA5TimeseriesZarrLoader:
       self._store_time_dims.append(time_dim)
       self._store_dates.append(dates)
       for row_idx, b_id in enumerate(basin_vals):
-        if b_id not in self._basin_lookup:
-          self._basin_lookup[b_id] = (store_idx, row_idx)
+        if b_id in self._basin_lookup:
+          prev_store_idx, _ = self._basin_lookup[b_id]
+          raise ValueError(
+              f"Duplicate basin ID {b_id!r} found across ERA5 timeseries Zarr stores "
+              f"({self.zarr_uris[prev_store_idx]!r} and {uri!r})."
+          )
+        self._basin_lookup[b_id] = (store_idx, row_idx)
 
   def has_basin(self, basin_id: str) -> bool:
     """Returns True if ``basin_id`` is present in any configured timeseries Zarr store."""
@@ -615,9 +626,13 @@ class ERA5ClimateLoader:
       if not line:
         continue
       item = json.loads(line)
-      gid = item.get("gauge_id", "")
+      gid = str(item.get("gauge_id", ""))
       if gid.startswith("hybas_"):
         hid = int(gid.split("_")[1])
+        self.records[hid] = item
+        count += 1
+      elif "HYBAS_ID" in item and item["HYBAS_ID"] is not None:
+        hid = int(item["HYBAS_ID"])
         self.records[hid] = item
         count += 1
     self.loaded_continents.add(continent_code)
@@ -707,6 +722,7 @@ class ERA5ClimateLoader:
     for c in sorted(self._continents_for(hybas_ids)):
       self.ensure_continent(c)
 
+    total_requested_w = sum(float(w) for w in weights)
     valid_weights = []
     valid_records = []
     for hid, w in zip(hybas_ids, weights, strict=True):
@@ -714,19 +730,20 @@ class ERA5ClimateLoader:
         valid_records.append(self.records[hid])
         valid_weights.append(float(w))
 
-    if not valid_records or sum(valid_weights) == 0:
+    if not valid_records or total_requested_w <= 0 or sum(valid_weights) == 0:
       return expand_caravan_climate_aliases({})
 
-    tot_w = sum(valid_weights)
-    norm_w = np.array(valid_weights, dtype=float) / tot_w
+    w_arr = np.array(valid_weights, dtype=float)
+    norm_w = w_arr / total_requested_w
 
     raw_res: Dict[str, float] = {}
     for k in CARAVAN_CLIMATE_STORED_KEYS:
       vals = np.array([r.get(k, np.nan) for r in valid_records], dtype=float)
       finite = np.isfinite(vals)
-      if np.any(finite) and np.sum(norm_w[finite]) > 0:
+      valid_cov = float(np.sum(norm_w[finite])) if np.any(finite) else 0.0
+      if valid_cov >= MIN_VALID_COVERAGE_FRACTION:
         raw_res[k] = float(
-            np.sum(vals[finite] * norm_w[finite]) / np.sum(norm_w[finite])
+            np.sum(vals[finite] * norm_w[finite]) / valid_cov
         )
       else:
         raw_res[k] = np.nan
@@ -759,7 +776,6 @@ class ERA5GriddedExtractor:
     self._lons: Optional[np.ndarray] = None
     self._dlat: float = 0.1
     self._dlon: float = 0.1
-    self._zonal_calc: Optional[ZonalWeightCalculator] = None
 
   def _open_dataset(self):
     if self._ds is not None:
@@ -776,9 +792,6 @@ class ERA5GriddedExtractor:
     self._lons = np.asarray(self._ds[lon_keys[0]][:], dtype=np.float64)
     self._dlat = abs(float(self._lats[1] - self._lats[0])) if len(self._lats) > 1 else 0.1
     self._dlon = abs(float(self._lons[1] - self._lons[0])) if len(self._lons) > 1 else 0.1
-    self._zonal_calc = ZonalWeightCalculator(
-        self._lats, self._lons, cell_res_lat=self._dlat, cell_res_lon=self._dlon
-    )
     return self._ds
 
   def compute_zonal_weights(
@@ -788,7 +801,6 @@ class ERA5GriddedExtractor:
     self._open_dataset()
     if not hasattr(polygon, "bounds"):
       polygon = shapely.geometry.shape(polygon)
-    # Delegate directly to the shared ZonalWeightCalculator
     calc = ZonalWeightCalculator(
         self._lats, self._lons, cell_res_lat=self._dlat, cell_res_lon=self._dlon
     )
@@ -798,21 +810,6 @@ class ERA5GriddedExtractor:
         lon_idx.astype(int),
         weights.astype(np.float32),
     )
-
-  @staticmethod
-  def _depth_to_mm(series: np.ndarray, units: Optional[str], var_name: str) -> np.ndarray:
-    """Converts a precipitation or PET series to mm/day using declared array units."""
-    return depth_to_mm(series, units, var_name)
-
-  @staticmethod
-  def _temp_to_celsius(series: np.ndarray, units: Optional[str], var_name: str) -> np.ndarray:
-    """Converts a temperature series to degrees Celsius using declared array units."""
-    return temp_to_celsius(series, units, var_name)
-
-  @staticmethod
-  def _pressure_to_kpa(series: np.ndarray, units: Optional[str], var_name: str) -> np.ndarray:
-    """Converts a surface pressure series to kPa using declared array units."""
-    return pressure_to_kpa(series, units, var_name)
 
   @staticmethod
   def _parse_time_coordinate(time_arr: np.ndarray, time_attrs: Dict[str, Any], zarr_uri: str) -> pd.DatetimeIndex:
@@ -992,11 +989,17 @@ class ERA5GriddedExtractor:
     )
 
     def _weighted_nanmean(cells: np.ndarray, w_matrix: np.ndarray) -> np.ndarray:
+      total_w = float(np.sum(w_matrix))
+      out = np.full((cells.shape[0],), np.nan, dtype=np.float64)
+      if total_w <= 0.0:
+        return out
       valid_w = np.where(np.isnan(cells), 0.0, w_matrix)
       w_sum = np.sum(valid_w, axis=1)
       num = np.nansum(cells * w_matrix, axis=1)
-      out = np.full(num.shape, np.nan, dtype=np.float64)
-      return np.divide(num, w_sum, out=out, where=w_sum > 0)
+      valid_enough = (w_sum > 0.0) & (
+          (w_sum / total_w) >= MIN_VALID_COVERAGE_FRACTION
+      )
+      return np.divide(num, w_sum, out=out, where=valid_enough)
 
     # 2. Stream through time chunks once across all polygons in the batch
     step = max(1, int(chunk_days))

@@ -1131,6 +1131,38 @@ class CatchmentAttributes:
                 'length'
             )
 
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type[CatchmentAttributes],
+        tuple[
+            str,
+            dict[str, object],
+            float,
+            float,
+            tuple[int, ...],
+            tuple[float, ...],
+            float,
+            str,
+            tuple[int, int],
+        ],
+    ]:
+        """Support standard-library pickle serialization across multiprocessing."""
+        return (
+            self.__class__,
+            (
+                self.catchment_id,
+                dict(self.attributes),
+                self.area_km2,
+                self.area_fraction_used_for_aggregation,
+                self.subbasin_ids,
+                self.subbasin_weights_km2,
+                self.min_overlap_threshold_km2,
+                self.era5_source,
+                self.baseline_years,
+            ),
+        )
+
     def with_attributes(
         self, updates: Mapping[str, object]
     ) -> CatchmentAttributes:

@@ -15,12 +15,15 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
+import fsspec
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -40,6 +43,7 @@ from multimet.timeseries_extractors.config import (
     Product,
     ProductType,
 )
+from multimet.utils.storage import is_remote_target
 
 logger = logging.getLogger(__name__)
 
@@ -56,16 +60,12 @@ _OPTIONAL_SECONDARY_BANDS: Mapping[Product, Tuple[str, ...]] = {
 def check_zarr_store_exists(store_path: str, max_retries: int = 6) -> bool:
   """Checks whether a Zarr store exists without masking storage/permission errors."""
   del max_retries
-  if not store_path.startswith(
-      ("gs://", "gcs://", "s3://", "abfs://", "az://", "memory://")
-  ):
+  if not is_remote_target(store_path):
     return (
         os.path.exists(os.path.join(store_path, "zarr.json"))
         or os.path.exists(os.path.join(store_path, ".zgroup"))
         or os.path.exists(os.path.join(store_path, ".zmetadata"))
     )
-
-  import fsspec
 
   fs, fs_path = fsspec.core.url_to_fs(store_path)
   return bool(
@@ -383,21 +383,23 @@ class MultiMetZarrWriter:
     if extra_attrs:
       global_attrs.update(extra_attrs)
 
-    import json
-    import tempfile
-
-    is_remote = store_path.startswith(
-        ("gs://", "gcs://", "s3://", "abfs://", "az://", "memory://")
-    )
+    is_remote = is_remote_target(store_path)
 
     def _populate_local_skeleton(local_dir: str) -> None:
       coord_ds = xr.Dataset(coords=coords, attrs=global_attrs)
+      coord_ds["_f32_template"] = (
+          ["_f32_dim"],
+          np.zeros(1, dtype=np.float32),
+      )
       _safe_to_zarr(coord_ds, local_dir, mode="w", consolidated=False)
+      template_dir = os.path.join(local_dir, "_f32_template")
       with open(
-          os.path.join(local_dir, "basin", ".zarray"), "r", encoding="utf-8"
+          os.path.join(template_dir, ".zarray"), "r", encoding="utf-8"
       ) as f:
-        coord_zarray = json.load(f)
-      compressor_cfg = coord_zarray.get("compressor")
+        f32_zarray = json.load(f)
+      compressor_cfg = f32_zarray.get("compressor")
+      shutil.rmtree(template_dir)
+
       for v_name, v_dims, v_shape, v_chunks, v_attrs in var_specs:
         v_dir = os.path.join(local_dir, v_name)
         os.makedirs(v_dir, exist_ok=True)
@@ -427,9 +429,9 @@ class MultiMetZarrWriter:
     if not is_remote:
       _populate_local_skeleton(store_path)
     else:
-      import fsspec
-
       fs, fs_path = fsspec.core.url_to_fs(store_path)
+      if fs.exists(fs_path):
+        fs.rm(fs_path, recursive=True)
       with tempfile.TemporaryDirectory() as tmp_dir:
         _populate_local_skeleton(tmp_dir)
         payloads: Dict[str, bytes] = {}

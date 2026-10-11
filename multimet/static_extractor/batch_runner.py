@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 from pathlib import Path
 import shutil
 import sys
@@ -38,6 +37,12 @@ from multimet.static_extractor.extractor import (
     _VALID_SINGLE_ERA5_SOURCES,
     _validate_era5_source_spec,
 )
+from multimet.utils.gcs import (
+    gcs_path_exists,
+    sync_gcs_directory,
+    upload_to_gcs,
+)
+from multimet.utils.geometry import find_all_dataset_dirs
 
 logger = logging.getLogger("static_extractor.batch_runner")
 
@@ -119,17 +124,6 @@ def export_subdataset_partitioned_files(
       "caravan": caravan_path,
       "parquet": parquet_path,
   }
-
-
-from multimet.utils.gcs import (
-    gcs_path_exists,
-    sync_gcs_directory,
-    upload_to_gcs,
-)
-from multimet.utils.geometry import (
-    find_all_dataset_dirs,
-    find_vector_file_in_dir,
-)
 
 
 def discover_datasets(

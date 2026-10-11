@@ -48,15 +48,16 @@ Every benchmark run and report MUST strictly enforce the following **five invari
 ## 2. Scope, Exclusions & Canonical Data Locations
 
 ### 2.1 Explicit Exclusions
-1. **No `ERA5_LAND` Gridded Archive Extraction:** Do not run `ERA5_LAND` gridded archive or zonal timeseries extraction benchmarks until `gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr` is built. For static attributes, benchmark both `--era5-source none` (`196` pure HydroATLAS Level 12 attributes) and `--era5-source hybas` (`210` attributes using pre-computed continental sub-basin tables).
-2. **No `GRAPHCAST`:** Exclude `GRAPHCAST` from all timeseries extractor and model benchmarks.
+1. **No `GRAPHCAST`:** Exclude `GRAPHCAST` from all timeseries extractor and model benchmarks.
 
 ### 2.2 Canonical Cloud & Staged Local Paths
 - **Canonical Caravan-MultiMet v1.1 Zarr Stores (Public, `token="anon"`):**
    - `gs://caravan-multimet/v1.1/CPC/timeseries.zarr` (`cpc_precipitation`, `1979-01-01 .. 2024-07-31`)
    - `gs://caravan-multimet/v1.1/IMERG/timeseries.zarr` (`imerg_precipitation`, `2000-06-01 .. 2024-10-31`)
    - `gs://caravan-multimet/v1.1/HRES/timeseries.zarr` (7 variables, `lead_time: 1..10`, `2016-01-01 .. 2024-09-30`)
+   - `gs://caravan-multimet/v1.1/ERA5_LAND/timeseries.zarr` (and `gs://open-multimet/caravan-new/<collection>/ERA5_LAND/timeseries.zarr` across `caravan-original`, `caravan-extensions`, and `google-internal`, `1980-01-01 .. 2026-09-08`)
 - **Gridded Meteorological Archives (Internal GCS, `token="google_default"`):**
+   - `gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr` (`0.1°`, `1801 x 3600`, ascending latitude `-90.0 .. 90.0`, `1980-01-01 .. 2026-09-08`, 39 `float32` bands)
    - `gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr` (`0.5°`, `360 x 720`)
    - `gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr` (`0.1°`, `1800 x 3600`)
    - `gs://open-multimet/gridded-data-archives/HRES/daily_surface.zarr` (`0.1°`, `10 x 1801 x 3600`)
@@ -65,21 +66,22 @@ Every benchmark run and report MUST strictly enforce the following **five invari
    - `490`-Basin Caravan Multi-Component Benchmark: `<BENCHMARK_DATA_DIR>/benchmark_basins_500.parquet` (`70` basins per Caravan dataset across `camels`, `camelsaus`, `camelsbr`, `camelscl`, `camelsgb`, `hysets`, `lamah`, with `geometry_wkt`, `ref_area_km2`, and `210` `ref_*` attributes).
    - HydroSHEDS 3-arcsec (`90m`) D8 Flow-Direction Tiles: `<DEM_TILES_DIR>/` (`gs://open-multimet/ancillary-data/dems/hydrosheds_dir_3s_tiles_5deg/`).
    - HydroATLAS Level 12 Geodatabase: `<CACHE_DIR>/hydroatlas/BasinATLAS_v10.gdb` (`gs://open-multimet/ancillary-data/hydroatlas/BasinATLAS_v10.gdb/`).
-   - HydroATLAS Pre-Aggregated ERA5 Climate Tables: `<CACHE_DIR>/era5_climate/` (`gs://open-multimet/ancillary-data/hydroatlas/era5_climate/`).
+   - HydroATLAS Pre-Aggregated ERA5 Climate Tables: `<CACHE_DIR>/era5_climate/` (`gs://open-multimet/ancillary-data/hydroatlas/era5_climate/{continent}_climate_indices.txt`, containing all 18 `compute_caravan_climate_metrics` keys across 1,034,083 Level 12 sub-basins).
    - Caravan Streamflow & Static Zarr Stores: `<CARAVAN_ZARR_DIR>/` (`streamflow.zarr`, `attributes.zarr`).
 
-### 2.3 Post-ERA5-Land Archive Checklist & Completed Code Updates (Tracked in Issue #46)
+### 2.3 Completed ERA5-Land Archive, Timeseries & Static Climate Tables (Issue #46)
 
-Once `gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr` and the basin-clipped `ERA5_LAND/timeseries.zarr` stores are finalized, complete the post-archive data regeneration steps below (the required code fixes in `multimet/` are already implemented in PR #74):
+`gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr`, the basin-clipped `ERA5_LAND/timeseries.zarr` stores across all three Caravan collections, the 9 continental HydroATLAS Level 12 climate tables (`{continent}_climate_indices.txt`), and all 22 Caravan subdataset static attribute tables (`attributes_caravan_<subdataset>.csv` and `attributes_<subdataset>.parquet`) have been finalized:
 
 1. **Completed Code Fixes (`multimet/utils/climate.py` & `multimet/static_extractor/`):**
    - **Unified `calculate_fao_pm_pet` in `multimet/utils/climate.py` matching Kratzert's Caravan `code/pet.py`:** Uses `86,400` seconds/day (`W/m² -> MJ/m²/day`) by default (`radiation_units="W/m^2"`), reproducing canonical `era5land_potential_evaporation_FAO_PENMAN_MONTEITH` to `Pearson r = 0.999999997` (`max_abs_diff = 0.0014 mm/day`).
    - **Added `era5land_*` column support, Caravan whole-series sign convention, & on-the-fly `FAO_PM` PET in `StaticAttributesExtractor.extract_attributes_for_polygon` (`multimet/static_extractor/extractor.py`):** Recognizes `era5land_*` columns, flips whole-series `pev` sign only when the whole-series mean `< 0` (preserving small negative winter condensation days per Caravan `caravan_utils.py`), and computes `FAO_PM` PET on-the-fly if `pet_fao` is absent from `timeseries_df`.
    - **Added cosine-latitude area-weighted polygon extraction & on-the-fly `FAO_PM` PET in `ERA5GriddedExtractor` (`multimet/static_extractor/climate.py`):** Uses `ZonalWeightMatrix` (with nearest-cell fallback for sub-grid polygons) and computes daily `pet_fao` on-the-fly from the 7 extracted daily surface variables (`t2m`, `d2m`, `sp`, `ssr`, `str`, `u10`, `v10`) via `calculate_fao_pm_pet`.
-2. **Post-Archive Ancillary & Dataset Regeneration Steps (Issue #46):**
-   - **Step A — Regenerate the 9 continental HydroATLAS Level 12 climate tables (`gs://open-multimet/ancillary-data/hydroatlas/era5_climate/{continent}_climate_indices.txt`):** Run `ERA5GriddedExtractor.extract_climate_metrics_for_polygons_batch` (`baseline_years=(1981, 2020)`) over all HydroATLAS Level 12 sub-basins (`HYBAS_ID`) for `af`, `ar`, `as`, `au`, `eu`, `gr`, `na`, `sa`, `si`. Writing the full 18-key output of `compute_caravan_climate_metrics` into `{continent}_climate_indices.txt` populates the 4 missing `*_ERA5_LAND` keys (`pet_mean_ERA5_LAND`, `aridity_ERA5_LAND`, `moisture_index_ERA5_LAND`, `seasonality_ERA5_LAND`) and replaces the legacy unclipped Knoben `seasonality`/`moisture_index` values so `--era5-source hybas` works accurately for arbitrary user polygons without requiring the gridded Zarr store.
-   - **Step B — Update canonical `attributes.zarr` climate columns from basin-clipped `ERA5_LAND/timeseries.zarr`:** For canonical Caravan-MultiMet basins, compute the 14 climate attributes directly from `ERA5_LAND/timeseries.zarr` (`1981-01-01 .. 2020-12-31`) via `compute_caravan_climate_metrics` (verified to match canonical Caravan v1.1 within `0.0001–0.004`).
-   - **Step C — Add `ERA5_LAND` to Phase 2, Phase 3A/3B, and Phase 5 benchmark runs:** Re-run `benchmark-static-extractor` (`--era5-source hybas` and `--era5-source gridded`), `benchmark-gridded-archive --product ERA5_LAND`, and `benchmark-timeseries-extractor --archive-store ERA5_LAND=gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr`.
+   - **Added 3-Tier `era5_source="auto"` Resolution (`timeseries -> hybas -> gridded`, with `--prefer-gridded-over-hybas` override):** Uses `ERA5TimeseriesZarrLoader` when a basin exists in pre-extracted `ERA5_LAND/timeseries.zarr`, falls back to `hybas` (`ERA5ClimateLoader`) or `gridded` (`ERA5GriddedExtractor`) for unindexed polygons, and enforces the 80% valid coverage rule across both `hybas` and `gridded`.
+2. **Completed Ancillary & Dataset Regeneration (Issue #46, `multimet/static_extractor/tools/regenerate_era5_climate_tables.py`):**
+   - **Step A — Regenerated all 9 continental HydroATLAS Level 12 climate tables (`gs://open-multimet/ancillary-data/hydroatlas/era5_climate/{continent}_climate_indices.txt`):** Extracted all 1,034,083 sub-basins (`af`, `ar`, `as`, `au`, `eu`, `gr`, `na`, `sa`, `si`) over `baseline_years=(1981, 2020)` with all 18 keys of `compute_caravan_climate_metrics` (including `*_ERA5_LAND`, `*_FAO_PM`, and clipped Knoben `seasonality`/`moisture_index`).
+   - **Step B — Updated all 22 Caravan subdataset static attribute tables (`gs://open-multimet/caravan-new/<collection>/attributes/<subdataset>/`):** Computed all 18 climate attributes directly from `ERA5_LAND/timeseries.zarr` (`1981-01-01 .. 2020-12-31`) via `compute_caravan_climate_metrics` across all 26,990 basins and updated both `attributes_caravan_<subdataset>.csv` and `attributes_<subdataset>.parquet`.
+   - **Step C — Future Benchmark Sweeps:** When re-running full benchmark suites, include `--era5-source hybas` / `--era5-source gridded` / `--era5-source timeseries`, `benchmark-gridded-archive --product ERA5_LAND`, and `benchmark-timeseries-extractor --archive-store ERA5_LAND=gs://open-multimet/gridded-data-archives/ERA5_LAND/daily_surface.zarr`.
 
 ---
 
@@ -272,9 +274,9 @@ python -m benchmarks.model \
 | **Per-Basin Median Attr Rel Error `[P50, P75, P90, P95, P99, Max]`** | `[0.01%, 0.04%, 0.08%, 0.12%, 0.51%, 33.1%]` | `[0.01%, 0.05%, 0.09%, 0.13%, 0.54%, 33.4%]` | `[0.15%, 0.42%, 0.91%, 1.77%, 26.3%, NaN (9 failed)]` |
 | **Categorical Majority Accuracy (Conditional / Unconditional `NaN=wrong`)** | **`99.55%` / `99.55%`** | **`99.55%` / `99.55%`** | **`99.23%` / `97.41%` (`97.61%` in-cov)** |
 
-- **Known Failure Modes:**
-  1. **`*_ERA5_LAND` PET Columns Without `--gridded-era5-uri`:** `pet_mean_ERA5_LAND`, `aridity_ERA5_LAND`, `moisture_index_ERA5_LAND`, and `seasonality_ERA5_LAND` are `100% NaN` under `--era5-source hybas` because the precomputed `{continent}_climate_indices.txt` JSONL files only store 10 keys (`p_mean`, `pet_mean`, `aridity`, `frac_snow`, `moisture_index`, `seasonality`, `high_prec_freq`, `high_prec_dur`, `low_prec_freq`, `low_prec_dur`) and omit the 4 `*_ERA5_LAND` keys (see Subsection 2.3 Step A).
-  2. **`*_FAO_PM` Columns in Pre-Staged `hybas` Tables:** `seasonality_FAO_PM` ($r=0.044$), `moisture_index_FAO_PM` ($r=0.180$), `pet_mean_FAO_PM` ($r=0.441$), and `aridity_FAO_PM` ($r=0.648$) diverge from canonical Caravan because the pre-staged `{continent}_climate_indices.txt` files were generated without clipping negative winter monthly `PET` before computing Knoben et al. (2018) $1 - \text{PET}/P$ (`59.6%` of records in `na_climate_indices.txt` have `seasonality > 2.0`). By contrast, `compute_caravan_climate_metrics` in `multimet/utils/climate.py` matches canonical Caravan v1.1 within `0.0001–0.004` across all 14 climate attributes when fed `1981–2020` `ERA5_LAND` daily series (see Subsection 2.3).
+- **Known / Historical Failure Modes:**
+  1. **`*_ERA5_LAND` PET Columns in Legacy Pre-Issue-#46 `hybas` Tables (Resolved in PR #98):** In the initial baseline run above, `pet_mean_ERA5_LAND`, `aridity_ERA5_LAND`, `moisture_index_ERA5_LAND`, and `seasonality_ERA5_LAND` were `NaN` under `--era5-source hybas` because the legacy `{continent}_climate_indices.txt` JSONL files only stored 10 keys. Regenerating all 9 continental tables (`gs://open-multimet/ancillary-data/hydroatlas/era5_climate/{continent}_climate_indices.txt`) with all 18 keys in Issue #46 / PR #98 resolved this.
+  2. **`*_FAO_PM` Columns in Legacy Pre-Issue-#46 `hybas` Tables (Resolved in PR #98):** In the initial baseline run above, `seasonality_FAO_PM` ($r=0.044$), `moisture_index_FAO_PM` ($r=0.180$), `pet_mean_FAO_PM` ($r=0.441$), and `aridity_FAO_PM` ($r=0.648$) diverged because the legacy `{continent}_climate_indices.txt` files were generated without clipping negative winter monthly `PET` before computing Knoben et al. (2018) $1 - \text{PET}/P$. Regenerating `{continent}_climate_indices.txt` via `compute_caravan_climate_metrics` in Issue #46 / PR #98 resolved this.
   3. **Sum-Aggregated Anthropogenic Attribute (`gdp_ud_ssu`):** Only HydroATLAS attribute with $r < 0.96$ ($r = 0.7556$, Spearman $\rho = 0.9891$, `Median Rel Error = 0.29%`) due to planar vs. WGS84 geodesic boundary-overlap weighting on a single metropolitan outlier basin.
 
 ---

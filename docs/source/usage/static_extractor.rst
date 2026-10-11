@@ -176,7 +176,7 @@ All Flags for ``extract-caravan-static``
    * - ``--era5-source``
      - No
      - ``auto``
-     - How to calculate ERA5 climate numbers: ``auto`` (``timeseries -> hybas -> gridded``, or ``timeseries -> gridded -> hybas`` with ``--prefer-gridded-over-hybas``), ``timeseries``, ``hybas``, ``gridded``, ``none``, or a comma-separated priority list.
+     - How to calculate ERA5 climate numbers: ``auto`` (``timeseries -> hybas -> gridded``, or ``timeseries -> gridded -> hybas`` with ``--prefer-gridded-over-hybas``), ``timeseries``, ``hybas``, ``gridded``, or a comma-separated priority list.
    * - ``--prefer-gridded-over-hybas``
      - No
      - Disabled
@@ -288,7 +288,7 @@ All Flags for ``extract-caravan-static-batch``
    * - ``--era5-source``
      - No
      - ``auto``
-     - How to calculate ERA5 climate numbers: ``auto`` (``timeseries -> hybas -> gridded``, or ``timeseries -> gridded -> hybas`` with ``--prefer-gridded-over-hybas``), ``timeseries``, ``hybas``, ``gridded``, ``none``, or a comma-separated priority list.
+     - How to calculate ERA5 climate numbers: ``auto`` (``timeseries -> hybas -> gridded``, or ``timeseries -> gridded -> hybas`` with ``--prefer-gridded-over-hybas``), ``timeseries``, ``hybas``, ``gridded``, or a comma-separated priority list.
    * - ``--prefer-gridded-over-hybas``
      - No
      - Disabled

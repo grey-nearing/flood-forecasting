@@ -140,7 +140,7 @@ gs://open-multimet/
 - **Path Pattern:** `gs://open-multimet/caravan-new/<collection>/attributes/<subdataset>/`
   - `attributes_<subdataset>.parquet`: Unified outer-joined Parquet table indexed by `gauge_id`.
   - `attributes_hydroatlas_<subdataset>.csv`: ~198 HydroATLAS Level 12 physical, terrain, soil, land-cover, and geology attributes.
-  - `attributes_caravan_<subdataset>.csv`: Long-term climatic and hydrologic signatures (`p_mean`, `pet_mean`, `aridity`, `frac_snow`, `moisture_index`, `seasonality`, `high_prec_freq`, `high_prec_dur`, `low_prec_freq`, `low_prec_dur`, `gauge_lat`, `gauge_lon`).
+  - `attributes_caravan_<subdataset>.csv`: All 18 long-term (1981–2020) ERA5-Land climatic and hydrologic signatures (`p_mean`, `pet_mean`, `aridity`, `frac_snow`, `moisture_index`, `seasonality`, `high_prec_freq`, `high_prec_dur`, `low_prec_freq`, `low_prec_dur`, `pet_mean_ERA5_LAND`, `pet_mean_FAO_PM`, `aridity_ERA5_LAND`, `aridity_FAO_PM`, `moisture_index_ERA5_LAND`, `moisture_index_FAO_PM`, `seasonality_ERA5_LAND`, `seasonality_FAO_PM`) plus `gauge_lat`, `gauge_lon` when present.
   - `attributes_other_<subdataset>.csv`: Provider metadata (`gauge_name`, `country`, `area`, `elevation`).
 
 ### 3.5 Gridded ARCO Surface Zarr Archives (`gridded-data-archives/`)
