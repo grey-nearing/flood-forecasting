@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Frontend multi-model consensus badges, flood summary cards, and chart timeline formatting."""
+"""Frontend multi-model consensus rows, flood summaries, and chart timelines."""
+
+from __future__ import annotations
 
 from typing import Any
 
@@ -22,34 +24,43 @@ from maas.thresholds import (
     EXCEEDANCE_CLASSES,
     RISK_RANK,
     UNASSESSED_COLOR,
-    UNASSESSED_LABEL,
     classify_exceedance,
     estimate_return_period_years,
 )
+
+_HIGH_CONFIDENCE_REL_SPREAD: float = 0.25
+_MEDIUM_CONFIDENCE_REL_SPREAD: float = 0.60
 
 
 def spread_confidence(
     central: float | None,
     p25: float | None,
     p75: float | None,
+    *,
     live: bool = True,
-    fallback_thresholds: bool = False,
 ) -> str:
-    """High / Medium / Low from the relative inter-quartile spread at the peak."""
+    """Compute High/Medium/Low confidence from peak interquartile spread."""
     if not live:
         return 'Low'
     level = 1
-    if central is not None and p25 is not None and p75 is not None and central > 0:
+    if (
+        central is not None
+        and p25 is not None
+        and p75 is not None
+        and central > 0
+    ):
         rel = max(p75 - p25, 0.0) / central
-        level = 2 if rel < 0.25 else (1 if rel < 0.6 else 0)
-    if fallback_thresholds:
-        level = max(level - 1, 0)
+        if rel < _HIGH_CONFIDENCE_REL_SPREAD:
+            level = 2
+        elif rel < _MEDIUM_CONFIDENCE_REL_SPREAD:
+            level = 1
+        else:
+            level = 0
     return ('Low', 'Medium', 'High')[level]
 
 
-def build_consensus_row(
+def build_consensus_row(  # noqa: PLR0913, PLR0917
     model: str,
-    available: bool,
     status: str | None,
     peak: float | None,
     peak_time: str | None,
@@ -57,12 +68,13 @@ def build_consensus_row(
     thresholds_source: str | None,
     confidence: str,
     unit: str = 'm³/s',
+    *,
+    available: bool,
     independent: bool = True,
-    **extra: Any,
+    **extra: Any,  # noqa: ANN401
 ) -> dict[str, Any]:
     """Build a single provider row for the Multi-Model Consensus Matrix."""
-    synthetic = available and status == 'fallback'
-    cls = classify_exceedance(peak, rps) if (available and not synthetic) else None
+    cls = classify_exceedance(peak, rps) if available else None
     row: dict[str, Any] = {
         'model': model,
         'name': MAAS_MODEL_NAMES.get(model, model),
@@ -78,9 +90,7 @@ def build_consensus_row(
             else None
         ),
         'exceedance_rank': cls['rank'] if cls else None,
-        'exceedance_label': (
-            cls['label'] if cls else (UNASSESSED_LABEL if synthetic else None)
-        ),
+        'exceedance_label': cls['label'] if cls else None,
         'risk_level': cls['risk_level'] if cls else 'UNKNOWN',
         'confidence': confidence if available else 'N/A',
         'thresholds_source': thresholds_source,
@@ -96,17 +106,18 @@ def reach_exceedance_summary(
     geoglows_fc: dict[str, Any] | None,
     geoglows_rp: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Forecast-peak return-period exceedance of the reach (worst of live GloFAS / GEOGLOWS)."""
+    """Compute forecast-peak return-period exceedance of the reach."""
     per_model: dict[str, Any] = {}
-    excluded: list[str] = []
     for key, fc, rps, value_keys in (
-        ('glofas', glofas_fc, glofas_rp, ('discharge_median', 'discharge_mean')),
+        (
+            'glofas',
+            glofas_fc,
+            glofas_rp,
+            ('discharge_median', 'discharge_mean'),
+        ),
         ('geoglows', geoglows_fc, geoglows_rp, ('flow_med',)),
     ):
-        if not fc:
-            continue
-        if fc.get('status') == 'fallback':
-            excluded.append(key)
+        if not fc or not fc.get('data'):
             continue
         peak, when = window_peak(daily_series(fc.get('data'), *value_keys))
         cls = classify_exceedance(peak, rps)
@@ -122,15 +133,13 @@ def reach_exceedance_summary(
         out = dict(EXCEEDANCE_CLASSES[0])
         out.update(
             {
-                'label': (
-                    UNASSESSED_LABEL if excluded else 'Not assessed (no forecast)'
-                ),
+                'label': 'Not assessed (no forecast)',
                 'risk_level': 'UNKNOWN',
                 'return_period': None,
                 'color': UNASSESSED_COLOR,
                 'governing_model': None,
                 'per_model': {},
-                'excluded_models': excluded,
+                'excluded_models': [],
                 'unit': 'm³/s',
             }
         )
@@ -141,7 +150,7 @@ def reach_exceedance_summary(
         {
             'governing_model': gov,
             'per_model': per_model,
-            'excluded_models': excluded,
+            'excluded_models': [],
             'unit': 'm³/s',
         }
     )
@@ -153,7 +162,7 @@ def build_flood_summary(
     fh_fc: dict[str, Any] | None,
     fh_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Synthesize overall multi-model flood warning status across all independent models."""
+    """Synthesize overall multi-model flood warning status across models."""
     independent = [
         r
         for r in consensus
@@ -161,14 +170,9 @@ def build_flood_summary(
         and r.get('independent')
         and r.get('status') in ('live', 'severity_only')
     ]
-    excluded = [
-        r['name']
-        for r in consensus
-        if r.get('available')
-        and r.get('independent')
-        and r.get('status') not in ('live', 'severity_only')
-    ]
-    n_exceed = sum(1 for r in independent if (r.get('exceedance_rank') or 0) >= 1)
+    n_exceed = sum(
+        1 for r in independent if (r.get('exceedance_rank') or 0) >= 1
+    )
     worst = (
         max(independent, key=lambda r: r.get('exceedance_rank') or 0)
         if independent
@@ -179,10 +183,9 @@ def build_flood_summary(
     ]
     overall = max(risks, key=lambda k: RISK_RANK[k]) if risks else 'UNKNOWN'
     agreement = (
-        f'{n_exceed} of {len(independent)} independent models forecast ≥ 2-yr exceedance'
+        f'{n_exceed} of {len(independent)} independent models forecast '
+        '≥ 2-yr exceedance'
     )
-    if excluded:
-        agreement += f"; offline fallback excluded: {', '.join(excluded)}"
     fh_meta = fh_status or fh_fc or {}
     return {
         'floodhub_severity': (
@@ -207,32 +210,42 @@ def build_flood_summary(
 def build_aligned_timeline(
     models: list[str],
     fh_fc: dict[str, Any] | None,
-    fh_is_q: bool,
+    fh_is_q: bool,  # noqa: FBT001
     gl_fc: dict[str, Any] | None,
     gg_fc: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Build a date-aligned daily timeline for multi-model hydrograph charting."""
+    """Build a date-aligned daily timeline for multi-model hydrograph charts."""
     fh_daily = (
         daily_series((fh_fc or {}).get('data'), 'discharge')
         if (fh_fc and fh_fc.get('data'))
         else {}
     )
     gl_daily = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_median', 'discharge_mean')
+        daily_series(
+            (gl_fc or {}).get('data'), 'discharge_median', 'discharge_mean'
+        )
         if gl_fc
         else {}
     )
     gl_p25_d = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_p25') if gl_fc else {}
+        daily_series((gl_fc or {}).get('data'), 'discharge_p25')
+        if gl_fc
+        else {}
     )
     gl_p75_d = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_p75') if gl_fc else {}
+        daily_series((gl_fc or {}).get('data'), 'discharge_p75')
+        if gl_fc
+        else {}
     )
     gl_max_d = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_max') if gl_fc else {}
+        daily_series((gl_fc or {}).get('data'), 'discharge_max')
+        if gl_fc
+        else {}
     )
     gl_min_d = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_min') if gl_fc else {}
+        daily_series((gl_fc or {}).get('data'), 'discharge_min')
+        if gl_fc
+        else {}
     )
     gg_daily = (
         daily_series((gg_fc or {}).get('data'), 'flow_med', 'flow_avg')

@@ -1,74 +1,308 @@
-from pathlib import Path
-import tempfile
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for the `frontend.static_attributes` adapter."""
+
+from __future__ import annotations
+
 import json
-import math
-try:
-    from absl.testing import absltest
-except ImportError:
-    import unittest as absltest
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import geopandas as gpd
 import numpy as np
 import pandas as pd
-import shapely.geometry
+import pytest
+from shapely.geometry import box
 
 from frontend.static_attributes import (
-    get_attributes_extractor,
     build_attribute_card_payload,
     build_map_layer_geojson,
     build_schema_payload,
+    card_payload_from_cache_entry,
+    get_attributes_extractor,
+    reset_attributes_extractor,
     sanitize_for_json,
-    zoom_to_hydroatlas_level
+    zoom_to_hydroatlas_level,
 )
 from multimet.static_extractor import CatchmentAttributes
 
-class StaticAttributesAdapterTest(absltest.TestCase):
+_EXPECTED_SUBBASIN_COUNT = 2
+_EXPECTED_MIN_SCHEMA_ATTRS = 10
+_EXPECTED_TEMP_C = 15.0
+_EXPECTED_SLOPE_DEG = 15.0
+_EXPECTED_ELEV_M = 500.0
+_EXPECTED_LAND_COVER_CLASS = 2
+_EXPECTED_TOTAL_AREA_KM2 = 100.0
 
-    def test_sanitize_for_json(self):
-        self.assertIsNone(sanitize_for_json(np.nan))
-        self.assertIsNone(sanitize_for_json(float('inf')))
-        self.assertEqual(sanitize_for_json({"a": np.nan, "b": 1.5}), {"a": None, "b": 1.5})
 
-    def test_zoom_to_hydroatlas_level(self):
+def build_synthetic_hydroatlas_fixtures(root: Path) -> tuple[Path, Path]:
+    """Create synthetic HydroATLAS Level-12 GeoParquet and ERA5 fixtures.
+
+    Args:
+        root: Temporary directory root.
+
+    Returns:
+        Tuple of `(hydroatlas_dir, era5_climate_dir)`.
+    """
+    hydroatlas_dir = root / 'hydroatlas'
+    subpoly_dir = hydroatlas_dir / 'subpolygons'
+    subpoly_dir.mkdir(parents=True, exist_ok=True)
+
+    hybas_ids = [7120000010, 7120000020]
+    attr_df = pd.DataFrame(
+        {
+            'HYBAS_ID': hybas_ids,
+            'NEXT_DOWN': [7120000020, 0],
+            'SUB_AREA': [1200.0, 1100.0],
+            'UP_AREA': [1200.0, 2300.0],
+            'ele_mt_sav': [2600.0, 2400.0],
+            'slp_dg_sav': [120.0, 95.0],
+            'pre_mm_syr': [780.0, 720.0],
+            'tmp_dc_syr': [45.0, 60.0],
+            'ari_ix_sav': [85.0, 92.0],
+            'cly_pc_sav': [18.0, 22.0],
+            'snd_pc_sav': [48.0, 44.0],
+            'slt_pc_sav': [34.0, 34.0],
+            'for_pc_sse': [65.0, 55.0],
+            'crp_pc_sse': [5.0, 10.0],
+            'urb_pc_sse': [2.0, 4.0],
+            'gwt_cm_sav': [180.0, 210.0],
+            'swc_pc_syr': [52.0, 48.0],
+            'inu_pc_smx': [2.0, 3.0],
+            'glc_cl_smj': [1, 4],
+            'clz_cl_smj': [14, 14],
+            'lit_cl_smj': [5, 5],
+            'dis_m3_pyr': [18.0, 35.0],
+            'run_mm_syr': [310.0, 290.0],
+        }
+    )
+    attr_df.to_parquet(
+        hydroatlas_dir / 'hydro_atlas_lev12.parquet', index=False
+    )
+
+    subpoly_gdf = gpd.GeoDataFrame(
+        {'HYBAS_ID': hybas_ids},
+        geometry=[
+            box(-106.6, 39.4, -106.1, 39.9),
+            box(-106.1, 39.4, -105.7, 39.9),
+        ],
+        crs='EPSG:4326',
+    )
+    subpoly_gdf.to_parquet(subpoly_dir / 'hybas_na_lev12_v1c.geoparquet')
+
+    era5_dir = root / 'era5_climate'
+    era5_dir.mkdir(parents=True, exist_ok=True)
+    climate_rows = [
+        {
+            'gauge_id': 'hybas_7120000010',
+            'p_mean': 2.4,
+            'pet_mean': 3.1,
+            'pet_mean_ERA5_LAND': 2.8,
+            'aridity': 1.29,
+            'aridity_ERA5_LAND': 1.17,
+            'frac_snow': 0.38,
+            'moisture_index': -0.22,
+            'moisture_index_ERA5_LAND': -0.15,
+            'seasonality': 0.42,
+            'seasonality_ERA5_LAND': 0.36,
+            'high_prec_freq': 16.5,
+            'high_prec_dur': 1.3,
+            'low_prec_freq': 195.0,
+            'low_prec_dur': 5.4,
+        },
+        {
+            'gauge_id': 'hybas_7120000020',
+            'p_mean': 2.1,
+            'pet_mean': 3.3,
+            'pet_mean_ERA5_LAND': 3.0,
+            'aridity': 1.57,
+            'aridity_ERA5_LAND': 1.43,
+            'frac_snow': 0.32,
+            'moisture_index': -0.36,
+            'moisture_index_ERA5_LAND': -0.30,
+            'seasonality': 0.46,
+            'seasonality_ERA5_LAND': 0.40,
+            'high_prec_freq': 14.2,
+            'high_prec_dur': 1.2,
+            'low_prec_freq': 210.0,
+            'low_prec_dur': 6.1,
+        },
+    ]
+    (era5_dir / 'na_climate_indices.txt').write_text(
+        '\n'.join(json.dumps(r) for r in climate_rows) + '\n',
+        encoding='utf-8',
+    )
+    return hydroatlas_dir, era5_dir
+
+
+class StaticAttributesAdapterTest(unittest.TestCase):
+    """Test suite for `frontend.static_attributes`."""
+
+    def test_sanitize_for_json(self) -> None:
+        """Verify NaN and Inf floats are converted to None."""
+        assert sanitize_for_json(np.nan) is None
+        assert sanitize_for_json(float('inf')) is None
+        assert sanitize_for_json({'a': np.nan, 'b': 1.5}) == {
+            'a': None,
+            'b': 1.5,
+        }
+
+    def test_zoom_to_hydroatlas_level(self) -> None:
+        """Verify slippy-map zoom maps to expected Pfafstetter level."""
         avail = [4, 5, 6, 8, 10, 12]
-        self.assertEqual(zoom_to_hydroatlas_level(3, avail), 4)
-        self.assertEqual(zoom_to_hydroatlas_level(7, avail), 8)
-        self.assertEqual(zoom_to_hydroatlas_level(15, avail), 12)
+        assert zoom_to_hydroatlas_level(3, avail) == 4  # noqa: PLR2004
+        assert zoom_to_hydroatlas_level(7, avail) == 8  # noqa: PLR2004
+        assert zoom_to_hydroatlas_level(15, avail) == 12  # noqa: PLR2004
 
-    def test_build_schema_payload(self):
+    def test_build_schema_payload(self) -> None:
+        """Verify attribute registry schema payload structure."""
         payload = build_schema_payload()
-        self.assertIn("attributes", payload)
-        self.assertIn("attribute_list", payload)
-        self.assertTrue(len(payload["attribute_list"]) > 10)
-        self.assertEqual(payload["extractor_source"], "multimet.static_extractor")
-        
-    def test_build_attribute_card_payload(self):
-        # Create a dummy CatchmentAttributes
+        assert 'attributes' in payload
+        assert 'attribute_list' in payload
+        assert len(payload['attribute_list']) > _EXPECTED_MIN_SCHEMA_ATTRS
+        assert payload['extractor_source'] == 'multimet.static_extractor'
+
+    def test_build_attribute_card_payload(self) -> None:
+        """Verify physical unit scaling and summary fields on card payload."""
         res = CatchmentAttributes(
-            catchment_id="test_id",
-            attributes={"tmp_dc_syr": 150, "pre_mm_syr": 1200, "ele_mt_sav": 500, "slp_dg_sav": 150, "for_pc_sse": 60, "glc_cl_smj": 2},
-            area_km2=100.0,
+            catchment_id='test_id',
+            attributes={
+                'tmp_dc_syr': 150,
+                'pre_mm_syr': 1200,
+                'ele_mt_sav': 500,
+                'slp_dg_sav': 150,
+                'for_pc_sse': 60,
+                'glc_cl_smj': 2,
+            },
+            area_km2=_EXPECTED_TOTAL_AREA_KM2,
             area_fraction_used_for_aggregation=1.0,
             subbasin_ids=(123, 456),
             subbasin_weights_km2=(50.0, 50.0),
             min_overlap_threshold_km2=0.0,
-            era5_source="hybas"
+            era5_source='hybas',
         )
         payload = build_attribute_card_payload(res)
-        
-        self.assertEqual(payload["status"], "success")
-        self.assertEqual(payload["catchment_id"], "test_id")
-        self.assertEqual(payload["intersected_subbasins_count"], 2)
-        
-        # Check rounding and scaled units
-        self.assertEqual(payload["flat_attributes"]["tmp_dc_syr"], 15.0)
-        self.assertEqual(payload["flat_attributes"]["slp_dg_sav"], 15.0)
-        self.assertEqual(payload["flat_attributes"]["ele_mt_sav"], 500.0)
-        self.assertEqual(payload["flat_attributes"]["glc_cl_smj"], 2)
-        
-        # Check summary
-        summary = payload["summary"]
-        self.assertEqual(summary["elevation_mean_m"], 500.0)
-        self.assertEqual(summary["total_area_km2"], 100.0)
-        self.assertEqual(summary["subbasin_ids"], [123, 456])
 
-if __name__ == "__main__":
-    absltest.main()
+        assert payload['status'] == 'success'
+        assert payload['catchment_id'] == 'test_id'
+        assert (
+            payload['intersected_subbasins_count'] == _EXPECTED_SUBBASIN_COUNT
+        )
+        assert payload['flat_attributes']['tmp_dc_syr'] == _EXPECTED_TEMP_C
+        assert payload['flat_attributes']['slp_dg_sav'] == _EXPECTED_SLOPE_DEG
+        assert payload['flat_attributes']['ele_mt_sav'] == _EXPECTED_ELEV_M
+        assert (
+            payload['flat_attributes']['glc_cl_smj']
+            == _EXPECTED_LAND_COVER_CLASS
+        )
+
+        summary = payload['summary']
+        assert summary['elevation_mean_m'] == _EXPECTED_ELEV_M
+        assert summary['total_area_km2'] == _EXPECTED_TOTAL_AREA_KM2
+        assert summary['subbasin_ids'] == [123, 456]
+
+    def test_card_payload_from_cache_entry_rejects_missing_metadata(
+        self,
+    ) -> None:
+        """Verify cache entries without area, weights, or coverage fail fast."""
+        with pytest.raises(ValueError, match='missing area_km2'):
+            card_payload_from_cache_entry(
+                'missing_area',
+                {
+                    'attributes': {'ele_mt_sav': 500.0},
+                    'subbasin_ids': [123],
+                    'subbasin_weights_km2': [50.0],
+                    'area_fraction_used_for_aggregation': 1.0,
+                },
+            )
+        with pytest.raises(ValueError, match='missing subbasin_weights_km2'):
+            card_payload_from_cache_entry(
+                'missing_weights',
+                {
+                    'attributes': {'ele_mt_sav': 500.0},
+                    'area_km2': 50.0,
+                    'subbasin_ids': [123],
+                    'area_fraction_used_for_aggregation': 1.0,
+                },
+            )
+        with pytest.raises(
+            ValueError, match='missing area_fraction_used_for_aggregation'
+        ):
+            card_payload_from_cache_entry(
+                'missing_fraction',
+                {
+                    'attributes': {'ele_mt_sav': 500.0},
+                    'area_km2': 50.0,
+                    'subbasin_ids': [123],
+                    'subbasin_weights_km2': [50.0],
+                },
+            )
+
+    def test_hermetic_extractor_and_map_layer_with_openhydronet_fixtures(
+        self,
+    ) -> None:
+        """Verify extraction and map-layer GeoJSON using synthetic fixtures."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            hydroatlas_dir, era5_dir = build_synthetic_hydroatlas_fixtures(
+                Path(tmp_dir)
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    'HYDROATLAS_GDB_PATH': str(hydroatlas_dir),
+                    'ERA5_CLIMATE_CACHE_DIR': str(era5_dir),
+                },
+            ):
+                reset_attributes_extractor()
+                try:
+                    extractor = get_attributes_extractor()
+                    poly = box(-106.2, 39.5, -106.0, 39.7)
+                    res = extractor.extract_attributes_for_polygon(
+                        poly,
+                        catchment_id='openhydronet_test_basin',
+                        era5_source='hybas',
+                    )
+                    card = build_attribute_card_payload(res)
+                    assert card['status'] == 'success'
+                    assert card['flat_attributes']['ele_mt_sav'] > 0
+                    assert card['flat_attributes']['p_mean'] > 0
+
+                    fc_elev = build_map_layer_geojson(
+                        extractor,
+                        (-106.5, 39.4, -105.8, 39.9),
+                        zoom=10,
+                        attribute='ele_mt_sav',
+                    )
+                    assert fc_elev['properties']['count'] == (
+                        _EXPECTED_SUBBASIN_COUNT
+                    )
+                    fc_clim = build_map_layer_geojson(
+                        extractor,
+                        (-106.5, 39.4, -105.8, 39.9),
+                        zoom=10,
+                        attribute='p_mean',
+                    )
+                    assert fc_clim['properties']['count'] == (
+                        _EXPECTED_SUBBASIN_COUNT
+                    )
+                finally:
+                    reset_attributes_extractor()
+
+
+if __name__ == '__main__':
+    unittest.main()

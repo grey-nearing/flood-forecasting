@@ -50,7 +50,7 @@
   <!-- Chart.js for meteorological time-series plotting -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <!-- Lucide icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://unpkg.com/lucide@0.460.0"></script>
 
   <style>
     :root {
@@ -221,11 +221,11 @@
       font-size: 11px; font-weight: 600; transition: border-color 0.15s ease, background 0.15s ease;
     }
     .weather-model-btn:hover { border-color: #1a73e8; background: #f8f9fa; }
-    .weather-model-btn.is-synthetic { color: #5f6368; }
+    .weather-model-btn.is-unsynced { color: #5f6368; }
     .weather-model-btn.active { background: #e8f0fe; border-color: #1a73e8; color: #174ea6; box-shadow: inset 0 0 0 1px #1a73e8; }
     .weather-tag { font-size: 9.5px; font-weight: 600; line-height: 15px; padding: 0 6px; border-radius: 9999px; white-space: nowrap; }
     .weather-tag.real { color: #137333; background: #e6f4ea; border: 1px solid #ceead6; }
-    .weather-tag.synthetic { color: #b06000; background: #fef7e0; border: 1px solid #fde293; }
+    .weather-tag.unsynced { color: #b06000; background: #fef7e0; border: 1px solid #fde293; }
     .weather-tag.unknown { color: #5f6368; background: #f1f3f4; border: 1px solid #dadce0; }
     .weather-frame-canvas { pointer-events: none; }
     .weather-var-option { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; border: 1px solid transparent; color: #202124; cursor: pointer; }
@@ -233,7 +233,7 @@
     .weather-var-option:has(input:checked) { background: #e8f0fe; border-color: #1a73e8; color: #174ea6; }
     .weather-status-dot { width: 9px; height: 9px; margin-top: 3px; border-radius: 9999px; flex-shrink: 0; }
     .weather-status-dot.real { background: #1e8e3e; box-shadow: 0 0 0 3px rgba(30, 142, 62, 0.2); }
-    .weather-status-dot.synthetic { background: #f9ab00; box-shadow: 0 0 0 3px rgba(249, 171, 0, 0.2); }
+    .weather-status-dot.unsynced { background: #f9ab00; box-shadow: 0 0 0 3px rgba(249, 171, 0, 0.2); }
     .weather-status-dot.unknown { background: #80868b; }
     .weather-tick { position: absolute; top: 0; font-size: 10px; color: #5f6368; white-space: nowrap; font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
     .weather-probe-icon { background: transparent; border: none; }
@@ -736,7 +736,7 @@
                 <input type="radio" name="weatherVarRadio" value="precipitation" checked class="accent-[#1a73e8]">
                 <i data-lucide="cloud-rain" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
                 <span class="flex-1">Rain rate</span>
-                <span data-var-tag="precipitation" class="weather-tag synthetic hidden">not synced</span>
+                <span data-var-tag="precipitation" class="weather-tag unsynced hidden">not synced</span>
               </label>
             </div>
           </div>
@@ -759,7 +759,7 @@
           <label id="weatherWindToggleRow" class="flex items-center justify-between gap-2 p-2 rounded-lg border border-[#dadce0] hover:border-[#bdc1c6] cursor-pointer">
             <span class="flex items-center gap-2 text-[#202124]">
               <i data-lucide="wind" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
-              <span>Wind particles <span id="weatherWindSourceTag" class="text-[#b06000]">(synthetic)</span></span>
+              <span>Wind particles <span id="weatherWindSourceTag" class="text-[#b06000]">(not synced)</span></span>
             </span>
             <input type="checkbox" id="layerWindToggle" class="accent-[#1a73e8] w-4 h-4">
           </label>
@@ -1535,7 +1535,7 @@
             <label class="text-xs font-bold text-[#1e8e3e] uppercase tracking-wider flex items-center gap-1.5">
               <i data-lucide="play-circle" class="w-4 h-4"></i> 2. Make Forecasts
             </label>
-            <span class="text-[10px] text-[#5f6368] font-mono">GoogleHydrology</span>
+            <span class="text-[10px] text-[#5f6368] font-mono">OpenHydroNet</span>
           </div>
           <p id="fcRunModeDesc" class="text-xs text-[#5f6368] leading-relaxed">
             Runs the MeanEmbeddingForecastLSTM over the 365-day spin-up + forecast window for all selected catchments and saves yesterday's state file (t₀ − 1d).
@@ -2162,7 +2162,7 @@
       const isGuest = activeProfileInfo.is_guest || activeProfileInfo.username === 'guest';
       const name = activeProfileInfo.display_name || activeProfileInfo.username || 'Guest User';
       const initial = (name || 'G').charAt(0).toUpperCase();
-      const emailText = activeProfileInfo.email || (isGuest ? 'Temporary session (unpersisted)' : `${activeProfileInfo.username}@google.com`);
+      const emailText = activeProfileInfo.email || (isGuest ? 'Temporary session (unpersisted)' : '');
       const badgeClass = isGuest
         ? 'text-[10px] bg-[#f1f3f4] text-[#5f6368] px-2 py-0.5 rounded-full border border-[#dadce0] font-mono'
         : 'text-[10px] bg-[#fef7e0] text-[#b06000] px-2 py-0.5 rounded-full border border-[#f9ab00] font-mono';
@@ -2207,7 +2207,7 @@
           const isCurrent = p.username === activeProfileInfo.username;
           const isGuestRow = p.username === 'guest';
           const label = p.display_name || p.username || 'User';
-          const subLabel = isGuestRow ? 'Temporary · emptied on restart' : (p.email || p.username + '@google.com');
+          const subLabel = isGuestRow ? 'Temporary · emptied on restart' : (p.email || '');
           const div = document.createElement('div');
           div.className = `flex items-center justify-between p-2 rounded-lg border text-xs transition ${isCurrent ? 'bg-[#fef7e0] border-[#fde293] text-[#b06000]' : 'bg-[#f8f9fa] border-[#dadce0] text-[#3c4043] hover:bg-[#f1f3f4]'}`;
 
@@ -2858,7 +2858,7 @@
           : 'text-[11px] bg-[#e6f4ea] text-[#137333] px-2.5 py-0.5 rounded-full border border-[#ceead6] font-mono';
       }
       if (emailEl) {
-        emailEl.innerText = prof.email || (isGuest ? 'Guest data is kept while the server runs and erased when it restarts. Create an account to keep your work.' : `${u}@google.com`);
+        emailEl.innerText = prof.email || (isGuest ? 'Guest data is kept while the server runs and erased when it restarts. Create an account to keep your work.' : '');
       }
       if (dirEl) {
         dirEl.innerText = summary.profile_dir || `data/profiles/${u}`;
@@ -5194,7 +5194,7 @@
     }
 
     // ==========================================
-    // Tab 4: Geographical Features (googlehydrology static_extractor + Map Viewer)
+    // Tab 4: Geographical Features (multimet static_extractor + Map Viewer)
     // ==========================================
     let currentAttributesData = null;
     let currentActiveCategory = 'all';
@@ -6639,7 +6639,7 @@
 
     // Tab 1 Weather Timeline Scrubber & Layer Interactivity
     // Weather Viewer. The sidebar status card always says what is drawn (layer, model, valid time)
-    // and whether it is real archived data or a synthetic stand-in, using /api/weather/models.
+    // and whether it is real archived data or not synced yet, using /api/weather/models.
     const WEATHER_TILE_STYLE_VERSION = '2';  // Bump when tile colours change (tiles are cached for a day).
     const WEATHER_STEP_HOURS = 3;
     const WEATHER_DEFAULT_MAX_LEAD_HOURS = 240;
@@ -6710,7 +6710,7 @@
     let weatherPlaySpeed = 1;
     let activeWeatherModel = 'ecmwf_ifs';
     let activeWeatherVar = 'precipitation';
-    let isWindParticlesEnabled = false;  // Wind is synthetic on this server, so particles start off.
+    let isWindParticlesEnabled = false;  // Wind particles start off by default.
     let weatherLayerOpacity = 0.80;
     let currentWeatherStep = 0;  // Index of 3-hourly lead times (0 = forecast start).
     let activeWeatherTileLayer = null;  // L.layerGroup: weather raster + place labels drawn above it.
@@ -6817,12 +6817,12 @@
       return d.toLocaleString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) + ' UTC';
     }
 
-    // 'real' | 'synthetic' | 'unknown' for one model/variable pair.
+    // 'real' | 'unsynced' | 'unknown' for one model/variable pair.
     function weatherVarSource(key = activeWeatherModel, varKey = activeWeatherVar) {
       if (varKey === 'radar') return 'real';
       const info = weatherInfo(key);
       if (!info || !info.data_source) return 'unknown';
-      return (info.real_variables || []).includes(varKey) ? 'real' : 'synthetic';
+      return (info.real_variables || []).includes(varKey) ? 'real' : 'unsynced';
     }
 
     function loadWeatherModelsInfo() {
@@ -7184,13 +7184,13 @@
       }
       container.innerHTML = rasterOptions.map(opt => {
         const checked = opt.key === activeWeatherVar ? 'checked' : '';
-        const isNotSynced = weatherVarSource(modelKey, opt.key) === 'synthetic';
+        const isNotSynced = weatherVarSource(modelKey, opt.key) === 'unsynced';
         const tagHidden = isNotSynced ? '' : 'hidden';
         return `<label class="weather-var-option">` +
           `<input type="radio" name="weatherVarRadio" value="${opt.key}" ${checked} class="accent-[#1a73e8]">` +
           `<i data-lucide="${opt.icon}" class="${opt.iconClass}"></i>` +
           `<span class="flex-1">${opt.getLabel(modelKey)}</span>` +
-          `<span data-var-tag="${opt.key}" class="weather-tag synthetic ${tagHidden}">not synced</span>` +
+          `<span data-var-tag="${opt.key}" class="weather-tag unsynced ${tagHidden}">not synced</span>` +
           `</label>`;
       }).join('');
       if (window.lucide) {
@@ -7305,12 +7305,12 @@
               tip = `Real data: run from ${formatWeatherRunDate(d)}, ${info.max_lead_hours} h of forecast.`;
             }
           } else if (info && info.data_source) {
-            cls = 'synthetic';
+            cls = 'unsynced';
             text = 'not synced';
             tip = 'This model has not been synced to the local weather_fetcher cache yet.';
           }
           btn.classList.toggle('active', active);
-          btn.classList.toggle('is-synthetic', cls === 'synthetic');
+          btn.classList.toggle('is-unsynced', cls === 'unsynced');
           btn.setAttribute('aria-pressed', active ? 'true' : 'false');
           btn.title = tip;
           const tag = btn.querySelector('[data-model-tag]');
@@ -7380,9 +7380,9 @@
             const runDate = info.init_time ? ` from ${formatWeatherRunDate(new Date(info.init_time))}` : '';
             sourceEl.innerText = `Real data from the saved ${model} run${runDate}. Click Refresh to fetch newer upstream runs.`;
           }
-        } else if (src === 'synthetic' && info.data_source === 'archived_run') {
+        } else if (src === 'unsynced' && info.data_source === 'archived_run') {
           sourceEl.innerText = `Not synced: this server has no ${WEATHER_VAR_NOUNS[activeWeatherVar] || activeWeatherVar} stream for ${model}.`;
-        } else if (src === 'synthetic') {
+        } else if (src === 'unsynced') {
           sourceEl.innerText = `Not synced: this server has no synced ${model} forecast run in weather_fetcher.`;
         } else if (weatherModelsInfoError) {
           sourceEl.innerText = 'Could not reach /api/weather/models, so it is unknown whether this is real data.';
@@ -7513,7 +7513,7 @@
     function weatherTileUrl() {
       const info = weatherInfo();
       // tile_version changes when the server's tile maths changes; tiles are cached for a day.
-      const version = [WEATHER_TILE_STYLE_VERSION, (info && info.tile_version) || '0', (info && info.init_time) || 'synthetic'].join('-');
+      const version = [WEATHER_TILE_STYLE_VERSION, (info && info.tile_version) || '0', (info && info.init_time) || 'unsynced'].join('-');
       return `/api/weather/tiles/${activeWeatherModel}/${activeWeatherVar}/${currentWeatherStep}/{z}/{x}/{y}.png?v=${encodeURIComponent(version)}`;
     }
 
@@ -7742,7 +7742,7 @@
         WEATHER_TILE_STYLE_VERSION,
         (info && info.frame_version) || '0',
         (info && info.tile_version) || '0',
-        (info && info.init_time) || 'synthetic'
+        (info && info.init_time) || 'unsynced'
       ].join('-');
     }
 
@@ -8187,7 +8187,7 @@
         .then(data => {
           if (seq !== windRequestSeq || !data || !data.header) return;
           windVectorData = data;
-          updateWeatherModelPills();  // Refreshes the wind "(synthetic)" tag.
+          updateWeatherModelPills();  // Refreshes the wind "(not synced)" tag.
           startWindAnimation();
         })
         .catch(err => {
@@ -8467,7 +8467,7 @@
       }
       const leadHours = probeData.lead_hours || [];
       const models = probeData.models || {};
-      const isSynthetic = m => !!(m && m.data_source && m.data_source !== 'archived_run');
+      const isUnsynced = m => !!(m && m.data_source && m.data_source !== 'archived_run');
       const lastValueIndex = arr => {
         for (let i = (arr || []).length - 1; i >= 0; i--) if (arr[i] !== null && arr[i] !== undefined) return i;
         return -1;
@@ -8478,7 +8478,7 @@
       let fcstMaxIdx = -1;
       WEATHER_MODEL_ORDER.forEach(key => {
         const m = models[key];
-        if (!m || (isSynthetic(m) && key !== activeWeatherModel)) return;
+        if (!m || (isUnsynced(m) && key !== activeWeatherModel)) return;
         const idx = lastValueIndex(m.precip_rate_mmh);
         if (idx < 0) return;
         if (isWeatherObservationModel(key)) {
@@ -8501,7 +8501,7 @@
       WEATHER_MODEL_ORDER.forEach(key => {
         const m = models[key];
         if (!m) return;
-        const synthetic = isSynthetic(m);
+        const unsynced = isUnsynced(m);
         const active = key === activeWeatherModel;
         const isObs = isWeatherObservationModel(key);
         const series = new Array(totalLen).fill(null);
@@ -8522,17 +8522,17 @@
         }
         datasets.push({
           type: 'line',
-          label: `${weatherModelLabel(key)} ${isObs ? 'observed' : 'forecast'}${synthetic ? ' (not synced)' : ''}`,
+          label: `${weatherModelLabel(key)} ${isObs ? 'observed' : 'forecast'}${unsynced ? ' (not synced)' : ''}`,
           data: series,
           borderColor: WEATHER_MODEL_COLORS[key],
           backgroundColor: active ? weatherHexToRgba(WEATHER_MODEL_COLORS[key], 0.22) : WEATHER_MODEL_COLORS[key],
           fill: active ? 'origin' : false,
           borderWidth: active ? 2.5 : 1.5,
-          borderDash: synthetic ? [6, 4] : [],
+          borderDash: unsynced ? [6, 4] : [],
           pointRadius: 0,
           cubicInterpolationMode: 'monotone',
           spanGaps: false,
-          hidden: synthetic && !active,
+          hidden: unsynced && !active,
           yAxisID: 'yRain',
           order: active ? 0 : 1
         });
@@ -8742,7 +8742,7 @@
           if (accumEl) accumEl.innerText = fmt(data.basin_accumulated_10d_mm, 1, 'mm');
           const hours = Number(data.accumulation_hours) || weatherMaxLeadHours(model);
           if (accumLabelEl) accumLabelEl.innerText = `Total over ${hours % 24 === 0 ? `${hours / 24} days` : `${hours} h`}`;
-          const src = data.data_source === 'archived_run' ? 'real data' : (data.data_source ? 'synthetic' : '');
+          const src = data.data_source === 'archived_run' ? 'real data' : (data.data_source ? 'not synced' : '');
           if (subtextEl) {
             subtextEl.innerText = `${weatherModelLabel(model)}${src ? ` (${src})` : ''}, ${formatWeatherTime(weatherValidTime(currentWeatherStep, model))}. The total is at the basin centre.`;
           }
@@ -8754,7 +8754,7 @@
     }
 
     // =========================================================================
-    // Tab 6: Forecasting & Data Assimilation (Real-Time MultiMet + GoogleHydrology)
+    // Tab 6: Forecasting & Data Assimilation (Real-Time MultiMet + OpenHydroNet)
     // =========================================================================
     let hyetographChart = null;
     let masterHydroChart = null;

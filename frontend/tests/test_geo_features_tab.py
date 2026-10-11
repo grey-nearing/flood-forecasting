@@ -1,283 +1,367 @@
-"""Tests for the Geographical Features tab (googlehydrology static_extractor + Map Viewer)."""
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-from http.server import ThreadingHTTPServer
+"""Tests for the Geographical Features tab (openhydronet static_extractor)."""
+
+from __future__ import annotations
+
 import json
+import os
 import re
+import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
-import urllib.parse
 import urllib.request
+from contextlib import ExitStack
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from unittest import mock
 
+from frontend import tests as _isolated_profiles  # noqa: F401
 from frontend.server import EarthkitHydroHandler
 from frontend.static_attributes import (
     ATTRIBUTE_REGISTRY,
-    StaticAttributesExtractor,
+    build_attribute_card_payload,
+    get_attributes_extractor,
+    reset_attributes_extractor,
 )
-# Importing the tests package points profiles at a temp folder (never real accounts).
-from frontend import tests as _isolated_profiles  # pylint: disable=unused-import
+from frontend.tests.test_static_attributes import (
+    build_synthetic_hydroatlas_fixtures,
+)
 
-CATCHMENT_1 = {
-    "type": "Feature",
-    "properties": {
-        "catchment_id": "geo_test_basin_1",
-        "name": "Upper Colorado Headwaters",
-        "area_km2": 215.0,
-        "source": "delineated",
+_HTTP_OK = 200
+_EXPECTED_SOME_COUNT = 2
+_EXPECTED_ALL_COUNT = 3
+_MIN_SCHEMA_ATTRIBUTES = 30
+
+CATCHMENT_1: dict[str, Any] = {
+    'type': 'Feature',
+    'properties': {
+        'catchment_id': 'geo_test_basin_1',
+        'name': 'Upper Colorado Headwaters',
+        'area_km2': 215.0,
+        'source': 'delineated',
     },
-    "geometry": {
-        "type": "Polygon",
-        "coordinates": [[
-            [-106.20, 39.50],
-            [-106.00, 39.50],
-            [-106.00, 39.70],
-            [-106.20, 39.70],
-            [-106.20, 39.50],
-        ]],
+    'geometry': {
+        'type': 'Polygon',
+        'coordinates': [
+            [
+                [-106.20, 39.50],
+                [-106.00, 39.50],
+                [-106.00, 39.70],
+                [-106.20, 39.70],
+                [-106.20, 39.50],
+            ]
+        ],
     },
 }
 
-CATCHMENT_2 = {
-    "type": "Feature",
-    "properties": {
-        "catchment_id": "geo_test_basin_2",
-        "name": "Blue River Sub-basin",
-        "area_km2": 180.0,
-        "source": "delineated",
+CATCHMENT_2: dict[str, Any] = {
+    'type': 'Feature',
+    'properties': {
+        'catchment_id': 'geo_test_basin_2',
+        'name': 'Blue River Sub-basin',
+        'area_km2': 180.0,
+        'source': 'delineated',
     },
-    "geometry": {
-        "type": "Polygon",
-        "coordinates": [[
-            [-106.05, 39.60],
-            [-105.85, 39.60],
-            [-105.85, 39.80],
-            [-106.05, 39.80],
-            [-106.05, 39.60],
-        ]],
+    'geometry': {
+        'type': 'Polygon',
+        'coordinates': [
+            [
+                [-106.05, 39.60],
+                [-105.85, 39.60],
+                [-105.85, 39.80],
+                [-106.05, 39.80],
+                [-106.05, 39.60],
+            ]
+        ],
     },
 }
 
-CATCHMENT_3 = {
-    "type": "Feature",
-    "properties": {
-        "catchment_id": "geo_test_basin_3",
-        "name": "Eagle River Valley",
-        "area_km2": 240.0,
-        "source": "uploaded",
+CATCHMENT_3: dict[str, Any] = {
+    'type': 'Feature',
+    'properties': {
+        'catchment_id': 'geo_test_basin_3',
+        'name': 'Eagle River Valley',
+        'area_km2': 240.0,
+        'source': 'uploaded',
     },
-    "geometry": {
-        "type": "Polygon",
-        "coordinates": [[
-            [-106.50, 39.55],
-            [-106.30, 39.55],
-            [-106.30, 39.75],
-            [-106.50, 39.75],
-            [-106.50, 39.55],
-        ]],
+    'geometry': {
+        'type': 'Polygon',
+        'coordinates': [
+            [
+                [-106.50, 39.55],
+                [-106.30, 39.55],
+                [-106.30, 39.75],
+                [-106.50, 39.75],
+                [-106.50, 39.55],
+            ]
+        ],
     },
 }
 
 
 class GeoFeaturesTabTest(unittest.TestCase):
+    """Hermetic integration tests for the Geographical Features tab."""
+
+    _tmp_dir: tempfile.TemporaryDirectory[str]
+    _stack: ExitStack
+    server: ThreadingHTTPServer
+    port: int
+    thread: threading.Thread
 
     @classmethod
-    def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), EarthkitHydroHandler)
+    def setUpClass(cls) -> None:
+        """Provision synthetic HydroATLAS fixtures and start test server."""
+        super().setUpClass()
+        cls._tmp_dir = tempfile.TemporaryDirectory()
+        cls._stack = ExitStack()
+        hydroatlas_dir, era5_dir = build_synthetic_hydroatlas_fixtures(
+            Path(cls._tmp_dir.name)
+        )
+        cls._stack.enter_context(
+            mock.patch.dict(
+                os.environ,
+                {
+                    'HYDROATLAS_GDB_PATH': str(hydroatlas_dir),
+                    'ERA5_CLIMATE_CACHE_DIR': str(era5_dir),
+                },
+            )
+        )
+        reset_attributes_extractor()
+
+        cls.server = ThreadingHTTPServer(('127.0.0.1', 0), EarthkitHydroHandler)
         cls.port = cls.server.server_port
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread = threading.Thread(
+            target=cls.server.serve_forever, daemon=True
+        )
         cls.thread.start()
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     @classmethod
-    def tearDownClass(cls):
+    def tearDownClass(cls) -> None:
+        """Shut down test server and clean up synthetic HydroATLAS fixtures."""
         cls.server.shutdown()
         cls.server.server_close()
+        reset_attributes_extractor()
+        cls._stack.close()
+        cls._tmp_dir.cleanup()
+        super().tearDownClass()
 
-    def _get(self, path: str, headers: dict | None = None):
-        url = f"http://127.0.0.1:{self.port}{path}"
-        req = urllib.request.Request(url, headers=headers or {}, method="GET")
-        with urllib.request.urlopen(req) as resp:
-            data = resp.read().decode("utf-8")
+    def _get(
+        self, path: str, headers: dict[str, str] | None = None
+    ) -> tuple[int, Any]:
+        url = f'http://127.0.0.1:{self.port}{path}'
+        req = urllib.request.Request(url, headers=headers or {}, method='GET')
+        with urllib.request.urlopen(req) as resp:  # noqa: S310
+            data = resp.read().decode('utf-8')
             status = resp.status
-            try:
-                parsed = json.loads(data)
-            except Exception:
-                parsed = data
+            content_type = resp.headers.get_content_type()
+            parsed: Any = (
+                json.loads(data) if content_type == 'application/json' else data
+            )
             return status, parsed
 
-    def _post(self, path: str, payload: dict, headers: dict | None = None):
-        url = f"http://127.0.0.1:{self.port}{path}"
-        body = json.dumps(payload).encode("utf-8")
-        req_headers = {"Content-Type": "application/json"}
+    def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        url = f'http://127.0.0.1:{self.port}{path}'
+        body = json.dumps(payload).encode('utf-8')
+        req_headers = {'Content-Type': 'application/json'}
         if headers:
             req_headers.update(headers)
         req = urllib.request.Request(
             url,
             data=body,
             headers=req_headers,
-            method="POST",
+            method='POST',
         )
-        with urllib.request.urlopen(req) as resp:
-            data = resp.read().decode("utf-8")
+        with urllib.request.urlopen(req) as resp:  # noqa: S310
+            data = resp.read().decode('utf-8')
             status = resp.status
             return status, json.loads(data)
 
-    def test_static_extractor_googlehydrology_integration(self):
-        """Verify StaticAttributesExtractor uses the googlehydrology static_extractor package."""
-        from frontend.static_attributes import get_attributes_extractor, build_attribute_card_payload
+    def test_static_extractor_openhydronet_integration(self) -> None:
+        """Verify StaticAttributesExtractor uses openhydronet extractor."""
         extractor = get_attributes_extractor()
-        res = build_attribute_card_payload(extractor.extract_attributes_for_polygon(CATCHMENT_1, catchment_id="geo_test_basin_1", era5_source="hybas"))
-        self.assertEqual(res["status"], "success")
-        self.assertEqual(res["catchment_id"], "geo_test_basin_1")
-        self.assertIn("flat_attributes", res)
-        self.assertIn("categories", res)
-        self.assertIn("summary", res)
-        flat = res["flat_attributes"]
-        for key in ("ele_mt_sav", "pre_mm_syr", "for_pc_sse", "cly_pc_sav", "p_mean", "aridity_ERA5_LAND"):
-            self.assertIn(key, flat)
-
-    def test_extract_one_some_and_all_catchments(self):
-        """Verify extracting attributes for One, Some, and All catchments and retrieving persisted state."""
-        headers = {"X-User-Profile": "test_geo_user"}
-        self._post("/api/watersheds/clear", {}, headers=headers)
-
-        # Upload 3 catchments to active profile
-        status, _ = self._post(
-            "/api/polygons/upload",
-            {
-                "type": "FeatureCollection",
-                "features": [CATCHMENT_1, CATCHMENT_2, CATCHMENT_3],
-            },
-            headers=headers,
-        )
-        self.assertEqual(status, 200)
-
-        # 1. Extract ONE catchment
-        status, d_one = self._post(
-            "/api/attributes/extract",
-            {
-                "catchment_id": "geo_test_basin_1",
-                "polygon": CATCHMENT_1,
-            },
-            headers=headers,
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(d_one["status"], "success")
-        self.assertEqual(d_one["catchment_id"], "geo_test_basin_1")
-        self.assertIn("geo_test_basin_1", d_one["results_by_id"])
-
-        # 2. Extract SOME catchments (subset of 2 catchments via catchment_ids)
-        status, d_some = self._post(
-            "/api/attributes/extract",
-            {
-                "catchment_ids": ["geo_test_basin_2", "geo_test_basin_3"],
-                "features": [CATCHMENT_2, CATCHMENT_3],
-            },
-            headers=headers,
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(d_some["status"], "success")
-        self.assertTrue(d_some["batch"])
-        self.assertEqual(d_some["count"], 2)
-        self.assertTrue(
-            {
-                "geo_test_basin_1",
-                "geo_test_basin_2",
-                "geo_test_basin_3",
-            }.issubset(set(d_some["results_by_id"].keys()))
-        )
-
-        # 3. Extract ALL active catchments
-        status, d_all = self._post(
-            "/api/attributes/extract",
-            {"all_active": True},
-            headers=headers,
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(d_all["status"], "success")
-        self.assertEqual(d_all["count"], 3)
-
-        # 4. Verify GET /api/attributes/extracted returns all 3 persisted catchments
-        status, d_get = self._get("/api/attributes/extracted", headers=headers)
-        self.assertEqual(status, 200)
-        self.assertEqual(d_get["count"], 3)
-        self.assertIn("geo_test_basin_1", d_get["results_by_id"])
-        self.assertIn("geo_test_basin_2", d_get["results_by_id"])
-        self.assertIn("geo_test_basin_3", d_get["results_by_id"])
-
-        # Clean up test user watersheds
-        self._post("/api/watersheds/clear", {}, headers=headers)
-
-    def test_raw_hydroatlas_attribute_map_layer_endpoint(self):
-        """Verify GET /api/attributes/map-layer returns colored BasinATLAS polygons for multiple attributes."""
-        s_status, schema = self._get("/api/attributes/schema")
-        self.assertEqual(s_status, 200)
-        self.assertEqual(schema["extractor_source"], "multimet.static_extractor")
-        self.assertIsInstance(schema["attribute_list"], list)
-        self.assertGreater(len(schema["attribute_list"]), 30)
-
-        for attr_key in ("ele_mt_sav", "pre_mm_syr", "for_pc_sse", "cly_pc_sav", "p_mean", "pet_mean_FAO_PM"):
-            status, fc = self._get(
-                f"/api/attributes/map-layer?bbox=-106.5,39.4,-105.8,39.9&zoom=8&attribute={attr_key}"
+        res = build_attribute_card_payload(
+            extractor.extract_attributes_for_polygon(
+                CATCHMENT_1,
+                catchment_id='geo_test_basin_1',
+                era5_source='hybas',
             )
-            self.assertEqual(status, 200)
-            self.assertEqual(fc["type"], "FeatureCollection")
-            props = fc["properties"]
-            self.assertEqual(props["attribute"], attr_key)
-            self.assertEqual(props["unit"], ATTRIBUTE_REGISTRY[attr_key].physical_unit)
-            self.assertGreater(props["count"], 0)
-            self.assertIsNotNone(props["min_value"])
-            self.assertIsNotNone(props["mean_value"])
-            self.assertIsNotNone(props["max_value"])
-            first_feat = fc["features"][0]
-            self.assertEqual(first_feat["type"], "Feature")
-            self.assertIn("HYBAS_ID", first_feat["properties"])
-            self.assertIn("value", first_feat["properties"])
+        )
+        assert res['status'] == 'success'
+        assert res['catchment_id'] == 'geo_test_basin_1'
+        assert 'flat_attributes' in res
+        assert 'categories' in res
+        assert 'summary' in res
+        flat = res['flat_attributes']
+        for key in (
+            'ele_mt_sav',
+            'pre_mm_syr',
+            'for_pc_sse',
+            'cly_pc_sav',
+            'p_mean',
+            'aridity_ERA5_LAND',
+        ):
+            assert key in flat
 
-    def test_geo_features_tab_dom_and_map_reparenting(self):
-        """Verify #tab-geo-features contains the Map Viewer slot, All/Some/One selector, and attribute layer controls."""
-        status, html = self._get("/")
-        self.assertEqual(status, 200)
+    def test_extract_one_some_and_all_catchments(self) -> None:
+        """Verify extracting attributes for One, Some, and All catchments."""
+        headers = {'X-User-Profile': 'test_geo_user'}
+        self._post('/api/watersheds/clear', {}, headers=headers)
+
+        status, _ = self._post(
+            '/api/polygons/upload',
+            {
+                'type': 'FeatureCollection',
+                'features': [CATCHMENT_1, CATCHMENT_2, CATCHMENT_3],
+            },
+            headers=headers,
+        )
+        assert status == _HTTP_OK
+
+        status, d_one = self._post(
+            '/api/attributes/extract',
+            {
+                'catchment_id': 'geo_test_basin_1',
+                'polygon': CATCHMENT_1,
+            },
+            headers=headers,
+        )
+        assert status == _HTTP_OK
+        assert d_one['status'] == 'success'
+        assert d_one['catchment_id'] == 'geo_test_basin_1'
+        assert 'geo_test_basin_1' in d_one['results_by_id']
+
+        status, d_some = self._post(
+            '/api/attributes/extract',
+            {
+                'catchment_ids': ['geo_test_basin_2', 'geo_test_basin_3'],
+                'features': [CATCHMENT_2, CATCHMENT_3],
+            },
+            headers=headers,
+        )
+        assert status == _HTTP_OK
+        assert d_some['status'] == 'success'
+        assert d_some['batch']
+        assert d_some['count'] == _EXPECTED_SOME_COUNT
+        assert {
+            'geo_test_basin_1',
+            'geo_test_basin_2',
+            'geo_test_basin_3',
+        }.issubset(set(d_some['results_by_id'].keys()))
+
+        status, d_all = self._post(
+            '/api/attributes/extract',
+            {'all_active': True},
+            headers=headers,
+        )
+        assert status == _HTTP_OK
+        assert d_all['status'] == 'success'
+        assert d_all['count'] == _EXPECTED_ALL_COUNT
+
+        status, d_get = self._get('/api/attributes/extracted', headers=headers)
+        assert status == _HTTP_OK
+        assert d_get['count'] == _EXPECTED_ALL_COUNT
+        assert 'geo_test_basin_1' in d_get['results_by_id']
+        assert 'geo_test_basin_2' in d_get['results_by_id']
+        assert 'geo_test_basin_3' in d_get['results_by_id']
+
+        self._post('/api/watersheds/clear', {}, headers=headers)
+
+    def test_raw_hydroatlas_attribute_map_layer_endpoint(self) -> None:
+        """Verify GET /api/attributes/map-layer returns colored polygons."""
+        s_status, schema = self._get('/api/attributes/schema')
+        assert s_status == _HTTP_OK
+        assert schema['extractor_source'] == 'multimet.static_extractor'
+        assert isinstance(schema['attribute_list'], list)
+        assert len(schema['attribute_list']) > _MIN_SCHEMA_ATTRIBUTES
+
+        for attr_key in (
+            'ele_mt_sav',
+            'pre_mm_syr',
+            'for_pc_sse',
+            'cly_pc_sav',
+            'p_mean',
+            'pet_mean_FAO_PM',
+        ):
+            status, fc = self._get(
+                '/api/attributes/map-layer'
+                f'?bbox=-106.5,39.4,-105.8,39.9&zoom=8&attribute={attr_key}'
+            )
+            assert status == _HTTP_OK
+            assert fc['type'] == 'FeatureCollection'
+            props = fc['properties']
+            assert props['attribute'] == attr_key
+            assert props['unit'] == ATTRIBUTE_REGISTRY[attr_key].physical_unit
+            assert props['count'] > 0
+            assert props['min_value'] is not None
+            assert props['mean_value'] is not None
+            assert props['max_value'] is not None
+            first_feat = fc['features'][0]
+            assert first_feat['type'] == 'Feature'
+            assert 'HYBAS_ID' in first_feat['properties']
+            assert 'value' in first_feat['properties']
+
+    def test_geo_features_tab_dom_and_map_reparenting(self) -> None:
+        """Verify #tab-geo-features DOM contains Map Viewer and controls."""
+        status, html = self._get('/')
+        assert status == _HTTP_OK
 
         required_ids = [
-            "tab-geo-features",
-            "geoFeaturesMapSlot",
-            "geoSelectModeAll",
-            "geoSelectModeSome",
-            "geoSelectModeOne",
-            "geoSelectMissingBtn",
-            "geoCheckAllBtn",
-            "geoUncheckAllBtn",
-            "geoCatchmentSelectorList",
-            "extractAttrsBtn",
-            "extractAttributesBtn",
-            "attrsResult",
-            "openAttrExplorerBtn",
-            "downloadCaravanCsvBtn",
-            "geoAttrSelect",
-            "geoLayerModeExtracted",
-            "geoLayerModeRaw",
-            "geoLayerModeBoth",
-            "geoRawLevelSelect",
-            "geoRawOpacitySlider",
-            "geoExtractedValuesList",
-            "geoMapLegendCard",
-            "geoLegendGradientBar",
-            "modalCatchmentSelect",
+            'tab-geo-features',
+            'geoFeaturesMapSlot',
+            'geoSelectModeAll',
+            'geoSelectModeSome',
+            'geoSelectModeOne',
+            'geoSelectMissingBtn',
+            'geoCheckAllBtn',
+            'geoUncheckAllBtn',
+            'geoCatchmentSelectorList',
+            'extractAttrsBtn',
+            'extractAttributesBtn',
+            'attrsResult',
+            'openAttrExplorerBtn',
+            'downloadCaravanCsvBtn',
+            'geoAttrSelect',
+            'geoLayerModeExtracted',
+            'geoLayerModeRaw',
+            'geoLayerModeBoth',
+            'geoRawLevelSelect',
+            'geoRawOpacitySlider',
+            'geoExtractedValuesList',
+            'geoMapLegendCard',
+            'geoLegendGradientBar',
+            'modalCatchmentSelect',
         ]
         for elem_id in required_ids:
-            self.assertRegex(
-                html,
-                rf'id=["\']{re.escape(elem_id)}["\']',
-                f"Missing #{elem_id} in Geographical Features tab",
+            assert re.search(rf'id=["\']{re.escape(elem_id)}["\']', html), (
+                f'Missing #{elem_id} in Geographical Features tab'
             )
 
-        self.assertIn("geoFeaturesMapSlot.prepend(mapEl)", html)
-        self.assertIn("initGeoFeaturesMapLayers()", html)
-        self.assertIn("syncDefaultUnextractedSelection()", html)
-        self.assertIn("/api/attributes/map-layer", html)
+        assert 'geoFeaturesMapSlot.prepend(mapEl)' in html
+        assert 'initGeoFeaturesMapLayers()' in html
+        assert 'syncDefaultUnextractedSelection()' in html
+        assert '/api/attributes/map-layer' in html
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

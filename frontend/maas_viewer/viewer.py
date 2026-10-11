@@ -12,13 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""High-level frontend viewer combining `maas.MaaSDataFetcher` with UI presentation layers."""
+"""Frontend viewer combining `MaaSDataFetcher` with UI presentation."""
+
+from __future__ import annotations
 
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import pyogrio
 from shapely.geometry import mapping
 
+from frontend.delineator import HydroDelineator, find_merit_shp
 from frontend.maas_viewer.consensus import (
     build_aligned_timeline,
     build_consensus_row,
@@ -39,19 +43,106 @@ from maas.floodhub import (
 from maas.networks import glofas_cell_polygon
 from maas.thresholds import thresholds_from_return_periods
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+_WATERSHED_CACHE_MAX_AGE_S: float = 365.0 * 86400.0
+_KM_PER_DEG: float = 111.0
+
 
 class MaaSViewer:
-    """Frontend presenter that fetches raw `maas` data and builds UI visualization payloads."""
+    """Frontend presenter that fetches `maas` data and builds UI payloads."""
 
     def __init__(
         self,
         config: MaaSConfig,
         fetcher: MaaSDataFetcher | None = None,
     ) -> None:
+        """Initialize the viewer with a `MaaSConfig` and optional fetcher."""
         self.config = config
-        self.fetcher = fetcher if fetcher is not None else MaaSDataFetcher(config)
+        self.fetcher = (
+            fetcher if fetcher is not None else MaaSDataFetcher(config)
+        )
 
-    def render_forecast_view(  # noqa: PLR0913
+    def _build_floodhub_consensus_row(
+        self,
+        fh_fc: dict[str, Any] | None,
+        fh_th: dict[str, Any],
+        *,
+        fh_is_q: bool,
+    ) -> dict[str, Any]:
+        """Build the FloodHub row for the consensus table."""
+        live = bool(
+            fh_fc and fh_fc.get('available') and fh_fc.get('status') == 'live'
+        )
+        severity = (fh_fc or {}).get('severity')
+        sev_risk = FH_SEVERITY_TO_RISK.get(str(severity or ''))
+        sev_live = (
+            bool(sev_risk)
+            and (fh_fc or {}).get('severity_source') == 'floodhub_flood_status'
+        )
+        if not (live or sev_live):
+            return build_consensus_row(
+                'floodhub',
+                'unavailable',
+                None,
+                None,
+                None,
+                None,
+                'N/A',
+                available=False,
+            )
+
+        fh_daily = daily_series((fh_fc or {}).get('data'), 'discharge')
+        peak, when = window_peak(fh_daily) if live else (None, None)
+        fh_rps = (
+            {
+                'return_period_2': fh_th.get('warning_2yr'),
+                'return_period_5': fh_th.get('danger_5yr'),
+                'return_period_20': fh_th.get('extreme_20yr'),
+            }
+            if live
+            else None
+        )
+        status_val = (fh_fc or {}).get('status') if live else 'severity_only'
+        th_source = (
+            'FloodHub gauge model thresholds'
+            if live
+            else 'FloodHub official flood status'
+        )
+        conf = (
+            'High' if (fh_fc or {}).get('quality_verified', True) else 'Medium'
+        )
+        row = build_consensus_row(
+            'floodhub',
+            status_val,
+            peak,
+            when,
+            fh_rps,
+            th_source,
+            conf,
+            unit='m³/s' if fh_is_q else 'm',
+            available=True,
+            value_type='discharge' if fh_is_q else 'stage',
+            severity=severity,
+            trend=(fh_fc or {}).get('trend'),
+        )
+        if sev_risk:
+            row['risk_level'] = sev_risk
+            row['risk_source'] = 'floodhub_severity'
+            if not live and sev_live:
+                rank = FH_SEVERITY_RANK.get(str(severity), 0)
+                row.update(
+                    exceedance_rank=rank,
+                    exceedance_label=FH_SEVERITY_LABELS.get(
+                        str(severity), str(severity)
+                    ),
+                    return_period=None,
+                    return_period_yrs=None,
+                )
+        return row
+
+    def render_forecast_view(  # noqa: PLR0913, PLR0917
         self,
         lat: float,
         lon: float,
@@ -64,7 +155,7 @@ class MaaSViewer:
         area_min_km2: float | str | None = None,
         network: str | None = None,
     ) -> dict[str, Any]:
-        """Fetch raw multi-model forecasts and enrich with UI timeline and consensus."""
+        """Fetch multi-model forecasts and enrich with timeline/consensus."""
         lat, lon = float(lat), float(lon)
         models = normalize_requested_models(requested_models)
         raw_bundle = self.fetcher.fetch_forecasts(
@@ -97,70 +188,11 @@ class MaaSViewer:
 
         consensus: list[dict[str, Any]] = []
         if 'floodhub' in models:
-            live = bool(fh_fc and fh_fc.get('available') and fh_fc.get('status') == 'live')
-            severity = (fh_fc or {}).get('severity')
-            sev_risk = FH_SEVERITY_TO_RISK.get(str(severity or ''))
-            sev_live = (
-                bool(sev_risk)
-                and (fh_fc or {}).get('severity_source') == 'floodhub_flood_status'
+            consensus.append(
+                self._build_floodhub_consensus_row(
+                    fh_fc, fh_th, fh_is_q=fh_is_q
+                )
             )
-            if live or sev_live:
-                fh_daily = daily_series((fh_fc or {}).get('data'), 'discharge')
-                peak, when = window_peak(fh_daily) if live else (None, None)
-                fh_rps = (
-                    {
-                        'return_period_2': fh_th.get('warning_2yr'),
-                        'return_period_5': fh_th.get('danger_5yr'),
-                        'return_period_20': fh_th.get('extreme_20yr'),
-                    }
-                    if live
-                    else None
-                )
-                row = build_consensus_row(
-                    'floodhub',
-                    True,
-                    fh_fc.get('status') if live else 'severity_only',
-                    peak,
-                    when,
-                    fh_rps,
-                    'FloodHub gauge model thresholds'
-                    if live
-                    else 'FloodHub official flood status',
-                    'High'
-                    if (fh_fc or {}).get('quality_verified', True)
-                    else 'Medium',
-                    unit='m³/s' if fh_is_q else 'm',
-                    value_type='discharge' if fh_is_q else 'stage',
-                    severity=severity,
-                    trend=(fh_fc or {}).get('trend'),
-                )
-                if sev_risk:
-                    row['risk_level'] = sev_risk
-                    row['risk_source'] = 'floodhub_severity'
-                    if not live and sev_live:
-                        rank = FH_SEVERITY_RANK.get(str(severity), 0)
-                        row.update(
-                            exceedance_rank=rank,
-                            exceedance_label=FH_SEVERITY_LABELS.get(
-                                str(severity), str(severity)
-                            ),
-                            return_period=None,
-                            return_period_yrs=None,
-                        )
-                consensus.append(row)
-            else:
-                consensus.append(
-                    build_consensus_row(
-                        'floodhub',
-                        False,
-                        'unavailable',
-                        None,
-                        None,
-                        None,
-                        None,
-                        'N/A',
-                    )
-                )
 
         if 'glofas' in models:
             if gl_fc and gl_fc.get('available'):
@@ -177,26 +209,26 @@ class MaaSViewer:
                 consensus.append(
                     build_consensus_row(
                         'glofas',
-                        True,
                         gl_fc.get('status'),
                         peak,
                         when,
                         gl_rp,
                         (gl_rp or {}).get('source'),
                         spread_confidence(peak, p25, p75),
+                        available=True,
                     )
                 )
             else:
                 consensus.append(
                     build_consensus_row(
                         'glofas',
-                        False,
                         'unavailable',
                         None,
                         None,
                         None,
                         None,
                         'N/A',
+                        available=False,
                     )
                 )
 
@@ -215,13 +247,13 @@ class MaaSViewer:
                 consensus.append(
                     build_consensus_row(
                         'geoglows',
-                        True,
                         gg_fc.get('status'),
                         peak,
                         when,
                         gg_rp,
                         (gg_rp or {}).get('source'),
                         spread_confidence(peak, p25, p75),
+                        available=True,
                         thresholds_status=(gg_rp or {}).get('status'),
                     )
                 )
@@ -229,13 +261,13 @@ class MaaSViewer:
                 consensus.append(
                     build_consensus_row(
                         'geoglows',
-                        False,
                         'unavailable',
                         None,
                         None,
                         None,
                         None,
                         'N/A',
+                        available=False,
                     )
                 )
 
@@ -278,7 +310,91 @@ class MaaSViewer:
             'meta': dict(raw_bundle['meta']),
         }
 
-    def render_watershed_polygon(  # noqa: PLR0913
+    def _read_merit_unit_from_shapefile(
+        self,
+        cat_shp: Path,
+        comid: int,
+        lat: float,
+    ) -> dict[str, Any] | None:
+        """Read a single MERIT-Basins unit catchment from `cat_shp`."""
+        df = pyogrio.read_dataframe(str(cat_shp), where=f'COMID = {int(comid)}')
+        if df.empty:
+            return None
+        geom = df.geometry.to_numpy()[0]
+        if 'unitarea' in df.columns:
+            area_km2 = float(df['unitarea'].to_numpy()[0])
+        elif 'uparea' in df.columns:
+            area_km2 = float(df['uparea'].to_numpy()[0])
+        else:
+            area_km2 = float(
+                geom.area
+                * _KM_PER_DEG
+                * _KM_PER_DEG
+                * math.cos(math.radians(lat))
+            )
+        return {
+            'type': 'Feature',
+            'geometry': mapping(geom),
+            'properties': {
+                'fabric': 'merit_reach',
+                'fabric_name': f'MERIT-Hydro Reach Catchment (COMID {comid})',
+                'model': 'GEOGLOWS ECMWF',
+                'comid': int(comid),
+                'area_km2': round(area_km2, 1),
+                'resolution': '90m MERIT-Basins',
+            },
+        }
+
+    def _render_merit_watershed(
+        self,
+        lat: float,
+        lon: float,
+        river_id: int | None,
+    ) -> dict[str, Any]:
+        """Resolve a MERIT-Basins reach unit catchment polygon."""
+        eff_rid = river_id or self.fetcher.geoglows.fetch_river_id(lat, lon)
+        if eff_rid:
+            cache_key = f'merit_reach_{eff_rid}'
+            cached = self.fetcher.watershed_cache.get(
+                cache_key, max_age_s=_WATERSHED_CACHE_MAX_AGE_S
+            )
+            if cached is not None:
+                return cached
+            cat_shp = find_merit_shp(eff_rid, 'cat')
+            if cat_shp is not None and cat_shp.is_file():
+                feature = self._read_merit_unit_from_shapefile(
+                    cat_shp, eff_rid, lat
+                )
+                if feature is not None:
+                    self.fetcher.watershed_cache.put(cache_key, feature)
+                    return feature
+
+        delin = HydroDelineator('merit-hydro')
+        res = delin.delineate_catchment(lat, lon, mode='unit_catchment')
+        props = res.get('properties') or {}
+        if 'area_km2' not in props or props['area_km2'] is None:
+            raise ValueError(
+                'MERIT-Basins delineation result is missing area_km2.'
+            )
+        area_km2 = float(props['area_km2'])
+        cid_label = props.get('catchment_id', 'Reach')
+        feature = {
+            'type': 'Feature',
+            'geometry': res['geometry'],
+            'properties': {
+                'fabric': 'merit_reach',
+                'fabric_name': f'MERIT Reach Catchment ({cid_label})',
+                'model': 'GEOGLOWS ECMWF',
+                'comid': eff_rid or int(props.get('outlet_unit_id') or 0),
+                'area_km2': round(area_km2, 1),
+                'resolution': '90m MERIT-Basins',
+            },
+        }
+        if eff_rid:
+            self.fetcher.watershed_cache.put(f'merit_reach_{eff_rid}', feature)
+        return feature
+
+    def render_watershed_polygon(  # noqa: PLR0913, PLR0917
         self,
         lat: float,
         lon: float,
@@ -287,165 +403,63 @@ class MaaSViewer:
         river_id: int | None = None,
         geofabric: str | None = None,
     ) -> dict[str, Any]:
-        """Resolve the watershed polygon corresponding to the selected hydrofabric."""
+        """Resolve the watershed polygon for the selected hydrofabric."""
         lat, lon = float(lat), float(lon)
         eff_fabric = (geofabric or fabric or 'hydroatlas_full').strip().lower()
 
         if eff_fabric == 'glofas_cell':
             return glofas_cell_polygon(lat, lon)
 
-        try:
-            from frontend.delineator import HydroDelineator, _find_merit_shp
-        except ImportError:
-            try:
-                from delineator import HydroDelineator, _find_merit_shp  # type: ignore[no-redef]
-            except ImportError:
-                HydroDelineator = None  # type: ignore[assignment]
-                _find_merit_shp = None  # type: ignore[assignment]
-
         if eff_fabric == 'merit_reach':
-            eff_rid = river_id
-            if not eff_rid:
-                try:
-                    eff_rid = self.fetcher.geoglows.fetch_river_id(lat, lon)
-                except Exception:  # noqa: BLE001
-                    eff_rid = None
-            if eff_rid:
-                cache_key = f'merit_reach_{eff_rid}'
-                cached = self.fetcher.watershed_cache.get(
-                    cache_key, max_age_s=365 * 86400
-                )
-                if cached is not None:
-                    return cached
-                if _find_merit_shp is not None:
-                    cat_shp = _find_merit_shp(eff_rid, 'cat')
-                    if cat_shp and cat_shp.exists():
-                        try:
-                            import pyogrio
+            return self._render_merit_watershed(lat, lon, river_id)
 
-                            df = pyogrio.read_dataframe(
-                                str(cat_shp), where=f'COMID = {eff_rid}'
-                            )
-                            if not df.empty:
-                                geom = df.geometry.values[0]
-                                area_col = (
-                                    'unitarea'
-                                    if 'unitarea' in df.columns
-                                    else (
-                                        'uparea'
-                                        if 'uparea' in df.columns
-                                        else None
-                                    )
-                                )
-                                area_km2 = (
-                                    float(df[area_col].values[0])
-                                    if area_col
-                                    else float(
-                                        geom.area
-                                        * 111.0
-                                        * 111.0
-                                        * math.cos(math.radians(lat))
-                                    )
-                                )
-                                feature = {
-                                    'type': 'Feature',
-                                    'geometry': mapping(geom),
-                                    'properties': {
-                                        'fabric': 'merit_reach',
-                                        'fabric_name': f'MERIT-Hydro Reach Catchment (COMID {eff_rid})',
-                                        'model': 'GEOGLOWS ECMWF',
-                                        'comid': eff_rid,
-                                        'area_km2': round(area_km2, 1),
-                                        'resolution': '90m MERIT-Basins',
-                                    },
-                                }
-                                self.fetcher.watershed_cache.put(
-                                    cache_key, feature
-                                )
-                                return feature
-                        except Exception:  # noqa: BLE001
-                            pass
-            if HydroDelineator is not None:
-                try:
-                    delin = HydroDelineator('merit-hydro')
-                    res = delin.delineate_catchment(
-                        lat, lon, mode='unit_catchment'
-                    )
-                    props = res.get('properties', {})
-                    area_km2 = float(props.get('area_km2', 25.0))
-                    feature = {
-                        'type': 'Feature',
-                        'geometry': res['geometry'],
-                        'properties': {
-                            'fabric': 'merit_reach',
-                            'fabric_name': f"MERIT Reach Catchment ({props.get('catchment_id', 'Reach')})",
-                            'model': 'GEOGLOWS ECMWF',
-                            'comid': eff_rid or 0,
-                            'area_km2': round(area_km2, 1),
-                            'resolution': '90m MERIT-Basins',
-                        },
-                    }
-                    if eff_rid:
-                        self.fetcher.watershed_cache.put(
-                            f'merit_reach_{eff_rid}', feature
-                        )
-                    return feature
-                except Exception:  # noqa: BLE001
-                    pass
+        if eff_fabric not in ('hydroatlas_unit', 'hydroatlas_full'):
+            raise ValueError(
+                f'Unsupported watershed fabric {eff_fabric!r}. Expected one of '
+                "'glofas_cell', 'merit_reach', 'hydroatlas_unit', "
+                "'hydroatlas_full'."
+            )
 
-        cache_key = f"{eff_fabric}_{gauge_id or f'{lat:.4f}_{lon:.4f}'}"
+        cache_key = f'{eff_fabric}_{gauge_id or f"{lat:.4f}_{lon:.4f}"}'
         cached = self.fetcher.watershed_cache.get(
-            cache_key, max_age_s=365 * 86400
+            cache_key, max_age_s=_WATERSHED_CACHE_MAX_AGE_S
         )
         if cached is not None:
             return cached
 
-        if HydroDelineator is not None:
-            try:
-                delin = HydroDelineator('hydroatlas')
-                mode = (
-                    'unit_catchment'
-                    if eff_fabric == 'hydroatlas_unit'
-                    else 'official_ridgeline'
-                )
-                res = delin.delineate_catchment(lat, lon, mode=mode)
-                props = res.get('properties', {})
-                r_attrs = props.get('reach_attributes', {})
-                hybas_id = r_attrs.get('hydrobasins_unit', gauge_id or '')
-                area_km2 = float(props.get('area_km2', 0.0))
-                is_full = eff_fabric == 'hydroatlas_full'
-                feat_name = (
-                    f"HydroATLAS Full Drainage Area ({hybas_id or 'Basin'})"
-                    if is_full
-                    else f"HydroATLAS Level 12 Unit Catchment ({hybas_id or 'Unit'})"
-                )
-                feature = {
-                    'type': 'Feature',
-                    'geometry': res['geometry'],
-                    'properties': {
-                        'fabric': eff_fabric,
-                        'fabric_name': feat_name,
-                        'model': 'Google FloodHub',
-                        'hybas_id': hybas_id,
-                        'area_km2': round(area_km2, 1),
-                        'resolution': '15 arc-sec HydroATLAS',
-                        'upstream_count': props.get(
-                            'upstream_reaches_count', 1
-                        ),
-                    },
-                }
-                self.fetcher.watershed_cache.put(cache_key, feature)
-                return feature
-            except Exception:  # noqa: BLE001
-                pass
-
-        return {
+        delin = HydroDelineator('hydroatlas')
+        mode = (
+            'unit_catchment'
+            if eff_fabric == 'hydroatlas_unit'
+            else 'official_ridgeline'
+        )
+        res = delin.delineate_catchment(lat, lon, mode=mode)
+        props = res.get('properties') or {}
+        if 'area_km2' not in props or props['area_km2'] is None:
+            raise ValueError(
+                'HydroATLAS delineation result is missing area_km2.'
+            )
+        area_km2 = float(props['area_km2'])
+        r_attrs = props.get('reach_attributes') or {}
+        hybas_id = r_attrs.get('hydrobasins_unit', gauge_id or '')
+        is_full = eff_fabric == 'hydroatlas_full'
+        feat_name = (
+            f'HydroATLAS Full Drainage Area ({hybas_id or "Basin"})'
+            if is_full
+            else f'HydroATLAS Level 12 Unit Catchment ({hybas_id or "Unit"})'
+        )
+        feature = {
             'type': 'Feature',
-            'geometry': {'type': 'Polygon', 'coordinates': []},
+            'geometry': res['geometry'],
             'properties': {
                 'fabric': eff_fabric,
-                'available': False,
-                'status': 'unavailable',
-                'area_km2': 0.0,
+                'fabric_name': feat_name,
+                'model': 'Google FloodHub',
+                'hybas_id': hybas_id,
+                'area_km2': round(area_km2, 1),
+                'resolution': '15 arc-sec HydroATLAS',
+                'upstream_count': props.get('upstream_reaches_count', 1),
             },
         }
+        self.fetcher.watershed_cache.put(cache_key, feature)
+        return feature

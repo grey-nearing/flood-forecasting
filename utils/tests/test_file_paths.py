@@ -32,7 +32,7 @@ def test_file_paths_exports_match_init() -> None:
 
 @pytest.mark.unit
 def test_only_public_uris_and_openhydronet_cache_in_file_paths() -> None:
-    """Verify all URIs and paths in file_paths use public domains or openhydronet cache."""
+    """Verify all URIs and paths in file_paths use public domains or cache."""
     allowed_uri_prefixes = (
         'gs://open-multimet',
         'gs://weatherbench2/',
@@ -64,4 +64,23 @@ def test_canonical_gcs_and_cache_paths() -> None:
     )
     assert isinstance(file_paths.OPENHYDRONET_CACHE_ROOT, Path)
     assert file_paths.OPENHYDRONET_CACHE_ROOT.name == 'openhydronet'
-
+    assert (
+        file_paths.OPENHYDRONET_PROFILES_DIR_ENV == 'OPENHYDRONET_PROFILES_DIR'
+    )
+    assert (
+        file_paths.FLOOD_FORECASTING_REPO_DIR_ENV
+        == 'FLOOD_FORECASTING_REPO_DIR'
+    )
+    assert file_paths.HYDRORIVERS_SHP_NAME == 'HydroRIVERS_v10.shp'
+    assert (
+        file_paths.OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH.name
+        == file_paths.HYDRORIVERS_SHP_NAME
+    )
+    assert (
+        file_paths.OPENHYDRONET_HYDROSHEDS_DEM_CACHE_DIR.parent.parent
+        == file_paths.OPENHYDRONET_DATA_CACHE_DIR
+    )
+    assert (
+        file_paths.OPENHYDRONET_MERIT_DEM_CACHE_DIR.parent.parent
+        == file_paths.OPENHYDRONET_DATA_CACHE_DIR
+    )

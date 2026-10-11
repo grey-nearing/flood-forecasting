@@ -12,97 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Earthkit Hydro frontend adapter for the Models-as-a-Service (MaaS) Hub tab.
+"""Frontend adapter for the Models-as-a-Service (MaaS) Hub tab.
 
 Delegates all backend provider HTTP queries, Zarr extraction, reach snapping,
 and return-period calculations to `maas` (`MaaSConfig`, `MaaSDataFetcher`,
-`maas.floodhub`, `maas.glofas`, `maas.geoglows`,
-`maas.networks`, `maas.thresholds`), and all UI presentation, multi-model
-consensus rows, aligned chart timelines, and watershed polygons to
-`frontend.maas_viewer` (`MaaSViewer`).
+`maas.floodhub`, `maas.glofas`, `maas.geoglows`, `maas.networks`,
+`maas.thresholds`), and all UI presentation, multi-model consensus rows,
+aligned chart timelines, and watershed polygons to `frontend.maas_viewer`
+(`MaaSViewer`).
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-import sys
 from typing import Any
 
-_ws_root = str(Path(__file__).resolve().parents[1])
-if _ws_root not in sys.path:
-    sys.path.insert(0, _ws_root)
-
-try:
-    from frontend.config import (
-        CACHE_DIR as _DEFAULT_CACHE_DIR,
-        RIVER_NETWORKS_DIR as _DEFAULT_RIVER_DIR,
-    )
-except ImportError:
-    from config import (  # type: ignore[no-redef]
-        CACHE_DIR as _DEFAULT_CACHE_DIR,
-        RIVER_NETWORKS_DIR as _DEFAULT_RIVER_DIR,
-    )
-
-from frontend.maas_viewer import (
-    MaaSViewer,
-    build_aligned_timeline,
-    build_consensus_row,
-    build_flood_summary,
-    reach_exceedance_summary,
-    spread_confidence,
-)
+import frontend.config as _frontend_config
+from frontend.maas_viewer import MaaSViewer
 from maas.config import (
-    DEFAULT_MAAS_MODELS,
     FLOODHUB_BASE_URL,
     GEOGLOWS_BASE_URL,
     GLOFAS_BASE_URL,
-    MAAS_MODEL_NAMES,
-    RETURN_PERIOD_YEARS,
     MaaSConfig,
-    convert_discharge_units,
-    normalize_requested_models,
-    parse_finite_float,
-    parse_float_or_default,
     parse_int,
 )
-from maas.fetcher import (
-    MaaSDataFetcher,
-    SQLiteCache,
-    align_daily_series,
-    daily_series,
-    fetch_forecasts,
-    fetch_gauges,
-    fetch_historical,
-    fetch_return_periods,
-    resolve_reaches,
-    window_peak,
-)
-from maas.floodhub import haversine_km
-from maas.networks import (
-    glofas_cell_center,
-    glofas_cell_polygon,
-    is_geoglows_river_id,
-)
-from maas.thresholds import (
-    CANONICAL_RETURN_PERIODS,
-    EXCEEDANCE_CLASSES,
-    RISK_RANK,
-    UNASSESSED_COLOR,
-    UNASSESSED_LABEL,
-    classify_exceedance,
-    compute_empirical_weibull_return_periods,
-    compute_gumbel_return_periods,
-    compute_return_periods,
-    estimate_return_period_years,
-    extract_annual_maxima,
-    gumbel_quantile_from_return_periods,
-    thresholds_from_return_periods,
-)
+from maas.fetcher import MaaSDataFetcher
+from maas.networks import is_geoglows_river_id
 from utils.file_paths import FLOODHUB_API_KEY_FILE
 
 
 def _load_default_floodhub_key() -> str:
+    """Load the default FloodHub API key from environment or local key file."""
     env_key = os.environ.get('FLOODHUB_API_KEY', '').strip()
     if env_key:
         return env_key
@@ -112,15 +53,15 @@ def _load_default_floodhub_key() -> str:
     return ''
 
 
-DEFAULT_FLOODHUB_KEY = _load_default_floodhub_key()
+DEFAULT_FLOODHUB_KEY: str = _load_default_floodhub_key()
 
 
 def get_maas_config() -> MaaSConfig:
-    """Build an explicit `MaaSConfig` from `frontend.config` and environment overrides."""
+    """Build an explicit `MaaSConfig` from `frontend.config` and environment."""
     fh_key = os.environ.get('FLOODHUB_API_KEY', DEFAULT_FLOODHUB_KEY).strip()
     return MaaSConfig(
-        river_networks_dir=Path(_DEFAULT_RIVER_DIR),
-        cache_dir=Path(_DEFAULT_CACHE_DIR),
+        river_networks_dir=Path(_frontend_config.RIVER_NETWORKS_DIR),
+        cache_dir=Path(_frontend_config.CACHE_DIR),
         floodhub_api_key=fh_key,
         floodhub_base_url=FLOODHUB_BASE_URL,
         glofas_base_url=GLOFAS_BASE_URL,
@@ -144,14 +85,14 @@ def fetch_floodhub_gauges_bbox(
     max_lat: float,
     max_lon: float,
 ) -> list[dict[str, Any]]:
-    """Fetch FloodHub gauges inside `(min_lat, min_lon, max_lat, max_lon)` via `maas`."""
+    """Fetch FloodHub gauges inside `(min_lat, min_lon, max_lat, max_lon)`."""
     return get_maas_fetcher().fetch_gauges(
         (float(min_lat), float(min_lon), float(max_lat), float(max_lon))
     )
 
 
 def fetch_floodhub_forecast(gauge_id: str) -> dict[str, Any]:
-    """Fetch 7-day forecast and return-period thresholds for a FloodHub gauge via `maas`."""
+    """Fetch 7-day forecast and return-period thresholds for FloodHub gauge."""
     fetcher = get_maas_fetcher()
     if not fetcher.config.floodhub_api_key.strip():
         return {
@@ -187,7 +128,7 @@ def fetch_glofas_return_periods(
 
 
 def fetch_geoglows_river_id(lat: float, lon: float) -> int | None:
-    """Resolve the 9-digit GEOGLOWS `LINKNO` reach ID at `(lat, lon)` via `maas`."""
+    """Resolve the 9-digit GEOGLOWS `LINKNO` reach ID at `(lat, lon)`."""
     return get_maas_fetcher().geoglows.fetch_river_id(float(lat), float(lon))
 
 
@@ -240,23 +181,25 @@ def aggregate_maas_forecast(
     )
 
 
-def get_unified_maas_forecast(  # noqa: PLR0913
+def get_unified_maas_forecast(  # noqa: PLR0913, PLR0917
     lat: float,
     lon: float,
     gauge_id: str | None = None,
-    river_id: Any = None,
+    river_id: int | str | None = None,
     requested_models: list[str] | None = None,
     reach_id: str | None = None,
-    upstream_area_km2: Any = None,
-    area_min_km2: Any = None,
+    upstream_area_km2: float | str | None = None,
+    area_min_km2: float | str | None = None,
     network: str | None = None,
 ) -> dict[str, Any]:
-    """Render unified 3-provider MaaS forecast view via `MaaSViewer.render_forecast_view`."""
+    """Render unified 3-provider MaaS forecast view via `MaaSViewer`."""
     return get_maas_viewer().render_forecast_view(
         float(lat),
         float(lon),
         gauge_id=gauge_id,
-        river_id=parse_int(river_id) if is_geoglows_river_id(river_id) else None,
+        river_id=(
+            parse_int(river_id) if is_geoglows_river_id(river_id) else None
+        ),
         reach_id=reach_id,
         requested_models=requested_models,
         upstream_area_km2=upstream_area_km2,
@@ -265,7 +208,7 @@ def get_unified_maas_forecast(  # noqa: PLR0913
     )
 
 
-def get_maas_watershed_polygon(  # noqa: PLR0913
+def get_maas_watershed_polygon(  # noqa: PLR0913, PLR0917
     lat: float,
     lon: float,
     fabric: str = 'hydroatlas_full',
@@ -273,7 +216,7 @@ def get_maas_watershed_polygon(  # noqa: PLR0913
     river_id: int | None = None,
     geofabric: str | None = None,
 ) -> dict[str, Any]:
-    """Render watershed polygon for the selected hydrofabric via `MaaSViewer`."""
+    """Render watershed polygon for selected hydrofabric via `MaaSViewer`."""
     return get_maas_viewer().render_watershed_polygon(
         float(lat),
         float(lon),
@@ -285,59 +228,18 @@ def get_maas_watershed_polygon(  # noqa: PLR0913
 
 
 __all__ = [
-    'CANONICAL_RETURN_PERIODS',
-    'DEFAULT_MAAS_MODELS',
-    'EXCEEDANCE_CLASSES',
-    'MAAS_MODEL_NAMES',
-    'MaaSConfig',
-    'MaaSDataFetcher',
-    'MaaSViewer',
-    'RETURN_PERIOD_YEARS',
-    'RISK_RANK',
-    'SQLiteCache',
-    'UNASSESSED_COLOR',
-    'UNASSESSED_LABEL',
+    'DEFAULT_FLOODHUB_KEY',
     'aggregate_maas_forecast',
-    'align_daily_series',
-    'build_aligned_timeline',
-    'build_consensus_row',
-    'build_flood_summary',
-    'classify_exceedance',
-    'compute_empirical_weibull_return_periods',
-    'compute_gumbel_return_periods',
-    'compute_return_periods',
-    'convert_discharge_units',
-    'daily_series',
-    'estimate_return_period_years',
-    'extract_annual_maxima',
     'fetch_floodhub_forecast',
     'fetch_floodhub_gauges_bbox',
-    'fetch_forecasts',
-    'fetch_gauges',
     'fetch_geoglows_forecast',
     'fetch_geoglows_return_periods',
     'fetch_geoglows_river_id',
     'fetch_glofas_forecast',
     'fetch_glofas_return_periods',
-    'fetch_historical',
-    'fetch_return_periods',
     'get_maas_config',
     'get_maas_fetcher',
     'get_maas_viewer',
     'get_maas_watershed_polygon',
     'get_unified_maas_forecast',
-    'glofas_cell_center',
-    'glofas_cell_polygon',
-    'gumbel_quantile_from_return_periods',
-    'haversine_km',
-    'is_geoglows_river_id',
-    'normalize_requested_models',
-    'parse_finite_float',
-    'parse_float_or_default',
-    'parse_int',
-    'reach_exceedance_summary',
-    'resolve_reaches',
-    'spread_confidence',
-    'thresholds_from_return_periods',
-    'window_peak',
 ]

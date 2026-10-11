@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Frontend visualization subpackage (`frontend.maas_viewer`) for Models-as-a-Service."""
+"""Frontend visualization subpackage (`frontend.maas_viewer`) for MaaS."""
 
 from frontend.maas_viewer.consensus import (
     build_aligned_timeline,
