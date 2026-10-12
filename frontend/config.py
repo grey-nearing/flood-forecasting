@@ -299,17 +299,32 @@ def resolve_hydrography_paths() -> dict[str, Path]:
     Returns:
         Mapping of hydrography dataset keys to resolved local `Path` objects.
     """
-    hydrorivers_shp = RIVER_NETWORKS_DIR / 'hydrorivers' / HYDRORIVERS_SHP_NAME
-    if not hydrorivers_shp.exists():
-        hydrorivers_shp = OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH
+    local_hr = RIVER_NETWORKS_DIR / 'hydrorivers' / HYDRORIVERS_SHP_NAME
+    cache_hr = OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH
+    if local_hr.is_file():
+        hydrorivers_shp = local_hr
+    elif cache_hr.is_file():
+        hydrorivers_shp = cache_hr
+    else:
+        hydrorivers_shp = local_hr if local_hr.exists() else cache_hr
 
-    hydrobasins_dir = HYDRO_BASINS_DIR / 'hydrobasins_units'
-    if not hydrobasins_dir.exists():
-        hydrobasins_dir = OPENHYDRONET_HYDROBASINS_CACHE_DIR
+    local_hb = HYDRO_BASINS_DIR / 'hydrobasins_units'
+    cache_hb = OPENHYDRONET_HYDROBASINS_CACHE_DIR
+    if local_hb.is_dir() and any(local_hb.glob('*.shp')):
+        hydrobasins_dir = local_hb
+    elif cache_hb.is_dir() and any(cache_hb.glob('*.shp')):
+        hydrobasins_dir = cache_hb
+    else:
+        hydrobasins_dir = local_hb if local_hb.exists() else cache_hb
 
-    merit_dir = RIVER_NETWORKS_DIR / 'merit_rivers'
-    if not merit_dir.exists():
-        merit_dir = OPENHYDRONET_MERIT_BASINS_CACHE_DIR
+    local_merit = RIVER_NETWORKS_DIR / 'merit_rivers'
+    cache_merit = OPENHYDRONET_MERIT_BASINS_CACHE_DIR
+    if local_merit.is_dir() and any(local_merit.glob('*.shp')):
+        merit_dir = local_merit
+    elif cache_merit.is_dir() and any(cache_merit.glob('*.shp')):
+        merit_dir = cache_merit
+    else:
+        merit_dir = local_merit if local_merit.exists() else cache_merit
 
     return {
         'hydrorivers_shp': hydrorivers_shp,

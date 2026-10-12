@@ -65,6 +65,10 @@ from maas.networks import (
     snap_geoglows_reach_from_network,
     snap_glofas_cell_from_network,
 )
+from maas.tools.build_network_pyramids import (
+    find_floodhub_lut,
+    find_hydrorivers_shp,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -80,10 +84,13 @@ _GLOFAS_OWS_MAX_COL: int = 7199
 
 def _data_dir(name: str) -> Path:
     """Resolve active data directory for `name` (`glofas_v4`, `geoglows_v2`)."""
-    river_dir = Path(_frontend_config.RIVER_NETWORKS_DIR)
-    cache_dir = Path(_frontend_config.CACHE_DIR)
-    path = river_dir / name
-    return path if path.exists() else cache_dir / name
+    local_dir = Path(_frontend_config.RIVER_NETWORKS_DIR) / name
+    cache_dir = Path(_frontend_config.CACHE_DIR) / name
+    if local_dir.is_dir() and any(local_dir.iterdir()):
+        return local_dir
+    if cache_dir.is_dir() and any(cache_dir.iterdir()):
+        return cache_dir
+    return local_dir if local_dir.exists() else cache_dir
 
 
 def _glofas_dir() -> Path:
@@ -135,25 +142,14 @@ def _find_hydrorivers_shp() -> Path | None:
     """Locate `HydroRIVERS_v10.shp` across configured data/cache directories."""
     river_dir = Path(_frontend_config.RIVER_NETWORKS_DIR)
     cache_dir = Path(_frontend_config.CACHE_DIR)
-    for base in (river_dir, cache_dir, cache_dir.parent):
-        cand = base / 'HydroRIVERS_v10_shp' / 'HydroRIVERS_v10.shp'
-        if cand.is_file():
-            return cand
-        direct = base / 'HydroRIVERS_v10.shp'
-        if direct.is_file():
-            return direct
-    return None
+    return find_hydrorivers_shp((river_dir, cache_dir, cache_dir.parent))
 
 
 def _find_floodhub_lut_path() -> Path | None:
     """Locate `hydrorivers_floodhub_v1.npz` if present on disk."""
     river_dir = Path(_frontend_config.RIVER_NETWORKS_DIR)
     cache_dir = Path(_frontend_config.CACHE_DIR)
-    for base in (river_dir, cache_dir, cache_dir.parent):
-        cand = base / 'hydrorivers_floodhub_v1.npz'
-        if cand.is_file():
-            return cand
-    return None
+    return find_floodhub_lut((river_dir, cache_dir, cache_dir.parent))
 
 
 def _can_build_network(model: str) -> bool:

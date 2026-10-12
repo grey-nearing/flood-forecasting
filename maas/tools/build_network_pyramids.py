@@ -22,13 +22,38 @@ from pathlib import Path
 
 from maas.networks import (
     CACHE_VERSION,
+    FLOODHUB_PYRAMID_LOD,
     GEOGLOWS_LOD,
     GLOFAS_LOD,
+    build_floodhub_pyramid,
     build_geoglows_pyramid,
     build_glofas_pyramid,
     pyramid_signature,
     save_network_pyramid,
 )
+
+_LOG = logging.getLogger(__name__)
+
+
+def find_hydrorivers_shp(search_dirs: Sequence[Path]) -> Path | None:
+    """Locate `HydroRIVERS_v10.shp` across `search_dirs`."""
+    for base in search_dirs:
+        cand = base / 'HydroRIVERS_v10_shp' / 'HydroRIVERS_v10.shp'
+        if cand.is_file():
+            return cand
+        direct = base / 'HydroRIVERS_v10.shp'
+        if direct.is_file():
+            return direct
+    return None
+
+
+def find_floodhub_lut(search_dirs: Sequence[Path]) -> Path | None:
+    """Locate `hydrorivers_floodhub_v1.npz` across `search_dirs` if present."""
+    for base in search_dirs:
+        cand = base / 'hydrorivers_floodhub_v1.npz'
+        if cand.is_file():
+            return cand
+    return None
 
 
 def build_all_pyramids(
@@ -39,11 +64,12 @@ def build_all_pyramids(
     """Build and persist zoom-stratified river network pyramids for `models`.
 
     Args:
-        river_networks_dir: Directory containing `glofas_v4/` and `geoglows_v2/`.
+        river_networks_dir: Directory containing `glofas_v4/`, `geoglows_v2/`,
+            and/or `HydroRIVERS_v10_shp/`.
         output_dir: Optional output directory for `.npz` pyramids (defaults to
             each model's subdirectory under `river_networks_dir`).
         models: Sequence of model identifiers to build (`'glofas'`,
-            `'geoglows'`).
+            `'geoglows'`, `'floodhub'`).
 
     Returns:
         Mapping from model name to list of polyline counts per zoom level.
@@ -77,13 +103,39 @@ def build_all_pyramids(
         gg_out = (
             output_dir if output_dir is not None else geoglows_dir
         ) / f'geoglows_network_v{CACHE_VERSION}.npz'
+        gg_extra = {k: v for k, v in gg_net.items() if k != 'levels'}
         save_network_pyramid(
             gg_out,
             gg_net['levels'],
             pyramid_signature(GEOGLOWS_LOD),
+            **gg_extra,
         )
         out_counts['geoglows'] = [
             len(lvl['offsets']) - 1 for lvl in gg_net['levels']
+        ]
+
+    if 'floodhub' in models:
+        search_dirs = (river_networks_dir, river_networks_dir.parent)
+        shp_path = find_hydrorivers_shp(search_dirs)
+        if shp_path is None:
+            raise FileNotFoundError(
+                f'Missing HydroRIVERS_v10.shp under {river_networks_dir}'
+            )
+        fh_net = build_floodhub_pyramid(
+            shp_path, find_floodhub_lut(search_dirs)
+        )
+        fh_target_dir = output_dir if output_dir is not None else glofas_dir
+        fh_target_dir.mkdir(parents=True, exist_ok=True)
+        fh_out = fh_target_dir / f'floodhub_network_v{CACHE_VERSION}.npz'
+        fh_extra = {k: v for k, v in fh_net.items() if k != 'levels'}
+        save_network_pyramid(
+            fh_out,
+            fh_net['levels'],
+            pyramid_signature(FLOODHUB_PYRAMID_LOD),
+            **fh_extra,
+        )
+        out_counts['floodhub'] = [
+            len(lvl['offsets']) - 1 for lvl in fh_net['levels']
         ]
     return out_counts
 
@@ -125,8 +177,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         models=models,
     )
     for model, sizes in counts.items():
-        logging.info(
-            f'{model}: lines per level {sizes} ({time.time() - t0:.1f} s)'
+        _LOG.info(
+            '%s: lines per level %s (%.1f s)',
+            model,
+            sizes,
+            time.time() - t0,
         )
     return 0
 

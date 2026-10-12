@@ -89,44 +89,48 @@ def get_dem_delineator(dem_id: str = DEFAULT_DEM_ID) -> DemDelineator:
     """Return a cached `DemDelineator` for the requested DEM dataset."""
     dataset = resolve_dem_dataset(dem_id)
     with _REGISTRY_LOCK:
-        if dataset.id not in _DEM_DELINEATORS:
-            tiles_dir = resolve_dem_tiles_dir(dataset.id)
-            tile_fetcher = None
-            if dataset.id == 'merit_hydro_90m':
-                ee_project = (
-                    os.environ.get('OPENHYDRONET_EE_PROJECT')
-                    or os.environ.get('GOOGLE_CLOUD_PROJECT')
-                    or ''
-                ).strip()
-                if ee_project:
+        tiles_dir = resolve_dem_tiles_dir(dataset.id)
+        resolved_tiles = tiles_dir.expanduser().resolve()
+        cached = _DEM_DELINEATORS.get(dataset.id)
+        if cached is not None and cached.tiles_dir == resolved_tiles:
+            return cached
+        tile_fetcher = None
+        if dataset.id == 'merit_hydro_90m':
+            ee_project = (
+                os.environ.get('OPENHYDRONET_EE_PROJECT')
+                or os.environ.get('GOOGLE_CLOUD_PROJECT')
+                or ''
+            ).strip()
+            if ee_project:
 
-                    def _fetch(
-                        lat_top: int,
-                        lon_left: int,
-                        target_dir: Path,
-                    ) -> Path:
-                        return download_merit_d8_tile(
-                            lat_top=lat_top,
-                            lon_left=lon_left,
-                            target_dir=target_dir,
-                            ee_project=ee_project,
-                        )
+                def _fetch(
+                    lat_top: int,
+                    lon_left: int,
+                    target_dir: Path,
+                ) -> Path:
+                    return download_merit_d8_tile(
+                        lat_top=lat_top,
+                        lon_left=lon_left,
+                        target_dir=target_dir,
+                        ee_project=ee_project,
+                    )
 
-                    tile_fetcher = _fetch
+                tile_fetcher = _fetch
 
-            _DEM_DELINEATORS[dataset.id] = DemDelineator(
-                tiles_dir=tiles_dir,
-                dataset=dataset,
-                tile_fetcher=tile_fetcher,
-            )
+        _DEM_DELINEATORS[dataset.id] = DemDelineator(
+            tiles_dir=tiles_dir,
+            dataset=dataset,
+            tile_fetcher=tile_fetcher,
+        )
         return _DEM_DELINEATORS[dataset.id]
 
 
 def get_river_network(dataset_id: str) -> RiverNetwork | None:
     """Lazily initialize and cache `RiverNetwork` for `dataset_id`."""
     with _REGISTRY_LOCK:
-        if dataset_id in _RIVER_NETWORKS:
-            return _RIVER_NETWORKS[dataset_id]
+        cached = _RIVER_NETWORKS.get(dataset_id)
+        if cached is not None:
+            return cached
         paths = resolve_hydrography_paths()
         net: RiverNetwork | None = None
         if dataset_id == 'merit-hydro':
@@ -139,7 +143,8 @@ def get_river_network(dataset_id: str) -> RiverNetwork | None:
             shp = paths['hydrorivers_shp']
             if shp.is_file():
                 net = RiverNetwork.from_hydrorivers(shp)
-        _RIVER_NETWORKS[dataset_id] = net
+        if net is not None:
+            _RIVER_NETWORKS[dataset_id] = net
         return net
 
 
@@ -151,8 +156,9 @@ def get_vector_delineator(
 ) -> UnitCatchmentDelineator | None:
     """Lazily initialize and cache `UnitCatchmentDelineator`."""
     with _REGISTRY_LOCK:
-        if dataset_id in _VECTOR_DELINEATORS:
-            return _VECTOR_DELINEATORS[dataset_id]
+        cached = _VECTOR_DELINEATORS.get(dataset_id)
+        if cached is not None:
+            return cached
         paths = resolve_hydrography_paths()
         layer: MeritBasinsLayer | HydroBasinsLayer | None = None
         if dataset_id == 'merit-hydro':
@@ -167,7 +173,9 @@ def get_vector_delineator(
             hb_dir = paths['hydrobasins_dir']
             if hb_dir.is_dir() and bool(discover_partitions(hb_dir, '*.shp')):
                 layer = HydroBasinsLayer(hb_dir)
-        delin = UnitCatchmentDelineator(layer) if layer is not None else None
+        if layer is None:
+            return None
+        delin = UnitCatchmentDelineator(layer)
         _VECTOR_DELINEATORS[dataset_id] = delin
         return delin
 
