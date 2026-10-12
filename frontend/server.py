@@ -42,6 +42,15 @@ from frontend.config import (
 )
 from frontend.delineator import HydroDelineator
 from frontend.dem_tile_server import DemTileServer
+from frontend.finetune_service import (
+    clear_finetune_data,
+    generate_sample_basin_csvs,
+    get_finetune_workspace_status,
+    list_finetune_models,
+    reset_finetune_session,
+    run_finetune_epochs,
+    upload_finetune_csv,
+)
 from frontend.forecast_zarr import ForecastZarrExtractor
 from frontend.historical_zarr import HistoricalZarrExtractor
 from frontend.jobs import get_job_manager
@@ -475,6 +484,8 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/maas/reaches': self._get_maas_reaches,
             '/api/maas/return-periods': self._get_maas_return_periods,
             '/api/forecast/status': self._get_forecast_status,
+            '/api/finetune/models': self._get_finetune_models,
+            '/api/finetune/status': self._get_finetune_status,
             '/api/archives': self._get_archives,
             '/api/attributes/csv': self._get_attributes_csv,
             '/api/archives/caravan_hydroatlas_attributes.csv': (
@@ -984,6 +995,43 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             {'provider': provider, 'method': method, 'return_periods': rps}
         )
 
+    def _get_finetune_models(self, _query: dict[str, list[str]]) -> None:
+        user = self._get_request_username()
+        self._send_json({'models': list_finetune_models(user)})
+
+    def _get_finetune_status(self, query: dict[str, list[str]]) -> None:
+        user = self._get_request_username()
+        pm = get_profile_manager()
+        basin_id = (
+            query.get('basin_id', [''])[0]
+            or query.get('catchment_id', [''])[0]
+            or ''
+        ).strip()
+        if not basin_id:
+            ws = pm.load_watersheds(user)
+            if ws:
+                basin_id = str(
+                    ws[0].get('properties', {}).get('catchment_id')
+                    or ws[0].get('id')
+                    or ''
+                )
+        if not basin_id:
+            basin_id = 'custom_basin_01'
+        model_id = (
+            query.get(
+                'model_id', ['google-floodhub-settings-110-epochs']
+            )[0]
+            or 'google-floodhub-settings-110-epochs'
+        ).strip()
+        split_ratio = _parse_float(query.get('split_ratio', [''])[0] or None)
+        payload = get_finetune_workspace_status(
+            username=user,
+            basin_id=basin_id,
+            model_id=model_id,
+            split_ratio=split_ratio,
+        )
+        self._send_json(payload)
+
     def _get_forecast_status(self, query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
         pm = get_profile_manager()
@@ -1335,6 +1383,11 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/attributes/extract': self._post_attributes_extract,
             '/api/forecast/fetch-realtime': self._post_forecast_fetch_realtime,
             '/api/forecast/run-model': self._post_forecast_run_model,
+            '/api/finetune/upload-csv': self._post_finetune_upload_csv,
+            '/api/finetune/sample-data': self._post_finetune_sample_data,
+            '/api/finetune/clear-data': self._post_finetune_clear_data,
+            '/api/finetune/run': self._post_finetune_run,
+            '/api/finetune/reset': self._post_finetune_reset,
             '/api/weather/refresh': self._post_weather_refresh,
             '/api/weather/sync': self._post_weather_refresh,
         }
@@ -2312,6 +2365,161 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             temp_overrides=temp_overrides,
             product_overrides=product_overrides,
             is_what_if=is_what_if,
+        )
+        self._send_json(payload)
+
+    def _post_finetune_upload_csv(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        data_type = str(data.get('data_type') or '').strip()
+        csv_content = str(
+            data.get('csv_content') or data.get('csv') or ''
+        )
+        filename = str(data.get('filename') or f'{data_type}.csv')
+        units = str(data.get('units') or 'mm/day')
+        area_km2 = _parse_float(data.get('area_km2'))
+        lead_time = _parse_int(data.get('lead_time'), default=7) or 7
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        )
+        try:
+            upload_info = upload_finetune_csv(
+                username=user,
+                basin_id=basin_id,
+                data_type=data_type,
+                csv_content=csv_content,
+                filename=filename,
+                units=units,
+                area_km2=area_km2,
+                target_lead_time=lead_time,
+            )
+            status_payload = get_finetune_workspace_status(
+                username=user,
+                basin_id=basin_id,
+                model_id=model_id,
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400)
+            return
+        self._send_json(
+            {
+                'status': 'uploaded',
+                'upload': upload_info,
+                'workspace': status_payload,
+            }
+        )
+
+    def _post_finetune_sample_data(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        num_days = _parse_int(data.get('num_days'), default=240) or 240
+        lead_time = _parse_int(data.get('lead_time'), default=7) or 7
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        )
+        previews = generate_sample_basin_csvs(
+            username=user,
+            basin_id=basin_id,
+            num_days=num_days,
+            lead_time=lead_time,
+        )
+        status_payload = get_finetune_workspace_status(
+            username=user,
+            basin_id=basin_id,
+            model_id=model_id,
+        )
+        self._send_json(
+            {
+                'status': 'generated',
+                'previews': previews,
+                'workspace': status_payload,
+            }
+        )
+
+    def _post_finetune_clear_data(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        )
+        clear_finetune_data(username=user, basin_id=basin_id)
+        status_payload = get_finetune_workspace_status(
+            username=user,
+            basin_id=basin_id,
+            model_id=model_id,
+        )
+        self._send_json(
+            {
+                'status': 'cleared',
+                'workspace': status_payload,
+            }
+        )
+
+    def _post_finetune_run(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        ).strip()
+        epochs = _parse_int(data.get('epochs'), default=5) or 5
+        learning_rate = _parse_float(data.get('learning_rate'))
+        loss = data.get('loss')
+        lr_strategy = data.get('learning_rate_strategy')
+        batch_size = _parse_int(data.get('batch_size'))
+        finetune_modules = data.get('finetune_modules')
+        split_ratio = (
+            _parse_float(data.get('split_ratio'), default=0.7) or 0.7
+        )
+        try:
+            payload = run_finetune_epochs(
+                username=user,
+                basin_id=basin_id,
+                model_id=model_id,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                loss=str(loss) if loss else None,
+                learning_rate_strategy=(
+                    str(lr_strategy) if lr_strategy else None
+                ),
+                batch_size=batch_size,
+                finetune_modules=finetune_modules,
+                split_ratio=split_ratio,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            self._send_error(str(exc), status=400)
+            return
+        self._send_json(payload)
+
+    def _post_finetune_reset(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        ).strip()
+        payload = reset_finetune_session(
+            username=user,
+            basin_id=basin_id,
+            model_id=model_id,
         )
         self._send_json(payload)
 

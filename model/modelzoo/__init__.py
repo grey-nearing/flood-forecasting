@@ -21,6 +21,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from model.modelzoo.basemodel import BaseModel
 from model.modelzoo.handoff_forecast_lstm import HandoffForecastLSTM
 from model.modelzoo.mean_embedding_forecast_lstm import (
     MeanEmbeddingForecastLSTM,
@@ -29,11 +30,38 @@ from model.utils.config import Config
 
 LOGGER = logging.getLogger(__name__)
 
+MODEL_REGISTRY: dict[str, type[BaseModel]] = {
+    'handoff_forecast_lstm': HandoffForecastLSTM,
+    'mean_embedding_forecast_lstm': MeanEmbeddingForecastLSTM,
+}
+
 _DEFAULT_DYNAMIC_EMBEDDING_MODULES: tuple[str, ...] = (
     'hindcast_embeddings_fc',
     'forecast_embeddings_fc',
     'shared_embeddings_fc',
 )
+
+
+def get_model_class(model_name: str) -> type[BaseModel]:
+    """Resolve a model architecture name to its ``BaseModel`` subclass.
+
+    Parameters
+    ----------
+    model_name : str
+        Name of the model architecture (case-insensitive).
+
+    Returns
+    -------
+    type[BaseModel]
+        The registered ``BaseModel`` subclass.
+    """
+    key = model_name.strip().lower()
+    model_cls = MODEL_REGISTRY.get(key)
+    if model_cls is None:
+        raise NotImplementedError(
+            f'{model_name} not implemented or not linked in `get_model()`'
+        )
+    return model_cls
 
 
 def get_model(cfg: Config) -> nn.Module:
@@ -49,14 +77,8 @@ def get_model(cfg: Config) -> nn.Module:
     nn.Module
         A new model instance of the type specified in the config.
     """
-    if cfg.model.lower() == 'handoff_forecast_lstm':
-        model = HandoffForecastLSTM(cfg=cfg)
-    elif cfg.model.lower() == 'mean_embedding_forecast_lstm':
-        model = MeanEmbeddingForecastLSTM(cfg=cfg)
-    else:
-        raise NotImplementedError(
-            f'{cfg.model} not implemented or not linked in `get_model()`'
-        )
+    model_cls = get_model_class(cfg.model)
+    model = model_cls(cfg=cfg)
 
     if cfg.compile:
         return torch.compile(model, mode='max-autotune')
