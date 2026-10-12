@@ -39,6 +39,7 @@ from maas.networks import (
     pyramid_signature,
     resolve_cross_network_click,
     save_network_pyramid,
+    snap_floodhub_reach_from_network,
     snap_geoglows_reach_from_network,
     snap_glofas_cell_from_network,
     trace_main_stem_chain,
@@ -171,6 +172,78 @@ class TestPyramidSerializationAndSnapping:
         assert resolved['glofas']['upstream_area_km2'] == pytest.approx(
             1800000.0
         )
+
+    def test_three_way_cross_network_snapping_including_floodhub(self) -> None:
+        """Verify 3-way snapping across FloodHub, GloFAS, and GEOGLOWS."""
+        row_main = round((90.0 - 38.625) / 0.05 - 0.5)
+        col_main = round((-90.175 + 180.0) / 0.05 - 0.5)
+        gl_net = {
+            'cell_lin': np.array(
+                [row_main * 7200 + col_main, row_main * 7200 + col_main + 1],
+                dtype=np.int64,
+            ),
+            'cell_area': np.array([1800000.0, 220.0], dtype=np.float32),
+        }
+        fh_net = {
+            'reach_lat': np.array([38.610, 38.626], dtype=np.float32),
+            'reach_lon': np.array([-90.182, -90.179], dtype=np.float32),
+            'reach_hyriv_id': np.array([70000101, 70000102], dtype=np.int32),
+            'reach_hybas_l12': np.array(
+                [7120000111, _EXPECTED_HYBAS_L12], dtype=np.int64
+            ),
+            'reach_area': np.array([310.0, 1790000.0], dtype=np.float32),
+        }
+        gg_net = {
+            'reach_lat': np.array([38.61, 38.63], dtype=np.float32),
+            'reach_lon': np.array([-90.19, -90.18], dtype=np.float32),
+            'reach_lon0': np.array([-90.20, -90.19], dtype=np.float32),
+            'reach_lat0': np.array([38.60, 38.64], dtype=np.float32),
+            'reach_lon1': np.array([-90.18, -90.17], dtype=np.float32),
+            'reach_lat1': np.array([38.62, 38.62], dtype=np.float32),
+            'reach_linkno': np.array(
+                [720010510, _EXPECTED_LINKNO], dtype=np.int32
+            ),
+            'reach_area': np.array([450.0, 1795000.0], dtype=np.float32),
+        }
+
+        fh_snap = snap_floodhub_reach_from_network(
+            fh_net, 38.620, -90.180, target_area_km2=1800000.0
+        )
+        assert fh_snap is not None
+        assert fh_snap['gauge_id'] == f'hybas_{_EXPECTED_HYBAS_L12}'
+        assert fh_snap['upstream_area_km2'] == pytest.approx(1790000.0)
+
+        # Distant offshore point (>15 km) with >8x area mismatch returns None
+        fh_offshore = snap_floodhub_reach_from_network(
+            fh_net, 38.90, -90.180, target_area_km2=10.0
+        )
+        assert fh_offshore is None
+
+        resolved_from_gg = resolve_cross_network_click(
+            38.627,
+            -90.180,
+            upstream_area_km2=1795000.0,
+            snap_glofas_fn=lambda lat, lon, area, **kw: (
+                snap_glofas_cell_from_network(gl_net, lat, lon, area, **kw)
+            ),
+            snap_geoglows_fn=lambda lat, lon, area, **kw: (
+                snap_geoglows_reach_from_network(gg_net, lat, lon, area, **kw)
+            ),
+            snap_floodhub_fn=lambda lat, lon, area, **kw: (
+                snap_floodhub_reach_from_network(fh_net, lat, lon, area, **kw)
+            ),
+            network='geoglows',
+            river_id=str(_EXPECTED_LINKNO),
+        )
+        assert resolved_from_gg is not None
+        assert (
+            resolved_from_gg['floodhub']['gauge_id']
+            == f'hybas_{_EXPECTED_HYBAS_L12}'
+        )
+        assert resolved_from_gg['glofas'][
+            'upstream_area_km2'
+        ] == pytest.approx(1800000.0)
+        assert resolved_from_gg['geoglows']['river_id'] == _EXPECTED_LINKNO
 
     def test_geoglows_in_memory_snapping_and_floodhub_level_features(
         self, tmp_path: Path

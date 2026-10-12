@@ -50,6 +50,7 @@ from maas.glofas import (
     extract_glofas_zarr_series,
 )
 from maas.networks import (
+    FLOODHUB_PYRAMID_LOD,
     GEOGLOWS_LOD,
     GLOFAS_LOD,
     glofas_cell_center,
@@ -58,6 +59,7 @@ from maas.networks import (
     load_network_pyramid,
     pyramid_signature,
     resolve_cross_network_click,
+    snap_floodhub_reach_from_network,
     snap_geoglows_reach_from_gpkg,
     snap_geoglows_reach_from_network,
     snap_glofas_cell_from_network,
@@ -186,6 +188,21 @@ _LOOKUP_MEM_CACHE: dict[str, tuple[Any, Any]] = {}
 _MEM_CACHE_LOCK = threading.Lock()
 
 
+def _get_cached_floodhub_pyramid(floodhub_npz: Path) -> dict[str, Any] | None:
+    key = str(floodhub_npz)
+    if key in _PYRAMID_MEM_CACHE:
+        return _PYRAMID_MEM_CACHE[key]
+    with _MEM_CACHE_LOCK:
+        if key in _PYRAMID_MEM_CACHE:
+            return _PYRAMID_MEM_CACHE[key]
+        net = load_network_pyramid(
+            floodhub_npz, pyramid_signature(FLOODHUB_PYRAMID_LOD)
+        )
+        if net is not None:
+            _PYRAMID_MEM_CACHE[key] = net
+        return net
+
+
 def _get_cached_glofas_pyramid(glofas_npz: Path) -> dict[str, Any] | None:
     key = str(glofas_npz)
     if key in _PYRAMID_MEM_CACHE:
@@ -262,27 +279,52 @@ def resolve_reaches(
     up_area = parse_finite_float(upstream_area_km2)
     min_area = parse_finite_float(area_min_km2)
 
+    glofas_npz = (
+        config.river_networks_dir / 'glofas_v4' / 'glofas_network_v1.npz'
+    )
+    if not glofas_npz.exists():
+        glofas_npz = (
+            config.cache_dir / 'glofas_v4' / 'glofas_network_v1.npz'
+        )
+    glofas_net = _get_cached_glofas_pyramid(glofas_npz)
+
+    floodhub_npz = (
+        config.river_networks_dir / 'glofas_v4' / 'floodhub_network_v1.npz'
+    )
+    if not floodhub_npz.exists():
+        floodhub_npz = (
+            config.cache_dir / 'glofas_v4' / 'floodhub_network_v1.npz'
+        )
+    floodhub_net = _get_cached_floodhub_pyramid(floodhub_npz)
+
+    geoglows_dir = config.river_networks_dir / 'geoglows_v2'
+    if not (geoglows_dir / 'global_streams_simplified.gpkg').exists() and not (
+        geoglows_dir / 'geoglows_network_v1.npz'
+    ).exists():
+        geoglows_dir = config.cache_dir / 'geoglows_v2'
+    geoglows_npz = geoglows_dir / 'geoglows_network_v1.npz'
+    geoglows_net = _get_cached_geoglows_pyramid(geoglows_npz)
+    gpkg_path = geoglows_dir / 'global_streams_simplified.gpkg'
+    attrs_path = geoglows_dir / 'geoglows_attrs_v1.npz'
+
+    if up_area is None or up_area <= 0.0:
+        for cand_fn in (
+            (lambda: snap_geoglows_reach_from_network(geoglows_net, lat, lon, None))
+            if network == 'geoglows'
+            else (lambda: snap_floodhub_reach_from_network(floodhub_net, lat, lon, None))
+            if network == 'floodhub'
+            else (lambda: snap_glofas_cell_from_network(glofas_net, lat, lon, None)),
+            lambda: snap_floodhub_reach_from_network(floodhub_net, lat, lon, None),
+            lambda: snap_geoglows_reach_from_network(geoglows_net, lat, lon, None),
+            lambda: snap_glofas_cell_from_network(glofas_net, lat, lon, None),
+        ):
+            inferred = cand_fn()
+            if inferred and parse_finite_float(inferred.get('upstream_area_km2')):
+                up_area = float(inferred['upstream_area_km2'])
+                break
+
     cross_snap: dict[str, Any] | None = None
     if up_area is not None and up_area > 0.0:
-        glofas_npz = (
-            config.river_networks_dir / 'glofas_v4' / 'glofas_network_v1.npz'
-        )
-        if not glofas_npz.exists():
-            glofas_npz = (
-                config.cache_dir / 'glofas_v4' / 'glofas_network_v1.npz'
-            )
-        glofas_net = _get_cached_glofas_pyramid(glofas_npz)
-
-        geoglows_dir = config.river_networks_dir / 'geoglows_v2'
-        if not (geoglows_dir / 'global_streams_simplified.gpkg').exists() and not (
-            geoglows_dir / 'geoglows_network_v1.npz'
-        ).exists():
-            geoglows_dir = config.cache_dir / 'geoglows_v2'
-        geoglows_npz = geoglows_dir / 'geoglows_network_v1.npz'
-        geoglows_net = _get_cached_geoglows_pyramid(geoglows_npz)
-        gpkg_path = geoglows_dir / 'global_streams_simplified.gpkg'
-        attrs_path = geoglows_dir / 'geoglows_attrs_v1.npz'
-
         def _snap_geoglows(
             qlat: float, qlon: float, area: float, **kw: Any
         ) -> dict[str, Any] | None:
@@ -309,6 +351,12 @@ def resolve_reaches(
             area_min_km2=min_area,
             network=network,
             river_id=river_id,
+            snap_floodhub_fn=lambda qlat, qlon, area, **kw: (
+                snap_floodhub_reach_from_network(
+                    floodhub_net, qlat, qlon, area, **kw
+                )
+            ),
+            gauge_id=gauge_id,
         )
         if cross_snap:
             if cross_snap.get('glofas'):
@@ -316,6 +364,30 @@ def resolve_reaches(
                 gl_lon = float(cross_snap['glofas']['lon'])
             if cross_snap.get('geoglows'):
                 eff_river_id = int(cross_snap['geoglows']['river_id'])
+
+    fh_snap = (cross_snap or {}).get('floodhub') or {}
+    is_merged_fh_line = (
+        network == 'floodhub'
+        and min_area is not None
+        and up_area is not None
+        and min_area < up_area
+    )
+    resolved_gauge_id = (
+        fh_snap.get('gauge_id')
+        if (not gauge_id or is_merged_fh_line) and fh_snap.get('gauge_id')
+        else gauge_id
+    )
+    resolved_fh_reach_id = (
+        fh_snap.get('river_id')
+        if (not river_id or is_geoglows_river_id(river_id) or is_merged_fh_line)
+        and fh_snap.get('river_id')
+        else (
+            str(river_id)
+            if river_id and not is_geoglows_river_id(river_id)
+            else None
+        )
+    )
+    gg_snap = (cross_snap or {}).get('geoglows') or {}
 
     return {
         'probe': {
@@ -326,10 +398,13 @@ def resolve_reaches(
             or up_area,
         },
         'floodhub': {
-            'gauge_id': gauge_id,
-            'reach_id': str(river_id)
-            if river_id and not is_geoglows_river_id(river_id)
-            else None,
+            'gauge_id': resolved_gauge_id,
+            'reach_id': resolved_fh_reach_id,
+            'lat': fh_snap.get('lat'),
+            'lon': fh_snap.get('lon'),
+            'upstream_area_km2': fh_snap.get('upstream_area_km2'),
+            'offset_km': fh_snap.get('offset_km'),
+            'snap': cross_snap.get('floodhub') if cross_snap else None,
         },
         'glofas': {
             'cell_center_lat': gl_lat,
@@ -345,12 +420,10 @@ def resolve_reaches(
         },
         'geoglows': {
             'river_id': eff_river_id,
-            'upstream_area_km2': (
-                (cross_snap or {}).get('geoglows') or {}
-            ).get('upstream_area_km2'),
-            'offset_km': ((cross_snap or {}).get('geoglows') or {}).get(
-                'offset_km'
-            ),
+            'lat': gg_snap.get('lat'),
+            'lon': gg_snap.get('lon'),
+            'upstream_area_km2': gg_snap.get('upstream_area_km2'),
+            'offset_km': gg_snap.get('offset_km'),
             'snap': cross_snap.get('geoglows') if cross_snap else None,
         },
     }
@@ -860,7 +933,7 @@ class MaaSDataFetcher:
         eff_river_id = reaches['geoglows'].get('river_id') or (
             parse_int(river_id) if is_geoglows_river_id(river_id) else None
         )
-        eff_gauge_id = gauge_id
+        eff_gauge_id = reaches['floodhub'].get('gauge_id') or gauge_id
 
         def _task_floodhub() -> tuple[dict[str, Any] | None, str | None]:
             if (
@@ -1078,9 +1151,13 @@ class MaaSDataFetcher:
         reaches['floodhub'] = {
             **reaches['floodhub'],
             'gauge_id': eff_gauge_id,
-            'lat': ((fh_fc or {}).get('gauge_location') or {}).get('lat'),
-            'lon': ((fh_fc or {}).get('gauge_location') or {}).get('lon'),
-            'distance_km': (fh_fc or {}).get('distance_km'),
+            'lat': ((fh_fc or {}).get('gauge_location') or {}).get('lat')
+            or reaches['floodhub'].get('lat'),
+            'lon': ((fh_fc or {}).get('gauge_location') or {}).get('lon')
+            or reaches['floodhub'].get('lon'),
+            'distance_km': (fh_fc or {}).get('distance_km')
+            if (fh_fc or {}).get('distance_km') is not None
+            else reaches['floodhub'].get('offset_km'),
             'status': (fh_fc or {}).get('status'),
         }
         reaches['geoglows'] = {

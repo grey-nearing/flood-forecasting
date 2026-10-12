@@ -941,17 +941,53 @@ class TestMaaSServerEndpoints(unittest.TestCase):
             assert len(data.get('features') or []) > 0
 
     def test_api_maas_cross_network_reach_matching(self) -> None:
-        """Verify cross-network reach snapping across synthetic pyramids."""
-        status, data = self._get(
-            '/api/maas/forecast'
-            '?lat=23.875&lon=89.875&network=glofas&upstream_area_km2=1480000'
+        """Verify 3-way cross-network reach snapping across pyramids."""
+        for src_net in ('glofas', 'geoglows', 'floodhub'):
+            status, data = self._get(
+                '/api/maas/forecast'
+                f'?lat=23.875&lon=89.875&network={src_net}'
+                '&upstream_area_km2=1480000'
+            )
+            assert status == _HTTP_OK
+            vs = data.get('virtual_station') or {}
+            gl_area = (vs.get('glofas_cell') or {}).get(
+                'upstream_area_km2'
+            ) or 0
+            gg_area = (vs.get('geoglows_reach') or {}).get(
+                'upstream_area_km2'
+            ) or 0
+            fh_gauge = (vs.get('floodhub_gauge') or {}).get('gauge_id')
+            fh_area = (vs.get('floodhub_gauge') or {}).get(
+                'upstream_area_km2'
+            ) or 0
+            assert gl_area > _MIN_CROSS_NETWORK_AREA_KM2
+            assert gg_area > _MIN_CROSS_NETWORK_AREA_KM2
+            assert fh_gauge == 'hybas_4120012340'
+            assert fh_area > _MIN_CROSS_NETWORK_AREA_KM2
+
+        # Also verify snapping when upstream_area_km2 is omitted
+        status_no_area, data_no_area = self._get(
+            '/api/maas/forecast?lat=23.875&lon=89.875&network=geoglows'
         )
-        assert status == _HTTP_OK
-        vs = data.get('virtual_station') or {}
-        gl_area = (vs.get('glofas_cell') or {}).get('upstream_area_km2') or 0
-        gg_area = (vs.get('geoglows_reach') or {}).get('upstream_area_km2') or 0
-        assert gl_area > _MIN_CROSS_NETWORK_AREA_KM2
-        assert gg_area > _MIN_CROSS_NETWORK_AREA_KM2
+        assert status_no_area == _HTTP_OK
+        reaches_no_area = data_no_area.get('reaches') or {}
+        assert (
+            reaches_no_area.get('floodhub') or {}
+        ).get('gauge_id') == 'hybas_4120012340'
+        assert (
+            (reaches_no_area.get('glofas') or {}).get('upstream_area_km2') or 0
+        ) > _MIN_CROSS_NETWORK_AREA_KM2
+
+    def test_maas_multi_hydrofabric_ui_controls_present(self) -> None:
+        """Verify multi-hydrofabric map toggle and marker hooks in UI."""
+        html_path = (
+            Path(__file__).resolve().parents[1] / 'static' / 'index.html'
+        )
+        html_text = html_path.read_text(encoding='utf-8')
+        assert 'selectedMaaSMapModels' in html_text
+        assert 'toggleMaaSMapModel' in html_text
+        assert 'updateMaaSSnappedReachMarkers' in html_text
+        assert 'maasModelSubLayers' in html_text
 
     def test_live_network_status_coloring(self) -> None:
         """Verify live flow percentile bins and exceedance rank coloring."""

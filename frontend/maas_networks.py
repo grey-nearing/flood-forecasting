@@ -61,6 +61,7 @@ from maas.networks import (
     query_geoglows_reaches,
     resolve_cross_network_click,
     save_network_pyramid,
+    snap_floodhub_reach_from_network,
     snap_geoglows_reach_from_gpkg,
     snap_geoglows_reach_from_network,
     snap_glofas_cell_from_network,
@@ -654,16 +655,33 @@ def get_model_network(  # noqa: PLR0913, PLR0917
     return {'type': 'FeatureCollection', 'properties': props, 'features': feats}
 
 
+def snap_floodhub_reach(
+    lat: float,
+    lon: float,
+    target_area_km2: float | None = None,
+    area_range: tuple[float, float] | None = None,
+    radius_deg: float = 0.20,
+) -> dict[str, Any] | None:
+    """Snap to a FloodHub HydroRIVERS reach near `(lat, lon)`."""
+    net = _network('floodhub')
+    return snap_floodhub_reach_from_network(
+        net,
+        lat,
+        lon,
+        target_area_km2=target_area_km2,
+        area_range=area_range,
+        radius_deg=radius_deg,
+    )
+
+
 def snap_glofas_cell(
     lat: float,
     lon: float,
-    target_area_km2: float,
+    target_area_km2: float | None = None,
     area_range: tuple[float, float] | None = None,
     radius_cells: int = 3,
 ) -> dict[str, Any] | None:
     """Snap to a GloFAS river cell near `(lat, lon)` matching upstream area."""
-    if not target_area_km2 or target_area_km2 <= 0:
-        return None
     net = _network('glofas')
     return snap_glofas_cell_from_network(
         net,
@@ -678,13 +696,11 @@ def snap_glofas_cell(
 def snap_geoglows_reach(
     lat: float,
     lon: float,
-    target_area_km2: float,
+    target_area_km2: float | None = None,
     area_range: tuple[float, float] | None = None,
     radius_deg: float = 0.15,
 ) -> dict[str, Any] | None:
     """Snap to a GEOGLOWS reach near `(lat, lon)` matching upstream area."""
-    if not target_area_km2 or target_area_km2 <= 0:
-        return None
     net = _network('geoglows')
     snapped = snap_geoglows_reach_from_network(
         net,
@@ -696,6 +712,8 @@ def snap_geoglows_reach(
     )
     if snapped is not None:
         return snapped
+    if not target_area_km2 or target_area_km2 <= 0:
+        return None
     gpkg_path = _geoglows_gpkg()
     attrs_path = _geoglows_attrs()
     if not (gpkg_path.is_file() and attrs_path.is_file()):
@@ -718,6 +736,7 @@ def resolve_click(  # noqa: PLR0913, PLR0917
     area_min_km2: float | str | None = None,
     network: str | None = None,
     river_id: int | str | None = None,
+    gauge_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Map a click on one model's river line to all models on the same river."""
     return resolve_cross_network_click(
@@ -729,6 +748,8 @@ def resolve_click(  # noqa: PLR0913, PLR0917
         area_min_km2=area_min_km2,
         network=network,
         river_id=river_id,
+        snap_floodhub_fn=snap_floodhub_reach,
+        gauge_id=gauge_id,
     )
 
 
