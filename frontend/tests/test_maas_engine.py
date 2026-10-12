@@ -32,6 +32,7 @@ from unittest import mock
 
 import geopandas as gpd
 import numpy as np
+import pytest
 from shapely.geometry import LineString, box
 
 import frontend.config as _frontend_config
@@ -41,6 +42,7 @@ from frontend.delineator import reset_delineator_caches
 from frontend.maas_live_status import (
     _LIVE_STATUS,
     _extract_current_floodhub_flow,
+    _load_geoglows_rp_arrays,
     compute_live_flow_metrics,
     enrich_network_features_live,
     grid_feature_key,
@@ -192,6 +194,15 @@ def _build_synthetic_maas_fixtures(root: Path) -> dict[str, Any]:
         reach_lat1=np.array([23.875], dtype=np.float32),
         reach_linkno=np.array([720010511], dtype=np.int32),
         reach_area=np.array([1480000.0], dtype=np.float32),
+    )
+    np.savez_compressed(
+        geoglows_dir / 'geoglows_return_periods_v1.npz',
+        river_id=np.array([720010511], dtype=np.int32),
+        periods=np.array([2, 5, 10, 25, 50, 100], dtype=np.int32),
+        gumbel=np.array(
+            [[1800.0, 2400.0, 2900.0, 3700.0, 4200.0, 4900.0]],
+            dtype=np.float32,
+        ),
     )
 
     # Synthetic D8 tile n45w090.npy for (40.45, -86.95) and hydrography files
@@ -557,6 +568,22 @@ class TestMaaSWatershedAndAdapter(unittest.TestCase):
         assert (
             full_feat.get('properties', {}).get('fabric') == 'hydroatlas_full'
         )
+
+        # Missing merit-hydro vector shapefiles must raise ValueError loudly
+        # rather than silently substituting a different hydrofabric.
+        with (
+            mock.patch(
+                'frontend.maas_viewer.viewer.find_merit_shp', return_value=None
+            ),
+            mock.patch(
+                'frontend.delineator.get_vector_delineator',
+                return_value=None,
+            ),
+            pytest.raises(ValueError, match='merit-hydro'),
+        ):
+            maas_engine.get_maas_watershed_polygon(
+                40.45, -86.95, fabric='merit_reach', river_id=999999999
+            )
 
 
 class TestMaaSContracts(unittest.TestCase):
@@ -1015,6 +1042,10 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         assert grid_feature_key(coarse_coords, 45000.0) == grid_feature_key(
             fine_coords, 45000.0
         )
+
+        rp_arrays = _load_geoglows_rp_arrays()
+        assert rp_arrays is not None
+        assert len(rp_arrays[0]) >= 1
 
 
 if __name__ == '__main__':

@@ -54,6 +54,7 @@ _EXPECTED_LINKNO: int = 720010511
 _EXPECTED_SEV_RANK: int = 2
 _EXPECTED_STREAM_ORDER: int = 8
 _EXPECTED_CHAIN_LEN: int = 3
+_EXPECTED_HYBAS_L12: int = 7120050010
 
 
 class TestGridGeometryAndIdentifiers:
@@ -263,6 +264,7 @@ class TestPyramidSerializationAndSnapping:
                 'NEXT_DOWN': np.array([0], dtype=np.int32),
                 'UPLAND_SKM': np.array([25000.0], dtype=np.float32),
                 'ORD_STRA': np.array([7], dtype=np.int32),
+                'HYBAS_L12': np.array([7120050010], dtype=np.int64),
             },
             geometry=[LineString([[-90.20, 38.64], [-90.17, 38.62]])],
             crs='EPSG:4326',
@@ -290,6 +292,12 @@ class TestPyramidSerializationAndSnapping:
         )
         assert fh_loaded is not None
         assert 'reach_hyriv_id' in fh_loaded
+        assert int(fh_loaded['reach_hybas_l12'][0]) == _EXPECTED_HYBAS_L12
+        fh_feats = extract_level_features(
+            fh_loaded['levels'][0], -91.0, 38.0, -89.0, 39.0
+        )
+        assert len(fh_feats) == 1
+        assert fh_feats[0]['properties']['gauge_id'] == 'hybas_7120050010'
 
 
 class TestMainStemTracing:

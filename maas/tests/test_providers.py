@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
+import numpy as np
 import pytest
 
 from maas.config import (
@@ -36,6 +38,8 @@ from maas.floodhub import (
     parse_floodhub_gauges_response,
 )
 from maas.geoglows import (
+    _resolve_geoglows_cache_file,
+    lookup_cached_geoglows_return_periods,
     parse_geoglows_forecast_response,
     parse_geoglows_retrospective_response,
     parse_geoglows_return_periods_payload,
@@ -44,25 +48,40 @@ from maas.glofas import (
     compute_glofas_reanalysis_return_periods,
     parse_glofas_forecast_response,
 )
+from maas.thresholds import thresholds_from_return_periods
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+_DEFAULT_VAL = 42.0
+_RIVER_ID = 720010511
+_TWO_POINTS = 2
+_THREE_POINTS = 3
+_PEAK_DAY_GLOFAS = 150
+_PEAK_DAY_RETRO = 100
+_RETRO_YEARS = 12
 
 
 class TestConfigAndParsers:
-    """Tests regex-based numeric parsers, model normalization, and unit conversions."""
+    """Tests numeric parsers, model normalization, and unit conversions."""
 
     def test_finite_float_and_int_parsers(self) -> None:
+        """Verify numeric parsers reject NaN/Inf/booleans and parse floats."""
         assert parse_finite_float('123.45') == pytest.approx(123.45)
         assert parse_finite_float('-1.5e2') == pytest.approx(-150.0)
         assert parse_finite_float('nan') is None
         assert parse_finite_float('inf') is None
-        assert parse_finite_float(True) is None
-        assert parse_float_or_default('bad', 42.0) == 42.0
-        assert parse_int('720010511') == 720010511
+        flag_val: object = True
+        assert parse_finite_float(flag_val) is None
+        assert parse_float_or_default('bad', _DEFAULT_VAL) == _DEFAULT_VAL
+        assert parse_int('720010511') == _RIVER_ID
         assert parse_int('abc') is None
 
         nan_val = parse_float_or_nan('invalid')
-        assert nan_val != nan_val  # NaN check
+        assert np.isnan(nan_val)
 
     def test_convert_discharge_units_and_model_aliases(self) -> None:
+        """Verify discharge unit conversion and model alias normalization."""
         assert convert_discharge_units(10.0, 'm3/s', 'cms') == pytest.approx(
             10.0
         )
@@ -79,6 +98,7 @@ class TestFloodHubProvider:
     """Tests Google FloodHub payload parsers and severity derivation."""
 
     def test_parse_floodhub_gauges_and_forecast(self) -> None:
+        """Verify FloodHub gauge, forecast, and severity derivation."""
         raw_gauges = {
             'floodStatuses': [
                 {
@@ -135,7 +155,7 @@ class TestFloodHubProvider:
             raw_fc, raw_meta, 'hybas_7120456780', now_utc=ref_now
         )
         assert fc['status'] == 'live'
-        assert len(fc['data']) == 2
+        assert len(fc['data']) == _TWO_POINTS
         assert fc['data'][1]['discharge'] == pytest.approx(9800.0)
         assert fc['thresholds']['warning_2yr'] == pytest.approx(8000.0)
         assert fc['thresholds']['danger_5yr'] == pytest.approx(9500.0)
@@ -145,6 +165,7 @@ class TestFloodHubProvider:
         assert trend == 'RISING'
 
     def test_normalize_severity_and_trend(self) -> None:
+        """Verify FloodHub severity and trend string normalization."""
         assert normalize_floodhub_severity('EXTREME') == 'EXTREME_DANGER'
         assert normalize_floodhub_severity('SEVERE') == 'DANGER'
         assert normalize_floodhub_severity('ABOVE_NORMAL') == 'WARNING'
@@ -153,6 +174,7 @@ class TestFloodHubProvider:
     def test_empty_floodhub_forecast_returns_unavailable_without_mock_data(
         self,
     ) -> None:
+        """Verify missing FloodHub forecast returns unavailable with no data."""
         fc = parse_floodhub_forecast_response(None, None, 'hybas_7120456780')
         assert fc['status'] == 'unavailable'
         assert fc['available'] is False
@@ -163,6 +185,7 @@ class TestGloFASAndGeoGLOWSProviders:
     """Tests GloFAS v4 and GEOGLOWS v2 forecast and return-period parsers."""
 
     def test_parse_glofas_forecast_and_reanalysis(self) -> None:
+        """Verify GloFAS v4 forecast parsing and reanalysis return periods."""
         raw_glofas = {
             'latitude': 38.625,
             'longitude': -90.175,
@@ -178,7 +201,7 @@ class TestGloFASAndGeoGLOWSProviders:
         }
         parsed = parse_glofas_forecast_response(raw_glofas, 38.627, -90.199)
         assert parsed['status'] == 'live'
-        assert len(parsed['data']) == 3
+        assert len(parsed['data']) == _THREE_POINTS
         assert parsed['data'][2]['discharge_median'] == pytest.approx(4900.0)
         assert parsed['data'][2]['discharge_min'] == pytest.approx(3900.0)
         assert parsed['data'][2]['discharge_max'] == pytest.approx(6400.0)
@@ -190,7 +213,12 @@ class TestGloFASAndGeoGLOWSProviders:
             for day in range(1, 310):
                 times.append(f'{yr}-01-01')
                 discharges.append(
-                    1200.0 + (2000.0 + 300.0 * yr_idx if day == 150 else 0.0)
+                    1200.0
+                    + (
+                        2000.0 + 300.0 * yr_idx
+                        if day == _PEAK_DAY_GLOFAS
+                        else 0.0
+                    )
                 )
         reanalysis = {
             'latitude': 38.625,
@@ -204,6 +232,7 @@ class TestGloFASAndGeoGLOWSProviders:
     def test_parse_geoglows_forecast_return_periods_and_retrospective(
         self,
     ) -> None:
+        """Verify GEOGLOWS forecast, return periods, and retrospective."""
         raw_fc = {
             'datetime': [
                 '2026-04-01T00:00:00Z',
@@ -218,10 +247,12 @@ class TestGloFASAndGeoGLOWSProviders:
             'flow_max': [1800.0, '', 2600.0],
             'high_res': [1220.0, 1400.0, 1680.0],
         }
-        fc = parse_geoglows_forecast_response(raw_fc, 720010511)
+        fc = parse_geoglows_forecast_response(raw_fc, _RIVER_ID)
         assert fc['status'] == 'live'
-        assert len(fc['data']) == 2  # skips intermediate blank-median/avg row
-        assert fc['river_id'] == 720010511
+        assert (
+            len(fc['data']) == _TWO_POINTS
+        )  # skips intermediate blank-median/avg row
+        assert fc['river_id'] == _RIVER_ID
 
         raw_rp = {
             'return_periods': {
@@ -233,7 +264,7 @@ class TestGloFASAndGeoGLOWSProviders:
                 'return_period_100': {'720010511': 6300.0},
             }
         }
-        rp = parse_geoglows_return_periods_payload(raw_rp, 720010511)
+        rp = parse_geoglows_return_periods_payload(raw_rp, _RIVER_ID)
         assert rp is not None
         assert rp['return_period_2'] == pytest.approx(2500.0)
         assert rp['return_period_20'] > rp['return_period_10']
@@ -245,12 +276,56 @@ class TestGloFASAndGeoGLOWSProviders:
             for day in range(1, 310):
                 retro_times.append(f'{yr}-05-10T00:00:00Z')
                 retro_vals.append(
-                    900.0 + (1800.0 + 250.0 * yr_idx if day == 100 else 0.0)
+                    900.0
+                    + (
+                        1800.0 + 250.0 * yr_idx
+                        if day == _PEAK_DAY_RETRO
+                        else 0.0
+                    )
                 )
         retro = parse_geoglows_retrospective_response(
             {'datetime': retro_times, '720010511': retro_vals},
-            720010511,
+            _RIVER_ID,
         )
         assert retro is not None
-        assert retro['years_of_record'] == 12
+        assert retro['years_of_record'] == _RETRO_YEARS
         assert retro['return_period_100'] > retro['return_period_2']
+
+        # 3-level payload (e.g. 2, 5, 25 yr without explicit 100 yr) must
+        # interpolate all canonical return periods so thresholds never fail.
+        sparse_rp = parse_geoglows_return_periods_payload(
+            {
+                'return_period_2': 1800.0,
+                'return_period_5': 2400.0,
+                'return_period_25': 3700.0,
+            },
+            _RIVER_ID,
+        )
+        assert sparse_rp is not None
+        for req_yr in (2, 5, 20, 100):
+            assert f'return_period_{req_yr}' in sparse_rp
+        th = thresholds_from_return_periods(sparse_rp, 'GEOGLOWS v2')
+        assert th['extreme_100yr'] > th['extreme_20yr'] > th['danger_5yr']
+
+    def test_lookup_cached_geoglows_return_periods_and_cache_resolution(
+        self, tmp_path: Path
+    ) -> None:
+        """Verify cached GEOGLOWS return period lookup and path resolution."""
+        gg_dir = tmp_path / 'geoglows_v2'
+        gg_dir.mkdir(parents=True, exist_ok=True)
+        npz_path = gg_dir / 'geoglows_return_periods_v1.npz'
+        np.savez_compressed(
+            npz_path,
+            river_id=np.array([_RIVER_ID], dtype=np.int32),
+            return_periods=np.array([2, 5, 25], dtype=np.int32),
+            gumbel_daily=np.array([[1800.0, 2400.0, 3700.0]], dtype=np.float32),
+        )
+        resolved = _resolve_geoglows_cache_file(
+            tmp_path, 'geoglows_return_periods_v1.npz'
+        )
+        assert resolved == npz_path
+        cached = lookup_cached_geoglows_return_periods(_RIVER_ID, npz_path)
+        assert cached is not None
+        assert cached['return_period_2'] == pytest.approx(1800.0)
+        assert cached['return_period_20'] > cached['return_period_5']
+        assert cached['return_period_100'] > cached['return_period_25']
