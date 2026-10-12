@@ -35,9 +35,9 @@ from maas.networks import (
 _LOG = logging.getLogger(__name__)
 
 
-def _find_hydrorivers_shp(river_networks_dir: Path) -> Path | None:
-    """Locate `HydroRIVERS_v10.shp` under `river_networks_dir` or its parent."""
-    for base in (river_networks_dir, river_networks_dir.parent):
+def find_hydrorivers_shp(search_dirs: Sequence[Path]) -> Path | None:
+    """Locate `HydroRIVERS_v10.shp` across `search_dirs`."""
+    for base in search_dirs:
         cand = base / 'HydroRIVERS_v10_shp' / 'HydroRIVERS_v10.shp'
         if cand.is_file():
             return cand
@@ -47,9 +47,9 @@ def _find_hydrorivers_shp(river_networks_dir: Path) -> Path | None:
     return None
 
 
-def _find_floodhub_lut(river_networks_dir: Path) -> Path | None:
-    """Locate `hydrorivers_floodhub_v1.npz` if present."""
-    for base in (river_networks_dir, river_networks_dir.parent):
+def find_floodhub_lut(search_dirs: Sequence[Path]) -> Path | None:
+    """Locate `hydrorivers_floodhub_v1.npz` across `search_dirs` if present."""
+    for base in search_dirs:
         cand = base / 'hydrorivers_floodhub_v1.npz'
         if cand.is_file():
             return cand
@@ -115,13 +115,14 @@ def build_all_pyramids(
         ]
 
     if 'floodhub' in models:
-        shp_path = _find_hydrorivers_shp(river_networks_dir)
+        search_dirs = (river_networks_dir, river_networks_dir.parent)
+        shp_path = find_hydrorivers_shp(search_dirs)
         if shp_path is None:
             raise FileNotFoundError(
                 f'Missing HydroRIVERS_v10.shp under {river_networks_dir}'
             )
         fh_net = build_floodhub_pyramid(
-            shp_path, _find_floodhub_lut(river_networks_dir)
+            shp_path, find_floodhub_lut(search_dirs)
         )
         fh_target_dir = output_dir if output_dir is not None else glofas_dir
         fh_target_dir.mkdir(parents=True, exist_ok=True)

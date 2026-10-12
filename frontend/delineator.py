@@ -90,8 +90,9 @@ def get_dem_delineator(dem_id: str = DEFAULT_DEM_ID) -> DemDelineator:
     dataset = resolve_dem_dataset(dem_id)
     with _REGISTRY_LOCK:
         tiles_dir = resolve_dem_tiles_dir(dataset.id)
+        resolved_tiles = tiles_dir.expanduser().resolve()
         cached = _DEM_DELINEATORS.get(dataset.id)
-        if cached is not None and cached.tiles_dir == tiles_dir.resolve():
+        if cached is not None and cached.tiles_dir == resolved_tiles:
             return cached
         tile_fetcher = None
         if dataset.id == 'merit_hydro_90m':
