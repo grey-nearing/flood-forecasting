@@ -27,8 +27,18 @@ import pytest
 from shapely.geometry import LineString, box, mapping, shape
 
 import frontend.config as _frontend_config
-from frontend.config import HYDRO_DATASETS, resolve_hydro_dataset_id
-from frontend.delineator import HydroDelineator, reset_delineator_caches
+from frontend.config import (
+    HYDRO_DATASETS,
+    resolve_hydro_dataset_id,
+    resolve_hydrography_paths,
+)
+from frontend.delineator import (
+    HydroDelineator,
+    get_dem_delineator,
+    get_river_network,
+    get_vector_delineator,
+    reset_delineator_caches,
+)
 from frontend.river_indexer import reset_river_indexer_caches
 
 _TILE_CELLS: int = 6000
@@ -387,6 +397,72 @@ class HydroDelineatorTest(unittest.TestCase):
         assert 'data-alias="demSelect"' in html
         assert 'data-dem-id="hydrosheds_90m"' in html
         assert 'data-dem-id="merit_hydro_90m"' in html
+
+    def test_late_populated_datasets_recover_without_cache_reset(self) -> None:
+        """Verify river, vector, and DEM singletons recover on file arrival."""
+        with tempfile.TemporaryDirectory() as late_tmp:
+            late_root = Path(late_tmp)
+            empty_dem = late_root / 'empty_dem'
+            populated_dem = late_root / 'dem' / 'hydrosheds_90m' / 'tiles_5deg'
+            empty_dem.mkdir(parents=True, exist_ok=True)
+
+            saved_dem_locs = dict(_frontend_config.DEM_TILE_LOCATIONS)
+            saved_river_dir = _frontend_config.RIVER_NETWORKS_DIR
+            saved_hb_dir = _frontend_config.HYDRO_BASINS_DIR
+            saved_hr_cache = (
+                _frontend_config.OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH
+            )
+            saved_hb_cache = _frontend_config.OPENHYDRONET_HYDROBASINS_CACHE_DIR
+
+            _frontend_config.DEM_TILE_LOCATIONS['hydrosheds_90m'] = (
+                empty_dem,
+                populated_dem,
+            )
+            _frontend_config.RIVER_NETWORKS_DIR = late_root / 'river_networks'
+            _frontend_config.HYDRO_BASINS_DIR = late_root / 'hydro_basins'
+            # Empty local dir must not shadow populated cache
+            (_frontend_config.HYDRO_BASINS_DIR / 'hydrobasins_units').mkdir(
+                parents=True, exist_ok=True
+            )
+            _frontend_config.OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH = (
+                late_root / 'missing_cache' / 'HydroRIVERS_v10.shp'
+            )
+            _frontend_config.OPENHYDRONET_HYDROBASINS_CACHE_DIR = (
+                late_root / 'missing_cache' / 'hydrobasins'
+            )
+            reset_delineator_caches()
+
+            # 1. Before files exist on disk, river/vector lookups return None
+            assert get_river_network('hydroatlas') is None
+            assert get_vector_delineator('hydroatlas') is None
+            initial_dem = get_dem_delineator('hydrosheds_90m')
+            assert initial_dem.tiles_dir == empty_dem.resolve()
+
+            # 2. Populate files on disk without calling reset_delineator_caches
+            _build_hermetic_hydro_fixtures(late_root)
+            paths = resolve_hydrography_paths()
+            assert paths['hydrorivers_shp'].is_file()
+            assert any(paths['hydrobasins_dir'].glob('*.shp'))
+
+            assert get_river_network('hydroatlas') is not None
+            assert get_vector_delineator('hydroatlas') is not None
+            updated_dem = get_dem_delineator('hydrosheds_90m')
+            assert updated_dem.tiles_dir == populated_dem.resolve()
+
+            res = HydroDelineator('hydroatlas').delineate_catchment(
+                lat=39.6828, lon=-88.7729, mode='dem_flow_direction'
+            )
+            assert res['properties']['outlet']['reach_id'] == 'HYRIV_70000001'
+
+            _frontend_config.DEM_TILE_LOCATIONS.clear()
+            _frontend_config.DEM_TILE_LOCATIONS.update(saved_dem_locs)
+            _frontend_config.RIVER_NETWORKS_DIR = saved_river_dir
+            _frontend_config.HYDRO_BASINS_DIR = saved_hb_dir
+            _frontend_config.OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH = (
+                saved_hr_cache
+            )
+            _frontend_config.OPENHYDRONET_HYDROBASINS_CACHE_DIR = saved_hb_cache
+            reset_delineator_caches()
 
 
 if __name__ == '__main__':

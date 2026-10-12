@@ -83,7 +83,7 @@ def _data_dir(name: str) -> Path:
     river_dir = Path(_frontend_config.RIVER_NETWORKS_DIR)
     cache_dir = Path(_frontend_config.CACHE_DIR)
     path = river_dir / name
-    return path if path.exists() else cache_dir / name
+    return path if (path.is_dir() and any(path.iterdir())) else cache_dir / name
 
 
 def _glofas_dir() -> Path:

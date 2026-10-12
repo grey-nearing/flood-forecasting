@@ -300,15 +300,15 @@ def resolve_hydrography_paths() -> dict[str, Path]:
         Mapping of hydrography dataset keys to resolved local `Path` objects.
     """
     hydrorivers_shp = RIVER_NETWORKS_DIR / 'hydrorivers' / HYDRORIVERS_SHP_NAME
-    if not hydrorivers_shp.exists():
+    if not hydrorivers_shp.is_file():
         hydrorivers_shp = OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH
 
     hydrobasins_dir = HYDRO_BASINS_DIR / 'hydrobasins_units'
-    if not hydrobasins_dir.exists():
+    if not (hydrobasins_dir.is_dir() and any(hydrobasins_dir.glob('*.shp'))):
         hydrobasins_dir = OPENHYDRONET_HYDROBASINS_CACHE_DIR
 
     merit_dir = RIVER_NETWORKS_DIR / 'merit_rivers'
-    if not merit_dir.exists():
+    if not (merit_dir.is_dir() and any(merit_dir.glob('*.shp'))):
         merit_dir = OPENHYDRONET_MERIT_BASINS_CACHE_DIR
 
     return {
