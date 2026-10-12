@@ -369,11 +369,13 @@ def _load_geoglows_rp_arrays() -> tuple[np.ndarray, np.ndarray] | None:
     """Load `(rp_rids, rp_gumbel)` for GEOGLOWS reaches."""
     import maas.geoglows as _gg  # noqa: PLC0415
 
-    _gg.lookup_cached_geoglows_return_periods(_SAMPLE_GEOGLOWS_RIVER_ID)
+    rp_path = _resolve_geoglows_dir() / 'geoglows_return_periods_v1.npz'
+    _gg.lookup_cached_geoglows_return_periods(
+        _SAMPLE_GEOGLOWS_RIVER_ID, rp_path
+    )
     rp_table = _gg._GEOGLOWS_RP_TABLE  # noqa: SLF001
     if rp_table is not None:
         return rp_table['river_id'], rp_table['values']
-    rp_path = _resolve_geoglows_dir() / 'geoglows_return_periods_v1.npz'
     if not rp_path.is_file():
         return None
     with np.load(rp_path, allow_pickle=False) as rz:

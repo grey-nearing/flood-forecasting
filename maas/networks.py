@@ -20,12 +20,12 @@ Supports three model river networks:
   3. TDX-Hydro streams (`geoglows`)
 """
 
+from __future__ import annotations
+
 import logging
 import math
 import time
-from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pyogrio
@@ -44,6 +44,10 @@ from maas.config import (
     parse_finite_float,
     parse_int,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +109,16 @@ LDD_DCOL = np.array([0, -1, 0, 1, -1, 0, 1, -1, 0, 1], dtype=np.int64)
 DISTANCE_WEIGHT = 0.35
 RANGE_SLACK = 1.15
 MAX_CORRIDOR_SNAP_KM = 15.0
+_MIN_GEOGLOWS_LINKNO = 100_000_000
+_MAX_GEOGLOWS_LINKNO = 999_999_999
+_LINKNO_DIGITS = 9
+_LAT0_TOL = 1e-6
+_LDD_PIT_CODE = 5
+_BASE_MIN_AREA_KM2 = 100.0
+_COARSE_DOWN_AREA_KM2 = 5000.0
+_FINE_KEEP_AREA_KM2 = 500.0
+_MIN_POLYLINE_VERTICES = 2
+_MIN_SEG_LEN2 = 1e-18
 
 
 def lod_for_zoom(
@@ -176,23 +190,24 @@ def glofas_cell_polygon(
     }
 
 
-def is_geoglows_river_id(value: Any) -> bool:
+def is_geoglows_river_id(value: object) -> bool:
     """Check whether `value` is a 9-digit GEOGLOWS v2 (TDX-Hydro) river ID."""
     v = parse_int(value)
     if v is None:
         return False
-    return 100_000_000 <= v <= 999_999_999
+    return _MIN_GEOGLOWS_LINKNO <= v <= _MAX_GEOGLOWS_LINKNO
 
 
-def as_linkno(value: Any) -> int | None:
+def as_linkno(value: object) -> int | None:
     """Parse a 9-digit GEOGLOWS `LINKNO`, or return `None`."""
     text = str(value or '').strip()
-    return int(text) if text.isdigit() and len(text) == 9 else None
+    return int(text) if text.isdigit() and len(text) == _LINKNO_DIGITS else None
 
 
 def _split_chains(
     down: np.ndarray,
     keep: np.ndarray,
+    *,
     include_end: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Split the kept part of a river tree into chains running downstream."""
@@ -245,7 +260,7 @@ def _gather_ranges(starts: np.ndarray, lengths: np.ndarray) -> np.ndarray:
     return shift + np.arange(total, dtype=np.int64)
 
 
-def _pack_level(
+def _pack_level(  # noqa: PLR0913, PLR0917
     xy: np.ndarray,
     line_of_vertex: np.ndarray,
     n_lines: int,
@@ -254,7 +269,7 @@ def _pack_level(
     tol: float,
     **extra: np.ndarray,
 ) -> dict[str, np.ndarray]:
-    """Build (optionally simplified) CSR polylines with bounding boxes and area ranges."""
+    """Build CSR polylines with bounding boxes and area ranges."""
     lines = shapely.linestrings(xy, indices=line_of_vertex)
     if tol and tol > 0:
         lines = shapely.simplify(lines, tol, preserve_topology=False)
@@ -339,7 +354,7 @@ def load_network_pyramid(
     path: Path,
     signature: str,
 ) -> dict[str, Any] | None:
-    """Load a cached river network pyramid if `path` exists and matches `signature`."""
+    """Load a cached river network pyramid if `path` matches `signature`."""
     if not path.exists():
         return None
     cache_key = (str(path.resolve()), signature, path.stat().st_mtime_ns)
@@ -380,7 +395,8 @@ def _read_glofas_rasters(glofas_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     with xr.open_dataset(up_path) as ds:
         if 'Band1' not in ds or 'lat' not in ds:
             raise KeyError(
-                f"Expected 'Band1' and 'lat' in {up_path}, got {list(ds.variables)}"
+                f"Expected 'Band1' and 'lat' in {up_path}, "
+                f'got {list(ds.variables)}'
             )
         up = ds['Band1'].to_numpy()
         lat0 = float(ds['lat'].to_numpy()[0])
@@ -392,7 +408,7 @@ def _read_glofas_rasters(glofas_dir: Path) -> tuple[np.ndarray, np.ndarray]:
         ldd = ds['Band1'].to_numpy()
     if (
         up.shape != (GLOFAS_NLAT, GLOFAS_NLON)
-        or abs(lat0 - (90.0 - GLOFAS_RES_DEG / 2.0)) > 1e-6
+        or abs(lat0 - (90.0 - GLOFAS_RES_DEG / 2.0)) > _LAT0_TOL
     ):
         raise ValueError(
             f'Unexpected GloFAS grid {up.shape}, first latitude {lat0}'
@@ -414,7 +430,7 @@ def _step(
     c2 = cols + LDD_DCOL[code]
     ok = (
         (code >= 1)
-        & (code != 5)
+        & (code != _LDD_PIT_CODE)
         & (r2 >= 0)
         & (r2 < nlat)
         & (c2 >= 0)
@@ -428,7 +444,7 @@ def _cell_xy(
     cols: np.ndarray,
     res: float = GLOFAS_RES_DEG,
 ) -> np.ndarray:
-    """Convert `(rows, cols)` indices to `(lon, lat)` cell-center coordinates."""
+    """Convert `(rows, cols)` indices to `(lon, lat)` cell-center coords."""
     return np.stack(
         [-180.0 + (cols + 0.5) * res, 90.0 - (rows + 0.5) * res],
         axis=1,
@@ -482,7 +498,7 @@ def load_geoglows_lookup(
         return z['linkno'][keep], z['area_km2'][keep]
 
 
-def build_geoglows_pyramid(geoglows_dir: Path) -> dict[str, Any]:
+def build_geoglows_pyramid(geoglows_dir: Path) -> dict[str, Any]:  # noqa: PLR0915
     """Build the zoom-stratified GEOGLOWS v2 TDX-Hydro pyramid."""
     gpkg_path = geoglows_dir / 'global_streams_simplified.gpkg'
     attrs_path = geoglows_dir / 'geoglows_attrs_v1.npz'
@@ -598,7 +614,7 @@ def build_geoglows_pyramid(geoglows_dir: Path) -> dict[str, Any]:
     }
 
 
-def build_floodhub_pyramid(
+def build_floodhub_pyramid(  # noqa: PLR0915
     shp_path: Path,
     lut_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -607,15 +623,25 @@ def build_floodhub_pyramid(
         raise FileNotFoundError(f'Missing HydroRIVERS shapefile: {shp_path}')
 
     t0 = time.time()
+    fields = set(pyogrio.read_info(str(shp_path)).get('fields', ()))
+    cols = ['HYRIV_ID', 'NEXT_DOWN', 'UPLAND_SKM', 'ORD_STRA']
+    has_hybas_col = 'HYBAS_L12' in fields
+    if has_hybas_col:
+        cols.append('HYBAS_L12')
     df = pyogrio.read_dataframe(
         str(shp_path),
-        columns=['HYRIV_ID', 'NEXT_DOWN', 'UPLAND_SKM', 'ORD_STRA'],
+        columns=cols,
         where='UPLAND_SKM >= 50',
     )
     hyriv = df['HYRIV_ID'].to_numpy(dtype=np.int32)
     next_d = df['NEXT_DOWN'].to_numpy(dtype=np.int32)
     area = df['UPLAND_SKM'].to_numpy(dtype=np.float32)
     order = df['ORD_STRA'].to_numpy(dtype=np.int8)
+    shp_hybas = (
+        df['HYBAS_L12'].to_numpy(dtype=np.int64)
+        if has_hybas_col
+        else np.zeros(len(hyriv), dtype=np.int64)
+    )
     geoms = df.geometry.to_numpy()
 
     o = np.argsort(hyriv)
@@ -623,6 +649,7 @@ def build_floodhub_pyramid(
     next_d = next_d[o]
     area = area[o]
     order = order[o]
+    shp_hybas = shp_hybas[o]
     geoms = geoms[o]
 
     if lut_path is not None and lut_path.exists():
@@ -631,14 +658,17 @@ def build_floodhub_pyramid(
             lut_fc = z['has_forecast'].astype(np.bool_)
             lut_hb = z['hybas_l12'].astype(np.int64)
         pos_lut = _index_of(lut_ids, hyriv)
-        has_fc = np.where(pos_lut >= 0, lut_fc[np.maximum(pos_lut, 0)], False)
-        hybas = np.where(pos_lut >= 0, lut_hb[np.maximum(pos_lut, 0)], 0)
+        no_fc = np.zeros(len(hyriv), dtype=np.bool_)
+        has_fc = np.where(pos_lut >= 0, lut_fc[np.maximum(pos_lut, 0)], no_fc)
+        hybas = np.where(
+            pos_lut >= 0, lut_hb[np.maximum(pos_lut, 0)], shp_hybas
+        )
     else:
         has_fc = np.ones(len(hyriv), dtype=np.bool_)
-        hybas = np.zeros(len(hyriv), dtype=np.int64)
+        hybas = shp_hybas
 
     has_geom = np.array([g is not None and not g.is_empty for g in geoms])
-    keep_base = has_geom & ((area >= 100.0) | has_fc)
+    keep_base = has_geom & ((area >= _BASE_MIN_AREA_KM2) | has_fc)
     hyriv = hyriv[keep_base]
     next_d = next_d[keep_base]
     area = area[keep_base]
@@ -679,10 +709,10 @@ def build_floodhub_pyramid(
 
     levels = []
     for _, min_area, tol in FLOODHUB_PYRAMID_LOD:
-        down_lvl = down_fc if min_area >= 5000 else down_hb
+        down_lvl = down_fc if min_area >= _COARSE_DOWN_AREA_KM2 else down_hb
         keep = (
             (area >= min_area)
-            if min_area > 500
+            if min_area > _FINE_KEEP_AREA_KM2
             else ((area >= min_area) | has_fc)
         )
         nodes, offsets, _ = _split_chains(down_lvl, keep, include_end=False)
@@ -726,7 +756,7 @@ def build_floodhub_pyramid(
     }
 
 
-def query_geoglows_reaches(
+def query_geoglows_reaches(  # noqa: PLR0913, PLR0917
     gpkg_path: Path,
     lookup: tuple[np.ndarray, np.ndarray],
     min_lon: float,
@@ -766,7 +796,7 @@ def query_geoglows_reaches(
     return feats
 
 
-def extract_level_features(
+def extract_level_features(  # noqa: PLR0913
     level: Mapping[str, np.ndarray],
     min_lon: float,
     min_lat: float,
@@ -775,7 +805,7 @@ def extract_level_features(
     *,
     hybas_to_sev: Mapping[int, int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Extract GeoJSON LineString features intersecting a bounding box from a pyramid level."""
+    """Extract GeoJSON LineString features intersecting a bounding box."""
     b = level['bbox']
     idx = np.flatnonzero(
         (b[:, 2] >= min_lon)
@@ -788,7 +818,7 @@ def extract_level_features(
     offsets = level['offsets']
     starts = offsets[idx]
     lengths = offsets[idx + 1] - starts
-    keep = lengths >= 2
+    keep = lengths >= _MIN_POLYLINE_VERTICES
     if not keep.all():
         idx = idx[keep]
         starts = starts[keep]
@@ -812,9 +842,7 @@ def extract_level_features(
     if is_floodhub:
         fcs = has_fc_arr[idx].tolist()
         hbs = (
-            hybas_arr[idx].tolist()
-            if hybas_arr is not None
-            else [0] * len(idx)
+            hybas_arr[idx].tolist() if hybas_arr is not None else [0] * len(idx)
         )
         ords = order_arr[idx].tolist() if order_arr is not None else None
         feats: list[dict[str, Any]] = []
@@ -827,7 +855,9 @@ def extract_level_features(
                 'area_min_km2': amin_list[k],
                 'river_id': f'HYRIV_{rid}' if rid > 0 else None,
                 'has_forecast': has_fc,
-                'gauge_id': f'hybas_{hb_id}' if (has_fc and hb_id > 0) else None,
+                'gauge_id': f'hybas_{hb_id}'
+                if (has_fc and hb_id > 0)
+                else None,
                 'severity_rank': (
                     int(hybas_to_sev.get(hb_id, 0))
                     if (has_fc and hybas_to_sev is not None)
@@ -905,7 +935,7 @@ def _choose(
     )
 
 
-def _point_to_seg_dist(
+def _point_to_seg_dist(  # noqa: PLR0913, PLR0917
     px: float,
     py: float,
     x1: np.ndarray,
@@ -913,14 +943,14 @@ def _point_to_seg_dist(
     x2: np.ndarray,
     y2: np.ndarray,
 ) -> np.ndarray:
-    """Euclidean distance from `(px, py)` to line segments `(x1, y1) -> (x2, y2)`."""
+    """Euclidean distance from `(px, py)` to segments `(x1, y1) -> (x2, y2)`."""
     dx = x2 - x1
     dy = y2 - y1
     len2 = dx * dx + dy * dy
     t = np.where(
-        len2 > 1e-18,
+        len2 > _MIN_SEG_LEN2,
         np.clip(
-            ((px - x1) * dx + (py - y1) * dy) / np.maximum(len2, 1e-18),
+            ((px - x1) * dx + (py - y1) * dy) / np.maximum(len2, _MIN_SEG_LEN2),
             0.0,
             1.0,
         ),
@@ -929,7 +959,7 @@ def _point_to_seg_dist(
     return np.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
 
 
-def snap_glofas_cell_from_network(
+def snap_glofas_cell_from_network(  # noqa: PLR0913, PLR0917
     net: Mapping[str, Any] | None,
     lat: float,
     lon: float,
@@ -951,8 +981,8 @@ def snap_glofas_cell_from_network(
         -radius_cells : radius_cells + 1,
         -radius_cells : radius_cells + 1,
     ]
-    rr = int(round(fr)) + dr.ravel()
-    cc = int(round(fc)) + dc.ravel()
+    rr = round(fr) + dr.ravel()
+    cc = round(fc) + dc.ravel()
     ok = (rr >= 0) & (rr < nlat) & (cc >= 0) & (cc < nlon)
     rr, cc = rr[ok], cc[ok]
     pos = _index_of(net['cell_lin'], rr * nlon + cc)
@@ -975,7 +1005,7 @@ def snap_glofas_cell_from_network(
     }
 
 
-def snap_geoglows_reach_from_network(
+def snap_geoglows_reach_from_network(  # noqa: PLR0913, PLR0917
     net: Mapping[str, Any] | None,
     lat: float,
     lon: float,
@@ -983,7 +1013,7 @@ def snap_geoglows_reach_from_network(
     area_range: tuple[float, float] | None = None,
     radius_deg: float = 0.15,
 ) -> dict[str, Any] | None:
-    """Snap `(lat, lon)` to a GEOGLOWS TDX-Hydro reach in memory matching `target_area_km2`."""
+    """Snap `(lat, lon)` to a GEOGLOWS TDX-Hydro reach in memory."""
     if net is None:
         return None
     if 'reach_lat' not in net or 'reach_linkno' not in net:
@@ -1030,7 +1060,7 @@ def snap_geoglows_reach_from_network(
     }
 
 
-def snap_geoglows_reach_from_gpkg(
+def snap_geoglows_reach_from_gpkg(  # noqa: PLR0913, PLR0917
     gpkg_path: Path,
     lookup: tuple[np.ndarray, np.ndarray],
     lat: float,
@@ -1039,7 +1069,7 @@ def snap_geoglows_reach_from_gpkg(
     area_range: tuple[float, float] | None = None,
     radius_deg: float = 0.15,
 ) -> dict[str, Any] | None:
-    """Snap `(lat, lon)` to a GEOGLOWS TDX-Hydro reach matching `target_area_km2`."""
+    """Snap `(lat, lon)` to a GEOGLOWS TDX-Hydro reach via GeoPackage."""
     if not target_area_km2 or target_area_km2 <= 0 or not gpkg_path.exists():
         return None
     df = pyogrio.read_dataframe(
@@ -1073,17 +1103,17 @@ def snap_geoglows_reach_from_gpkg(
     }
 
 
-def resolve_cross_network_click(
+def resolve_cross_network_click(  # noqa: PLR0913, PLR0917
     lat: float,
     lon: float,
-    upstream_area_km2: Any,
+    upstream_area_km2: object,
     snap_glofas_fn: Callable[..., dict[str, Any] | None],
     snap_geoglows_fn: Callable[..., dict[str, Any] | None],
-    area_min_km2: Any = None,
+    area_min_km2: object = None,
     network: str | None = None,
-    river_id: Any = None,
+    river_id: object = None,
 ) -> dict[str, Any] | None:
-    """Map a click on one model's river line to every model's forecast element on the same river."""
+    """Map a click on one river network to every model's forecast element."""
     area = parse_finite_float(upstream_area_km2)
     if area is None or area <= 0.0:
         return None
@@ -1185,14 +1215,14 @@ def query_hydrorivers_reaches(
     return reaches
 
 
-def trace_main_stem_chain(
+def trace_main_stem_chain(  # noqa: C901
     reaches: Sequence[Mapping[str, Any]],
     lat: float,
     lon: float,
     reach_id: str | None = None,
     max_steps: int = 40,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], float | None]:
-    """Trace `(start reach, main-stem chain up/downstream, snap distance km)`."""
+    """Trace `(start reach, main-stem chain, snap distance km)`."""
     if not reaches:
         return None, [], None
     by_id = {int(r['hyriv_id']): dict(r) for r in reaches}
