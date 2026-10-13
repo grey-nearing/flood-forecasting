@@ -54,9 +54,11 @@ from frontend.maas_engine import (
 from frontend.maas_networks import get_model_network
 from frontend.profile_manager import get_profile_manager
 from frontend.realtime_forecast_service import (
+    clear_realtime_streamflow_csv,
     fetch_realtime_for_basin,
     inspect_realtime_stores_for_basin,
     run_hydrological_model_for_basin,
+    upload_realtime_streamflow_csv,
 )
 from frontend.river_indexer import HydroRiverNetwork
 from frontend.static_attributes import (
@@ -1335,6 +1337,12 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/attributes/extract': self._post_attributes_extract,
             '/api/forecast/fetch-realtime': self._post_forecast_fetch_realtime,
             '/api/forecast/run-model': self._post_forecast_run_model,
+            '/api/forecast/upload-streamflow': (
+                self._post_forecast_upload_streamflow
+            ),
+            '/api/forecast/clear-streamflow': (
+                self._post_forecast_clear_streamflow
+            ),
             '/api/weather/refresh': self._post_weather_refresh,
             '/api/weather/sync': self._post_weather_refresh,
         }
@@ -2313,6 +2321,41 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             product_overrides=product_overrides,
             is_what_if=is_what_if,
         )
+        self._send_json(payload)
+
+    def _post_forecast_upload_streamflow(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        catchment_id = data.get('catchment_id') or data.get('basin_id')
+        csv_content = str(
+            data.get('csv_content') or data.get('csv') or ''
+        )
+        filename = str(data.get('filename') or 'streamflow.csv')
+        try:
+            payload = upload_realtime_streamflow_csv(
+                username=user,
+                catchment_id=str(catchment_id) if catchment_id else None,
+                csv_content=csv_content,
+                filename=filename,
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400)
+            return
+        self._send_json(payload)
+
+    def _post_forecast_clear_streamflow(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        catchment_id = data.get('catchment_id') or data.get('basin_id')
+        if not catchment_id:
+            self._send_error('catchment_id is required', status=400)
+            return
+        try:
+            payload = clear_realtime_streamflow_csv(
+                username=user,
+                catchment_id=str(catchment_id),
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400)
+            return
         self._send_json(payload)
 
     def _post_weather_refresh(self, data: dict[str, Any]) -> None:

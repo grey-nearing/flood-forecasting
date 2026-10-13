@@ -161,10 +161,18 @@ class IMERGExtractor(BaseExtractor):
         "MULTIMET_IMERG_CACHE",
         os.path.join(tempfile.gettempdir(), "multimet_imerg_cache"),
     )
-    filename = f"3B-DAY-E.MS.MRG.3IMERG.{date_str}-S000000-E235959.V07B.nc4"
-    cached_path = os.path.join(cache_dir, filename)
-    if os.path.exists(cached_path) and os.path.getsize(cached_path) > 1000:
-      return cached_path
+    preferred_versions = (
+        ("V07C", "V07B", "V07A")
+        if date_str >= "20260304"
+        else ("V07B", "V07C", "V07A")
+    )
+    for ver in preferred_versions:
+      candidate = (
+          f"3B-DAY-E.MS.MRG.3IMERG.{date_str}-S000000-E235959.{ver}.nc4"
+      )
+      cached_path = os.path.join(cache_dir, candidate)
+      if os.path.exists(cached_path) and os.path.getsize(cached_path) > 1000:
+        return cached_path
 
     if os.path.isdir(cache_dir):
       for fname in os.listdir(cache_dir):
@@ -173,7 +181,7 @@ class IMERGExtractor(BaseExtractor):
           if os.path.getsize(f_path) > 1000:
             return f_path
 
-    # 3. If not cached locally, download from NASA GES DISC
+    # 3. If not cached locally, download from NASA GES DISC (trying V07C/V07B)
     base_url = (
         self.data_dir
         if (
@@ -182,9 +190,19 @@ class IMERGExtractor(BaseExtractor):
         )
         else DEFAULT_GESDISC_URL
     )
-    url = f"{base_url.rstrip('/')}/{year}/{month:02d}/{filename}"
-
-    return download_daily_imerg(url, cached_path, session=self.session)
+    last_err: Optional[Exception] = None
+    for ver in preferred_versions:
+      filename = f"3B-DAY-E.MS.MRG.3IMERG.{date_str}-S000000-E235959.{ver}.nc4"
+      cached_path = os.path.join(cache_dir, filename)
+      url = f"{base_url.rstrip('/')}/{year}/{month:02d}/{filename}"
+      try:
+        return download_daily_imerg(url, cached_path, session=self.session)
+      except FileNotFoundError as exc:
+        last_err = exc
+        continue
+    if last_err is not None:
+      raise last_err
+    raise FileNotFoundError(f"Could not download IMERG file for {date_str}")
 
   def extract_day_from_nc4(
       self,
@@ -451,12 +469,19 @@ class IMERGExtractor(BaseExtractor):
               leave=True,
           )
       ):
-        day_res = self.extract_day(
-            dt,
-            basins_gdf,
-            matrix=weights_matrix,
-            use_bounding_box=use_bounding_box,
-        )
+        try:
+          day_res = self.extract_day(
+              dt,
+              basins_gdf,
+              matrix=weights_matrix,
+              use_bounding_box=use_bounding_box,
+          )
+        except FileNotFoundError:
+          logger.warning(
+              "IMERG daily file not available for %s; leaving as NaN.",
+              dt.strftime("%Y-%m-%d"),
+          )
+          continue
         precip_matrix[:, d_idx] = day_res["imerg_precipitation"]
         if "imerg_missing_fraction" in day_res:
           missing_matrix[:, d_idx] = day_res["imerg_missing_fraction"]

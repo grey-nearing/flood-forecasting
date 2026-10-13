@@ -27,9 +27,11 @@ Connects the Forecasting and Data Assimilation UI tab directly to:
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 import logging
 import math
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -355,6 +357,526 @@ def inspect_saved_state(
         'state_date': state_date,
         'hidden_shape': h_shape,
     }
+
+
+_SENTINEL_MISSING_VALUES: frozenset[float] = frozenset(
+    {-999.0, -9999.0, -99999.0}
+)
+_MAX_SHORT_UPLOAD_POINTS = 90
+_MIN_CSV_COLUMNS = 2
+
+
+def _sanitize_catchment_filename_token(catchment_id: str) -> str:
+    """Sanitize ``catchment_id`` into a safe filename stem."""
+    cleaned = ''.join(
+        c for c in str(catchment_id).strip() if c.isalnum() or c in ('_', '-')
+    )
+    return cleaned or 'basin'
+
+
+def get_assimilation_csv_path(
+    username: str | None,
+    catchment_id: str,
+) -> Path:
+    """Return the per-basin uploaded real-time streamflow CSV path."""
+    pm = profile_manager.get_profile_manager()
+    safe_cid = _sanitize_catchment_filename_token(catchment_id)
+    uploads_dir = pm.get_assimilation_dir(username) / 'uploads'
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    return uploads_dir / f'{safe_cid}.csv'
+
+
+def _clean_streamflow_value(val: object) -> float | None:
+    """Validate and clean a single streamflow observation (m^3/s).
+
+    Preserves missing/sentinel/negative values as ``None`` (``NaN``).
+    """
+    cleaned = _clean_float(val)
+    if cleaned is None:
+        return None
+    if cleaned < 0.0 or cleaned in _SENTINEL_MISSING_VALUES:
+        return None
+    return round(cleaned, 3)
+
+
+def _read_uploaded_csv_series(csv_path: Path) -> tuple[str, pd.Series] | None:
+    """Parse a per-basin upload CSV into ``(basin_id, series)``."""
+    if not csv_path.is_file() or csv_path.stat().st_size == 0:
+        return None
+    df = pd.read_csv(csv_path)
+    if df.empty or 'date' not in df.columns:
+        return None
+    val_col = (
+        'streamflow'
+        if 'streamflow' in df.columns
+        else ('discharge_cms' if 'discharge_cms' in df.columns else None)
+    )
+    if val_col is None:
+        return None
+    cid = (
+        str(df['basin'].iloc[0]).strip()
+        if 'basin' in df.columns and not df['basin'].dropna().empty
+        else csv_path.stem
+    )
+    dates = (
+        pd.to_datetime(df['date'], errors='coerce')
+        .dt.floor('D')
+        .dt.tz_localize(None)
+    )
+    vals = pd.to_numeric(df[val_col], errors='coerce')
+    s = pd.Series(vals.to_numpy(dtype=np.float32), index=dates)
+    s = s[s.index.notna()]
+    if s.empty:
+        return None
+    return cid, s.groupby(level=0).mean().sort_index()
+
+
+def _sync_assimilation_zarr_from_uploads(username: str | None) -> Path | None:
+    """Rebuild ``assimilation/streamflow_realtime.zarr`` from upload CSVs."""
+    pm = profile_manager.get_profile_manager()
+    uploads_dir = pm.get_assimilation_dir(username) / 'uploads'
+    zarr_path = pm.get_assimilation_zarr_path(username)
+
+    basin_frames: dict[str, pd.Series] = {}
+    if uploads_dir.is_dir():
+        for csv_path in sorted(uploads_dir.glob('*.csv')):
+            parsed = _read_uploaded_csv_series(csv_path)
+            if parsed is not None:
+                basin_frames[parsed[0]] = parsed[1]
+
+    if not basin_frames:
+        if zarr_path.exists():
+            shutil.rmtree(zarr_path)
+        return None
+
+    all_basins = sorted(basin_frames.keys())
+    all_dates = sorted({d for s in basin_frames.values() for d in s.index})
+    date_index = pd.DatetimeIndex(all_dates)
+    arr = np.full(
+        (len(all_basins), len(date_index)),
+        np.nan,
+        dtype=np.float32,
+    )
+    for b_idx, cid in enumerate(all_basins):
+        s_reindexed = basin_frames[cid].reindex(date_index)
+        arr[b_idx, :] = s_reindexed.to_numpy(dtype=np.float32)
+
+    ds = xr.Dataset(
+        {'streamflow': (('basin', 'date'), arr)},
+        coords={'basin': all_basins, 'date': date_index.to_numpy()},
+        attrs={
+            'title': 'Uploaded Real-Time Streamflow Observations',
+            'source_dataset': 'User CSV Upload',
+            'temporal_resolution': '1D',
+            'units': 'm^3/s',
+        },
+    )
+    if zarr_path.exists():
+        shutil.rmtree(zarr_path)
+    zarr_path.parent.mkdir(parents=True, exist_ok=True)
+    ds.to_zarr(zarr_path, mode='w', zarr_format=2, consolidated=True)
+    return zarr_path
+
+
+def _load_points_from_zarr(
+    username: str | None, catchment_id: str
+) -> list[dict[str, Any]]:
+    """Read uploaded streamflow points from Zarr store fallback."""
+    pm = profile_manager.get_profile_manager()
+    zarr_path = pm.get_assimilation_zarr_path(username)
+    if not _is_valid_zarr_store(zarr_path):
+        return []
+    ds = xr.open_zarr(zarr_path, consolidated=False)
+    bkey = _find_basin_key_in_ds(ds, catchment_id)
+    if bkey is None or 'date' not in ds.coords:
+        return []
+    sub = ds.sel(basin=bkey)
+    v_name = next(
+        (
+            str(v)
+            for v in ('streamflow', 'discharge_cms', 'q_cms')
+            if v in sub.data_vars
+        ),
+        next(iter(sub.data_vars), None),
+    )
+    if v_name is None:
+        return []
+    s_dates = pd.to_datetime(sub['date'].to_numpy()).floor('D')
+    s_vals = sub[v_name].to_numpy()
+    return [
+        {
+            'date': _format_date_str(d_val),
+            'discharge_cms': _clean_streamflow_value(q_val),
+        }
+        for d_val, q_val in zip(s_dates, s_vals, strict=False)
+    ]
+
+
+def load_realtime_streamflow_series(
+    username: str | None,
+    catchment_id: str,
+    start_date: str | pd.Timestamp | None = None,
+    end_date: str | pd.Timestamp | None = None,
+) -> list[dict[str, Any]]:
+    """Load uploaded real-time streamflow observations for ``catchment_id``."""
+    if not catchment_id:
+        return []
+    csv_path = get_assimilation_csv_path(username, catchment_id)
+    points: list[dict[str, Any]] = []
+
+    if csv_path.is_file() and csv_path.stat().st_size > 0:
+        df = pd.read_csv(csv_path)
+        if not df.empty and 'date' in df.columns:
+            val_col = (
+                'streamflow'
+                if 'streamflow' in df.columns
+                else (
+                    'discharge_cms'
+                    if 'discharge_cms' in df.columns
+                    else df.columns[-1]
+                )
+            )
+            dates = (
+                pd.to_datetime(df['date'], errors='coerce')
+                .dt.floor('D')
+                .dt.tz_localize(None)
+            )
+            vals = pd.to_numeric(df[val_col], errors='coerce')
+            points = [
+                {
+                    'date': _format_date_str(d_val),
+                    'discharge_cms': _clean_streamflow_value(q_val),
+                }
+                for d_val, q_val in zip(dates, vals, strict=False)
+                if not pd.isna(d_val)
+            ]
+    else:
+        points = _load_points_from_zarr(username, catchment_id)
+
+    points.sort(key=lambda item: item['date'])
+    if not points:
+        return []
+
+    if start_date is not None or end_date is not None:
+        start_str = _format_date_str(start_date) if start_date else None
+        end_str = _format_date_str(end_date) if end_date else None
+        filtered = [
+            pt
+            for pt in points
+            if (start_str is None or pt['date'] >= start_str)
+            and (end_str is None or pt['date'] <= end_str)
+        ]
+        if filtered:
+            return filtered
+
+    return points[-_MAX_SHORT_UPLOAD_POINTS:]
+
+
+def _detect_csv_columns(
+    df: pd.DataFrame,
+) -> tuple[str | None, str, str]:
+    """Identify ``(basin_col, date_col, flow_col)`` in an uploaded CSV."""
+    cols = list(df.columns)
+    if len(cols) < _MIN_CSV_COLUMNS:
+        raise ValueError(
+            'Uploaded CSV must contain at least 2 columns (date and '
+            'streamflow).'
+        )
+
+    lower_to_col = {str(c).strip().lower(): str(c) for c in cols}
+
+    basin_col = next(
+        (
+            lower_to_col[cand]
+            for cand in (
+                'basin',
+                'basin_id',
+                'catchment_id',
+                'gauge_id',
+                'site_no',
+                'station_id',
+            )
+            if cand in lower_to_col
+        ),
+        None,
+    )
+
+    date_col = next(
+        (
+            lower_to_col[cand]
+            for cand in (
+                'date',
+                'datetime',
+                'timestamp',
+                'time',
+                'valid_time',
+                'day',
+            )
+            if cand in lower_to_col and lower_to_col[cand] != basin_col
+        ),
+        None,
+    )
+    if date_col is None:
+        date_col = next(str(c) for c in cols if str(c) != basin_col)
+
+    flow_col = next(
+        (
+            lower_to_col[cand]
+            for cand in (
+                'streamflow',
+                'discharge_cms',
+                'streamflow_cms',
+                'discharge',
+                'q_cms',
+                'flow_cms',
+                'q',
+                'flow',
+                'obs',
+                'value',
+            )
+            if cand in lower_to_col
+            and lower_to_col[cand] not in (basin_col, date_col)
+        ),
+        None,
+    )
+    if flow_col is None:
+        remaining = [
+            str(c) for c in cols if str(c) not in (basin_col, date_col)
+        ]
+        if not remaining:
+            raise ValueError(
+                'Could not find a streamflow/discharge column in the '
+                'uploaded CSV.'
+            )
+        flow_col = remaining[0]
+
+    return basin_col, date_col, flow_col
+
+
+def upload_realtime_streamflow_csv(
+    username: str | None,
+    catchment_id: str | None,
+    csv_content: str,
+    filename: str = 'streamflow.csv',
+) -> dict[str, Any]:
+    """Parse, validate, and store an uploaded real-time streamflow CSV."""
+    raw_text = (csv_content or '').strip()
+    if not raw_text:
+        raise ValueError('Uploaded CSV file is empty.')
+
+    try:
+        df = pd.read_csv(io.StringIO(raw_text))
+    except Exception as exc:
+        raise ValueError(f'Failed to parse CSV: {exc}') from exc
+
+    if df.empty:
+        raise ValueError('Uploaded CSV contains no data rows.')
+
+    basin_col, date_col, flow_col = _detect_csv_columns(df)
+    parsed_dates = pd.to_datetime(
+        df[date_col], errors='coerce', utc=True
+    ).dt.floor('D').dt.tz_localize(None)
+    if parsed_dates.isna().all():
+        raise ValueError(
+            f"Could not parse any valid dates from column '{date_col}'."
+        )
+
+    raw_vals = pd.to_numeric(df[flow_col], errors='coerce')
+    cleaned_vals = [
+        _clean_streamflow_value(v) if pd.notna(v) else np.nan
+        for v in raw_vals.to_numpy()
+    ]
+
+    work = pd.DataFrame(
+        {
+            'date': parsed_dates,
+            'streamflow': np.array(
+                [np.nan if v is None else v for v in cleaned_vals],
+                dtype=np.float64,
+            ),
+        }
+    )
+    if basin_col is not None:
+        work['basin'] = df[basin_col].astype(str).str.strip()
+    else:
+        if not catchment_id or not str(catchment_id).strip():
+            raise ValueError(
+                'A catchment_id is required when the CSV does not include a '
+                'basin column.'
+            )
+        work['basin'] = str(catchment_id).strip()
+
+    work = work[work['date'].notna() & (work['basin'] != '')]
+    if work.empty:
+        raise ValueError('No valid (basin, date) rows found in uploaded CSV.')
+
+    updated_basins: list[str] = []
+    for cid, grp in work.groupby('basin', sort=True):
+        cid_str = str(cid).strip()
+        daily = (
+            grp.groupby('date', sort=True)['streamflow']
+            .mean()
+            .reset_index()
+        )
+        daily['date'] = daily['date'].dt.strftime('%Y-%m-%d')
+        daily['streamflow'] = daily['streamflow'].round(3)
+        daily.insert(0, 'basin', cid_str)
+
+        out_csv = get_assimilation_csv_path(username, cid_str)
+        daily.to_csv(out_csv, index=False)
+        updated_basins.append(cid_str)
+
+    zarr_path = _sync_assimilation_zarr_from_uploads(username)
+    target_cid = (
+        str(catchment_id).strip()
+        if (catchment_id and str(catchment_id).strip() in updated_basins)
+        else updated_basins[0]
+    )
+    series_for_target = load_realtime_streamflow_series(username, target_cid)
+    valid_count = sum(
+        1 for pt in series_for_target if pt['discharge_cms'] is not None
+    )
+    if valid_count == 0:
+        raise ValueError(
+            f"Uploaded CSV column '{flow_col}' contains no valid non-negative "
+            'streamflow observations.'
+        )
+
+    status_payload = get_realtime_status(
+        username=username,
+        catchment_id=target_cid,
+    )
+    return {
+        'status': 'success',
+        'username': username,
+        'catchment_id': target_cid,
+        'basins_updated': updated_basins,
+        'filename': str(filename or 'streamflow.csv'),
+        'date_column': date_col,
+        'streamflow_column': flow_col,
+        'row_count': len(series_for_target),
+        'valid_count': valid_count,
+        'start_date': (
+            series_for_target[0]['date'] if series_for_target else None
+        ),
+        'end_date': (
+            series_for_target[-1]['date'] if series_for_target else None
+        ),
+        'observed_streamflow': series_for_target,
+        'zarr_path': str(zarr_path) if zarr_path else None,
+        'forecast_status': status_payload,
+    }
+
+
+def clear_realtime_streamflow_csv(
+    username: str | None,
+    catchment_id: str,
+) -> dict[str, Any]:
+    """Delete uploaded real-time streamflow CSV for ``catchment_id``."""
+    cid_str = str(catchment_id or '').strip()
+    if not cid_str:
+        raise ValueError('catchment_id is required to clear streamflow data.')
+    csv_path = get_assimilation_csv_path(username, cid_str)
+    if csv_path.exists():
+        csv_path.unlink()
+    _sync_assimilation_zarr_from_uploads(username)
+    status_payload = get_realtime_status(
+        username=username,
+        catchment_id=cid_str,
+    )
+    return {
+        'status': 'success',
+        'username': username,
+        'catchment_id': cid_str,
+        'observed_streamflow': [],
+        'forecast_status': status_payload,
+    }
+
+
+_RETURN_PERIOD_KEY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        'return_period_2',
+        ('return_period_2', 'rp_2', 'rp2', 'q2', '2', '2yr', 'warning_2yr'),
+    ),
+    (
+        'return_period_5',
+        ('return_period_5', 'rp_5', 'rp5', 'q5', '5', '5yr', 'danger_5yr'),
+    ),
+    (
+        'return_period_10',
+        ('return_period_10', 'rp_10', 'rp10', 'q10', '10', '10yr'),
+    ),
+    (
+        'return_period_20',
+        (
+            'return_period_20',
+            'rp_20',
+            'rp20',
+            'q20',
+            '20',
+            '20yr',
+            'extreme_20yr',
+        ),
+    ),
+    (
+        'return_period_50',
+        ('return_period_50', 'rp_50', 'rp50', 'q50', '50', '50yr'),
+    ),
+    (
+        'return_period_100',
+        ('return_period_100', 'rp_100', 'rp100', 'q100', '100', '100yr'),
+    ),
+)
+
+
+def _extract_normalized_return_periods(
+    raw_dict: dict[str, Any],
+) -> dict[str, float]:
+    """Normalize return period threshold keys into ``return_period_<yr>``."""
+    nested = raw_dict.get('return_periods_cms') or raw_dict.get(
+        'return_periods'
+    )
+    source = dict(raw_dict)
+    if isinstance(nested, dict):
+        source.update(nested)
+    lower_map = {str(k).strip().lower(): v for k, v in source.items()}
+    normalized: dict[str, float] = {}
+    for canonical_key, aliases in _RETURN_PERIOD_KEY_ALIASES:
+        for alias in aliases:
+            if alias in lower_map:
+                cleaned = _clean_float(lower_map[alias])
+                if cleaned is not None and cleaned > 0.0:
+                    normalized[canonical_key] = round(cleaned, 3)
+                    break
+    return normalized
+
+
+def load_basin_return_periods(
+    username: str | None,
+    catchment_id: str,
+) -> dict[str, float]:
+    """Load return period thresholds (m^3/s) for ``catchment_id`` if present."""
+    if not catchment_id:
+        return {}
+    pm = profile_manager.get_profile_manager()
+    rp_path = pm.get_return_periods_path(username)
+    if rp_path.is_file() and rp_path.stat().st_size > 0:
+        rp_data = json.loads(rp_path.read_text(encoding='utf-8'))
+        if isinstance(rp_data, dict):
+            entry = rp_data.get(catchment_id)
+            if isinstance(entry, dict):
+                normalized = _extract_normalized_return_periods(entry)
+                if normalized:
+                    return normalized
+
+    for feat in pm.load_watersheds(username):
+        props = feat.get('properties') or {}
+        cid = str(props.get('catchment_id') or feat.get('id') or '').strip()
+        if cid == catchment_id and isinstance(props, dict):
+            normalized = _extract_normalized_return_periods(props)
+            if normalized:
+                return normalized
+    return {}
 
 
 def _discover_zarr_stores(username: str | None) -> dict[str, Path]:
@@ -927,6 +1449,10 @@ def _build_catchments_status_map(
                 c_state.get('state_date'), expected_state_ts
             )
         )
+        c_obs = load_realtime_streamflow_series(
+            username=username, catchment_id=cid
+        )
+        c_has_obs = any(pt['discharge_cms'] is not None for pt in c_obs)
         catchments_status[cid] = {
             'catchment_id': cid,
             'issue_date': issue_date_str,
@@ -935,11 +1461,38 @@ def _build_catchments_status_map(
             'is_state_from_previous_day': c_prev,
             'is_state_valid_for_hotstart': c_valid_hs,
             'has_realtime_data': c_has_data,
+            'has_observed_streamflow': c_has_obs,
             'can_fetch_hotstart': c_valid_hs,
             'can_run_hotstart': bool(c_valid_hs and c_has_data),
             'can_run_coldstart': bool(c_has_data),
         }
     return catchments_status
+
+
+def _resolve_status_issue_date(
+    username: str | None,
+    primary_id: str,
+    requested_issue_date: str | None,
+    *,
+    probe_ecmwf: bool,
+) -> pd.Timestamp:
+    """Resolve ``t0`` for status payloads, falling back when no Zarr exists."""
+    try:
+        return resolve_issue_date(
+            username=username,
+            catchment_id=primary_id,
+            requested_issue_date=requested_issue_date,
+            probe_ecmwf=probe_ecmwf,
+        )
+    except ValueError:
+        obs_pts = load_realtime_streamflow_series(
+            username=username, catchment_id=primary_id
+        )
+        if obs_pts:
+            return pd.Timestamp(obs_pts[-1]['date']).floor('D').tz_localize(
+                None
+            ) + pd.Timedelta(days=1)
+        return pd.Timestamp.now('UTC').floor('D').tz_localize(None)
 
 
 def get_realtime_status(  # noqa: PLR0913
@@ -960,9 +1513,9 @@ def get_realtime_status(  # noqa: PLR0913
         else (selected_ids[0] if selected_ids else '')
     )
 
-    t0 = resolve_issue_date(
+    t0 = _resolve_status_issue_date(
         username=username,
-        catchment_id=primary_id,
+        primary_id=primary_id,
         requested_issue_date=requested_issue_date,
         probe_ecmwf=probe_ecmwf,
     )
@@ -1081,6 +1634,27 @@ def get_realtime_status(  # noqa: PLR0913
         )
     )
 
+    observed_streamflow = load_realtime_streamflow_series(
+        username=username,
+        catchment_id=primary_id,
+        start_date=(
+            t0 - pd.Timedelta(days=int(lookback_days))
+            if has_realtime_data
+            else None
+        ),
+        end_date=(
+            t0 + pd.Timedelta(days=_DEFAULT_LEAD_TIME_DAYS + 7)
+            if has_realtime_data
+            else None
+        ),
+    )
+    has_observed_streamflow = any(
+        pt['discharge_cms'] is not None for pt in observed_streamflow
+    )
+    return_periods = load_basin_return_periods(
+        username=username, catchment_id=primary_id
+    )
+
     return {
         'status': 'success',
         'username': username,
@@ -1102,6 +1676,9 @@ def get_realtime_status(  # noqa: PLR0913
         'can_run_hotstart': can_run_hotstart,
         'can_run_coldstart': can_run_coldstart,
         'has_realtime_data': has_realtime_data,
+        'has_observed_streamflow': has_observed_streamflow,
+        'observed_streamflow': observed_streamflow,
+        'return_periods': return_periods,
         'hotstart_status_message': hotstart_msg,
         'coldstart_status_message': coldstart_msg,
         'nowcast_dates': streams['nowcast_dates'],
@@ -2186,6 +2763,25 @@ def _run_forecast_model_single(
     saved_state = inspect_saved_state(
         username=username, catchment_id=catchment_id, model_id=model_id
     )
+    window_start = (
+        hindcast_series[0]['date']
+        if hindcast_series
+        else _format_date_str(t0 - pd.Timedelta(days=_HINDCAST_TAIL_DAYS))
+    )
+    window_end = (
+        forecast_series[-1]['date']
+        if forecast_series
+        else _format_date_str(t0 + pd.Timedelta(days=lead_time - 1))
+    )
+    observed_streamflow = load_realtime_streamflow_series(
+        username=username,
+        catchment_id=catchment_id,
+        start_date=window_start,
+        end_date=window_end,
+    )
+    return_periods = load_basin_return_periods(
+        username=username, catchment_id=catchment_id
+    )
 
     return {
         'status': 'success',
@@ -2203,6 +2799,11 @@ def _run_forecast_model_single(
         'peak_date': peak_date,
         'hindcast_tail': hindcast_series,
         'forecast': forecast_series,
+        'has_observed_streamflow': any(
+            pt['discharge_cms'] is not None for pt in observed_streamflow
+        ),
+        'observed_streamflow': observed_streamflow,
+        'return_periods': return_periods,
         'saved_state': saved_state,
     }
 

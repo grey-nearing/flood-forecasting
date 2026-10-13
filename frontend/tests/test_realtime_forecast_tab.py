@@ -1089,6 +1089,109 @@ class RealtimeForecastTabTest(unittest.TestCase):
         ):
             assert token in html
 
+    def test_upload_realtime_streamflow_csv_and_return_periods(self) -> None:
+        """Verify uploading a streamflow CSV, preserving NaNs, and plotting."""
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir,
+            basin_id=TEST_BASIN,
+            issue_date_str='2026-03-30',
+        )
+
+        # 1. Upload 2-column CSV with valid values, missing, and sentinel -999
+        csv_text = (
+            'date,discharge_cms\n'
+            '2026-03-27,14.2\n'
+            '2026-03-28,\n'
+            '2026-03-29,-999\n'
+            '2026-03-30,28.5\n'
+        )
+        code, upload_res = self._request(
+            'POST',
+            '/api/forecast/upload-streamflow',
+            {
+                'catchment_id': TEST_BASIN,
+                'filename': 'gauge_obs.csv',
+                'csv_content': csv_text,
+            },
+        )
+        assert code == HTTP_OK, f'CSV upload failed: {upload_res}'
+        assert upload_res['status'] == 'success'
+        obs_series = upload_res['observed_streamflow']
+        assert len(obs_series) == 4  # noqa: PLR2004
+        by_date = {pt['date']: pt['discharge_cms'] for pt in obs_series}
+        assert by_date['2026-03-27'] == pytest.approx(14.2)
+        assert by_date['2026-03-28'] is None
+        assert by_date['2026-03-29'] is None
+        assert by_date['2026-03-30'] == pytest.approx(28.5)
+
+        # Verify assimilation/streamflow_realtime.zarr preserves NaNs
+        zarr_path = (
+            self.profile_dir / 'assimilation' / 'streamflow_realtime.zarr'
+        )
+        assert zarr_path.exists()
+        ds_obs = xr.open_zarr(zarr_path, consolidated=False)
+        assert TEST_BASIN in ds_obs['basin'].to_numpy()
+        q_vals = ds_obs['streamflow'].sel(basin=TEST_BASIN).to_numpy()
+        assert np.isnan(q_vals[1])
+        assert np.isnan(q_vals[2])
+        assert np.isclose(q_vals[0], 14.2)
+        assert np.isclose(q_vals[3], 28.5)
+
+        # 2. Verify /api/forecast/status returns observed_streamflow
+        code, status_res = self._request(
+            'GET', f'/api/forecast/status?catchment_id={TEST_BASIN}'
+        )
+        assert code == HTTP_OK
+        assert status_res['has_observed_streamflow'] is True
+        assert len(status_res['observed_streamflow']) == 4  # noqa: PLR2004
+        assert 'return_periods' in status_res
+
+        # 3. Verify running model includes observed_streamflow without nudging
+        code, run_res = self._request(
+            'POST',
+            '/api/forecast/run-model',
+            {'catchment_id': TEST_BASIN, 'mode': 'coldstart'},
+        )
+        assert code == HTTP_OK
+        assert run_res['has_observed_streamflow'] is True
+        assert len(run_res['observed_streamflow']) == 4  # noqa: PLR2004
+        assert 'return_periods' in run_res
+
+        # 4. Clear uploaded CSV and confirm status resets
+        code, clear_res = self._request(
+            'POST',
+            '/api/forecast/clear-streamflow',
+            {'catchment_id': TEST_BASIN},
+        )
+        assert code == HTTP_OK
+        assert clear_res['status'] == 'success'
+        assert clear_res['observed_streamflow'] == []
+
+        code, status_after = self._request(
+            'GET', f'/api/forecast/status?catchment_id={TEST_BASIN}'
+        )
+        assert code == HTTP_OK
+        assert status_after['has_observed_streamflow'] is False
+        assert status_after['observed_streamflow'] == []
+
+        # 5. Verify frontend HTML/JS tokens for CSV upload & return periods
+        html_path = (
+            Path(__file__).resolve().parent.parent / 'static' / 'index.html'
+        )
+        html = html_path.read_text(encoding='utf-8')
+        for token in (
+            'id="fcUploadStreamflowCsvBtn"',
+            'id="fcStreamflowCsvInput"',
+            'id="fcClearStreamflowCsvBtn"',
+            'id="fcStreamflowCsvStatus"',
+            'OBSERVED STREAMFLOW (CSV)',
+            '/api/forecast/upload-streamflow',
+            '/api/forecast/clear-streamflow',
+            'fcReturnPeriodLinesPlugin',
+            'if (t.value > yMax || t.value < yMin) return;',
+        ):
+            assert token in html
+
 
 if __name__ == '__main__':
     unittest.main()
