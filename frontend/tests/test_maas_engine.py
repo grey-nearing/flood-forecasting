@@ -341,6 +341,12 @@ def _fake_requests_get(
                     'river_discharge_p75': [
                         2500.0 + 110.0 * d for d in range(15)
                     ],
+                    'river_discharge_member01': [
+                        2150.0 + 95.0 * d for d in range(15)
+                    ],
+                    'river_discharge_member02': [
+                        2350.0 + 105.0 * d for d in range(15)
+                    ],
                 }
             }
     elif '/getriverid' in url:
@@ -919,6 +925,11 @@ class TestMaaSServerEndpoints(unittest.TestCase):
             'geoglows',
         ]
         assert 'glofas' in data['timeline']['series']
+        gl_tl = data['timeline']['series']['glofas']
+        assert 'deterministic' in gl_tl
+        assert 'median' in gl_tl
+        assert 'members' in gl_tl
+        assert set(gl_tl['members']) == {'member01', 'member02'}
 
         status_sub, data_sub = self._get(
             '/api/maas/forecast?lat=32.756&lon=-117.252&models=glofas,geoglows'
@@ -979,7 +990,7 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         ) > _MIN_CROSS_NETWORK_AREA_KM2
 
     def test_maas_multi_hydrofabric_ui_controls_present(self) -> None:
-        """Verify multi-hydrofabric map toggle and marker hooks in UI."""
+        """Verify multi-hydrofabric toggle and GloFAS ensemble hooks in UI."""
         html_path = (
             Path(__file__).resolve().parents[1] / 'static' / 'index.html'
         )
@@ -988,6 +999,9 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         assert 'toggleMaaSMapModel' in html_text
         assert 'updateMaaSSnappedReachMarkers' in html_text
         assert 'maasModelSubLayers' in html_text
+        assert 'maasGlofasEnsembleEnabled' in html_text
+        assert 'toggleMaaSGlofasEnsemble' in html_text
+        assert 'appendMaaSGlofasEnsembleDatasets' in html_text
 
     def test_live_network_status_coloring(self) -> None:
         """Verify live flow percentile bins and exceedance rank coloring."""

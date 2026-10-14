@@ -191,20 +191,30 @@ class TestGloFASAndGeoGLOWSProviders:
             'longitude': -90.175,
             'daily': {
                 'time': ['2026-04-01', '2026-04-02', '2026-04-03'],
+                'river_discharge': [4050.0, 4450.0, 4850.0],
                 'river_discharge_mean': [4100.0, 4500.0, 4900.0],
                 'river_discharge_median': [4100.0, 4500.0, 4900.0],
                 'river_discharge_p25': [3800.0, 4100.0, 4400.0],
                 'river_discharge_p75': [4400.0, 4900.0, 5400.0],
                 'river_discharge_min': [3400.0, 3600.0, 3900.0],
                 'river_discharge_max': [5100.0, 5800.0, 6400.0],
+                'river_discharge_member01': [3900.0, 4200.0, 4600.0],
+                'river_discharge_member02': [4300.0, 4800.0, 5200.0],
             },
         }
         parsed = parse_glofas_forecast_response(raw_glofas, 38.627, -90.199)
         assert parsed['status'] == 'live'
         assert len(parsed['data']) == _THREE_POINTS
+        assert parsed['data'][2]['discharge_deterministic'] == pytest.approx(
+            4850.0
+        )
         assert parsed['data'][2]['discharge_median'] == pytest.approx(4900.0)
         assert parsed['data'][2]['discharge_min'] == pytest.approx(3900.0)
         assert parsed['data'][2]['discharge_max'] == pytest.approx(6400.0)
+        assert set(parsed['ensemble_members']) == {'member01', 'member02'}
+        assert parsed['ensemble_members']['member01'][2] == pytest.approx(
+            4600.0
+        )
 
         # Reanalysis annual maxima across 12 years (>= 300 days/year)
         times: list[str] = []

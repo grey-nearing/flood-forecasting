@@ -16,9 +16,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from maas.config import MAAS_MODEL_NAMES
+from maas.config import MAAS_MODEL_NAMES, parse_finite_float
 from maas.fetcher import align_daily_series, daily_series, window_peak
 from maas.thresholds import (
     EXCEEDANCE_CLASSES,
@@ -207,6 +208,39 @@ def build_flood_summary(
     }
 
 
+_ISO_DATE_LEN: int = 10
+
+
+def _align_glofas_members(
+    gl_fc: Mapping[str, Any] | None,
+    dates: Sequence[str],
+) -> dict[str, list[float | None]]:
+    """Align GloFAS ensemble members (`member01`..`member50`) onto `dates`."""
+    if not isinstance(gl_fc, Mapping):
+        return {}
+    raw_members = gl_fc.get('ensemble_members')
+    if not isinstance(raw_members, Mapping) or not raw_members:
+        return {}
+    raw_records = gl_fc.get('data') or ()
+    raw_times = [
+        str(r.get('time', ''))[:_ISO_DATE_LEN]
+        for r in raw_records
+        if isinstance(r, Mapping)
+    ]
+    aligned_members: dict[str, list[float | None]] = {}
+    for mk, mvals in sorted(raw_members.items()):
+        if not isinstance(mvals, Sequence) or isinstance(mvals, (str, bytes)):
+            continue
+        mdaily: dict[str, float] = {}
+        for t_str, mv in zip(raw_times, mvals, strict=False):
+            fval = parse_finite_float(mv)
+            if len(t_str) == _ISO_DATE_LEN and fval is not None:
+                mdaily[t_str] = fval
+        if mdaily:
+            aligned_members[str(mk)] = align_daily_series(mdaily, dates)
+    return aligned_members
+
+
 def build_aligned_timeline(
     models: list[str],
     fh_fc: dict[str, Any] | None,
@@ -220,10 +254,24 @@ def build_aligned_timeline(
         if (fh_fc and fh_fc.get('data'))
         else {}
     )
+    gl_det_d = (
+        daily_series(
+            (gl_fc or {}).get('data'),
+            'discharge_deterministic',
+            'discharge_median',
+        )
+        if gl_fc
+        else {}
+    )
     gl_daily = (
         daily_series(
             (gl_fc or {}).get('data'), 'discharge_median', 'discharge_mean'
         )
+        if gl_fc
+        else {}
+    )
+    gl_mean_d = (
+        daily_series((gl_fc or {}).get('data'), 'discharge_mean')
         if gl_fc
         else {}
     )
@@ -264,7 +312,9 @@ def build_aligned_timeline(
     gg_min_d = (
         daily_series((gg_fc or {}).get('data'), 'flow_min') if gg_fc else {}
     )
-    dates = sorted(set(fh_daily) | set(gl_daily) | set(gg_daily))
+    dates = sorted(
+        set(fh_daily) | set(gl_det_d) | set(gl_daily) | set(gg_daily)
+    )
     timeline_series: dict[str, Any] = {}
     if 'floodhub' in models and fh_daily:
         fh_aligned = align_daily_series(fh_daily, dates)
@@ -274,15 +324,19 @@ def build_aligned_timeline(
             'unit': 'm³/s' if fh_is_q else 'm',
             'axis': 'discharge' if fh_is_q else 'stage',
         }
-    if 'glofas' in models and gl_daily:
-        gl_aligned = align_daily_series(gl_daily, dates)
+    if 'glofas' in models and (gl_daily or gl_det_d):
+        gl_det_aligned = align_daily_series(gl_det_d or gl_daily, dates)
+        gl_med_aligned = align_daily_series(gl_daily or gl_det_d, dates)
         timeline_series['glofas'] = {
-            'central': gl_aligned,
-            'median': gl_aligned,
+            'central': gl_det_aligned,
+            'deterministic': gl_det_aligned,
+            'median': gl_med_aligned,
+            'mean': align_daily_series(gl_mean_d, dates),
             'p25': align_daily_series(gl_p25_d, dates),
             'p75': align_daily_series(gl_p75_d, dates),
             'max': align_daily_series(gl_max_d, dates),
             'min': align_daily_series(gl_min_d, dates),
+            'members': _align_glofas_members(gl_fc, dates),
         }
     if 'geoglows' in models and gg_daily:
         gg_aligned = align_daily_series(gg_daily, dates)

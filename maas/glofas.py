@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Copernicus GloFAS v4 Open-Meteo/CDS/Zarr extractor and LISFLOOD grid snapper."""
+"""Copernicus GloFAS v4 Open-Meteo/CDS/Zarr extractor and grid snapper."""
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -36,6 +36,8 @@ from maas.thresholds import (
     compute_return_periods,
     extract_annual_maxima,
 )
+
+_MIN_REANALYSIS_YEARS: int = 8
 
 GLOFAS_DAILY_VARIABLES = (
     'river_discharge,'
@@ -64,11 +66,16 @@ def parse_glofas_forecast_response(
     lat: float,
     lon: float,
 ) -> dict[str, Any]:
-    """Parse an Open-Meteo `/v1/flood` JSON payload into normalized GloFAS records.
+    """Parse an Open-Meteo `/v1/flood` JSON payload into GloFAS records.
 
     Missing values are preserved as `None` (never replaced with `0.0`).
+    Extracts the deterministic control trace (`discharge_deterministic` from
+    `river_discharge`), summary statistics (`mean`, `median`, `min`, `max`,
+    `p25`, `p75`), and any individual perturbed ensemble members
+    (`river_discharge_member01`..`river_discharge_member50`).
     """
     records: list[dict[str, Any]] = []
+    ensemble_members: dict[str, list[float | None]] = {}
     if isinstance(payload, Mapping) and isinstance(
         payload.get('daily'), Mapping
     ):
@@ -84,9 +91,15 @@ def parse_glofas_forecast_response(
         ):
             if required_key not in daily:
                 raise KeyError(
-                    f'Missing required key {required_key!r} in GloFAS daily forecast payload'
+                    f'Missing required key {required_key!r} '
+                    'in GloFAS daily forecast payload'
                 )
         times = daily['time']
+        raw_det = daily.get('river_discharge')
+        has_det_col = isinstance(raw_det, Sequence) and not isinstance(
+            raw_det, (str, bytes)
+        )
+        dets: Sequence[Any] = raw_det if has_det_col else ()
         means = daily['river_discharge_mean']
         meds = daily['river_discharge_median']
         maxs = daily['river_discharge_max']
@@ -94,17 +107,32 @@ def parse_glofas_forecast_response(
         p25s = daily['river_discharge_p25']
         p75s = daily['river_discharge_p75']
         for i, raw_t in enumerate(times):
+            med_val = _extract_rounded_or_none(meds, i)
+            det_val = (
+                _extract_rounded_or_none(dets, i) if has_det_col else med_val
+            )
             records.append(
                 {
                     'time': str(raw_t),
+                    'discharge_deterministic': det_val,
                     'discharge_mean': _extract_rounded_or_none(means, i),
-                    'discharge_median': _extract_rounded_or_none(meds, i),
+                    'discharge_median': med_val,
                     'discharge_max': _extract_rounded_or_none(maxs, i),
                     'discharge_min': _extract_rounded_or_none(mins, i),
                     'discharge_p25': _extract_rounded_or_none(p25s, i),
                     'discharge_p75': _extract_rounded_or_none(p75s, i),
                 }
             )
+        member_keys = sorted(
+            k for k in daily if str(k).startswith('river_discharge_member')
+        )
+        for mk in member_keys:
+            seq = daily.get(mk)
+            if isinstance(seq, Sequence) and not isinstance(seq, (str, bytes)):
+                short_key = str(mk).replace('river_discharge_', '')
+                ensemble_members[short_key] = [
+                    _extract_rounded_or_none(seq, i) for i in range(len(times))
+                ]
     has_live = len(records) > 0
     return {
         'model': 'copernicus_glofas',
@@ -114,6 +142,7 @@ def parse_glofas_forecast_response(
         'lon': lon,
         'unit': 'CUBIC_METERS_PER_SECOND',
         'data': records,
+        'ensemble_members': ensemble_members,
     }
 
 
@@ -131,7 +160,7 @@ def compute_glofas_reanalysis_return_periods(
     times = daily.get('time') or []
     values = daily.get('river_discharge') or []
     annual_max = extract_annual_maxima(times, values)
-    if len(annual_max) < 8:
+    if len(annual_max) < _MIN_REANALYSIS_YEARS:
         return None
 
     method_key = method.strip().lower()
@@ -157,7 +186,8 @@ def compute_glofas_reanalysis_return_periods(
         )
     else:
         raise ValueError(
-            f"Unsupported return period method {method!r}. Expected 'gumbel', 'gema', or 'weibull'."
+            f'Unsupported return period method {method!r}. '
+            "Expected 'gumbel', 'gema', or 'weibull'."
         )
 
     valid = [
@@ -206,13 +236,15 @@ def extract_glofas_zarr_series(
     with open_fn(zarr_path) as ds:
         if var_name not in ds:
             raise KeyError(
-                f'Variable {var_name!r} not found in {zarr_path}; available: {list(ds.data_vars)}'
+                f'Variable {var_name!r} not found in {zarr_path}; '
+                f'available: {list(ds.data_vars)}'
             )
         lat_coord = 'latitude' if 'latitude' in ds.coords else 'lat'
         lon_coord = 'longitude' if 'longitude' in ds.coords else 'lon'
         if lat_coord not in ds.coords or lon_coord not in ds.coords:
             raise KeyError(
-                f'Missing latitude/longitude coordinates in {zarr_path}: {list(ds.coords)}'
+                f'Missing latitude/longitude coordinates in {zarr_path}: '
+                f'{list(ds.coords)}'
             )
         lats = ds[lat_coord].to_numpy(dtype=float)
         lons = ds[lon_coord].to_numpy(dtype=float)
@@ -223,7 +255,8 @@ def extract_glofas_zarr_series(
             or abs(float(lons[lon_idx]) - cell_lon) > GLOFAS_RES_DEG
         ):
             raise ValueError(
-                f'Cell ({cell_lat}, {cell_lon}) is outside archive domain in {zarr_path}.'
+                f'Cell ({cell_lat}, {cell_lon}) is outside archive domain '
+                f'in {zarr_path}.'
             )
         sub = ds[var_name].isel({lat_coord: lat_idx, lon_coord: lon_idx})
         times = sub['time'].to_numpy()
@@ -245,7 +278,7 @@ def extract_glofas_zarr_series(
 
 
 class GloFASClient:
-    """Client for Copernicus GloFAS v4 forecasts and reanalysis via Open-Meteo."""
+    """Client for Copernicus GloFAS v4 forecasts and reanalysis."""
 
     def __init__(
         self,
@@ -253,6 +286,7 @@ class GloFASClient:
         timeout_s: float = 10.0,
         session: requests.Session | None = None,
     ) -> None:
+        """Initialize the GloFAS HTTP client."""
         self.base_url = base_url
         self.timeout_s = timeout_s
         self.session = session if session is not None else requests.Session()
@@ -263,11 +297,12 @@ class GloFASClient:
         lon: float,
         forecast_days: int = 15,
     ) -> dict[str, Any]:
-        """Fetch 15-day GloFAS ensemble forecast statistics."""
+        """Fetch 15-day GloFAS deterministic and 50-member ensemble forecast."""
         params = {
             'latitude': lat,
             'longitude': lon,
             'daily': GLOFAS_DAILY_VARIABLES,
+            'ensemble': 'true',
             'forecast_days': forecast_days,
         }
         resp = self.session.get(
