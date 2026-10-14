@@ -693,10 +693,14 @@ class MultiMetZarrWriter:
     missing_var = MISSING_FRACTION_VAR.get(product)
     if missing_var and missing_var not in all_store_vars:
       all_store_vars.append(missing_var)
-    for band in all_store_vars:
-      nan_vars[band] = (dims, np.full(shape, np.nan, dtype=np.float32))
 
     with xr.open_zarr(store_path) as existing_ds:
+      existing_var_names = list(existing_ds.data_vars)
+      target_var_names = existing_var_names if existing_var_names else all_store_vars
+      for band in target_var_names:
+        if band in existing_ds.data_vars and existing_ds[band].ndim == 4:
+          continue
+        nan_vars[band] = (dims, np.full(shape, np.nan, dtype=np.float32))
       if is_forecast and "ensemble_member" in existing_ds.dims:
         ens_coord_vals = np.asarray(existing_ds["ensemble_member"].values)
         coords["ensemble_member"] = ens_coord_vals
@@ -936,10 +940,14 @@ class MultiMetZarrWriter:
     missing_var = MISSING_FRACTION_VAR.get(product)
     if missing_var and missing_var not in all_store_vars:
       all_store_vars.append(missing_var)
-    for band in all_store_vars:
-      nan_vars[band] = (dims, np.full(shape, np.nan, dtype=np.float32))
 
     with xr.open_zarr(store_path) as existing_ds:
+      existing_var_names = list(existing_ds.data_vars)
+      target_var_names = existing_var_names if existing_var_names else all_store_vars
+      for band in target_var_names:
+        if band in existing_ds.data_vars and existing_ds[band].ndim == 4:
+          continue
+        nan_vars[band] = (dims, np.full(shape, np.nan, dtype=np.float32))
       if is_forecast and "ensemble_member" in existing_ds.dims:
         ens_coord_vals = np.asarray(existing_ds["ensemble_member"].values)
         coords["ensemble_member"] = ens_coord_vals

@@ -786,10 +786,66 @@ class RealtimeForcingFetcher:
           ref_dt.strftime("%Y-%m-%d"),
       )
 
+      active_start_dt = start_dt
+      if (
+          not overwrite
+          and loaded_weights is None
+          and self.writer.store_exists(prod_enum)
+      ):
+        store_info = self.writer.get_store_info(prod_enum)
+        if (
+            store_info is not None
+            and store_info.get("bands")
+            and len(store_info["dates"]) > 0
+        ):
+          store_basins = set(store_info["basins"])
+          present_basins = [b for b in basin_ids if b in store_basins]
+          missing_basins = [b for b in basin_ids if b not in store_basins]
+          if present_basins and missing_basins:
+            present_start, _ = self.plan_product_window(
+                prod_enum,
+                basin_ids=present_basins,
+                reference_date=ref_dt,
+                mode=mode,
+                lookback_days=lookback_days,
+                hot_start_state_date=state_dt,
+                overwrite=False,
+                spinup_only_lead_1d=spinup_only_lead_1d,
+                full_forecast_days=full_forecast_days,
+            )
+            if present_start > start_dt:
+              hist_end_dt = present_start - pd.Timedelta(days=1)
+              logger.info(
+                  "[%s] Backfilling %d newly added basin(s) for %s over [%s .. %s]...",
+                  mode.upper(),
+                  len(missing_basins),
+                  prod_name,
+                  start_dt.strftime("%Y-%m-%d"),
+                  hist_end_dt.strftime("%Y-%m-%d"),
+              )
+              ds_missing = self._extract_product_dataset(
+                  prod_name,
+                  basins_gdf=basins_gdf.loc[missing_basins],
+                  start_dt=start_dt,
+                  end_dt=hist_end_dt,
+                  reference_dt=ref_dt,
+                  spinup_only_lead_1d=spinup_only_lead_1d,
+                  full_forecast_days=full_forecast_days,
+                  weights_matrix=None,
+              )
+              self.writer.write_or_append(
+                  ds_missing,
+                  prod_enum,
+                  overwrite_existing_basins=False,
+                  preserve_existing_valid=True,
+                  allow_2d_expansion=True,
+              )
+              active_start_dt = present_start
+
       ds = self._extract_product_dataset(
           prod_name,
           basins_gdf=basins_gdf,
-          start_dt=start_dt,
+          start_dt=active_start_dt,
           end_dt=end_dt,
           reference_dt=ref_dt,
           spinup_only_lead_1d=spinup_only_lead_1d,
