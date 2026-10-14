@@ -43,6 +43,53 @@ logger = logging.getLogger(__name__)
 
 PROFILES_DIR = DATA_DIR / 'profiles'
 
+# Cache of inspected Zarr store metadata keyed by:
+# (resolved_path, zarr_mtime_ns, zmeta_mtime_ns, max_child_mtime_ns)
+_ZARR_INSPECT_CACHE: dict[tuple[str, int, int, int], dict[str, Any]] = {}
+
+
+def _find_zarr_dirs(base_d: Path) -> list[Path]:
+    """Return sorted ``*.zarr`` directories under ``base_d`` without descending into them."""
+    if not base_d.exists():
+        return []
+    found: list[Path] = []
+    for root, dirs, _files in os.walk(base_d):
+        zarr_dirs = [d for d in dirs if d.endswith('.zarr')]
+        for zd in zarr_dirs:
+            found.append(Path(root) / zd)
+        dirs[:] = [d for d in dirs if not d.endswith('.zarr')]
+    return sorted(found)
+
+
+def _zarr_cache_signature(zarr_path: Path) -> tuple[str, int, int, int]:
+    """Build a fast mtime signature for ``zarr_path`` without deep chunk traversal."""
+    resolved = str(zarr_path.resolve())
+    try:
+        zarr_mtime_ns = zarr_path.stat().st_mtime_ns
+    except OSError:
+        return (resolved, 0, 0, 0)
+    zmeta_mtime_ns = 0
+    for meta_name in ('.zmetadata', 'zarr.json', '.zgroup', '.zattrs'):
+        mpath = zarr_path / meta_name
+        try:
+            if mpath.exists():
+                zmeta_mtime_ns = max(zmeta_mtime_ns, mpath.stat().st_mtime_ns)
+        except OSError:
+            pass
+    max_child_mtime_ns = 0
+    try:
+        for entry in os.scandir(zarr_path):
+            try:
+                max_child_mtime_ns = max(
+                    max_child_mtime_ns,
+                    entry.stat().st_mtime_ns,
+                )
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return (resolved, zarr_mtime_ns, zmeta_mtime_ns, max_child_mtime_ns)
+
 LEGACY_PROFILE_SUBDIRS = (
     'polygons',
     'attributes',
@@ -879,6 +926,21 @@ class ProfileManager:
         default_category: str = 'historical',
     ) -> dict[str, Any]:
         """Inspect a Zarr store on disk and return metadata."""
+        rel_path = (
+            str(zarr_path.relative_to(profile_dir))
+            if zarr_path.is_relative_to(profile_dir)
+            else zarr_path.name
+        )
+        cache_sig = _zarr_cache_signature(zarr_path)
+        if cache_sig[1] > 0 and cache_sig in _ZARR_INSPECT_CACHE:
+            cached = _ZARR_INSPECT_CACHE[cache_sig]
+            return {
+                **cached,
+                'rel_path': rel_path,
+                'path': str(zarr_path),
+                'category': default_category,
+            }
+
         size_bytes = sum(
             f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()
         )
@@ -889,11 +951,6 @@ class ProfileManager:
             ).isoformat()
             if zarr_path.exists()
             else ''
-        )
-        rel_path = (
-            str(zarr_path.relative_to(profile_dir))
-            if zarr_path.is_relative_to(profile_dir)
-            else zarr_path.name
         )
 
         meta: dict[str, Any] = {
@@ -923,7 +980,12 @@ class ProfileManager:
         if not _is_valid_zarr_dir(zarr_path):
             return meta
 
-        ds = xr.open_zarr(str(zarr_path), decode_timedelta=False)
+        try:
+            ds = xr.open_zarr(str(zarr_path), decode_timedelta=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('Could not open Zarr store %s: %s', zarr_path, exc)
+            return meta
+
         meta['dimensions'] = {str(k): int(v) for k, v in ds.sizes.items()}
 
         for b_key in ('basin', 'basin_id', 'catchment_id', 'gauge_id'):
@@ -976,6 +1038,8 @@ class ProfileManager:
             or attrs.get('initialization_time')
             or meta['start_date']
         )
+        if cache_sig[1] > 0:
+            _ZARR_INSPECT_CACHE[cache_sig] = dict(meta)
         return meta
 
     def _summarize_polygons(
@@ -1211,7 +1275,7 @@ class ProfileManager:
         for base_d in dirs:
             if not base_d.exists():
                 continue
-            for z_item in sorted(base_d.rglob('*.zarr')):
+            for z_item in _find_zarr_dirs(base_d):
                 if exclude_forecast and 'forecast' in z_item.name:
                     continue
                 if str(z_item) in seen_zarrs:
@@ -1462,9 +1526,30 @@ class ProfileManager:
             return_periods_data=return_periods_data,
         )
 
-        total_bytes = sum(
-            f.stat().st_size for f in p_dir.rglob('*') if f.is_file()
+        inspected_zarr_bytes = sum(
+            int(st.get('size_bytes', 0))
+            for st in (
+                historical_stores
+                + targets_stores
+                + forecast_stores
+                + assimilation_stores
+            )
         )
+        non_zarr_bytes = 0
+        if p_dir.exists():
+            for root, dirs, files in os.walk(p_dir):
+                root_path = Path(root)
+                dirs[:] = [
+                    d for d in dirs if str(root_path / d) not in seen_zarrs
+                ]
+                for fname in files:
+                    fpath = root_path / fname
+                    try:
+                        if fpath.is_file():
+                            non_zarr_bytes += fpath.stat().st_size
+                    except OSError:
+                        pass
+        total_bytes = inspected_zarr_bytes + non_zarr_bytes
         hist_basins_set = {
             b for s in historical_stores for b in s.get('basins', [])
         }

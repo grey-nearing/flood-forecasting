@@ -42,6 +42,15 @@ from frontend.config import (
 )
 from frontend.delineator import HydroDelineator
 from frontend.dem_tile_server import DemTileServer
+from frontend.finetune_service import (
+    clear_finetune_data,
+    generate_sample_basin_csvs,
+    get_finetune_workspace_status,
+    list_finetune_models,
+    reset_finetune_session,
+    run_finetune_epochs,
+    upload_finetune_csv,
+)
 from frontend.forecast_zarr import ForecastZarrExtractor
 from frontend.historical_zarr import HistoricalZarrExtractor
 from frontend.jobs import get_job_manager
@@ -52,7 +61,7 @@ from frontend.maas_engine import (
     get_unified_maas_forecast,
 )
 from frontend.maas_networks import get_model_network
-from frontend.profile_manager import get_profile_manager
+from frontend.profile_manager import _find_zarr_dirs, get_profile_manager
 from frontend.realtime_forecast_service import (
     clear_realtime_streamflow_csv,
     fetch_realtime_for_basin,
@@ -380,6 +389,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(payload)))
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(payload)
@@ -477,6 +487,8 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/maas/reaches': self._get_maas_reaches,
             '/api/maas/return-periods': self._get_maas_return_periods,
             '/api/forecast/status': self._get_forecast_status,
+            '/api/finetune/models': self._get_finetune_models,
+            '/api/finetune/status': self._get_finetune_status,
             '/api/archives': self._get_archives,
             '/api/attributes/csv': self._get_attributes_csv,
             '/api/archives/caravan_hydroatlas_attributes.csv': (
@@ -986,6 +998,43 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             {'provider': provider, 'method': method, 'return_periods': rps}
         )
 
+    def _get_finetune_models(self, _query: dict[str, list[str]]) -> None:
+        user = self._get_request_username()
+        self._send_json({'models': list_finetune_models(user)})
+
+    def _get_finetune_status(self, query: dict[str, list[str]]) -> None:
+        user = self._get_request_username()
+        pm = get_profile_manager()
+        basin_id = (
+            query.get('basin_id', [''])[0]
+            or query.get('catchment_id', [''])[0]
+            or ''
+        ).strip()
+        if not basin_id:
+            ws = pm.load_watersheds(user)
+            if ws:
+                basin_id = str(
+                    ws[0].get('properties', {}).get('catchment_id')
+                    or ws[0].get('id')
+                    or ''
+                )
+        if not basin_id:
+            basin_id = 'custom_basin_01'
+        model_id = (
+            query.get(
+                'model_id', ['google-floodhub-settings-110-epochs']
+            )[0]
+            or 'google-floodhub-settings-110-epochs'
+        ).strip()
+        split_ratio = _parse_float(query.get('split_ratio', [''])[0] or None)
+        payload = get_finetune_workspace_status(
+            username=user,
+            basin_id=basin_id,
+            model_id=model_id,
+            split_ratio=split_ratio,
+        )
+        self._send_json(payload)
+
     def _get_forecast_status(self, query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
         pm = get_profile_manager()
@@ -1081,23 +1130,28 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         archives: list[dict[str, Any]],
         seen_paths: set[str],
     ) -> None:
+        p_dir = pm.get_profile_dir(user)
         hist_dirs = (
             pm.get_historical_dir(user),
             pm.get_dynamics_dir(user),
             pm.get_targets_dir(user),
-            pm.get_profile_dir(user) / 'archives',
+            p_dir / 'archives',
         )
         for base_dir in hist_dirs:
             if not base_dir.exists():
                 continue
-            for item in base_dir.rglob('*.zarr'):
+            for item in _find_zarr_dirs(base_dir):
                 if 'forecast' in item.name or str(item) in seen_paths:
                     continue
                 seen_paths.add(str(item))
-                size_bytes = sum(
-                    f.stat().st_size for f in item.rglob('*') if f.is_file()
+                meta = pm._inspect_zarr_store(
+                    item,
+                    p_dir,
+                    default_category='Historical Data',
                 )
-                basin_list, n_times, _ = _inspect_zarr_archive(item)
+                basin_list = list(meta.get('basins') or [])
+                n_times = int(meta.get('n_timesteps') or 0)
+                size_bytes = int(meta.get('size_bytes') or 0)
                 is_master = (
                     item.name == HISTORICAL_MASTER_ZARR_NAME
                     or len(basin_list) > 1
@@ -1140,21 +1194,28 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         archives: list[dict[str, Any]],
         seen_paths: set[str],
     ) -> None:
+        p_dir = pm.get_profile_dir(user)
         fc_dirs = [pm.get_forecast_dir(user)]
-        rt_dir = pm.get_profile_dir(user) / 'realtime'
+        rt_dir = p_dir / 'realtime'
         if rt_dir.exists():
             fc_dirs.append(rt_dir)
         for base_dir in fc_dirs:
             if not base_dir.exists():
                 continue
-            for item in base_dir.rglob('*.zarr'):
+            for item in _find_zarr_dirs(base_dir):
                 if str(item) in seen_paths:
                     continue
                 seen_paths.add(str(item))
-                size_bytes = sum(
-                    f.stat().st_size for f in item.rglob('*') if f.is_file()
+                meta = pm._inspect_zarr_store(
+                    item,
+                    p_dir,
+                    default_category='Forecast Weather',
                 )
-                mfc_basins, _, mfc_lead = _inspect_zarr_archive(item)
+                mfc_basins = list(meta.get('basins') or [])
+                mfc_lead = int(
+                    meta.get('lead_time_days') or meta.get('n_timesteps') or 0
+                )
+                size_bytes = int(meta.get('size_bytes') or 0)
                 cid = (
                     f'FORECAST_{len(mfc_basins)}_BASINS'
                     if len(mfc_basins) > 1
@@ -1343,6 +1404,11 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/forecast/clear-streamflow': (
                 self._post_forecast_clear_streamflow
             ),
+            '/api/finetune/upload-csv': self._post_finetune_upload_csv,
+            '/api/finetune/sample-data': self._post_finetune_sample_data,
+            '/api/finetune/clear-data': self._post_finetune_clear_data,
+            '/api/finetune/run': self._post_finetune_run,
+            '/api/finetune/reset': self._post_finetune_reset,
             '/api/weather/refresh': self._post_weather_refresh,
             '/api/weather/sync': self._post_weather_refresh,
         }
@@ -1495,14 +1561,16 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             settings=data.get('settings'),
             create_if_missing=create_if_missing,
         )
-        loaded_feats = pm.load_watersheds(prof.get('username'))
+        active_user = str(prof.get('username') or 'guest')
+        loaded_feats = pm.load_watersheds(active_user)
         self._send_json(
             {
                 'status': 'success',
-                'message': f"Logged in as '{prof.get('username')}'",
+                'message': f"Logged in as '{active_user}'",
                 'profile': prof,
                 'watersheds': loaded_feats,
                 'count': len(loaded_feats),
+                'account_summary': pm.get_account_summary(active_user),
             }
         )
 
@@ -1535,13 +1603,15 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             email=data.get('email'),
             display_name=data.get('display_name'),
         )
+        created_user = str(prof.get('username') or clean_user)
         self._send_json(
             {
                 'status': 'success',
-                'message': f"Created account '{prof.get('username')}'",
+                'message': f"Created account '{created_user}'",
                 'profile': prof,
                 'watersheds': [],
                 'count': 0,
+                'account_summary': pm.get_account_summary(created_user),
             }
         )
 
@@ -1582,6 +1652,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 'profile': prof,
                 'watersheds': loaded_feats,
                 'count': len(loaded_feats),
+                'account_summary': pm.get_account_summary(pm.active_username),
             }
         )
 
@@ -1596,6 +1667,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 'profile': prof,
                 'watersheds': loaded_feats,
                 'count': len(loaded_feats),
+                'account_summary': pm.get_account_summary('guest'),
             }
         )
 
@@ -2356,6 +2428,161 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_error(str(exc), status=400)
             return
+        self._send_json(payload)
+
+    def _post_finetune_upload_csv(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        data_type = str(data.get('data_type') or '').strip()
+        csv_content = str(
+            data.get('csv_content') or data.get('csv') or ''
+        )
+        filename = str(data.get('filename') or f'{data_type}.csv')
+        units = str(data.get('units') or 'mm/day')
+        area_km2 = _parse_float(data.get('area_km2'))
+        lead_time = _parse_int(data.get('lead_time'), default=7) or 7
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        )
+        try:
+            upload_info = upload_finetune_csv(
+                username=user,
+                basin_id=basin_id,
+                data_type=data_type,
+                csv_content=csv_content,
+                filename=filename,
+                units=units,
+                area_km2=area_km2,
+                target_lead_time=lead_time,
+            )
+            status_payload = get_finetune_workspace_status(
+                username=user,
+                basin_id=basin_id,
+                model_id=model_id,
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400)
+            return
+        self._send_json(
+            {
+                'status': 'uploaded',
+                'upload': upload_info,
+                'workspace': status_payload,
+            }
+        )
+
+    def _post_finetune_sample_data(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        num_days = _parse_int(data.get('num_days'), default=240) or 240
+        lead_time = _parse_int(data.get('lead_time'), default=7) or 7
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        )
+        previews = generate_sample_basin_csvs(
+            username=user,
+            basin_id=basin_id,
+            num_days=num_days,
+            lead_time=lead_time,
+        )
+        status_payload = get_finetune_workspace_status(
+            username=user,
+            basin_id=basin_id,
+            model_id=model_id,
+        )
+        self._send_json(
+            {
+                'status': 'generated',
+                'previews': previews,
+                'workspace': status_payload,
+            }
+        )
+
+    def _post_finetune_clear_data(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        )
+        clear_finetune_data(username=user, basin_id=basin_id)
+        status_payload = get_finetune_workspace_status(
+            username=user,
+            basin_id=basin_id,
+            model_id=model_id,
+        )
+        self._send_json(
+            {
+                'status': 'cleared',
+                'workspace': status_payload,
+            }
+        )
+
+    def _post_finetune_run(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        ).strip()
+        epochs = _parse_int(data.get('epochs'), default=5) or 5
+        learning_rate = _parse_float(data.get('learning_rate'))
+        loss = data.get('loss')
+        lr_strategy = data.get('learning_rate_strategy')
+        batch_size = _parse_int(data.get('batch_size'))
+        finetune_modules = data.get('finetune_modules')
+        split_ratio = (
+            _parse_float(data.get('split_ratio'), default=0.7) or 0.7
+        )
+        try:
+            payload = run_finetune_epochs(
+                username=user,
+                basin_id=basin_id,
+                model_id=model_id,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                loss=str(loss) if loss else None,
+                learning_rate_strategy=(
+                    str(lr_strategy) if lr_strategy else None
+                ),
+                batch_size=batch_size,
+                finetune_modules=finetune_modules,
+                split_ratio=split_ratio,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            self._send_error(str(exc), status=400)
+            return
+        self._send_json(payload)
+
+    def _post_finetune_reset(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = str(
+            data.get('basin_id')
+            or data.get('catchment_id')
+            or 'custom_basin_01'
+        ).strip()
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        ).strip()
+        payload = reset_finetune_session(
+            username=user,
+            basin_id=basin_id,
+            model_id=model_id,
+        )
         self._send_json(payload)
 
     def _post_weather_refresh(self, data: dict[str, Any]) -> None:
