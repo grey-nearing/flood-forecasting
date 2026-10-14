@@ -1014,6 +1014,9 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         assert 'maasGlofasEnsembleEnabled' in html_text
         assert 'toggleMaaSGlofasEnsemble' in html_text
         assert 'appendMaaSGlofasEnsembleDatasets' in html_text
+        assert 'maasGlofasRangeEnabled' in html_text
+        assert 'toggleMaaSGlofasRange' in html_text
+        assert 'appendMaaSGlofasRangeDatasets' in html_text
 
     def test_live_network_status_coloring(self) -> None:
         """Verify live flow percentile bins and exceedance rank coloring."""

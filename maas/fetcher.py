@@ -988,7 +988,7 @@ class MaaSDataFetcher:
                 if (
                     isinstance(gl_fc_cached, dict)
                     and gl_fc_cached.get('status') == 'live'
-                    and 'ensemble_members' in gl_fc_cached
+                    and bool(gl_fc_cached.get('ensemble_members'))
                 ):
                     return gl_fc_cached
                 res_fc = self.glofas.fetch_forecast(

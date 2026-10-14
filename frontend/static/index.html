@@ -370,7 +370,7 @@
           </div>
           <div id="maasMapMultiModelList" role="group" aria-label="Map models and river networks (click one or multiple)" class="flex items-center gap-1.5 flex-wrap"></div>
           <div class="flex items-center gap-1.5 pt-1 border-t border-[#e8eaed] pl-0.5">
-            <span id="maasMapModelDot" class="w-2 h-2 rounded-full flex-shrink-0" style="background:#7c3aed"></span>
+            <span id="maasMapModelDot" class="w-2 h-2 rounded-full flex-shrink-0" style="background:#d55e00"></span>
             <div id="maasNetworkCaption" class="text-[11px] font-medium text-[#5f6368] leading-tight">LISFLOOD 0.05° river grid</div>
           </div>
         </div>
@@ -11172,25 +11172,27 @@
     // and draws that model's own river network on the map. Esc or X closes the forecast view.
     // =========================================================================
     const MAAS_MODEL_ORDER = ['glofas', 'floodhub', 'geoglows'];
+    // Okabe–Ito colorblind-safe palette (distinguishable under protanopia, deuteranopia, and tritanopia)
+    // paired with distinct dash patterns and point marker shapes.
     const MAAS_MODELS = {
       floodhub: {
         name: 'Google FloodHub', shortName: 'FloodHub', streamMap: 'HydroSHEDS',
         cadenceLabel: 'daily',
-        color: '#1a73e8', band: 'rgba(26, 115, 232, 0.22)',
+        color: '#0072b2', band: 'rgba(0, 114, 178, 0.20)',
         borderDash: [], pointStyle: 'circle', pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
         networkLabel: 'HydroSHEDS HydroRIVERS', reachLabel: 'HydroRIVERS reach'
       },
       glofas: {
         name: 'Copernicus GloFAS', shortName: 'GloFAS', streamMap: 'LISFLOOD',
         cadenceLabel: 'daily',
-        color: '#7c3aed', band: 'rgba(124, 58, 237, 0.20)',
+        color: '#d55e00', band: 'rgba(213, 94, 0, 0.16)',
         borderDash: [7, 4], pointStyle: 'rectRot', pointRadius: 4.5, pointHoverRadius: 6.5, pointBorderWidth: 1.5,
         networkLabel: 'LISFLOOD 0.05° river grid', reachLabel: 'GloFAS 0.05° river'
       },
       geoglows: {
         name: 'GEOGLOWS ECMWF', shortName: 'GEOGLOWS', streamMap: 'TDX-Hydro',
         cadenceLabel: '3-hourly',
-        color: '#16a34a', band: 'rgba(22, 163, 74, 0.22)',
+        color: '#009e73', band: 'rgba(0, 158, 115, 0.20)',
         borderDash: [3, 3], pointStyle: 'triangle', pointRadius: 3.2, pointHoverRadius: 5.5, pointBorderWidth: 1,
         networkLabel: 'TDX-Hydro streams', reachLabel: 'TDX-Hydro stream'
       }
@@ -11203,7 +11205,8 @@
     let currentMaaSModel = 'glofas';
     const selectedMaaSMapModels = new Set(['glofas']); // 1..3 hydrofabrics visible on the map at once
     const selectedMaaSModels = new Set(['glofas']); // 0..3 deterministic/central models plotted in the forecast view
-    let maasGlofasEnsembleEnabled = false; // Forecast-view-only sub-option under GloFAS for the 50-member GloFAS ensemble
+    let maasGlofasEnsembleEnabled = false; // Forecast-view-only sub-option under GloFAS for the 50 actual ensemble member traces
+    let maasGlofasRangeEnabled = false; // Forecast-view-only sub-option under GloFAS for the full Min–Max ensemble range
     let currentMaaSView = 'map'; // 'map' | 'forecast'
     let currentMaaSProbe = null; // { lat, lon, gaugeId, riverId, label, meta } of the selected reach
     let currentMaaSForecastData = null; // /api/maas/forecast payload for currentMaaSProbe
@@ -11361,15 +11364,18 @@
       </button>`;
     }
 
-    function maasGlofasForecastGroupHtml(isDetSelected, isEnsSelected) {
+    function maasGlofasForecastGroupHtml(isDetSelected, isEnsSelected, isRangeSelected) {
       const m = MAAS_MODELS.glofas;
       const detCls = isDetSelected
         ? 'bg-[#e8f0fe] text-[#174ea6] font-medium'
         : 'bg-[#f8f9fa] text-[#5f6368] hover:bg-[#f1f3f4]';
       const ensCls = isEnsSelected
-        ? 'bg-[#f3e8fd] text-[#6d28d9] font-medium'
+        ? 'bg-[#fef3e8] text-[#9a3412] font-medium'
         : 'bg-[#f8f9fa] text-[#5f6368] hover:bg-[#f1f3f4]';
-      const groupBorder = (isDetSelected || isEnsSelected)
+      const rangeCls = isRangeSelected
+        ? 'bg-[#fef3e8] text-[#9a3412] font-medium'
+        : 'bg-[#f8f9fa] text-[#5f6368] hover:bg-[#f1f3f4]';
+      const groupBorder = (isDetSelected || isEnsSelected || isRangeSelected)
         ? 'border-[#d2e3fc] shadow-[0_1px_2px_rgba(26,115,232,0.08)]'
         : 'border-[#dadce0]';
       return `<div id="maasGlofasForecastGroup" class="inline-flex items-stretch rounded-lg border overflow-hidden transition ${groupBorder}" role="group" aria-label="Copernicus GloFAS forecast options">
@@ -11379,11 +11385,17 @@
           </span>
           <span class="truncate">${maasEscapeHtml(m.shortName)}</span>
         </button>
-        <button type="button" id="maasGlofasEnsembleBtn" data-maas-glofas-ensemble="toggle" role="checkbox" aria-checked="${isEnsSelected}" title="Copernicus GloFAS 50-member ensemble sub-option (Forecast View only)" class="flex items-center gap-1 text-[11px] px-2 py-1.5 border-l border-[#dadce0] transition ${ensCls}">
+        <button type="button" id="maasGlofasEnsembleBtn" data-maas-glofas-ensemble="toggle" role="checkbox" aria-checked="${isEnsSelected}" title="Plot all 50 Copernicus GloFAS ensemble member trajectories (Forecast View only)" class="flex items-center gap-1 text-[11px] px-2 py-1.5 border-l border-[#dadce0] transition ${ensCls}">
           <span class="w-3 h-3 rounded border flex items-center justify-center flex-shrink-0" style="border-color:${isEnsSelected ? m.color : '#80868b'};background:${isEnsSelected ? m.color : 'transparent'}">
             ${isEnsSelected ? '<span class="text-white text-[9px] leading-none font-bold">✓</span>' : ''}
           </span>
           <span>+ Ensemble</span>
+        </button>
+        <button type="button" id="maasGlofasRangeBtn" data-maas-glofas-range="toggle" role="checkbox" aria-checked="${isRangeSelected}" title="Plot Copernicus GloFAS full ensemble range (Min–Max envelope, Forecast View only)" class="flex items-center gap-1 text-[11px] px-2 py-1.5 border-l border-[#dadce0] transition ${rangeCls}">
+          <span class="w-3 h-3 rounded border flex items-center justify-center flex-shrink-0" style="border-color:${isRangeSelected ? m.color : '#80868b'};background:${isRangeSelected ? m.color : 'transparent'}">
+            ${isRangeSelected ? '<span class="text-white text-[9px] leading-none font-bold">✓</span>' : ''}
+          </span>
+          <span>+ Range</span>
         </button>
       </div>`;
     }
@@ -11399,18 +11411,29 @@
       if (fcList) {
         fcList.innerHTML = MAAS_MODEL_ORDER.map(k =>
           k === 'glofas'
-            ? maasGlofasForecastGroupHtml(selectedMaaSModels.has('glofas'), maasGlofasEnsembleEnabled)
+            ? maasGlofasForecastGroupHtml(selectedMaaSModels.has('glofas'), maasGlofasEnsembleEnabled, maasGlofasRangeEnabled)
             : maasModelPillButtonHtml('data-maas-forecast-model', k, selectedMaaSModels.has(k))
         ).join('');
       }
       updateMaaSMapNetworkCaption();
     }
 
+    function maasTotalActiveForecastSelections() {
+      return selectedMaaSModels.size + (maasGlofasEnsembleEnabled ? 1 : 0) + (maasGlofasRangeEnabled ? 1 : 0);
+    }
+
+    function ensureMaaSGlofasForecastFetched() {
+      const hasGlofasPayload = currentMaaSForecastData && currentMaaSForecastData.models && currentMaaSForecastData.models.glofas;
+      if (!hasGlofasPayload && !maasForecastFullPending && currentMaaSProbe) {
+        const p = currentMaaSProbe;
+        fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta, true);
+      }
+    }
+
     function toggleMaaSMultiModel(key) {
       if (!MAAS_MODELS[key]) return;
       if (selectedMaaSModels.has(key)) {
-        const totalActive = selectedMaaSModels.size + (maasGlofasEnsembleEnabled ? 1 : 0);
-        if (totalActive <= 1) return; // keep at least one trace selected in forecast view
+        if (maasTotalActiveForecastSelections() <= 1) return; // keep at least one trace selected in forecast view
         selectedMaaSModels.delete(key);
       } else {
         selectedMaaSModels.add(key);
@@ -11427,18 +11450,27 @@
 
     function toggleMaaSGlofasEnsemble() {
       if (maasGlofasEnsembleEnabled) {
-        if (selectedMaaSModels.size === 0) {
-          // Keep at least one trace active by restoring the GloFAS deterministic trace
+        if (maasTotalActiveForecastSelections() <= 1) {
           selectedMaaSModels.add('glofas');
         }
         maasGlofasEnsembleEnabled = false;
       } else {
         maasGlofasEnsembleEnabled = true;
-        const hasGlofasPayload = currentMaaSForecastData && currentMaaSForecastData.models && currentMaaSForecastData.models.glofas;
-        if (!hasGlofasPayload && !maasForecastFullPending && currentMaaSProbe) {
-          const p = currentMaaSProbe;
-          fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta, true);
+        ensureMaaSGlofasForecastFetched();
+      }
+      renderMaaSMultiModelLists();
+      if (currentMaaSView === 'forecast') renderMaaSForecast();
+    }
+
+    function toggleMaaSGlofasRange() {
+      if (maasGlofasRangeEnabled) {
+        if (maasTotalActiveForecastSelections() <= 1) {
+          selectedMaaSModels.add('glofas');
         }
+        maasGlofasRangeEnabled = false;
+      } else {
+        maasGlofasRangeEnabled = true;
+        ensureMaaSGlofasForecastFetched();
       }
       renderMaaSMultiModelLists();
       if (currentMaaSView === 'forecast') renderMaaSForecast();
@@ -11916,7 +11948,7 @@
       const clickedNet = meta && meta.network && MAAS_MODELS[meta.network] ? meta.network : null;
       if (clickedNet) {
         const alreadyHasClickedProvider = selectedMaaSModels.has(clickedNet) ||
-          (clickedNet === 'glofas' && maasGlofasEnsembleEnabled);
+          (clickedNet === 'glofas' && (maasGlofasEnsembleEnabled || maasGlofasRangeEnabled));
         if (currentMaaSView !== 'forecast') {
           if (selectedMaaSMapModels.size >= 2) {
             selectedMaaSModels.clear();
@@ -11929,7 +11961,7 @@
             selectedMaaSModels.add(clickedNet);
           }
         } else if (!alreadyHasClickedProvider) {
-          if (selectedMaaSMapModels.size === 1 && selectedMaaSModels.size === 1 && !maasGlofasEnsembleEnabled) {
+          if (selectedMaaSMapModels.size === 1 && selectedMaaSModels.size === 1 && !maasGlofasEnsembleEnabled && !maasGlofasRangeEnabled) {
             selectedMaaSModels.clear();
             selectedMaaSModels.add(clickedNet);
           } else {
@@ -11962,7 +11994,7 @@
       if (meta && meta.network) url += `&network=${encodeURIComponent(meta.network)}`;
       try {
         const activeFetchModels = new Set(selectedMaaSModels);
-        if (maasGlofasEnsembleEnabled) activeFetchModels.add('glofas');
+        if (maasGlofasEnsembleEnabled || maasGlofasRangeEnabled) activeFetchModels.add('glofas');
         if (!forceAllModels && activeFetchModels.size === 1) {
           const [onlyModel] = activeFetchModels;
           maasForecastFullPending = true;
@@ -12064,12 +12096,14 @@
               }
             },
             tooltip: {
-              filter: (item) => !item.dataset.legendHidden && !item.dataset.isThreshold && maasIsFiniteVal(item.raw),
+              filter: (item) => !item.dataset.tooltipHidden && !item.dataset.legendHidden && !item.dataset.isThreshold && maasIsFiniteVal(item.raw),
               callbacks: {
                 label: (ctx) => {
                   const ds = ctx.dataset;
                   const fmt = (v) => (v === null || v === undefined || !isFinite(v)) ? '—' : Number(v).toFixed(ds.unit === 'm' ? 2 : 1);
-                  const value = ds.bandLow ? `${fmt(ds.bandLow[ctx.dataIndex])}–${fmt(ctx.parsed.y)}` : fmt(ctx.parsed.y);
+                  const value = (ds.bandLow && ds.bandHigh)
+                    ? `${fmt(ds.bandLow[ctx.dataIndex])}–${fmt(ds.bandHigh[ctx.dataIndex])}`
+                    : (ds.bandLow ? `${fmt(ds.bandLow[ctx.dataIndex])}–${fmt(ctx.parsed.y)}` : fmt(ctx.parsed.y));
                   return `${ds.label}: ${value} ${ds.unit}`;
                 }
               }
@@ -12144,110 +12178,136 @@
       return parts.length ? `Matched stream reaches${targetArea}: ${parts.join(' · ')}` : null;
     }
 
-    // Appends the Copernicus GloFAS 50-member ensemble (individual member spaghetti traces,
-    // 25th–75th percentile band, and ensemble median) to `datasets` when the GloFAS Ensemble sub-option is active.
+    // Computes the outer [minSlice, maxSlice] envelope across `glSeries.min`, `glSeries.max`, and all 50 `glSeries.members`
+    // at `activeIndices`, so both the full range band and ensemble member summary reflect the true full ensemble bounds.
+    function computeMaaSGlofasFullRangeBounds(glSeries, activeIndices) {
+      if (!glSeries || !Array.isArray(activeIndices) || !activeIndices.length) return [null, null];
+      const membersObj = (glSeries.members && typeof glSeries.members === 'object') ? glSeries.members : {};
+      const memberArrs = Object.values(membersObj).filter(Array.isArray);
+      const rawMin = Array.isArray(glSeries.min) ? glSeries.min : null;
+      const rawMax = Array.isArray(glSeries.max) ? glSeries.max : null;
+      const minSlice = [];
+      const maxSlice = [];
+      for (const idx of activeIndices) {
+        let lo = (rawMin && idx < rawMin.length && maasIsFiniteVal(rawMin[idx])) ? Number(rawMin[idx]) : Infinity;
+        let hi = (rawMax && idx < rawMax.length && maasIsFiniteVal(rawMax[idx])) ? Number(rawMax[idx]) : -Infinity;
+        for (const mArr of memberArrs) {
+          if (idx < mArr.length && maasIsFiniteVal(mArr[idx])) {
+            const v = Number(mArr[idx]);
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+          }
+        }
+        minSlice.push(isFinite(lo) ? Math.round(lo * 100) / 100 : null);
+        maxSlice.push(isFinite(hi) ? Math.round(hi * 100) / 100 : null);
+      }
+      return [minSlice, maxSlice];
+    }
+
+    // Plots ONLY the actual 50 Copernicus GloFAS ensemble member trajectories (`member01`..`member50`) with points at each
+    // daily prediction when the "+ Ensemble" sub-option is active (no shaded band or median line).
     function appendMaaSGlofasEnsembleDatasets(datasets, glSeries, activeIndices, unit = 'm³/s') {
       if (!glSeries || !Array.isArray(activeIndices) || !activeIndices.length) return false;
       const hasValues = (arr) => Array.isArray(arr) && arr.some(maasIsFiniteVal);
       const membersObj = (glSeries.members && typeof glSeries.members === 'object') ? glSeries.members : {};
       const memberKeys = Object.keys(membersObj).sort();
-      let plottedAny = false;
+      const [minSlice, maxSlice] = computeMaaSGlofasFullRangeBounds(glSeries, activeIndices);
+      let plottedCount = 0;
 
       for (const mk of memberKeys) {
         const rawArr = membersObj[mk];
         if (!Array.isArray(rawArr)) continue;
         const sliced = maasPickIndices(rawArr, activeIndices);
         if (!hasValues(sliced)) continue;
+        const isFirst = plottedCount === 0;
         datasets.push({
-          label: `GloFAS Ensemble (${memberKeys.length} members, daily)`,
+          label: isFirst
+            ? `Copernicus GloFAS Ensemble (${memberKeys.length} members, daily)`
+            : `GloFAS ${mk}`,
           data: sliced,
+          bandLow: isFirst ? minSlice : null,
+          bandHigh: isFirst ? maxSlice : null,
           unit,
-          borderColor: 'rgba(124, 58, 237, 0.22)',
-          backgroundColor: 'rgba(124, 58, 237, 0.35)',
-          borderWidth: 1.15,
+          borderColor: 'rgba(213, 94, 0, 0.34)',
+          backgroundColor: 'rgba(213, 94, 0, 0.50)',
+          borderWidth: 1.3,
           borderDash: [],
           pointStyle: 'circle',
-          pointRadius: 1.8,
-          pointHoverRadius: 3.5,
-          pointBackgroundColor: 'rgba(124, 58, 237, 0.38)',
-          pointBorderColor: 'rgba(124, 58, 237, 0.38)',
+          pointRadius: 2.2,
+          pointHoverRadius: 4,
+          pointBackgroundColor: 'rgba(213, 94, 0, 0.52)',
+          pointBorderColor: 'rgba(213, 94, 0, 0.52)',
           pointBorderWidth: 0,
-          pointHitRadius: 0,
+          pointHitRadius: 3,
           fill: false,
           tension: 0.25,
           spanGaps: true,
-          legendHidden: true,
-          order: 4
-        });
-        plottedAny = true;
-      }
-
-      const p25 = maasPickIndices(glSeries.p25, activeIndices);
-      const p75 = maasPickIndices(glSeries.p75, activeIndices);
-      if (hasValues(p25) && hasValues(p75)) {
-        datasets.push({
-          label: 'GloFAS P25',
-          data: p25,
-          unit,
-          legendHidden: true,
-          borderWidth: 0,
-          pointRadius: 0,
-          pointHitRadius: 0,
-          fill: false,
-          tension: 0.25,
-          spanGaps: true,
+          legendHidden: !isFirst,
+          tooltipHidden: !isFirst,
           order: 3
         });
-        datasets.push({
-          label: memberKeys.length
-            ? `GloFAS Ensemble (${memberKeys.length} members, 25th–75th pct)`
-            : 'GloFAS Ensemble (25th–75th pct)',
-          data: p75,
-          bandLow: p25,
-          unit,
-          borderColor: 'rgba(124, 58, 237, 0.45)',
-          backgroundColor: 'rgba(124, 58, 237, 0.18)',
-          borderWidth: 1,
-          pointStyle: 'rect',
-          pointRadius: 0,
-          pointHitRadius: 0,
-          fill: '-1',
-          tension: 0.25,
-          spanGaps: true,
-          order: 3
-        });
-        plottedAny = true;
+        plottedCount++;
       }
-
-      const medRaw = Array.isArray(glSeries.median) ? glSeries.median : glSeries.central;
-      const med = maasPickIndices(medRaw, activeIndices);
-      if (hasValues(med)) {
-        datasets.push({
-          label: 'GloFAS Ensemble Median (daily)',
-          data: med,
-          unit,
-          borderColor: '#9333ea',
-          backgroundColor: '#9333ea',
-          borderWidth: 2,
-          borderDash: [2, 3],
-          pointStyle: 'circle',
-          pointRadius: 3.5,
-          pointHoverRadius: 5.5,
-          pointBackgroundColor: '#ffffff',
-          pointBorderColor: '#9333ea',
-          pointBorderWidth: 1.8,
-          fill: false,
-          tension: 0.25,
-          spanGaps: true,
-          order: 2
-        });
-        plottedAny = true;
-      }
-      return plottedAny;
+      return plottedCount > 0;
     }
 
-    // Draws either the single selected model (when 1 model is selected in Forecast View)
-    // or the multi-model / GloFAS-ensemble forecast comparison.
+    // Plots the Copernicus GloFAS full ensemble range (`Min–Max` shaded envelope with daily points on the boundary)
+    // when the "+ Range" sub-option is active.
+    function appendMaaSGlofasRangeDatasets(datasets, glSeries, activeIndices, unit = 'm³/s') {
+      if (!glSeries || !Array.isArray(activeIndices) || !activeIndices.length) return false;
+      const hasValues = (arr) => Array.isArray(arr) && arr.some(maasIsFiniteVal);
+      const [minSlice, maxSlice] = computeMaaSGlofasFullRangeBounds(glSeries, activeIndices);
+      if (!hasValues(minSlice) || !hasValues(maxSlice)) return false;
+
+      datasets.push({
+        label: 'GloFAS Ensemble Min',
+        data: minSlice,
+        unit,
+        legendHidden: true,
+        tooltipHidden: true,
+        borderColor: 'rgba(213, 94, 0, 0.50)',
+        backgroundColor: 'rgba(213, 94, 0, 0.50)',
+        borderWidth: 1.2,
+        borderDash: [2, 3],
+        pointStyle: 'circle',
+        pointRadius: 2.2,
+        pointHoverRadius: 4,
+        pointBackgroundColor: '#ffffff',
+        pointBorderColor: 'rgba(213, 94, 0, 0.70)',
+        pointBorderWidth: 1.2,
+        pointHitRadius: 2,
+        fill: false,
+        tension: 0.25,
+        spanGaps: true,
+        order: 4
+      });
+      datasets.push({
+        label: 'Copernicus GloFAS Full Range (Min–Max, daily)',
+        data: maxSlice,
+        bandLow: minSlice,
+        bandHigh: maxSlice,
+        unit,
+        borderColor: 'rgba(213, 94, 0, 0.55)',
+        backgroundColor: 'rgba(213, 94, 0, 0.16)',
+        borderWidth: 1.2,
+        borderDash: [2, 3],
+        pointStyle: 'rect',
+        pointRadius: 2.2,
+        pointHoverRadius: 4,
+        pointBackgroundColor: '#ffffff',
+        pointBorderColor: 'rgba(213, 94, 0, 0.70)',
+        pointBorderWidth: 1.2,
+        pointHitRadius: 2,
+        fill: '-1',
+        tension: 0.25,
+        spanGaps: true,
+        order: 4
+      });
+      return true;
+    }
+
+    // Draws all selected MaaS forecast traces (`GloFAS` deterministic, `GloFAS + Ensemble` 50 members,
+    // `GloFAS + Range` Min–Max envelope, `FloodHub`, and `GEOGLOWS`) at their native prediction timestamps.
     function renderMaaSForecast() {
       initMaasCharts();
       const data = currentMaaSForecastData;
@@ -12258,12 +12318,13 @@
       let plotDates = allDates;
       let note = null;
       let isStage = false;
-      const multiTraceMode = selectedMaaSModels.size >= 2 || maasGlofasEnsembleEnabled;
 
       if (!data) {
         note = currentMaaSForecastNote;
-      } else if (multiTraceMode) {
+      } else {
         const activeKeys = MAAS_MODEL_ORDER.filter(k => selectedMaaSModels.has(k));
+        const onlyFloodhubStagePossible = activeKeys.length === 1 && activeKeys[0] === 'floodhub' &&
+          !maasGlofasEnsembleEnabled && !maasGlofasRangeEnabled;
         const usable = [];
         const skipped = [];
         const loading = [];
@@ -12274,54 +12335,76 @@
           if (!hasModelEntry && maasForecastFullPending) {
             loading.push(`${MAAS_MODELS[k].shortName} (loading…)`);
           } else if (!s || !hasValues(traceArr)) {
-            skipped.push(`${MAAS_MODELS[k].shortName} (no forecast)`);
-          } else if (s.axis === 'stage' || s.unit === 'm') {
+            const severity = k === 'floodhub' ? ((data.models || {}).floodhub || {}).severity : null;
+            const status = (timeline.status || {})[k] || null;
+            if (onlyFloodhubStagePossible && status === 'severity_only' && severity) {
+              skipped.push(`FloodHub flood status: ${String(severity).replace(/_/g, ' ').toLowerCase()} (no hydrograph published)`);
+            } else {
+              skipped.push(`${MAAS_MODELS[k].shortName} (no forecast)`);
+            }
+          } else if ((s.axis === 'stage' || s.unit === 'm') && !onlyFloodhubStagePossible) {
             skipped.push(`${MAAS_MODELS[k].shortName} (stage-only gauge in m)`);
           } else {
+            if (s.axis === 'stage' || s.unit === 'm') isStage = true;
             usable.push(k);
           }
         }
         const glSeries = (timeline.series || {}).glofas;
+        const hasGlEntry = data.models && data.models.glofas;
         let glEnsUsable = false;
         if (maasGlofasEnsembleEnabled) {
-          const hasGlEntry = data.models && data.models.glofas;
-          const hasEnsData = glSeries && (
-            hasValues(glSeries.p25) ||
-            hasValues(glSeries.median) ||
-            hasValues(glSeries.central) ||
-            Object.keys(glSeries.members || {}).length > 0
-          );
+          const hasMembersData = glSeries && Object.values(glSeries.members || {}).some(hasValues);
           if (!hasGlEntry && maasForecastFullPending) {
             if (!selectedMaaSModels.has('glofas')) loading.push('GloFAS Ensemble (loading…)');
-          } else if (!hasEnsData) {
-            if (!selectedMaaSModels.has('glofas')) skipped.push('GloFAS Ensemble (no forecast)');
+          } else if (!hasMembersData) {
+            skipped.push('GloFAS Ensemble (no member data)');
           } else {
             glEnsUsable = true;
           }
         }
+        let glRangeUsable = false;
+        if (maasGlofasRangeEnabled) {
+          const hasRangeData = glSeries && (
+            (hasValues(glSeries.min) && hasValues(glSeries.max)) ||
+            Object.values(glSeries.members || {}).some(hasValues)
+          );
+          if (!hasGlEntry && maasForecastFullPending) {
+            if (!selectedMaaSModels.has('glofas') && !maasGlofasEnsembleEnabled) {
+              loading.push('GloFAS Range (loading…)');
+            }
+          } else if (!hasRangeData) {
+            skipped.push('GloFAS Range (no min/max data)');
+          } else {
+            glRangeUsable = true;
+          }
+        }
 
-        if ((!usable.length && !glEnsUsable) || !allDates.length) {
+        if ((!usable.length && !glEnsUsable && !glRangeUsable) || !allDates.length) {
           if (loading.length) {
             note = `Loading forecast for ${loading.join(', ')}…`;
           } else {
-            note = skipped.length ? `No discharge forecast available for selected models: ${skipped.join(', ')}.` : MAAS_STATUS_NOTES.unavailable;
+            note = skipped.length ? `No forecast available for selected options: ${skipped.join(', ')}.` : MAAS_STATUS_NOTES.unavailable;
           }
         } else {
+          const unit = isStage ? 'm' : 'm³/s';
           const rangeArrays = usable.map(k => {
             const s = timeline.series[k];
             return k === 'glofas' ? (s.deterministic || s.central) : s.central;
           });
-          if (glEnsUsable && glSeries) {
-            if (Array.isArray(glSeries.p75)) rangeArrays.push(glSeries.p75);
-            if (Array.isArray(glSeries.median)) rangeArrays.push(glSeries.median);
+          if ((glEnsUsable || glRangeUsable) && glSeries) {
+            if (Array.isArray(glSeries.min)) rangeArrays.push(glSeries.min);
+            if (Array.isArray(glSeries.max)) rangeArrays.push(glSeries.max);
             for (const mArr of Object.values(glSeries.members || {})) {
               if (Array.isArray(mArr)) rangeArrays.push(mArr);
             }
           }
           const activeIndices = maasActiveTimelineIndices(allDates.length, rangeArrays);
           plotDates = activeIndices.map(i => allDates[i]);
+          if (glRangeUsable && glSeries) {
+            appendMaaSGlofasRangeDatasets(datasets, glSeries, activeIndices, unit);
+          }
           if (glEnsUsable && glSeries) {
-            appendMaaSGlofasEnsembleDatasets(datasets, glSeries, activeIndices, 'm³/s');
+            appendMaaSGlofasEnsembleDatasets(datasets, glSeries, activeIndices, unit);
           }
           for (const k of usable) {
             const m = MAAS_MODELS[k];
@@ -12334,7 +12417,7 @@
             datasets.push({
               label: traceLabel,
               data: slicedSeries,
-              unit: 'm³/s',
+              unit,
               borderColor: m.color,
               backgroundColor: m.color,
               borderWidth: 2.8,
@@ -12352,11 +12435,11 @@
             });
           }
           const activeProviders = new Set(usable);
-          if (glEnsUsable) activeProviders.add('glofas');
+          if (glEnsUsable || glRangeUsable) activeProviders.add('glofas');
           const providerList = MAAS_MODEL_ORDER.filter(k => activeProviders.has(k));
           if (maasChart) {
             maasChart.$returnPeriodThresholds = providerList.length === 1
-              ? maasModelThresholds(data, providerList[0]).map(t => Object.assign({}, t, { unit: 'm³/s' }))
+              ? maasModelThresholds(data, providerList[0]).map(t => Object.assign({}, t, { unit }))
               : [];
           }
           const reachNote = maasSnappedReachSummary(data, providerList);
@@ -12364,65 +12447,6 @@
             ? data.flood_summary.agreement
             : null;
           note = [reachNote, agreementNote, loading.length ? `Loading: ${loading.join(', ')}` : null, skipped.length ? `Skipped: ${skipped.join(', ')}` : null].filter(Boolean).join(' · ') || null;
-        }
-      } else {
-        const [selectedKey] = selectedMaaSModels;
-        const key = (selectedKey && MAAS_MODELS[selectedKey]) ? selectedKey : (currentMaaSModel || 'glofas');
-        const style = MAAS_MODELS[key];
-        const series = (timeline.series || {})[key];
-        const status = (timeline.status || {})[key] || null;
-        const hasModelEntry = data.models && data.models[key];
-        const rawCentral = (key === 'glofas' && series) ? (series.deterministic || series.central) : (series && series.central);
-        if (!hasModelEntry && maasForecastFullPending) {
-          note = `Loading ${style.shortName} forecast…`;
-        } else if (!series || !hasValues(rawCentral) || !allDates.length) {
-          note = MAAS_STATUS_NOTES[status] || MAAS_STATUS_NOTES.unavailable;
-          const severity = key === 'floodhub' ? ((data.models || {}).floodhub || {}).severity : null;
-          if (status === 'severity_only' && severity) {
-            note = `FloodHub flood status: ${String(severity).replace(/_/g, ' ').toLowerCase()}. No forecast hydrograph is published for this gauge.`;
-          }
-        } else {
-          const activeIndices = maasActiveTimelineIndices(allDates.length, [rawCentral]);
-          plotDates = activeIndices.map(i => allDates[i]);
-          const central = maasPickIndices(rawCentral, activeIndices);
-          const p25 = maasPickIndices(series.p25, activeIndices);
-          const p75 = maasPickIndices(series.p75, activeIndices);
-          isStage = series.axis === 'stage' || series.unit === 'm';
-          const unit = isStage ? 'm' : 'm³/s';
-          // GloFAS ensemble is controlled explicitly via the "+ Ensemble" sub-option under GloFAS.
-          const hasBand = key !== 'glofas' && hasValues(p25) && hasValues(p75);
-          if (hasBand) {
-            // Ribbon: an invisible P25 line, then the P75 line filled down to it.
-            datasets.push({
-              label: 'P25', data: p25, unit, legendHidden: true, borderWidth: 0, pointRadius: 0, pointHitRadius: 0,
-              fill: false, tension: 0.3, spanGaps: true, order: 2
-            });
-            datasets.push({
-              label: '25th–75th percentile', data: p75, bandLow: p25, unit, borderWidth: 0,
-              backgroundColor: style.band, pointRadius: 0, pointHitRadius: 0, fill: '-1', tension: 0.3, spanGaps: true, order: 2
-            });
-          }
-          datasets.push({
-            label: key === 'glofas'
-              ? `${style.name} Deterministic (${style.streamMap}, ${style.cadenceLabel})`
-              : `${style.name} (${style.streamMap}, ${style.cadenceLabel})`,
-            data: central, unit,
-            borderColor: style.color, backgroundColor: style.color, borderWidth: 2.8,
-            borderDash: style.borderDash || [],
-            pointStyle: style.pointStyle || 'circle',
-            pointRadius: style.pointRadius || 4,
-            pointHoverRadius: style.pointHoverRadius || 6,
-            pointBackgroundColor: style.pointStyle === 'circle' ? '#ffffff' : style.color,
-            pointBorderColor: style.pointStyle === 'circle' ? style.color : '#ffffff',
-            pointBorderWidth: style.pointBorderWidth || 1.5,
-            fill: false, tension: 0.25, spanGaps: true, order: 0
-          });
-          if (maasChart) {
-            maasChart.$returnPeriodThresholds = maasModelThresholds(data, key).map(t => Object.assign({}, t, { unit }));
-          }
-          const reachNote = maasSnappedReachSummary(data, [key]);
-          const statusNote = status && status !== 'live' ? (MAAS_STATUS_NOTES[status] || null) : null;
-          note = [reachNote, statusNote].filter(Boolean).join(' · ') || null;
         }
       }
 
@@ -12462,6 +12486,11 @@
           const ensBtn = e.target.closest('[data-maas-glofas-ensemble]');
           if (ensBtn) {
             toggleMaaSGlofasEnsemble();
+            return;
+          }
+          const rangeBtn = e.target.closest('[data-maas-glofas-range]');
+          if (rangeBtn) {
+            toggleMaaSGlofasRange();
             return;
           }
           const btn = e.target.closest('[data-maas-forecast-model]');
