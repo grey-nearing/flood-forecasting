@@ -209,6 +209,39 @@ def build_flood_summary(
 
 
 _ISO_DATE_LEN: int = 10
+_ISO_MINUTE_LEN: int = 16
+_ISO_SECOND_LEN: int = 19
+
+
+def _normalize_timestamp(raw_time: object) -> str | None:
+    """Normalize a UTC date or datetime string to `'YYYY-MM-DDTHH:MM:SSZ'`."""
+    s = str(raw_time or '').strip()
+    if len(s) == _ISO_DATE_LEN:
+        return f'{s}T00:00:00Z'
+    if len(s) >= _ISO_SECOND_LEN:
+        return f"{s[:_ISO_SECOND_LEN].replace(' ', 'T')}Z"
+    if len(s) == _ISO_MINUTE_LEN:
+        return f"{s.replace(' ', 'T')}:00Z"
+    return None
+
+
+def _timestamp_series(
+    records: Sequence[Mapping[str, Any]] | None,
+    key: str,
+    fallback_key: str | None = None,
+) -> dict[str, float]:
+    """Extract `{YYYY-MM-DDTHH:MM:SSZ: value}` at native model cadence."""
+    out: dict[str, float] = {}
+    for r in records or ():
+        if not isinstance(r, Mapping):
+            continue
+        v = parse_finite_float(r.get(key))
+        if v is None and fallback_key is not None:
+            v = parse_finite_float(r.get(fallback_key))
+        ts = _normalize_timestamp(r.get('time'))
+        if ts is not None and v is not None:
+            out[ts] = round(v, 2)
+    return out
 
 
 def _align_glofas_members(
@@ -223,7 +256,7 @@ def _align_glofas_members(
         return {}
     raw_records = gl_fc.get('data') or ()
     raw_times = [
-        str(r.get('time', ''))[:_ISO_DATE_LEN]
+        _normalize_timestamp(r.get('time'))
         for r in raw_records
         if isinstance(r, Mapping)
     ]
@@ -231,13 +264,13 @@ def _align_glofas_members(
     for mk, mvals in sorted(raw_members.items()):
         if not isinstance(mvals, Sequence) or isinstance(mvals, (str, bytes)):
             continue
-        mdaily: dict[str, float] = {}
+        mseries: dict[str, float] = {}
         for t_str, mv in zip(raw_times, mvals, strict=False):
             fval = parse_finite_float(mv)
-            if len(t_str) == _ISO_DATE_LEN and fval is not None:
-                mdaily[t_str] = fval
-        if mdaily:
-            aligned_members[str(mk)] = align_daily_series(mdaily, dates)
+            if t_str is not None and fval is not None:
+                mseries[t_str] = fval
+        if mseries:
+            aligned_members[str(mk)] = align_daily_series(mseries, dates)
     return aligned_members
 
 
@@ -248,14 +281,14 @@ def build_aligned_timeline(
     gl_fc: dict[str, Any] | None,
     gg_fc: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Build a date-aligned daily timeline for multi-model hydrograph charts."""
+    """Build a timestamp-aligned timeline at each model's native cadence."""
     fh_daily = (
-        daily_series((fh_fc or {}).get('data'), 'discharge')
+        _timestamp_series((fh_fc or {}).get('data'), 'discharge')
         if (fh_fc and fh_fc.get('data'))
         else {}
     )
     gl_det_d = (
-        daily_series(
+        _timestamp_series(
             (gl_fc or {}).get('data'),
             'discharge_deterministic',
             'discharge_median',
@@ -264,53 +297,61 @@ def build_aligned_timeline(
         else {}
     )
     gl_daily = (
-        daily_series(
+        _timestamp_series(
             (gl_fc or {}).get('data'), 'discharge_median', 'discharge_mean'
         )
         if gl_fc
         else {}
     )
     gl_mean_d = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_mean')
+        _timestamp_series((gl_fc or {}).get('data'), 'discharge_mean')
         if gl_fc
         else {}
     )
     gl_p25_d = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_p25')
+        _timestamp_series((gl_fc or {}).get('data'), 'discharge_p25')
         if gl_fc
         else {}
     )
     gl_p75_d = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_p75')
+        _timestamp_series((gl_fc or {}).get('data'), 'discharge_p75')
         if gl_fc
         else {}
     )
     gl_max_d = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_max')
+        _timestamp_series((gl_fc or {}).get('data'), 'discharge_max')
         if gl_fc
         else {}
     )
     gl_min_d = (
-        daily_series((gl_fc or {}).get('data'), 'discharge_min')
+        _timestamp_series((gl_fc or {}).get('data'), 'discharge_min')
         if gl_fc
         else {}
     )
     gg_daily = (
-        daily_series((gg_fc or {}).get('data'), 'flow_med', 'flow_avg')
+        _timestamp_series((gg_fc or {}).get('data'), 'flow_med', 'flow_avg')
         if gg_fc
         else {}
     )
     gg_p25_d = (
-        daily_series((gg_fc or {}).get('data'), 'flow_25p') if gg_fc else {}
+        _timestamp_series((gg_fc or {}).get('data'), 'flow_25p')
+        if gg_fc
+        else {}
     )
     gg_p75_d = (
-        daily_series((gg_fc or {}).get('data'), 'flow_75p') if gg_fc else {}
+        _timestamp_series((gg_fc or {}).get('data'), 'flow_75p')
+        if gg_fc
+        else {}
     )
     gg_max_d = (
-        daily_series((gg_fc or {}).get('data'), 'flow_max') if gg_fc else {}
+        _timestamp_series((gg_fc or {}).get('data'), 'flow_max')
+        if gg_fc
+        else {}
     )
     gg_min_d = (
-        daily_series((gg_fc or {}).get('data'), 'flow_min') if gg_fc else {}
+        _timestamp_series((gg_fc or {}).get('data'), 'flow_min')
+        if gg_fc
+        else {}
     )
     dates = sorted(
         set(fh_daily) | set(gl_det_d) | set(gl_daily) | set(gg_daily)
@@ -323,6 +364,7 @@ def build_aligned_timeline(
             'discharge': fh_aligned,
             'unit': 'm³/s' if fh_is_q else 'm',
             'axis': 'discharge' if fh_is_q else 'stage',
+            'cadence': 'daily',
         }
     if 'glofas' in models and (gl_daily or gl_det_d):
         gl_det_aligned = align_daily_series(gl_det_d or gl_daily, dates)
@@ -337,6 +379,7 @@ def build_aligned_timeline(
             'max': align_daily_series(gl_max_d, dates),
             'min': align_daily_series(gl_min_d, dates),
             'members': _align_glofas_members(gl_fc, dates),
+            'cadence': 'daily',
         }
     if 'geoglows' in models and gg_daily:
         gg_aligned = align_daily_series(gg_daily, dates)
@@ -347,6 +390,7 @@ def build_aligned_timeline(
             'p75': align_daily_series(gg_p75_d, dates),
             'max': align_daily_series(gg_max_d, dates),
             'min': align_daily_series(gg_min_d, dates),
+            'cadence': '3-hourly',
         }
     return {
         'dates': dates,

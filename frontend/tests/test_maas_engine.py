@@ -352,17 +352,21 @@ def _fake_requests_get(
     elif '/getriverid' in url:
         payload = {'river_id': 720010511}
     elif '/forecaststats/' in url:
+        base_day = today.replace(hour=0, minute=0, second=0, microsecond=0)
+        steps = 15 * 8
         payload = {
             'datetime': [
-                (today + timedelta(days=d)).strftime('%Y-%m-%dT00:00:00Z')
-                for d in range(15)
+                (base_day + timedelta(hours=3 * s)).strftime(
+                    '%Y-%m-%dT%H:%M:%SZ'
+                )
+                for s in range(steps)
             ],
-            'flow_med': [2100.0 + 95.0 * d for d in range(15)],
-            'flow_avg': [2150.0 + 95.0 * d for d in range(15)],
-            'flow_min': [1750.0 + 70.0 * d for d in range(15)],
-            'flow_25p': [1950.0 + 85.0 * d for d in range(15)],
-            'flow_75p': [2400.0 + 105.0 * d for d in range(15)],
-            'flow_max': [2750.0 + 120.0 * d for d in range(15)],
+            'flow_med': [2100.0 + 12.0 * s for s in range(steps)],
+            'flow_avg': [2150.0 + 12.0 * s for s in range(steps)],
+            'flow_min': [1750.0 + 9.0 * s for s in range(steps)],
+            'flow_25p': [1950.0 + 10.5 * s for s in range(steps)],
+            'flow_75p': [2400.0 + 13.0 * s for s in range(steps)],
+            'flow_max': [2750.0 + 15.0 * s for s in range(steps)],
         }
     elif '/returnperiods/' in url:
         payload = {
@@ -926,10 +930,18 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         ]
         assert 'glofas' in data['timeline']['series']
         gl_tl = data['timeline']['series']['glofas']
+        assert gl_tl['cadence'] == 'daily'
         assert 'deterministic' in gl_tl
         assert 'median' in gl_tl
         assert 'members' in gl_tl
         assert set(gl_tl['members']) == {'member01', 'member02'}
+        assert sum(v is not None for v in gl_tl['deterministic']) == 15  # noqa: PLR2004
+        gg_tl = data['timeline']['series']['geoglows']
+        assert gg_tl['cadence'] == '3-hourly'
+        assert sum(v is not None for v in gg_tl['central']) == 120  # noqa: PLR2004
+        fh_tl = data['timeline']['series']['floodhub']
+        assert fh_tl['cadence'] == 'daily'
+        assert sum(v is not None for v in fh_tl['central']) == 7  # noqa: PLR2004
 
         status_sub, data_sub = self._get(
             '/api/maas/forecast?lat=32.756&lon=-117.252&models=glofas,geoglows'

@@ -11175,20 +11175,23 @@
     const MAAS_MODELS = {
       floodhub: {
         name: 'Google FloodHub', shortName: 'FloodHub', streamMap: 'HydroSHEDS',
+        cadenceLabel: 'daily',
         color: '#1a73e8', band: 'rgba(26, 115, 232, 0.22)',
-        borderDash: [], pointStyle: 'circle',
+        borderDash: [], pointStyle: 'circle', pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
         networkLabel: 'HydroSHEDS HydroRIVERS', reachLabel: 'HydroRIVERS reach'
       },
       glofas: {
         name: 'Copernicus GloFAS', shortName: 'GloFAS', streamMap: 'LISFLOOD',
+        cadenceLabel: 'daily',
         color: '#7c3aed', band: 'rgba(124, 58, 237, 0.20)',
-        borderDash: [7, 4], pointStyle: 'rectRot',
+        borderDash: [7, 4], pointStyle: 'rectRot', pointRadius: 4.5, pointHoverRadius: 6.5, pointBorderWidth: 1.5,
         networkLabel: 'LISFLOOD 0.05° river grid', reachLabel: 'GloFAS 0.05° river'
       },
       geoglows: {
         name: 'GEOGLOWS ECMWF', shortName: 'GEOGLOWS', streamMap: 'TDX-Hydro',
+        cadenceLabel: '3-hourly',
         color: '#16a34a', band: 'rgba(22, 163, 74, 0.22)',
-        borderDash: [3, 3], pointStyle: 'triangle',
+        borderDash: [3, 3], pointStyle: 'triangle', pointRadius: 3.2, pointHoverRadius: 5.5, pointBorderWidth: 1,
         networkLabel: 'TDX-Hydro streams', reachLabel: 'TDX-Hydro stream'
       }
     };
@@ -11635,9 +11638,16 @@
       return `${Math.abs(lat).toFixed(3)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(3)}°${lon >= 0 ? 'E' : 'W'}`;
     }
 
-    function maasFormatDateLabel(isoValue) {
+    function maasFormatDateLabel(isoValue, includeHour = true) {
       const d = new Date(isoValue);
-      return isNaN(d.getTime()) ? String(isoValue) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+      if (isNaN(d.getTime())) return String(isoValue);
+      const dayStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+      if (!includeHour) return dayStr;
+      const hr = d.getUTCHours();
+      const min = d.getUTCMinutes();
+      return (hr === 0 && min === 0)
+        ? dayStr
+        : `${dayStr}, ${String(hr).padStart(2, '0')}:${String(min).padStart(2, '0')} UTC`;
     }
 
     // Matches the backend's zoom thresholds in maas.networks / maas_networks.py so zooming into a finer level of detail
@@ -12014,7 +12024,27 @@
           animation: false,
           interaction: { mode: 'index', intersect: false },
           scales: {
-            x: { ticks: { color: '#5f6368', font: { size: 10 }, maxRotation: 0, autoSkipPadding: 12 }, grid: { color: '#e8eaed' } },
+            x: {
+              ticks: {
+                color: '#5f6368',
+                font: { size: 10 },
+                maxRotation: 0,
+                autoSkipPadding: 12,
+                callback: function(val, index) {
+                  const rawDates = (maasChart && maasChart.$rawTimestamps) || [];
+                  const iso = rawDates[index];
+                  if (maasChart && maasChart.$hasSubDaily && iso) {
+                    const d = new Date(iso);
+                    if (!isNaN(d.getTime()) && (d.getUTCHours() !== 0 || d.getUTCMinutes() !== 0)) {
+                      return null;
+                    }
+                    return maasFormatDateLabel(iso, false);
+                  }
+                  return this.getLabelForValue(val);
+                }
+              },
+              grid: { color: '#e8eaed' }
+            },
             y: {
               title: { display: true, text: 'Discharge (m³/s)', color: '#5f6368', font: { size: 11 } },
               ticks: { color: '#5f6368' },
@@ -12034,7 +12064,7 @@
               }
             },
             tooltip: {
-              filter: (item) => !item.dataset.legendHidden && !item.dataset.isThreshold,
+              filter: (item) => !item.dataset.legendHidden && !item.dataset.isThreshold && maasIsFiniteVal(item.raw),
               callbacks: {
                 label: (ctx) => {
                   const ds = ctx.dataset;
@@ -12068,20 +12098,27 @@
       return v !== null && v !== undefined && isFinite(v);
     }
 
-    // Finds the [firstIdx, lastIdx] window where at least one of the given arrays has a finite value,
-    // so the x-axis automatically configures to the active forecast horizon.
-    function maasActiveDateRange(totalLen, arrays) {
-      let i0 = totalLen, i1 = -1;
-      for (const arr of arrays) {
-        if (!Array.isArray(arr)) continue;
-        for (let i = 0; i < Math.min(totalLen, arr.length); i++) {
-          if (maasIsFiniteVal(arr[i])) {
-            if (i < i0) i0 = i;
-            if (i > i1) i1 = i;
+    // Returns the sorted list of timeline indices where at least one of the active plotted arrays has a finite prediction,
+    // so daily-only views step through daily timestamps while views including GEOGLOWS step through 3-hourly timestamps
+    // (leaving `null` at non-00:00 UTC slots for daily models so points are drawn only where predictions are actually made).
+    function maasActiveTimelineIndices(totalLen, arrays) {
+      const indices = [];
+      for (let i = 0; i < totalLen; i++) {
+        let anyFinite = false;
+        for (const arr of arrays) {
+          if (Array.isArray(arr) && i < arr.length && maasIsFiniteVal(arr[i])) {
+            anyFinite = true;
+            break;
           }
         }
+        if (anyFinite) indices.push(i);
       }
-      return i0 <= i1 ? [i0, i1] : [0, totalLen - 1];
+      return indices;
+    }
+
+    function maasPickIndices(arr, indices) {
+      if (!Array.isArray(arr)) return null;
+      return indices.map(i => (i < arr.length ? arr[i] : null));
     }
 
     function maasSnappedReachSummary(data, keys) {
@@ -12109,8 +12146,8 @@
 
     // Appends the Copernicus GloFAS 50-member ensemble (individual member spaghetti traces,
     // 25th–75th percentile band, and ensemble median) to `datasets` when the GloFAS Ensemble sub-option is active.
-    function appendMaaSGlofasEnsembleDatasets(datasets, glSeries, i0, i1, unit = 'm³/s') {
-      if (!glSeries) return false;
+    function appendMaaSGlofasEnsembleDatasets(datasets, glSeries, activeIndices, unit = 'm³/s') {
+      if (!glSeries || !Array.isArray(activeIndices) || !activeIndices.length) return false;
       const hasValues = (arr) => Array.isArray(arr) && arr.some(maasIsFiniteVal);
       const membersObj = (glSeries.members && typeof glSeries.members === 'object') ? glSeries.members : {};
       const memberKeys = Object.keys(membersObj).sort();
@@ -12119,18 +12156,22 @@
       for (const mk of memberKeys) {
         const rawArr = membersObj[mk];
         if (!Array.isArray(rawArr)) continue;
-        const sliced = rawArr.slice(i0, i1 + 1);
+        const sliced = maasPickIndices(rawArr, activeIndices);
         if (!hasValues(sliced)) continue;
         datasets.push({
-          label: `GloFAS Ensemble (${memberKeys.length} members)`,
+          label: `GloFAS Ensemble (${memberKeys.length} members, daily)`,
           data: sliced,
           unit,
           borderColor: 'rgba(124, 58, 237, 0.22)',
-          backgroundColor: 'rgba(124, 58, 237, 0.12)',
+          backgroundColor: 'rgba(124, 58, 237, 0.35)',
           borderWidth: 1.15,
           borderDash: [],
-          pointRadius: 0,
-          pointHoverRadius: 0,
+          pointStyle: 'circle',
+          pointRadius: 1.8,
+          pointHoverRadius: 3.5,
+          pointBackgroundColor: 'rgba(124, 58, 237, 0.38)',
+          pointBorderColor: 'rgba(124, 58, 237, 0.38)',
+          pointBorderWidth: 0,
           pointHitRadius: 0,
           fill: false,
           tension: 0.25,
@@ -12141,8 +12182,8 @@
         plottedAny = true;
       }
 
-      const p25 = Array.isArray(glSeries.p25) ? glSeries.p25.slice(i0, i1 + 1) : null;
-      const p75 = Array.isArray(glSeries.p75) ? glSeries.p75.slice(i0, i1 + 1) : null;
+      const p25 = maasPickIndices(glSeries.p25, activeIndices);
+      const p75 = maasPickIndices(glSeries.p75, activeIndices);
       if (hasValues(p25) && hasValues(p75)) {
         datasets.push({
           label: 'GloFAS P25',
@@ -12179,19 +12220,22 @@
       }
 
       const medRaw = Array.isArray(glSeries.median) ? glSeries.median : glSeries.central;
-      const med = Array.isArray(medRaw) ? medRaw.slice(i0, i1 + 1) : null;
+      const med = maasPickIndices(medRaw, activeIndices);
       if (hasValues(med)) {
         datasets.push({
-          label: 'GloFAS Ensemble Median',
+          label: 'GloFAS Ensemble Median (daily)',
           data: med,
           unit,
           borderColor: '#9333ea',
           backgroundColor: '#9333ea',
           borderWidth: 2,
           borderDash: [2, 3],
-          pointStyle: 'line',
-          pointRadius: 0,
-          pointHoverRadius: 4,
+          pointStyle: 'circle',
+          pointRadius: 3.5,
+          pointHoverRadius: 5.5,
+          pointBackgroundColor: '#ffffff',
+          pointBorderColor: '#9333ea',
+          pointBorderWidth: 1.8,
           fill: false,
           tension: 0.25,
           spanGaps: true,
@@ -12274,33 +12318,33 @@
               if (Array.isArray(mArr)) rangeArrays.push(mArr);
             }
           }
-          const [i0, i1] = maasActiveDateRange(allDates.length, rangeArrays);
-          plotDates = allDates.slice(i0, i1 + 1);
+          const activeIndices = maasActiveTimelineIndices(allDates.length, rangeArrays);
+          plotDates = activeIndices.map(i => allDates[i]);
           if (glEnsUsable && glSeries) {
-            appendMaaSGlofasEnsembleDatasets(datasets, glSeries, i0, i1, 'm³/s');
+            appendMaaSGlofasEnsembleDatasets(datasets, glSeries, activeIndices, 'm³/s');
           }
           for (const k of usable) {
             const m = MAAS_MODELS[k];
             const s = timeline.series[k];
             const rawTrace = k === 'glofas' ? (s.deterministic || s.central) : s.central;
-            const slicedSeries = rawTrace.slice(i0, i1 + 1);
+            const slicedSeries = maasPickIndices(rawTrace, activeIndices);
             const traceLabel = k === 'glofas'
-              ? `${m.name} Deterministic (${m.streamMap})`
-              : `${m.name} (${m.streamMap})`;
+              ? `${m.name} Deterministic (${m.streamMap}, ${m.cadenceLabel})`
+              : `${m.name} (${m.streamMap}, ${m.cadenceLabel})`;
             datasets.push({
               label: traceLabel,
               data: slicedSeries,
               unit: 'm³/s',
               borderColor: m.color,
               backgroundColor: m.color,
-              borderWidth: 3,
+              borderWidth: 2.8,
               borderDash: m.borderDash || [],
               pointStyle: m.pointStyle || 'circle',
-              pointRadius: 4,
-              pointHoverRadius: 6,
+              pointRadius: m.pointRadius || 4,
+              pointHoverRadius: m.pointHoverRadius || 6,
               pointBackgroundColor: m.pointStyle === 'circle' ? '#ffffff' : m.color,
               pointBorderColor: m.pointStyle === 'circle' ? m.color : '#ffffff',
-              pointBorderWidth: 2,
+              pointBorderWidth: m.pointBorderWidth || 1.5,
               fill: false,
               tension: 0.25,
               spanGaps: true,
@@ -12338,11 +12382,11 @@
             note = `FloodHub flood status: ${String(severity).replace(/_/g, ' ').toLowerCase()}. No forecast hydrograph is published for this gauge.`;
           }
         } else {
-          const [i0, i1] = maasActiveDateRange(allDates.length, [rawCentral]);
-          plotDates = allDates.slice(i0, i1 + 1);
-          const central = rawCentral.slice(i0, i1 + 1);
-          const p25 = Array.isArray(series.p25) ? series.p25.slice(i0, i1 + 1) : null;
-          const p75 = Array.isArray(series.p75) ? series.p75.slice(i0, i1 + 1) : null;
+          const activeIndices = maasActiveTimelineIndices(allDates.length, [rawCentral]);
+          plotDates = activeIndices.map(i => allDates[i]);
+          const central = maasPickIndices(rawCentral, activeIndices);
+          const p25 = maasPickIndices(series.p25, activeIndices);
+          const p75 = maasPickIndices(series.p75, activeIndices);
           isStage = series.axis === 'stage' || series.unit === 'm';
           const unit = isStage ? 'm' : 'm³/s';
           // GloFAS ensemble is controlled explicitly via the "+ Ensemble" sub-option under GloFAS.
@@ -12360,13 +12404,18 @@
           }
           datasets.push({
             label: key === 'glofas'
-              ? `${style.name} Deterministic (${style.streamMap})`
-              : (hasBand ? 'Median' : (isStage ? 'Stage' : 'Discharge')),
+              ? `${style.name} Deterministic (${style.streamMap}, ${style.cadenceLabel})`
+              : `${style.name} (${style.streamMap}, ${style.cadenceLabel})`,
             data: central, unit,
-            borderColor: style.color, backgroundColor: style.color, borderWidth: 2.5,
+            borderColor: style.color, backgroundColor: style.color, borderWidth: 2.8,
             borderDash: style.borderDash || [],
             pointStyle: style.pointStyle || 'circle',
-            pointRadius: 3, tension: 0.3, spanGaps: true, order: 0
+            pointRadius: style.pointRadius || 4,
+            pointHoverRadius: style.pointHoverRadius || 6,
+            pointBackgroundColor: style.pointStyle === 'circle' ? '#ffffff' : style.color,
+            pointBorderColor: style.pointStyle === 'circle' ? style.color : '#ffffff',
+            pointBorderWidth: style.pointBorderWidth || 1.5,
+            fill: false, tension: 0.25, spanGaps: true, order: 0
           });
           if (maasChart) {
             maasChart.$returnPeriodThresholds = maasModelThresholds(data, key).map(t => Object.assign({}, t, { unit }));
@@ -12383,12 +12432,18 @@
         statusEl.classList.toggle('hidden', !note);
       }
       if (!maasChart) return;
+      const hasSubDaily = plotDates.some(iso => {
+        const d = new Date(iso);
+        return !isNaN(d.getTime()) && (d.getUTCHours() !== 0 || d.getUTCMinutes() !== 0);
+      });
+      maasChart.$rawTimestamps = plotDates;
+      maasChart.$hasSubDaily = hasSubDaily;
       const { x, y } = maasChart.options.scales;
       x.display = datasets.length > 0;
       y.display = datasets.length > 0;
       y.beginAtZero = !isStage;
       y.title.text = isStage ? 'Stage (m)' : 'Discharge (m³/s)';
-      maasChart.data.labels = datasets.length ? plotDates.map(maasFormatDateLabel) : [];
+      maasChart.data.labels = datasets.length ? plotDates.map(iso => maasFormatDateLabel(iso, hasSubDaily)) : [];
       maasChart.data.datasets = datasets;
       maasChart.update();
     }
