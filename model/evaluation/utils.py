@@ -53,6 +53,9 @@ def metrics_to_dataframe(
             else:
                 # in case the current period has no valid samples, the result dict has no metric-key
                 metrics_dict[basin][metric_key] = np.nan
+        for extra_k, extra_v in basin_data.items():
+            if extra_k != 'xr' and extra_k not in metrics_dict[basin]:
+                metrics_dict[basin][extra_k] = extra_v
 
     df = pd.DataFrame.from_dict(metrics_dict, orient='index')
     df.index.name = 'basin'

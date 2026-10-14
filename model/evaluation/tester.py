@@ -479,6 +479,66 @@ class BaseTester(object):
                             experiment_logger.log_step(**values)
                         results.update(values)
 
+                        if (
+                            self.period == 'test'
+                            and predict_last_n > 1
+                            and 'samples' not in xr[f'{target_variable}_sim'].dims
+                        ):
+                            lead_metric_names = [
+                                m
+                                for m in ['NSE', 'KGE', 'FHV']
+                                if m in var_metrics
+                            ]
+                            if lead_metric_names:
+                                for lead_idx in range(predict_last_n):
+                                    lead_day = lead_idx + 1
+                                    obs_l = (
+                                        xr.isel(
+                                            time_step=slice(
+                                                lead_idx, lead_idx + 1
+                                            )
+                                        )
+                                        .stack(datetime=['date', 'time_step'])
+                                        .drop_vars(
+                                            {'datetime', 'date', 'time_step'}
+                                        )[f'{target_variable}_obs']
+                                    )
+                                    obs_l['datetime'] = date_range
+                                    sim_l = (
+                                        xr.isel(
+                                            time_step=slice(
+                                                lead_idx, lead_idx + 1
+                                            )
+                                        )
+                                        .stack(datetime=['date', 'time_step'])
+                                        .drop_vars(
+                                            {'datetime', 'date', 'time_step'}
+                                        )[f'{target_variable}_sim']
+                                    )
+                                    sim_l['datetime'] = date_range
+                                    if (
+                                        target_variable
+                                        in self.cfg.clip_targets_to_zero
+                                    ):
+                                        sim_l = xarray.where(
+                                            sim_l < 0, 0, sim_l
+                                        )
+                                    try:
+                                        l_vals = calculate_metrics(
+                                            obs_l,
+                                            sim_l,
+                                            metrics=lead_metric_names,
+                                            resolution='1D',
+                                        )
+                                    except AllNaNError:
+                                        l_vals = {
+                                            m: np.nan for m in lead_metric_names
+                                        }
+                                    for m_name, m_val in l_vals.items():
+                                        results[f'{m_name}_lead{lead_day}'] = (
+                                            m_val
+                                        )
+
             if basin in basins_for_figures:
                 self._create_and_log_figures(
                     basin, results, experiment_logger, epoch or -1, suffix
