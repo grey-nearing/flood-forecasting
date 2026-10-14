@@ -370,7 +370,7 @@
           </div>
           <div id="maasMapMultiModelList" role="group" aria-label="Map models and river networks (click one or multiple)" class="flex items-center gap-1.5 flex-wrap"></div>
           <div class="flex items-center gap-1.5 pt-1 border-t border-[#e8eaed] pl-0.5">
-            <span id="maasMapModelDot" class="w-2 h-2 rounded-full flex-shrink-0" style="background:#007b83"></span>
+            <span id="maasMapModelDot" class="w-2 h-2 rounded-full flex-shrink-0" style="background:#7c3aed"></span>
             <div id="maasNetworkCaption" class="text-[11px] font-medium text-[#5f6368] leading-tight">LISFLOOD 0.05° river grid</div>
           </div>
         </div>
@@ -11175,17 +11175,20 @@
     const MAAS_MODELS = {
       floodhub: {
         name: 'Google FloodHub', shortName: 'FloodHub', streamMap: 'HydroSHEDS',
-        color: '#1a73e8', band: 'rgba(26, 115, 232, 0.25)',
+        color: '#1a73e8', band: 'rgba(26, 115, 232, 0.22)',
+        borderDash: [], pointStyle: 'circle',
         networkLabel: 'HydroSHEDS HydroRIVERS', reachLabel: 'HydroRIVERS reach'
       },
       glofas: {
         name: 'Copernicus GloFAS', shortName: 'GloFAS', streamMap: 'LISFLOOD',
-        color: '#007b83', band: 'rgba(0, 123, 131, 0.25)',
+        color: '#7c3aed', band: 'rgba(124, 58, 237, 0.20)',
+        borderDash: [7, 4], pointStyle: 'rectRot',
         networkLabel: 'LISFLOOD 0.05° river grid', reachLabel: 'GloFAS 0.05° river'
       },
       geoglows: {
         name: 'GEOGLOWS ECMWF', shortName: 'GEOGLOWS', streamMap: 'TDX-Hydro',
-        color: '#1e8e3e', band: 'rgba(30, 142, 62, 0.25)',
+        color: '#16a34a', band: 'rgba(22, 163, 74, 0.22)',
+        borderDash: [3, 3], pointStyle: 'triangle',
         networkLabel: 'TDX-Hydro streams', reachLabel: 'TDX-Hydro stream'
       }
     };
@@ -11969,8 +11972,10 @@
               position: 'bottom',
               labels: {
                 color: '#202124',
-                font: { size: 11 },
-                boxWidth: 14,
+                font: { size: 11, weight: '500' },
+                usePointStyle: true,
+                pointStyleWidth: 18,
+                padding: 16,
                 filter: (item, chartData) => !chartData.datasets[item.datasetIndex].legendHidden
               }
             },
@@ -12090,49 +12095,27 @@
         } else {
           const [i0, i1] = maasActiveDateRange(allDates.length, usable.map(k => timeline.series[k].central));
           plotDates = allDates.slice(i0, i1 + 1);
-          const n = plotDates.length;
-          const sliced = {};
-          for (const k of usable) {
-            sliced[k] = timeline.series[k].central.slice(i0, i1 + 1);
-          }
-          if (usable.length >= 2) {
-            const envMin = [], envMax = [], envMean = [];
-            for (let i = 0; i < n; i++) {
-              const vals = usable.map(k => sliced[k][i]).filter(maasIsFiniteVal).map(Number);
-              if (vals.length >= 2) {
-                envMin.push(Math.min(...vals));
-                envMax.push(Math.max(...vals));
-                envMean.push(Number((vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2)));
-              } else {
-                envMin.push(null);
-                envMax.push(null);
-                envMean.push(vals.length === 1 ? vals[0] : null);
-              }
-            }
-            if (hasValues(envMin) && hasValues(envMax)) {
-              datasets.push({
-                label: 'Ensemble min', data: envMin, unit: 'm³/s', legendHidden: true, borderWidth: 0,
-                pointRadius: 0, pointHitRadius: 0, fill: false, tension: 0.3, spanGaps: true, order: 3
-              });
-              datasets.push({
-                label: 'Multi-model spread (min–max)', data: envMax, bandLow: envMin, unit: 'm³/s', borderWidth: 0,
-                backgroundColor: 'rgba(95, 99, 104, 0.18)', pointRadius: 0, pointHitRadius: 0, fill: '-1',
-                tension: 0.3, spanGaps: true, order: 3
-              });
-              datasets.push({
-                label: 'Multi-model mean', data: envMean, unit: 'm³/s', borderColor: '#202124',
-                backgroundColor: '#202124', borderWidth: 2, borderDash: [4, 3], pointRadius: 0,
-                tension: 0.3, spanGaps: true, order: 0
-              });
-            }
-          }
           for (const k of usable) {
             const m = MAAS_MODELS[k];
+            const slicedSeries = timeline.series[k].central.slice(i0, i1 + 1);
             datasets.push({
-              label: m.name,
-              data: sliced[k], unit: 'm³/s', borderColor: m.color, backgroundColor: m.color,
-              borderWidth: 2.5, pointRadius: 2,
-              tension: 0.3, spanGaps: true, order: 1
+              label: `${m.name} (${m.streamMap})`,
+              data: slicedSeries,
+              unit: 'm³/s',
+              borderColor: m.color,
+              backgroundColor: m.color,
+              borderWidth: 3,
+              borderDash: m.borderDash || [],
+              pointStyle: m.pointStyle || 'circle',
+              pointRadius: 4,
+              pointHoverRadius: 6,
+              pointBackgroundColor: m.pointStyle === 'circle' ? '#ffffff' : m.color,
+              pointBorderColor: m.pointStyle === 'circle' ? m.color : '#ffffff',
+              pointBorderWidth: 2,
+              fill: false,
+              tension: 0.25,
+              spanGaps: true,
+              order: 1
             });
           }
           const reachNote = maasSnappedReachSummary(data, usable);
