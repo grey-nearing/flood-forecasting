@@ -802,6 +802,7 @@ class RealtimeForcingFetcher:
           prod_enum,
           overwrite_existing_basins=overwrite,
           preserve_existing_valid=not overwrite,
+          allow_2d_expansion=True,
       )
       self.writer.consolidate_metadata(prod_enum)
       stores[prod_name] = store_path

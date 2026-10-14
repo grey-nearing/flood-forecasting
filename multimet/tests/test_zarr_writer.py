@@ -412,3 +412,105 @@ def test_initialize_zarr_store_local_and_remote_memory_roundtrip(tmp_path):
   assert "_f32_template" not in z_grp
 
 
+def test_write_or_append_2d_expansion_and_basin_dtype_widening(
+    writer: MultiMetZarrWriter,
+):
+  """Verifies write_or_append supports adding new basins with shifted dates and varying string lengths."""
+  basins_init = [
+      "catchment_hydroatlas_POINT_38526_81631_38525_81630",
+      "catchment_hydroatlas_HYRIV_70689198_35212_81698",
+  ]
+  dates_init = pd.date_range("2025-10-12", periods=3, freq="D")
+  leads = pd.to_timedelta(range(1, 11), unit="D")
+  ds1 = xr.Dataset(
+      data_vars={
+          band: (
+              ["basin", "date", "lead_time"],
+              np.ones((2, 3, 10), dtype=np.float32),
+          )
+          for band in PRODUCT_BANDS[Product.HRES]
+      },
+      coords={
+          "basin": basins_init,
+          "date": dates_init.values,
+          "lead_time": leads.values,
+      },
+  )
+  store_path = writer.write_or_append(ds1, Product.HRES)
+
+  # 1. Add a 3rd basin (shorter string ID <U47 vs <U50) AND shifted dates (2025-10-13..2025-10-15)
+  basins_next = basins_init + [
+      "catchment_hydroatlas_HYRIV_70674197_35782_81497"
+  ]
+  dates_next = pd.date_range("2025-10-13", periods=3, freq="D")
+  ds2 = xr.Dataset(
+      data_vars={
+          band: (
+              ["basin", "date", "lead_time"],
+              np.full((3, 3, 10), 2.0, dtype=np.float32),
+          )
+          for band in PRODUCT_BANDS[Product.HRES]
+      },
+      coords={
+          "basin": basins_next,
+          "date": dates_next.values,
+          "lead_time": leads.values,
+      },
+  )
+  writer.write_or_append(
+      ds2, Product.HRES, preserve_existing_valid=True, allow_2d_expansion=True
+  )
+
+  # 2. Add a single new basin with an even longer string ID (<U60) on a new date with allow_2d_expansion=True
+  long_basin = "catchment_hydroatlas_VERY_LONG_CUSTOM_BASIN_IDENTIFIER_99999"
+  dates_single = pd.date_range("2025-10-16", periods=1, freq="D")
+  ds3 = xr.Dataset(
+      data_vars={
+          band: (
+              ["basin", "date", "lead_time"],
+              np.full((1, 1, 10), 5.0, dtype=np.float32),
+          )
+          for band in PRODUCT_BANDS[Product.HRES]
+      },
+      coords={
+          "basin": [long_basin],
+          "date": dates_single.values,
+          "lead_time": leads.values,
+      },
+  )
+  writer.write_or_append(
+      ds3, Product.HRES, preserve_existing_valid=True, allow_2d_expansion=True
+  )
+
+  with xr.open_zarr(store_path) as res_ds:
+    assert list(res_ds["basin"].values) == basins_next + [long_basin]
+    assert res_ds["hres_total_precipitation"].shape == (4, 5, 10)
+    # New basin at 2025-10-12 (before its extraction window) must be NaN
+    assert np.isnan(
+        res_ds["hres_total_precipitation"]
+        .sel(
+            basin="catchment_hydroatlas_HYRIV_70674197_35782_81497",
+            date="2025-10-12",
+        )
+        .values
+    ).all()
+    # New basin at 2025-10-15 must be 2.0
+    np.testing.assert_allclose(
+        res_ds["hres_total_precipitation"]
+        .sel(
+            basin="catchment_hydroatlas_HYRIV_70674197_35782_81497",
+            date="2025-10-15",
+        )
+        .values,
+        2.0,
+    )
+    # Long basin ID must be preserved without truncation and have 5.0 on 2025-10-16
+    np.testing.assert_allclose(
+        res_ds["hres_total_precipitation"]
+        .sel(basin=long_basin, date="2025-10-16")
+        .values,
+        5.0,
+    )
+
+
+
