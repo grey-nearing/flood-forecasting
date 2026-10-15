@@ -26,7 +26,7 @@ Audit every line of the diff for any sliver of potential to introduce, fabricate
 
 1. **Missing Data In $\implies$ `NaN` Out (or Loud Exception):**
    - **Never** silently drop, zero-fill (`0.0`), forward-fill (`ffill`), backward-fill (`bfill`), linearly interpolate, or replace missing dates, sub-daily granules, grid cells, basins, or forecast lead times with climatology or constants.
-   - **Never** substitute backup or fallback data products or sources when a requested source is unavailable, delayed, or fails to download (no `"auto"` source fallbacks, no silent fallback between NASA GES DISC and other buckets, no mixing of incompatible dataset versions such as IMERG V06 `precipitationCal` with V07 `precipitation`, and no mixing of prior and current forecast runs via `preserve_existing_valid` flags, except for 3-D forecast Zarr arrays where the Zarr `date` is the initialization date `00:00 UTC` and `preserve_existing_valid=True` is required to preserve `lead_time=2D..10D` during hot-start boundary refreshes).
+   - **Never** substitute backup or fallback data products or sources when a requested source is unavailable, delayed, or fails to download (no `"auto"` source fallbacks, no silent fallback between NASA GES DISC and other buckets, no mixing of incompatible dataset versions such as IMERG V06 `precipitationCal` with V07 `precipitation`, and no mixing of prior and current forecast runs via `preserve_existing_valid` flags).
    - **Never** substitute a fallback statistical estimator, distribution, or fabricated quantile when an algorithm fails to converge or lacks sufficient valid observations.
    - **Never** broadcast a single analysis or forecast step across missing forecast lead times.
 2. **Strict Sub-Daily & Spatial Coverage Thresholds:**
