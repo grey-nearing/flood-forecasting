@@ -30,7 +30,7 @@ needs on top of it:
 Run ``python -m frontend.weather_sync --data-root <dir>`` for one manual sync.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # noqa: I001
 
 import argparse
 import logging
@@ -38,8 +38,8 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 import time
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -416,7 +416,7 @@ def run_sync_subprocess(
     models: Sequence[str] | None = None,
     *,
     force: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, Any] | bool:
     """Run one sync in a separate process and return the resulting status."""
     resolved_root = str(Path(root or weather_data_root()).resolve())
     Path(resolved_root).mkdir(parents=True, exist_ok=True)
@@ -443,18 +443,29 @@ def run_sync_subprocess(
     if force:
         cmd.append('--force')
     started = _utc_now_str()
-    proc = subprocess.run(  # noqa: S603
+    proc = subprocess.Popen(  # noqa: S603
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-        check=False,
         cwd=_REPO_ROOT,
     )
+    start_time = time.monotonic()
+    while proc.poll() is None:
+        if time.monotonic() - start_time > SUBPROCESS_TIMEOUT_S:
+            proc.kill()
+            proc.wait()
+            logger.error(
+                "Weather sync subprocess timed out after %s seconds",
+                SUBPROCESS_TIMEOUT_S,
+            )
+            return False
+        time.sleep(0.5)
+    stdout, stderr = proc.communicate()
     _append_log(
         resolved_root,
         f'\n=== {started} {" ".join(cmd)} (exit {proc.returncode})\n'
-        f'{proc.stdout}{proc.stderr}',
+        f'{stdout}{stderr}',
     )
     status = read_sync_status(resolved_root)
     if (status.get('last_check_utc') or '') < started:
@@ -468,7 +479,7 @@ def run_sync_subprocess(
                 }
             )
         else:
-            stderr_lines = (proc.stderr or '').strip().splitlines()
+            stderr_lines = (stderr or '').strip().splitlines()
             detail = (
                 stderr_lines[-1]
                 if stderr_lines
