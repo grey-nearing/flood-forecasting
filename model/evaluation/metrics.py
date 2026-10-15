@@ -58,7 +58,13 @@ def _mask_valid(obs: DataArray, sim: DataArray) -> tuple[DataArray, DataArray]:
 
 
 def _get_fdc(da: DataArray) -> np.ndarray:
-    return np.sort(da.values)[::-1]
+    vals = np.asarray(da.values)
+    nan_mask = np.isnan(vals)
+    if nan_mask.any():
+        valid = np.sort(vals[~nan_mask])[::-1]
+        nans = np.full(int(nan_mask.sum()), np.nan, dtype=vals.dtype)
+        return np.concatenate([valid, nans])
+    return np.sort(vals)[::-1]
 
 
 def nse(obs: DataArray, sim: DataArray) -> float:
@@ -958,11 +964,11 @@ def _check_all_nan(obs: DataArray, sim: DataArray):
     AllNaNError
         If all observations or all simulations are NaN.
     """
-    if bool(obs.isnull().all()):
+    if bool(np.isnan(obs.values).all()):
         raise AllNaNError(
             'All observed values are NaN, thus metrics will be NaN, too.'
         )
-    if bool(sim.isnull().all()):
+    if bool(np.isnan(sim.values).all()):
         raise AllNaNError(
             'All simulated values are NaN, thus metrics will be NaN, too.'
         )

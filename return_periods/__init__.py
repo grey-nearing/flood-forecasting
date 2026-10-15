@@ -52,6 +52,7 @@ from return_periods.extract_peaks_utilities import (
 from return_periods.forecast_evaluation import (
     EXCEEDANCE_WEIGHT_SUM,
     EXCEEDANCE_WEIGHTS,
+    PRIMARY_WINDOW_DAYS,
     RETURN_PERIODS,
     compute_precision_recall_f1_single_rp,
     compute_series_return_period_thresholds,
@@ -84,9 +85,10 @@ from return_periods.theoretical_distribution_utilities import (
 )
 
 __all__ = [
-    'EXCEEDANCE_WEIGHT_SUM',
     'EXCEEDANCE_WEIGHTS',
+    'EXCEEDANCE_WEIGHT_SUM',
     'PLOTTING_POSITION_TYPES',
+    'PRIMARY_WINDOW_DAYS',
     'RETURN_PERIODS',
     'BaseFitter',
     'DataIntervalError',

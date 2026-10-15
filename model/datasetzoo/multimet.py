@@ -19,7 +19,7 @@ import math
 import pickle
 import subprocess
 import sys
-from collections.abc import Hashable, Iterable, Iterator
+from collections.abc import Hashable, Iterable, Iterator, Sequence
 from pathlib import Path
 
 import dask
@@ -108,7 +108,7 @@ class MultimetDataLoader(torch.utils.data.DataLoader):
         self._debug = logging_level <= logging.DEBUG
 
     def __iter__(self):
-        if not self._lazy_load and hasattr(self.dataset, 'get_batch'):
+        if not self._lazy_load and isinstance(self.dataset, Multimet):
             for indices in self.batch_sampler:
                 yield self.dataset.get_batch(indices)
             return
@@ -295,7 +295,9 @@ class Multimet(Dataset):
         self._forecast_counter = None
         if cfg.timestep_counter:
             self._hindcast_counter = np.full((self._seq_length,), 0)
-            self._forecast_counter = self._lead_times
+            self._forecast_counter = np.asarray(
+                self._lead_times, dtype=np.int64
+            )
             if self._forecast_overlap:
                 overlap_counter = np.full(
                     (self._forecast_overlap,), self._min_lead_time
@@ -481,7 +483,13 @@ class Multimet(Dataset):
         self._dataset = self.scaler.scale(self._dataset)
 
     def _init_fast_batch_extractor(self) -> None:
-        """Precompute contiguous (basin, date, ...) views and zero-copy sliding_window_views for vectorized batching."""
+        """Precompute contiguous arrays and sliding window views for batching.
+
+        Builds zero-copy `sliding_window_view` arrays over the eager in-memory
+        `(basin, date)` and `(basin, date, lead_time)` dataset arrays so that
+        `get_batch` can slice a full batch of samples in a single vectorized
+        NumPy indexing step.
+        """
         swv = np.lib.stride_tricks.sliding_window_view
         self._fast_basin_col = self._sample_index.get_column('basin').astype(
             np.intp
@@ -495,8 +503,8 @@ class Multimet(Dataset):
         self._fast_statics = np.ascontiguousarray(
             np.stack(
                 [
-                    self._dataset[e].transpose('basin').data
-                    for e in self._static_features
+                    self._dataset[feat].transpose('basin').data
+                    for feat in self._static_features
                 ],
                 axis=-1,
             )
@@ -504,8 +512,8 @@ class Multimet(Dataset):
         target_arr = np.ascontiguousarray(
             np.stack(
                 [
-                    self._dataset[e].transpose('basin', 'date').data
-                    for e in self._target_features
+                    self._dataset[feat].transpose('basin', 'date').data
+                    for feat in self._target_features
                 ],
                 axis=-1,
             )
@@ -518,10 +526,10 @@ class Multimet(Dataset):
                 np.expand_dims(
                     np.stack(
                         [
-                            self._per_basin_target_stds[e]
+                            self._per_basin_target_stds[feat]
                             .transpose('basin')
                             .data
-                            for e in self._target_features
+                            for feat in self._target_features
                         ],
                         axis=-1,
                     ),
@@ -532,41 +540,105 @@ class Multimet(Dataset):
             self._fast_stds = None
 
         self._fast_hindcast_wins: dict[str, np.ndarray] = {}
-        for f in self._hindcast_features_without_lead_time:
+        for feature in self._hindcast_features_without_lead_time:
             arr = np.ascontiguousarray(
-                self._dataset[f].transpose('basin', 'date').data
+                self._dataset[feature].transpose('basin', 'date').data
             )
-            self._fast_hindcast_wins[f] = swv(arr, self._seq_length, axis=1)
-        for f in self._hindcast_features_with_lead_time:
+            self._fast_hindcast_wins[feature] = swv(
+                arr, self._seq_length, axis=1
+            )
+        for feature in self._hindcast_features_with_lead_time:
             arr = np.ascontiguousarray(
-                self._dataset[f]
+                self._dataset[feature]
                 .isel(lead_time=0)
                 .transpose('basin', 'date')
                 .data
             )
-            self._fast_hindcast_wins[f] = swv(arr, self._seq_length, axis=1)
+            self._fast_hindcast_wins[feature] = swv(
+                arr, self._seq_length, axis=1
+            )
 
         self._fast_forecast_3d: dict[str, np.ndarray] = {}
         self._fast_forecast_overlap_wins: dict[str, np.ndarray] = {}
-        for f in self._forecast_features:
+        for feature in self._forecast_features:
             arr_3d = np.ascontiguousarray(
-                self._dataset[f]
+                self._dataset[feature]
                 .transpose('basin', 'date', 'lead_time')
                 .data
             )
-            self._fast_forecast_3d[f] = arr_3d
-            if self._forecast_overlap is not None and self._forecast_overlap > 0:
+            self._fast_forecast_3d[feature] = arr_3d
+            if (
+                self._forecast_overlap is not None
+                and self._forecast_overlap > 0
+            ):
                 arr_l0 = np.ascontiguousarray(arr_3d[:, :, 0])
-                self._fast_forecast_overlap_wins[f] = swv(
+                self._fast_forecast_overlap_wins[feature] = swv(
                     arr_l0, self._forecast_overlap, axis=1
                 )
         self._fast_ready = True
 
+    def _build_batch_forecast(
+        self,
+        b_idx: np.ndarray,
+        d_idx: np.ndarray,
+        h_end: np.ndarray,
+    ) -> dict[str, torch.Tensor]:
+        """Build the `x_d_forecast` tensor dictionary for a batch of indices."""
+        if not self._forecast_features:
+            return {}
+        if self._forecast_overlap is not None and self._forecast_overlap > 0:
+            ov_start = h_end - self._forecast_overlap
+            batch_forecast: dict[str, torch.Tensor] = {
+                feature: torch.from_numpy(
+                    np.concatenate(
+                        [
+                            self._fast_forecast_overlap_wins[feature][
+                                b_idx, ov_start
+                            ],
+                            self._fast_forecast_3d[feature][b_idx, d_idx, :],
+                        ],
+                        axis=1,
+                    )
+                ).unsqueeze(-1)
+                for feature in self._forecast_features
+            }
+        else:
+            batch_forecast = {
+                feature: torch.from_numpy(
+                    self._fast_forecast_3d[feature][b_idx, d_idx, :]
+                ).unsqueeze(-1)
+                for feature in self._forecast_features
+            }
+        if self._forecast_counter is not None:
+            forecast_cnt = np.broadcast_to(
+                self._forecast_counter[None, :, None],
+                (len(b_idx), len(self._forecast_counter), 1),
+            ).copy()
+            batch_forecast['forecast_counter'] = torch.from_numpy(forecast_cnt)
+        return batch_forecast
+
     def get_batch(
-        self, indices: list[int] | np.ndarray
+        self, indices: Sequence[int] | np.ndarray
     ) -> dict[str, torch.Tensor | np.ndarray | dict[str, torch.Tensor]]:
-        """Vectorized batch extraction equivalent to collating [self[i] for i in indices]."""
-        if not indices:
+        """Extract a collated batch of samples via vectorized indexing.
+
+        Args:
+            indices: 1D sequence or NumPy array of integer sample indices.
+
+        Returns:
+            Dictionary of collated batch tensors and date arrays matching
+            `self.collate_fn([_convert_to_tensor(self[i]) for i in indices])`.
+
+        Raises:
+            RuntimeError: If the dataset was initialized with `lazy_load=True`
+                and fast batch views are not available.
+        """
+        if not self._fast_ready:
+            raise RuntimeError(
+                'Fast batch extractor is not initialized because the dataset '
+                'was constructed with lazy_load=True.'
+            )
+        if len(indices) == 0:
             return {}
         idx = np.asarray(indices, dtype=np.intp)
         b_idx = self._fast_basin_col[idx]
@@ -582,39 +654,21 @@ class Multimet(Dataset):
         h_start = h_end - self._seq_length
 
         batch_hindcast: dict[str, torch.Tensor] = {
-            f: torch.from_numpy(win[b_idx, h_start]).unsqueeze(-1)
-            for f, win in self._fast_hindcast_wins.items()
+            feature: torch.from_numpy(win[b_idx, h_start]).unsqueeze(-1)
+            for feature, win in self._fast_hindcast_wins.items()
         }
         if self._hindcast_counter is not None:
-            hc = np.broadcast_to(
+            hindcast_cnt = np.broadcast_to(
                 self._hindcast_counter[None, :, None],
                 (bsz, len(self._hindcast_counter), 1),
             ).copy()
-            batch_hindcast['hindcast_counter'] = torch.from_numpy(hc)
+            batch_hindcast['hindcast_counter'] = torch.from_numpy(hindcast_cnt)
 
-        batch_forecast: dict[str, torch.Tensor] = {}
-        if self._forecast_features:
-            if self._forecast_overlap is not None and self._forecast_overlap > 0:
-                ov_start = h_end - self._forecast_overlap
-                for f in self._forecast_features:
-                    ov = self._fast_forecast_overlap_wins[f][b_idx, ov_start]
-                    fc = self._fast_forecast_3d[f][b_idx, d_idx, :]
-                    batch_forecast[f] = torch.from_numpy(
-                        np.concatenate([ov, fc], axis=1)
-                    ).unsqueeze(-1)
-            else:
-                for f in self._forecast_features:
-                    batch_forecast[f] = torch.from_numpy(
-                        self._fast_forecast_3d[f][b_idx, d_idx, :]
-                    ).unsqueeze(-1)
-            if self._forecast_counter is not None:
-                fc_cnt = np.broadcast_to(
-                    self._forecast_counter[None, :, None],
-                    (bsz, len(self._forecast_counter), 1),
-                ).copy()
-                batch_forecast['forecast_counter'] = torch.from_numpy(fc_cnt)
+        batch_forecast = self._build_batch_forecast(b_idx, d_idx, h_end)
 
-        batch: dict[str, torch.Tensor | np.ndarray | dict[str, torch.Tensor]] = {
+        batch: dict[
+            str, torch.Tensor | np.ndarray | dict[str, torch.Tensor]
+        ] = {
             'date': self._fast_date_win[date_start],
             'x_s': torch.from_numpy(self._fast_statics[b_idx]),
             'x_d_hindcast': batch_hindcast,

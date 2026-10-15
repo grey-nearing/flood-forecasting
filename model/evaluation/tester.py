@@ -386,67 +386,22 @@ class BaseTester(object):
 
             if metrics:
                 for target_variable in self.cfg.target_variables:
-                    obs = (
-                        xr.isel(
-                            time_step=slice(
-                                -predict_last_n,
-                                -predict_last_n + 1,
-                            )
-                        )
-                        .stack(datetime=['date', 'time_step'])
-                        .drop_vars({'datetime', 'date', 'time_step'})[
-                            f'{target_variable}_obs'
-                        ]
+                    var_metrics = (
+                        metrics
+                        if isinstance(metrics, list)
+                        else metrics[target_variable]
                     )
-                    obs['datetime'] = date_range
+                    if 'all' in var_metrics:
+                        var_metrics = get_available_metrics()
+
+                    obs, sim = self._select_time_step_series(
+                        xr,
+                        target_variable,
+                        -predict_last_n,
+                        date_range,
+                    )
                     # check if there are observations for this period
                     if obs.notnull().any():
-                        sim = (
-                            xr.isel(
-                                time_step=slice(
-                                    -predict_last_n,
-                                    -predict_last_n + 1,
-                                )
-                            )
-                            .stack(datetime=['date', 'time_step'])
-                            .drop_vars({'datetime', 'date', 'time_step'})[
-                                f'{target_variable}_sim'
-                            ]
-                        )
-                        sim['datetime'] = date_range
-
-                        # clip negative predictions to zero, if variable is listed in config 'clip_target_to_zero'
-                        if target_variable in self.cfg.clip_targets_to_zero:
-                            sim = xarray.where(sim < 0, 0, sim)
-
-                        if 'samples' in sim.dims:
-                            is_cmal_det = (
-                                self.cfg.head.lower() == 'cmal_deterministic'
-                            )
-                            match self.cfg.tester_sample_reduction:
-                                case TesterSamplesReduction.MEAN:
-                                    sim = (
-                                        sim.isel(samples=0)
-                                        if is_cmal_det
-                                        else sim.mean(dim='samples')
-                                    )
-                                case TesterSamplesReduction.MEDIAN:
-                                    sim = (
-                                        sim.isel(samples=5)
-                                        if is_cmal_det
-                                        else sim.median(dim='samples')
-                                    )
-                                case _:
-                                    msg = f'Supported {self.cfg.tester_sample_reduction=}'
-                                    raise KeyError(msg)
-
-                        var_metrics = (
-                            metrics
-                            if isinstance(metrics, list)
-                            else metrics[target_variable]
-                        )
-                        if 'all' in var_metrics:
-                            var_metrics = get_available_metrics()
                         try:
                             values = calculate_metrics(
                                 obs,
@@ -479,65 +434,15 @@ class BaseTester(object):
                             experiment_logger.log_step(**values)
                         results.update(values)
 
-                        if (
-                            self.period == 'test'
-                            and predict_last_n > 1
-                            and 'samples' not in xr[f'{target_variable}_sim'].dims
-                        ):
-                            lead_metric_names = [
-                                m
-                                for m in ['NSE', 'KGE', 'FHV']
-                                if m in var_metrics
-                            ]
-                            if lead_metric_names:
-                                for lead_idx in range(predict_last_n):
-                                    lead_day = lead_idx + 1
-                                    obs_l = (
-                                        xr.isel(
-                                            time_step=slice(
-                                                lead_idx, lead_idx + 1
-                                            )
-                                        )
-                                        .stack(datetime=['date', 'time_step'])
-                                        .drop_vars(
-                                            {'datetime', 'date', 'time_step'}
-                                        )[f'{target_variable}_obs']
-                                    )
-                                    obs_l['datetime'] = date_range
-                                    sim_l = (
-                                        xr.isel(
-                                            time_step=slice(
-                                                lead_idx, lead_idx + 1
-                                            )
-                                        )
-                                        .stack(datetime=['date', 'time_step'])
-                                        .drop_vars(
-                                            {'datetime', 'date', 'time_step'}
-                                        )[f'{target_variable}_sim']
-                                    )
-                                    sim_l['datetime'] = date_range
-                                    if (
-                                        target_variable
-                                        in self.cfg.clip_targets_to_zero
-                                    ):
-                                        sim_l = xarray.where(
-                                            sim_l < 0, 0, sim_l
-                                        )
-                                    try:
-                                        l_vals = calculate_metrics(
-                                            obs_l,
-                                            sim_l,
-                                            metrics=lead_metric_names,
-                                            resolution='1D',
-                                        )
-                                    except AllNaNError:
-                                        l_vals = {
-                                            m: np.nan for m in lead_metric_names
-                                        }
-                                    for m_name, m_val in l_vals.items():
-                                        results[f'{m_name}_lead{lead_day}'] = (
-                                            m_val
-                                        )
+                    if self.period == 'test' and predict_last_n > 1:
+                        results.update(
+                            self._evaluate_per_step_metrics(
+                                xr=xr,
+                                target_variable=target_variable,
+                                var_metrics=list(var_metrics),
+                                date_range=date_range,
+                            )
+                        )
 
             if basin in basins_for_figures:
                 self._create_and_log_figures(
@@ -578,6 +483,100 @@ class BaseTester(object):
             if result_file.exists():
                 zarr.consolidate_metadata(str(result_file))
                 LOGGER.debug('Consolidated metadata for %s', result_file)
+
+    def _select_time_step_series(
+        self,
+        xr: xarray.Dataset,
+        target_variable: str,
+        step_idx: int,
+        date_range: pd.DatetimeIndex,
+    ) -> tuple[xarray.DataArray, xarray.DataArray]:
+        """Extract 1D observed and reduced simulated series for `step_idx`."""
+        obs_series = (
+            xr[f'{target_variable}_obs']
+            .isel(time_step=step_idx, drop=True)
+            .rename({'date': 'datetime'})
+            .assign_coords(datetime=date_range)
+            .transpose(..., 'datetime')
+        )
+        sim_series = (
+            xr[f'{target_variable}_sim']
+            .isel(time_step=step_idx, drop=True)
+            .rename({'date': 'datetime'})
+            .assign_coords(datetime=date_range)
+            .transpose(..., 'datetime')
+        )
+        if target_variable in self.cfg.clip_targets_to_zero:
+            sim_series = xarray.where(sim_series < 0, 0, sim_series)
+        if 'samples' in sim_series.dims:
+            is_cmal_det = self.cfg.head.lower() == 'cmal_deterministic'
+            match self.cfg.tester_sample_reduction:
+                case TesterSamplesReduction.MEAN:
+                    sim_series = (
+                        sim_series.isel(samples=0)
+                        if is_cmal_det
+                        else sim_series.mean(dim='samples')
+                    )
+                case TesterSamplesReduction.MEDIAN:
+                    sim_series = (
+                        sim_series.isel(samples=5)
+                        if is_cmal_det
+                        else sim_series.median(dim='samples')
+                    )
+                case _:
+                    msg = f'Supported {self.cfg.tester_sample_reduction=}'
+                    raise KeyError(msg)
+        return obs_series, sim_series
+
+    def _evaluate_per_step_metrics(
+        self,
+        xr: xarray.Dataset,
+        target_variable: str,
+        var_metrics: list[str],
+        date_range: pd.DatetimeIndex,
+    ) -> dict[str, float]:
+        """Compute per-step metrics keyed by the `time_step` coordinate."""
+        step_results: dict[str, float] = {}
+        if not var_metrics:
+            return step_results
+        metric_prefix = (
+            f'{target_variable}_' if len(self.cfg.target_variables) > 1 else ''
+        )
+        time_steps = [int(ts) for ts in xr['time_step'].to_numpy()]
+        for step_idx, time_step_val in enumerate(time_steps):
+            if time_step_val >= 1:
+                step_suffix = f'lead{time_step_val}'
+            elif time_step_val == 0:
+                step_suffix = 'hindcast'
+            else:
+                step_suffix = f'hindcast{abs(time_step_val)}'
+            obs_step, sim_step = self._select_time_step_series(
+                xr,
+                target_variable,
+                step_idx,
+                date_range,
+            )
+            has_valid_obs = not bool(np.isnan(obs_step.values).all())
+            has_valid_sim = not bool(np.isnan(sim_step.values).all())
+            if has_valid_obs and has_valid_sim:
+                step_values = calculate_metrics(
+                    obs_step,
+                    sim_step,
+                    metrics=var_metrics,
+                    resolution='1D',
+                )
+            else:
+                LOGGER.warning(
+                    'Target %s step %s has all-NaN obs or sim; setting '
+                    'step metrics to NaN.',
+                    target_variable,
+                    step_suffix,
+                )
+                step_values = dict.fromkeys(var_metrics, np.nan)
+            for metric_name, metric_val in step_values.items():
+                key = f'{metric_prefix}{metric_name}_{step_suffix}'
+                step_results[key] = metric_val
+        return step_results
 
     def _calc_exclude_basins(self) -> Iterator[str]:
         if not self.cfg.tester_skip_obs_all_nan:
