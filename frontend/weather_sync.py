@@ -30,7 +30,7 @@ needs on top of it:
 Run ``python -m frontend.weather_sync --data-root <dir>`` for one manual sync.
 """
 
-from __future__ import annotations  # noqa: I001
+from __future__ import annotations
 
 import argparse
 import logging
@@ -38,8 +38,8 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 

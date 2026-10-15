@@ -1,4 +1,5 @@
-# Copyright 2026 Google LLC  # noqa: D100
+"""Extractors for ECMWF HRES."""
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -60,7 +61,7 @@ _RASTERIO_LOCK = threading.Lock()
 
 
 def _has_module(name: str) -> bool:
-  """Returns True when ``name`` is an importable module with a valid spec."""  # noqa: D401
+  """Return True when ``name`` is an importable module with a valid spec."""
   mod = sys.modules.get(name)
   if mod is not None:
     return getattr(mod, "__spec__", None) is not None
@@ -68,7 +69,7 @@ def _has_module(name: str) -> bool:
 
 
 def _has_grib2_grid_section(raw_bytes: bytes) -> bool:
-  """Returns True when a GRIB2 message includes Section 3 (Grid Definition)."""  # noqa: D401
+  """Return True when a GRIB2 message includes Section 3 (Grid Definition)."""
   if (
       len(raw_bytes) < 20  # noqa: PLR2004
       or raw_bytes[:4] != b"GRIB"
@@ -90,7 +91,7 @@ def _has_grib2_grid_section(raw_bytes: bytes) -> bool:
 def deaccumulate(
     accumulated: np.ndarray, clip_negative: bool = False  # noqa: FBT001, FBT002
 ) -> np.ndarray:
-  """Converts a run-cumulative forecast stack into per-lead-day increments."""  # noqa: D401
+  """Convert a run-cumulative forecast stack into per-lead-day increments."""
   daily = np.empty_like(accumulated)
   daily[0] = accumulated[0]
   difference = accumulated[1:] - accumulated[:-1]
@@ -100,7 +101,7 @@ def deaccumulate(
 
 
 def parse_ecmwf_index(idx_text: str, wanted_params: set) -> dict[str, tuple[int, int]]:  # noqa: E501
-    """Parses byte ranges from an ECMWF Open Data .index file text."""  # noqa: D401
+    """Parse byte ranges from an ECMWF Open Data .index file text."""
     byte_ranges = {}
     for line in idx_text.splitlines():
         line_s = line.strip()
@@ -115,7 +116,7 @@ def parse_ecmwf_index(idx_text: str, wanted_params: set) -> dict[str, tuple[int,
     return byte_ranges
 
 def fetch_byte_range(gcs: Any, path: str, start_b: int, end_b: int) -> bytes:  # noqa: ANN401
-    """Fetches a byte range from a GCS object."""  # noqa: D401
+    """Fetch a byte range from a GCS object."""
     return gcs.cat_file(path, start=start_b, end=end_b)
 
 
@@ -158,7 +159,7 @@ def decode_grib2_message(  # noqa: C901, PLR0912, PLR0915
     param: str = "",
     context: str = "",
 ) -> np.ndarray:
-  """Decodes a single GRIB2 message into a 2D float32 array in raw WMO units."""  # noqa: D401
+  """Decode a single GRIB2 message into a 2D float32 array in raw WMO units."""
   if _has_module("eccodes"):
     import eccodes  # type: ignore[import-untyped]  # noqa: PLC0415
 
@@ -192,13 +193,12 @@ def decode_grib2_message(  # noqa: C901, PLR0912, PLR0915
     )
 
     logging.getLogger("rasterio").setLevel(logging.CRITICAL)
-    with _RASTERIO_LOCK, MemoryFile(raw_bytes, ext=".grib2") as memfile:  # noqa: SIM117
-      with memfile.open() as dataset:
-        arr = dataset.read(1).astype(np.float32)
-        nodata = dataset.nodata
-        grib_tags = dataset.tags(1)
-        grib_unit = grib_tags.get("GRIB_UNIT", "")
-        pds_nums = grib_tags.get("GRIB_PDS_TEMPLATE_NUMBERS", "").split()
+    with _RASTERIO_LOCK, MemoryFile(raw_bytes, ext=".grib2") as memfile, memfile.open() as dataset:  # noqa: E501
+      arr = dataset.read(1).astype(np.float32)
+      nodata = dataset.nodata
+      grib_tags = dataset.tags(1)
+      grib_unit = grib_tags.get("GRIB_UNIT", "")
+      pds_nums = grib_tags.get("GRIB_PDS_TEMPLATE_NUMBERS", "").split()
     if param and len(pds_nums) >= _PDS_MIN_CATEGORY_NUMBERS:
       cat_num = (int(pds_nums[0]), int(pds_nums[1]))
       surface_type = (
@@ -289,12 +289,12 @@ def find_latest_hres_open_data_date(
     require_full_10d: bool = True,  # noqa: FBT001, FBT002
     fs: Any | None = None,  # noqa: ANN401
 ) -> pd.Timestamp:
-  """Finds the latest published ECMWF Open Data 00z HRES initialization date.
+  """Find the latest published ECMWF Open Data 00z HRES initialization date.
 
   Walks backwards from ``reference_date`` (default: current UTC date) up to
   ``max_lookback_days`` until it finds an initialization date whose 00z 0.25-deg
   IFS forecast index file is published on ``gs://ecmwf-open-data``.
-  """  # noqa: D401
+  """
   if fs is None:
     if gcsfs is None:
       raise ImportError("gcsfs is required to query ECMWF Open Data on GCS.")
@@ -332,7 +332,7 @@ def _fetch_open_data_day_grids(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR091
     lat_idx: np.ndarray | None = None,
     lon_idx: np.ndarray | None = None,
 ) -> dict[str, np.ndarray] | None:
-  """Fetches and decodes 1 initialization date of ECMWF Open Data GRIB2 slices.
+  """Fetch and decodes 1 initialization date of ECMWF Open Data GRIB2 slices.
 
   Uses batched ``fs.cat`` on ``.index`` files and ``fs.cat_ranges`` on ``.grib2``
   byte ranges for high-throughput concurrent GCS reads, then converts units to
@@ -343,7 +343,7 @@ def _fetch_open_data_day_grids(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR091
   Returns ``None`` if the initialization date is not published upstream.
   Raises ``FileNotFoundError`` if the run is only partially published (e.g. step
   24h exists but later steps in ``lead_steps`` are missing).
-  """  # noqa: D401, E501
+  """  # noqa: E501
   sorted_steps = tuple(sorted(int(s) for s in lead_steps))
   if not sorted_steps:
     raise ValueError("lead_steps cannot be empty.")
@@ -497,7 +497,7 @@ def _fetch_open_data_day_grids(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR091
 
 
 def open_wb2_hres_dataset(zarr_url: str | xr.Dataset) -> xr.Dataset:
-  """Opens WeatherBench 2 HRES Zarr store, pruning unneeded 3D atmospheric levels."""  # noqa: D401, E501
+  """Open WeatherBench 2 HRES Zarr store, pruning unneeded 3D atmospheric levels."""  # noqa: E501
   if isinstance(zarr_url, xr.Dataset):
     ds = zarr_url
   elif gcsfs is not None:
@@ -525,7 +525,7 @@ def _compute_zonal_mean(
     basin_ids: list[str],
     weights_dict: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]],
 ) -> np.ndarray:
-  """Computes weighted zonal mean over non-NaN grid cells (>=80% valid coverage)."""  # noqa: D401, E501
+  """Compute weighted zonal mean over non-NaN grid cells (>=80% valid coverage)."""  # noqa: E501
   out, _ = _compute_zonal_mean_with_coverage(raster_2d, basin_ids, weights_dict)
   return out
 
@@ -535,7 +535,7 @@ def _compute_zonal_mean_with_coverage(
     basin_ids: list[str],
     weights_dict: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]],
 ) -> tuple[np.ndarray, np.ndarray]:
-  """Computes weighted zonal mean and missing fraction over non-NaN grid cells."""  # noqa: D401, E501
+  """Compute weighted zonal mean and missing fraction over non-NaN grid cells."""  # noqa: E501
   out = np.full(len(basin_ids), np.nan, dtype=np.float32)
   miss = np.ones(len(basin_ids), dtype=np.float32)
   for b_idx, b_id in enumerate(basin_ids):
@@ -560,7 +560,7 @@ def _extract_instantaneous_lead_with_coverage(  # noqa: PLR0913, PLR0917
     scale: float = 1.0,
     offset: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray] | None:
-  """Extracts instantaneous slices over a 24h lead window with missing fraction."""  # noqa: D401, E501
+  """Extract instantaneous slices over a 24h lead window with missing fraction."""  # noqa: E501
   if var_name not in z_root:
     return None
   var_slice = z_root[var_name][h_start:h_end, :, :]
@@ -585,7 +585,7 @@ def _extract_instantaneous_lead(  # noqa: PLR0913, PLR0917
     scale: float = 1.0,
     offset: float = 0.0,
 ) -> np.ndarray | None:
-  """Extracts and averages instantaneous slices over a 24h lead window."""  # noqa: D401
+  """Extract and averages instantaneous slices over a 24h lead window."""
   res = _extract_instantaneous_lead_with_coverage(
       z_root,
       var_name,
@@ -612,7 +612,7 @@ def _extract_accumulated_lead_with_coverage(  # noqa: PLR0913, PLR0917
     scale: float = 1.0,
     is_strictly_positive: bool = True,  # noqa: FBT001, FBT002
 ) -> tuple[np.ndarray, np.ndarray] | None:
-  """Extracts differenced accumulations or hourly flux sums with missing fraction."""  # noqa: D401, E501
+  """Extract differenced accumulations or hourly flux sums with missing fraction."""  # noqa: E501
   if var_name not in z_root:
     return None
   is_hourly_flux = "_1hr" in var_name.lower() or "tprate" in var_name.lower()
@@ -645,7 +645,7 @@ def _extract_accumulated_lead(  # noqa: PLR0913, PLR0917
     scale: float = 1.0,
     is_strictly_positive: bool = True,  # noqa: FBT001, FBT002
 ) -> np.ndarray | None:
-  """Extracts differenced accumulations or hourly flux sums between lead end and start."""  # noqa: D401, E501
+  """Extract differenced accumulations or hourly flux sums between lead end and start."""  # noqa: E501
   res = _extract_accumulated_lead_with_coverage(
       z_root,
       var_name,
@@ -668,11 +668,11 @@ def extract_day_from_hres(
     weights_dict: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]],
     sort_lon_idx: np.ndarray,
 ) -> dict[str, np.ndarray]:
-  """Extracts 1 forecast initialization date across 10 lead days for HRES.
+  """Extract 1 forecast initialization date across 10 lead days for HRES.
 
   Returns a dict mapping band names to 2D numpy arrays of shape (num_basins,
   10).
-  """  # noqa: D401
+  """
   dt = pd.to_datetime(dt)
   base_dt = pd.to_datetime("2016-01-01 00:00:00")
   t0_hours = int((dt - base_dt).total_seconds() // 3600)
@@ -790,12 +790,13 @@ _weighted_mean_1d = weighted_mean_valid
 class HRESExtractor(BaseExtractor):
   """Extractor for ECMWF IFS High Resolution (HRES) 10-Day Operational Forecasts."""  # noqa: E501
 
-  def __init__(  # noqa: D107
+  def __init__(
       self,
       data_dir: str | None = None,
       source: str = "auto",
       fs: Any | None = None,  # noqa: ANN401
   ):
+    """Initialize the extractor."""
     super().__init__(Product.HRES, data_dir)
     self._fs = fs
     source_lower = source.lower().strip()
@@ -857,7 +858,7 @@ class HRESExtractor(BaseExtractor):
     self._cached_basin_keys = None
 
   def _get_open_data_fs(self) -> Any:  # noqa: ANN401
-    """Returns the GCS filesystem client for ECMWF Open Data."""  # noqa: D401
+    """Return the GCS filesystem client for ECMWF Open Data."""
     if self._fs is not None:
       return self._fs
     if gcsfs is None:
@@ -873,7 +874,7 @@ class HRESExtractor(BaseExtractor):
       weights_dict: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None,  # noqa: E501
       lead_steps: Sequence[int] = OPEN_DATA_LEAD_STEPS,
   ) -> dict[str, np.ndarray]:
-    """Extracts 1 forecast initialization date across 10 lead days."""  # noqa: D401
+    """Extract 1 forecast initialization date across 10 lead days."""
     dt_ts = pd.to_datetime(dt)
     if self.source == "archive":
       if not self.data_dir:
@@ -944,9 +945,9 @@ class HRESExtractor(BaseExtractor):
       end_date: str | pd.Timestamp | None = None,
       weights_matrix: ZonalWeightMatrix | None = None,
       use_bounding_box: bool = True,  # noqa: FBT001, FBT002
-      **kwargs,  # noqa: ANN003
+      **kwargs: Any,  # noqa: ANN401
   ) -> xr.Dataset:
-      """Extracts HRES forecast dataset for given basin geometries."""  # noqa: D401
+      """Extract HRES forecast dataset for given basin geometries."""
       spinup_only_before = kwargs.get("spinup_only_before")
       if start_date is None or end_date is None:
         raise ValueError(
@@ -1003,7 +1004,7 @@ class HRESExtractor(BaseExtractor):
       spinup_only_before: str | pd.Timestamp | None = None,
       max_workers: int = 16,
   ) -> xr.Dataset:
-    """Extracts 10-day (or 1-day spin-up) HRES forecasts from ECMWF Open Data on GCS.
+    """Extract 10-day (or 1-day spin-up) HRES forecasts from ECMWF Open Data on GCS.
 
     Args:
       basins_gdf: Catchment geometries indexed by basin ID.
@@ -1019,7 +1020,7 @@ class HRESExtractor(BaseExtractor):
         ``>= spinup_only_before`` (or when ``spinup_only_before is None``), all
         10 lead days (``24h..240h``) are extracted.
       max_workers: Maximum number of concurrent GCS day-fetch workers.
-    """  # noqa: D401, E501
+    """  # noqa: E501
     if start_date is None or end_date is None:
       raise ValueError(
           "HRESExtractor.extract_for_basins_open_data requires both start_date "
@@ -1212,7 +1213,7 @@ class HRESExtractor(BaseExtractor):
       dt: pd.Timestamp,
       basins_gdf: gpd.GeoDataFrame,
   ) -> dict[str, np.ndarray]:
-    """Extracts 1 forecast initialization date across 10 lead days from WeatherBench 2 HRES."""  # noqa: D401, E501
+    """Extract 1 forecast initialization date across 10 lead days from WeatherBench 2 HRES."""  # noqa: E501
     num_basins = len(basins_gdf)
     res_dict = {
         band: np.full((num_basins, 10), np.nan, dtype=np.float32)
@@ -1336,7 +1337,7 @@ class HRESExtractor(BaseExtractor):
       weights_matrix: ZonalWeightMatrix | None = None,
       use_bounding_box: bool = True,  # noqa: FBT001, FBT002
   ) -> xr.Dataset:
-    """Extracts 10-day HRES forecasts from WeatherBench 2 on GCS."""  # noqa: D401
+    """Extract 10-day HRES forecasts from WeatherBench 2 on GCS."""
     from multimet.timeseries_extractors.gridded_archive import (  # noqa: PLC0415
       _warn_missing_variables_once,
     )
@@ -1559,7 +1560,7 @@ class HRESExtractor(BaseExtractor):
         missing_fraction,
     )
 
-    ds = xr.Dataset(
+    return xr.Dataset(
         data_vars=data_vars,
         coords={
             "basin": basin_ids,
@@ -1568,7 +1569,6 @@ class HRESExtractor(BaseExtractor):
         },
         attrs=dict(PRODUCT_METADATA_ATTRS.get(Product.HRES, {})),
     )
-    return ds  # noqa: RET504
 
   def extract_for_basins_zarr(
       self,
@@ -1576,7 +1576,7 @@ class HRESExtractor(BaseExtractor):
       start_date: str | pd.Timestamp | None = None,
       end_date: str | pd.Timestamp | None = None,
   ) -> xr.Dataset:
-    """Extracts 10-day HRES forecast from local or archived Zarr store."""  # noqa: D401
+    """Extract 10-day HRES forecast from local or archived Zarr store."""
     if start_date is None or end_date is None:
       raise ValueError(
           "HRESExtractor.extract_for_basins_zarr requires both start_date and "
@@ -1641,7 +1641,7 @@ class HRESExtractor(BaseExtractor):
         missing_fraction,
     )
 
-    ds = xr.Dataset(
+    return xr.Dataset(
         data_vars=data_vars,
         coords={
             "basin": basin_ids,
@@ -1649,5 +1649,4 @@ class HRESExtractor(BaseExtractor):
             "lead_time": lead_time_idx.to_numpy(),
         },
     )
-    return ds  # noqa: RET504
 
