@@ -51,7 +51,7 @@ The runtime directory `model/pretrained-models/google-floodhub-settings-110-epoc
 
 ## 4. How to Use for Fine-Tuning
 
-You can warm-start a fine-tuning run from `google-floodhub-settings-110-epochs` by setting `base_run_dir` in a fine-tuning YAML configuration file. A step-by-step walkthrough is also provided in [`model/tutorial/OpenHydroNet_Tutorial.ipynb`](../tutorial/OpenHydroNet_Tutorial.ipynb) and [`model/tutorial/configs/finetune-config.yml`](../tutorial/configs/finetune-config.yml).
+You can warm-start a fine-tuning run from `google-floodhub-settings-110-epochs` by setting `base_run_dir` in a fine-tuning YAML configuration file.
 
 ### Example Fine-Tuning Configuration
 
@@ -163,4 +163,4 @@ finetune_modules:
 
 ### Note on Data Scaling
 
-When fine-tuning with `base_run_dir`, the `model` package loads `scaler.zarr` from `base_run_dir` so all pre-trained global dynamic features, static attributes, and target variables use their exact pre-trained normalization statistics. If you add new local dynamic variables in `hindcast_inputs` or `forecast_inputs`, `model` automatically computes finite, non-zero `center` and `scale` statistics for the new variables over the fine-tuning training window (`[train_start_date - seq_length, train_end_date + lead_time]`) and always writes the resulting scaler to `<run_dir>/scaler.zarr` so the fine-tuned run directory is self-contained for validation and evaluation.
+When fine-tuning with `base_run_dir`, the `model` package loads `scaler.zarr` from `base_run_dir` so all pre-trained global dynamic features, static attributes, and target variables use their exact pre-trained normalization statistics. If you add new local dynamic variables in `hindcast_inputs` or `forecast_inputs`, `model` automatically computes finite, non-zero `center` and `scale` statistics for the new variables over the training data window (`seq_length` days before `train_start_date` through `lead_time` days after `train_end_date`) and always writes the resulting scaler to `<run_dir>/scaler.zarr` so the fine-tuned run directory is self-contained for validation and evaluation. Fine-tuning stops with an error if a new variable has no valid values in this window.

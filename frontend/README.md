@@ -87,6 +87,7 @@ run_server(host='127.0.0.1', port=8080)
 - **Localhost binding (`127.0.0.1`):** The server binds to `127.0.0.1` by default because profile and workspace endpoints accept a client-supplied username without password authentication. Do not pass `--host 0.0.0.0` on an untrusted network.
 - **80% valid spatial coverage threshold:** Area-weighted catchment aggregation requires at least **80%** of the polygon's area to have finite (non-`NaN`) values. If fewer than 80% of a basin is covered by valid data on a given date, the extracted value is set to `NaN`.
 - **Cold-Start before Hot-Start:** Before running a Hot-Start forecast for a basin, run a Cold-Start forecast first so the model executes the 365-day historical spin-up and writes a saved `(h, c)` state file (`save_state`) to `models/hot_start/`.
+- **Default forecast model:** The Forecasting tab uses the pre-trained checkpoint in `model/pretrained-models/google-floodhub-settings-110-epochs` unless the request sets `model_run_dir`. Your basin must have every static attribute listed under `static_attributes` in that run's `config.yml`; otherwise the forecast stops with a `KeyError` that names the missing attributes.
 - **Local 90 m DEM tiles:** Exact 90 m D8 watershed delineation requires 5° × 5° flow-direction `.npy` tiles in `frontend/data/base_layers/dem/<dem_id>/tiles_5deg` or `~/.cache/openhydronet/data/`. Use `download-merit-d8-tiles` to download MERIT-Hydro tiles before delineating basins offline.
 
 ---

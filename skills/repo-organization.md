@@ -40,7 +40,6 @@ flood-forecasting/
 │   ├── utils/                     # Config parser, command-line scheduler, custom errors
 │   ├── example-configs/           # Reference YAML configs (FloodHub, State Handoff, CAMELS)
 │   ├── pretrained-models/         # Pre-trained FloodHub model weights, scalers & configs
-│   ├── tutorial/                  # Interactive OpenHydroNet Tutorial notebook, configs & sample data
 │   └── tests/                     # Co-located hydrology model unit & integration tests
 ├── multimet/                      # Multi-source meteorological, static & spatial data pipelines
 │   ├── catchment_delineation/     # Global DEM flow routing & watershed polygon delineation

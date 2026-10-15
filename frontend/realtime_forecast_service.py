@@ -63,15 +63,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MODEL_ID = 'google-floodhub-settings-110-epochs'
 DEFAULT_MODEL_RUN_DIR = (
     FLOOD_FORECASTING_REPO_DIR
     / 'model'
-    / 'tutorial'
-    / 'model-runs'
-    / '5-basin-example'
-)
-DEFAULT_TUTORIAL_CARAVAN_DIR = (
-    FLOOD_FORECASTING_REPO_DIR / 'model' / 'tutorial' / 'Caravan-nc'
+    / 'pretrained-models'
+    / _DEFAULT_MODEL_ID
 )
 
 _MIN_FORECAST_LEAD_STEPS = 2
@@ -82,7 +79,6 @@ _DEFAULT_LOOKBACK_DAYS = 14
 _DEFAULT_LEAD_TIME_DAYS = 7
 _HINDCAST_TAIL_DAYS = 14
 _NDIM_3D = 3
-_DEFAULT_MODEL_ID = '5-basin-example'
 
 NOWCAST_PRODUCTS_METADATA: dict[str, dict[str, Any]] = {
     'IMERG': {
@@ -2058,49 +2054,33 @@ def fetch_realtime_forcing_for_catchment(  # noqa: PLR0913
     return status_payload
 
 
-def _resolve_model_run_dir() -> Path:
-    """Resolve the path to the 5-basin-example pretrained model run dir."""
-    if DEFAULT_MODEL_RUN_DIR.exists():
-        return DEFAULT_MODEL_RUN_DIR
-    legacy_dir = (
-        FLOOD_FORECASTING_REPO_DIR
-        / 'tutorial'
-        / 'model-runs'
-        / '5-basin-example'
-    )
-    if legacy_dir.exists():
-        return legacy_dir
-    return DEFAULT_MODEL_RUN_DIR
-
-
-def _resolve_tutorial_caravan_dir() -> Path:
-    """Resolve the path to the tutorial Caravan attributes directory."""
-    if DEFAULT_TUTORIAL_CARAVAN_DIR.exists():
-        return DEFAULT_TUTORIAL_CARAVAN_DIR
-    zarr_dir = (
-        FLOOD_FORECASTING_REPO_DIR / 'model' / 'tutorial' / 'Caravan-zarr'
-    )
-    if zarr_dir.exists():
-        return zarr_dir
-    legacy_dir = FLOOD_FORECASTING_REPO_DIR / 'tutorial' / 'Caravan-nc'
-    if legacy_dir.exists():
-        return legacy_dir
-    return DEFAULT_TUTORIAL_CARAVAN_DIR
-
-
 def _load_forecast_model_bundle(
     run_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Load the trained ``MeanEmbeddingForecastLSTM`` and ``Scaler`` on CPU."""
-    target_dir = (
-        Path(run_dir) if run_dir is not None else _resolve_model_run_dir()
-    )
+    """Load the trained ``MeanEmbeddingForecastLSTM`` and ``Scaler`` on CPU.
+
+    Args:
+        run_dir: Model run directory containing ``config.yml``, a
+            ``model_epoch*.pt`` checkpoint, and ``scaler.zarr``. Defaults to
+            ``DEFAULT_MODEL_RUN_DIR`` (the shipped pretrained FloodHub run).
+
+    Raises:
+        FileNotFoundError: If ``run_dir`` has no ``config.yml`` or no
+            ``model_epoch*.pt`` checkpoint.
+    """
+    target_dir = Path(run_dir) if run_dir is not None else DEFAULT_MODEL_RUN_DIR
     cache_key = str(target_dir.resolve())
     if cache_key in _MODEL_CACHE:
         return _MODEL_CACHE[cache_key]
 
+    config_path = target_dir / 'config.yml'
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f'Model run directory {target_dir} has no config.yml.'
+        )
+
     ensure_flood_forecasting_on_sys_path()
-    cfg = Config(target_dir / 'config.yml')
+    cfg = Config(config_path)
     cfg.update_config(
         {
             'device': 'cpu',
@@ -2258,26 +2238,10 @@ def _load_static_attributes_for_basin(
             catchment_id,
         )
 
-    tutorial_caravan_dir = _resolve_tutorial_caravan_dir()
-    if row is None and tutorial_caravan_dir.exists():
-        has_tut_zarr = _is_valid_zarr_store(
-            tutorial_caravan_dir / 'attributes.zarr'
-        )
-        has_tut_dirs = (tutorial_caravan_dir / 'attributes').is_dir() and any(
-            d.is_dir() for d in (tutorial_caravan_dir / 'attributes').iterdir()
-        )
-        if has_tut_zarr or has_tut_dirs:
-            row = _lookup_row_in_df(
-                _to_attr_dataframe(
-                    load_caravan_attributes_fn(data_dir=tutorial_caravan_dir)
-                ),
-                catchment_id,
-            )
-
     if row is None:
         raise KeyError(
             f"Static attributes for catchment '{catchment_id}' were not found "
-            'in the active user profile or Caravan attribute stores.'
+            'in the active user profile attribute stores.'
         )
 
     missing_cols = [f for f in attr_features if f not in row.index]

@@ -9,8 +9,6 @@ build:
   os: ubuntu-24.04
   tools:
     python: "3.12"
-  apt_packages:
-    - pandoc
 
 # Build documentation in the "docs/source" directory with Sphinx
 sphinx:
