@@ -2541,12 +2541,19 @@
         }
       }
 
-      // Apply user's preferred hydro dataset (defaulting to hydroatlas)
+      // Apply the profile's preferred hydro dataset (defaulting to hydroatlas). Setting the
+      // dropdown value alone leaves the map showing the previous dataset's river network and
+      // legend, so route the change through the same path as a manual dropdown switch.
       const prefDs = (activeProfileInfo.settings && activeProfileInfo.settings.default_hydro_dataset) || 'hydroatlas';
       const dsSelect = document.getElementById('datasetSelect');
       if (dsSelect && dsSelect.value !== prefDs) {
-        dsSelect.value = prefDs;
-        if (typeof updateLegend === 'function') updateLegend(prefDs);
+        const hasOption = Array.from(dsSelect.options).some(opt => opt.value === prefDs);
+        if (hasOption) {
+          dsSelect.value = prefDs;
+          applyHydroDatasetSelection(prefDs);
+        } else {
+          console.warn(`Profile setting default_hydro_dataset='${prefDs}' is not an available dataset; keeping '${dsSelect.value}'.`);
+        }
       }
 
       // Pre-fill email in Section 3 if available
@@ -3913,13 +3920,18 @@
           btn.addEventListener('click', async () => {
             try {
               const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+              // Send the in-memory basin list only when it was loaded for this profile; otherwise
+              // the server re-persists the watersheds it already stores for the profile.
               const resp = await fetch('/api/profile/save_watersheds', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                   'X-User-Profile': targetUser
                 },
-                body: JSON.stringify({ username: targetUser })
+                body: JSON.stringify({
+                  username: targetUser,
+                  watersheds: loadedWatershedsUsername === targetUser ? activeWatersheds : undefined
+                })
               });
               const res = await resp.json();
               if (resp.ok) {
@@ -4105,10 +4117,7 @@
 
       // Dataset switch listener (1:1 DEM + River Network)
       document.getElementById('datasetSelect').addEventListener('change', (e) => {
-        const ds = e.target.value;
-        updateLegend(ds);
-        if (riverLayerGroup) riverLayerGroup.clearLayers();
-        fetchAndRenderRivers(true);
+        applyHydroDatasetSelection(e.target.value);
       });
 
       // Stream filter listener
@@ -4163,6 +4172,16 @@
       setTimeout(() => {
         if (map) map.invalidateSize();
       }, 150);
+    }
+
+    // Apply a hydrography dataset switch to the map: refresh the legend, drop the previous
+    // dataset's river reaches, and immediately re-fetch the river network for the current
+    // viewport. Shared by the dataset dropdown and by profile switches that restore a saved
+    // `default_hydro_dataset` preference, so the dropdown, legend, and map never disagree.
+    function applyHydroDatasetSelection(dataset) {
+      updateLegend(dataset);
+      if (riverLayerGroup) riverLayerGroup.clearLayers();
+      fetchAndRenderRivers(true);
     }
 
     // Dynamic Legend Updater based on chosen Dataset

@@ -299,6 +299,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
             return resp.status, json.loads(resp.read().decode('utf-8'))
 
+    @pytest.mark.unit
     def test_task1_top_of_page_clutter_removed_and_legacy_ids_preserved(
         self,
     ) -> None:
@@ -323,6 +324,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         assert 'legendBox' in self.dom.by_id
         assert self.dom.by_id['legendBox']['hidden_or_ancestor_hidden']
 
+    @pytest.mark.unit
     def test_task2_login_merged_into_account_tab_and_section2_profile_removed(
         self,
     ) -> None:
@@ -356,6 +358,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
                 f'#{s2_id} must be hidden inside #tab-delineation'
             )
 
+    @pytest.mark.unit
     def test_task3_mega_simple_left_panel_and_1to1_dem_river_dropdown(
         self,
     ) -> None:
@@ -415,6 +418,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
                 mh_data['features'][0]['properties']['reach_id']
             ).startswith('MERIT_')
 
+    @pytest.mark.integration
     def test_task4_dem_delineator_integration_and_profile_artifact_sync(  # noqa: PLR0915
         self,
     ) -> None:
@@ -576,6 +580,49 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
             expected_sidebars
         ), 'Every unified left sidebar header must include a collapse button'
 
+    def _js_function_body(self, signature: str) -> str:
+        """Return the source of the top-level JS function at ``signature``."""
+        assert signature in self.html_text, f'Missing JS function: {signature}'
+        return self.html_text.split(signature, 1)[1].split('\n    }\n', 1)[0]
+
+    @pytest.mark.unit
+    def test_issue120_profile_switch_refreshes_river_overlay_and_legend(
+        self,
+    ) -> None:
+        """Verify restoring a profile's dataset refreshes legend and rivers.
+
+        Regression for Issue #120: `updateProfileHeaderUI` used to assign
+        `datasetSelect.value` directly, leaving the previous profile's river
+        network and legend on the map.
+        """
+        apply_fn = self._js_function_body(
+            'function applyHydroDatasetSelection(dataset) {'
+        )
+        assert 'updateLegend(dataset)' in apply_fn
+        assert 'riverLayerGroup.clearLayers()' in apply_fn
+        assert 'fetchAndRenderRivers(true)' in apply_fn
+
+        header_fn = self._js_function_body('function updateProfileHeaderUI() {')
+        assert 'settings.default_hydro_dataset' in header_fn
+        ds_apply_block = header_fn.split('dsSelect.value = prefDs;', 1)[1]
+        assert ds_apply_block.lstrip().startswith(
+            'applyHydroDatasetSelection(prefDs);'
+        ), 'Restoring a profile dataset must refresh legend and river overlay'
+        assert 'opt.value === prefDs' in header_fn, (
+            'Unknown saved datasets must not be applied to #datasetSelect'
+        )
+
+        save_block = self.html_text.split(
+            "fetch('/api/profile/save_watersheds'", 1
+        )[1].split('})', 1)[0]
+        assert (
+            'watersheds: loadedWatershedsUsername === targetUser'
+            ' ? activeWatersheds : undefined'
+        ) in save_block, (
+            'Save Current Basins must send the in-memory list for its profile'
+        )
+
+    @pytest.mark.integration
     def test_dataset_switch_preserves_watersheds_and_mutations_bind_profile(
         self,
     ) -> None:
@@ -590,7 +637,10 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         assert 'clearAllWatersheds' not in ds_block, (
             'Switching datasetSelect must not wipe active watersheds'
         )
-        assert 'fetchAndRenderRivers(true)' in ds_block
+        assert 'applyHydroDatasetSelection(e.target.value)' in ds_block
+        assert 'fetchAndRenderRivers(true)' in self._js_function_body(
+            'function applyHydroDatasetSelection(dataset) {'
+        )
 
         for endpoint in (
             '/api/profile/save_watersheds',

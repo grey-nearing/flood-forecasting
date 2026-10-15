@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -272,6 +273,41 @@ class ProfileManagerTest(unittest.TestCase):
             self.pm.delete_account('scratch_folder')
         assert len(self.pm.load_watersheds('guest')) == 1
         assert self.pm.active_username == 'guest'
+
+    def test_save_settings_targets_named_profile_without_switching(
+        self,
+    ) -> None:
+        """Verify `save_settings(username=...)` leaves the active profile alone.
+
+        The `/api/profile/settings` handler relies on this contract so that a
+        request for one account can never rewrite another account's
+        ``profile.json`` through the process-global active profile (Issue #119).
+        """
+        self.pm.create_account('writer')
+        self.pm.create_account('active')
+        assert self.pm.active_username == 'active'
+
+        info = self.pm.save_settings(
+            {'default_hydro_dataset': 'merit-hydro'},
+            username='writer',
+        )
+        assert info['username'] == 'writer'
+        assert info['settings']['default_hydro_dataset'] == 'merit-hydro'
+        assert info['settings']['default_weather_source'] == 'cpc'
+        assert self.pm.active_username == 'active'
+
+        on_disk = json.loads(
+            (self.profiles_root / 'writer' / 'profile.json').read_text(
+                encoding='utf-8'
+            )
+        )
+        assert on_disk['settings']['default_hydro_dataset'] == 'merit-hydro'
+        assert (
+            self.pm.get_profile_info('active')['settings'][
+                'default_hydro_dataset'
+            ]
+            == 'hydroatlas'
+        )
 
 
 if __name__ == '__main__':

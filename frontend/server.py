@@ -1750,20 +1750,101 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         )
 
     def _post_profile_settings(self, data: dict[str, Any]) -> None:
-        settings = data.get('settings', {})
-        pm = get_profile_manager()
-        prof = pm.save_settings(settings)
-        self._send_json({'status': 'saved', 'profile': prof})
+        """Merge ``settings`` into the requesting user's ``profile.json``.
 
-    def _post_profile_save_watersheds(self, data: dict[str, Any]) -> None:
+        The target profile is resolved from the request (payload ``username``,
+        ``X-User-Profile`` header, or query string) so that one browser session
+        cannot rewrite another account's preferences through the process-global
+        active profile. Only the guest session or an existing account can be
+        updated; unknown usernames are rejected instead of being created.
+        """
         user = self._get_request_username(data)
+        settings = data.get('settings')
+        if not isinstance(settings, dict):
+            self._send_error(
+                "Expected a 'settings' object mapping preference names to"
+                ' values.',
+                status=400,
+            )
+            return
         pm = get_profile_manager()
-        feats = pm.load_watersheds(user)
+        if user != _GUEST_USERNAME and not pm.account_exists(user):
+            self._send_error(
+                f"Account '{user}' does not exist.",
+                status=404,
+                code='account_not_found',
+            )
+            return
+        prof = pm.save_settings(settings, username=user)
         self._send_json(
             {
                 'status': 'saved',
-                'count': len(feats),
+                'username': prof['username'],
+                'profile': prof,
+            }
+        )
+
+    @staticmethod
+    def _parse_watersheds_payload(
+        payload: object,
+    ) -> list[dict[str, Any]] | str:
+        """Validate a ``watersheds`` payload into a list of GeoJSON Features.
+
+        Args:
+            payload: A list of Feature dicts or a FeatureCollection dict.
+
+        Returns:
+            The list of Feature dicts, or an error message string describing
+            why the payload is not a valid watersheds list.
+        """
+        if isinstance(payload, dict):
+            if payload.get('type') != 'FeatureCollection':
+                return (
+                    "'watersheds' object must be a GeoJSON FeatureCollection."
+                )
+            payload = payload.get('features')
+        if not isinstance(payload, list):
+            return (
+                "'watersheds' must be a list of GeoJSON Features or a"
+                ' FeatureCollection.'
+            )
+        for idx, feat in enumerate(payload):
+            if not isinstance(feat, dict) or feat.get('type') != 'Feature':
+                return f'watersheds[{idx}] is not a GeoJSON Feature object.'
+            if 'geometry' not in feat:
+                return f"watersheds[{idx}] is missing its 'geometry' member."
+        return payload
+
+    def _post_profile_save_watersheds(self, data: dict[str, Any]) -> None:
+        """Persist the profile's watersheds and rebuild catchment artifacts.
+
+        When the payload carries a ``watersheds`` list (or FeatureCollection),
+        it replaces the profile's stored watersheds. Without a payload, the
+        watersheds already stored for the profile are re-written so that
+        ``polygons/watersheds.json`` and the ``catchments/`` GeoJSONs and basin
+        split lists are synchronized from a single source of truth.
+        """
+        user = self._get_request_username(data)
+        pm = get_profile_manager()
+        if 'watersheds' in data:
+            parsed = self._parse_watersheds_payload(data['watersheds'])
+            if isinstance(parsed, str):
+                self._send_error(parsed, status=400)
+                return
+            features = parsed
+        else:
+            features = pm.load_watersheds(user)
+        pm.save_watersheds(features, username=user)
+        basin_ids = [
+            str(f.get('properties', {}).get('catchment_id') or f.get('id'))
+            for f in pm.load_watersheds(user)
+        ]
+        self._send_json(
+            {
+                'status': 'saved',
+                'count': len(basin_ids),
                 'username': user,
+                'catchment_ids': basin_ids,
             }
         )
 
