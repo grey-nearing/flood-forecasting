@@ -38,7 +38,7 @@ Audit every line of the diff for any sliver of potential to introduce, fabricate
    - Gridded Zarr archives must maintain strictly contiguous daily time axes (`1D` frequency) with zero interior date gaps and zero interior all-`NaN` days.
    - Never allow trimming trailing `NaN` slices on historical years; only allow up to `MAX_PUBLICATION_LAG_DAYS = 7` days of upstream publication lag at the tail of the current year when `--end_date` is omitted (when `--end_date` is explicitly passed, require 100% finite coverage through `end_date`).
    - Never trust cached files by filename alone (`precip.{year}.nc`); verify internal coordinate timestamps **and** finite data values cover the required dates, and ensure `--extend_archive` bypasses pre-cached files to force fresh upstream downloads.
-   - Never allow `--in_place` or incremental updates to overwrite existing valid archive slices with `NaN`s.
+   - Never allow `--in_place` or incremental updates to overwrite existing valid archive slices with `NaN`s. The sole exception is hot-start boundary refreshes during operational sync, where the most recent $N$ days of an existing store may be re-fetched to overwrite preliminary or trailing-NaN data. In this exception, the update must explicitly preserve existing valid historical values if the newly fetched slice contains `NaN`s.
    - Verify that format decoders (GRIB2, NetCDF, HDF5, Zarr) explicitly convert bitmap/sentinel missing values (such as `9999.0` or `_FillValue`) to `np.nan` and validate coordinate axes, bounds, and latitude orientation (`-90..90` ascending) before use.
 
 ---

@@ -11,3 +11,4 @@ Modules
    timeseries_extractors
    weather_fetcher
    return_periods
+   benchmarks

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 from collections.abc import Hashable, Iterator
 from pathlib import Path
 
@@ -21,6 +20,7 @@ import dask.array
 import numpy as np
 import pandas as pd
 import xarray as xr
+import yaml
 
 from utils.file_paths import SCALER_ZARR_NAME
 
@@ -45,7 +45,7 @@ def resolve_scaler_dir(cfg: object, *, is_train: bool = False) -> Path | None:
     return run_dir
 
 
-def _calc_stats(dataset: xr.Dataset, needed: set[str]):
+def _calc_stats(dataset: xr.Dataset, needed: set[str]) -> dict[str, xr.DataArray]:
     stats = {
         'mean': dataset.mean(skipna=True),
         'median': (
@@ -75,7 +75,7 @@ def _calc_types(
     none_value: float,
     stats: dict[str, xr.DataArray],
 ) -> Iterator[xr.DataArray]:
-    """Yields pre-calculated statistics for each feature.
+    """Yield pre-calculated statistics for each feature.
 
     Helper for building final 'center' and 'scale' params for the scaler.
     Determines needed statistic type ('mean', 'std', 'none', etc) for `types` for each feature.
@@ -121,10 +121,11 @@ class Scaler:
     def __init__(
         self,
         scaler_dir: Path,
-        calculate_scaler,
+        calculate_scaler: bool,
         custom_normalization: dict[str, dict[str, float]] | None = None,
         dataset: xr.Dataset | None = None,
-    ):
+    ) -> None:
+        """Initialize the scaler."""
         if custom_normalization is None:
             custom_normalization = {}
         # Consistency check.
@@ -143,16 +144,66 @@ class Scaler:
         elif dataset is not None:
             self.calculate(dataset)
 
-    def load(self):
+    def load(self) -> None:
+        """Load a pre-computed scaler dataset from zarr or legacy dictionary."""
         scaler_zarr = self.scaler_dir / SCALER_FILE_NAME
-        if not scaler_zarr.exists():
-            raise FileNotFoundError(f'Scaler file not found at {scaler_zarr}')
-        self.scaler = xr.open_zarr(scaler_zarr).load()
+        if scaler_zarr.exists():
+            self.scaler = xr.open_zarr(scaler_zarr).load()
+            return
+
+        if self._load_legacy():
+            return
+
+        raise FileNotFoundError(f'Scaler file not found at {scaler_zarr}')
+
+    def _load_legacy(self) -> bool:
+        """Load legacy scaler dictionary into self.scaler."""
+        legacy_p = self.scaler_dir / 'train_data' / 'train_data_scaler.p'
+        legacy_yml = self.scaler_dir / 'train_data' / 'train_data_scaler.yml'
+
+        legacy_dict = None
+        if legacy_p.exists():
+            legacy_dict = np.load(legacy_p, allow_pickle=True).item()
+        elif legacy_yml.exists():
+            with legacy_yml.open() as f:
+                legacy_dict = yaml.safe_load(f)
+
+        if legacy_dict is None:
+            return False
+
+        scaler_dict = {'center': [], 'scale': []}
+        for key, value in legacy_dict.items():
+            if key in ['attribute_means', 'camels_attr_means']:
+                scaler_dict['center'].append(xr.Dataset(value).astype(np.float32))
+            elif key in ['attribute_stds', 'camels_attr_stds']:
+                scaler_dict['scale'].append(xr.Dataset(value).astype(np.float32))
+            elif key == 'xarray_feature_center':
+                scaler_dict['center'].append(xr.Dataset.from_dict(value).astype(np.float32))
+            elif key == 'xarray_feature_scale':
+                scaler_dict['scale'].append(xr.Dataset.from_dict(value).astype(np.float32))
+
+        if scaler_dict['center'] and scaler_dict['scale']:
+            center_ds = xr.merge(scaler_dict['center'])
+            scale_ds = xr.merge(scaler_dict['scale'])
+            self.scaler = xr.concat(
+                [center_ds, scale_ds],
+                dim=pd.Index(['center', 'scale'], name='parameter')
+            )
+            obs_scaler = self.scaler.copy().rename(
+                {f: f + '_obs' for f in self.scaler.data_vars}
+            )
+            sim_scaler = self.scaler.copy().rename(
+                {f: f + '_sim' for f in self.scaler.data_vars}
+            )
+            self.scaler = xr.merge([self.scaler, obs_scaler, sim_scaler])
+            return True
+        return False
 
     def calculate(
         self,
         dataset: xr.Dataset,
-    ):
+    ) -> None:
+        """Calculate scaler statistics."""
         # Option for custom scaling for each feature.
         centering_types = dict.fromkeys(dataset.data_vars, 'mean')
         scaling_types = dict.fromkeys(dataset.data_vars, 'std')
@@ -196,14 +247,15 @@ class Scaler:
         ):  # ensure allowing side-effects on compute
             self.scaler = self.scaler.chunk('auto')
 
-    def save(self):
+    def save(self) -> None:
+        """Save the scaler."""
         if self.scaler is None:
             raise ValueError(
                 'You are trying to save a scaler that has not been computed.'
             )
         _assert_computed(self.scaler)
 
-        os.makedirs(self.scaler_dir, exist_ok=True)
+        self.scaler_dir.mkdir(parents=True, exist_ok=True)
         scaler_file = self.scaler_dir / SCALER_FILE_NAME
         self.scaler.to_zarr(scaler_file, mode='w')
 
@@ -318,7 +370,7 @@ def is_any_lazy(dataset: xr.Dataset) -> bool:
     )
 
 
-def _assert_computed(da: xr.DataArray | xr.Dataset | None):
+def _assert_computed(da: xr.DataArray | xr.Dataset | None) -> None:
     assert da is not None
     chunks = da.chunks
     assert not chunks, f'`scaler` needs to be computed yet has {chunks=}'

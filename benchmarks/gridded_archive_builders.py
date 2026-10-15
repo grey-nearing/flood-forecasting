@@ -19,6 +19,7 @@ GES DISC / local granules (for IMERG) into a Zarr store and compares the rebuilt
 daily grids against an existing reference gridded archive Zarr store.
 
 Computes:
+
 1. Grid dimension and coordinate (`latitude`, `longitude`, `time`) exact parity.
 2. Valid/NaN cell mask confusion matrix (`both_valid_pct`, `both_nan_pct`,
    `rebuilt_only_nan_pct`, `ref_only_nan_pct`).

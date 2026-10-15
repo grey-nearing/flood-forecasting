@@ -15,6 +15,7 @@
 """Canonical benchmark suite for OpenHydroNet (`flood-forecasting`) components.
 
 Modules:
+
 - `benchmarks.catchment_delineation` (`benchmark-catchment`): Global 90m (`3-arcsec`)
   D8 watershed polygon delineation and pour-point snapping benchmark.
 - `benchmarks.static_extractor` (`benchmark-static-extractor`): HydroATLAS Level 12

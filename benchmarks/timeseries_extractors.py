@@ -21,6 +21,7 @@ and compares the reconstructed timeseries against the canonical MultiMet Zarr
 stores (`--canonical-dir`).
 
 Key capabilities:
+
 1. Supports `.parquet` / `.geoparquet` (with `geometry_wkt` or `geometry`) as
    well as `.geojson`, `.shp`, and `.gpkg`.
 2. Filters `--dataset` basins to those present in the canonical store's `basin`
@@ -171,8 +172,7 @@ def load_benchmark_dataset(
 
   Returns:
     GeoDataFrame indexed by `basin_id` with columns:
-    `['geometry', 'dataset', 'size_tier', 'ref_area_km2', 'spherical_area_km2',
-      'area_rel_diff', 'is_geometry_revised', 'is_out_of_coverage']`.
+    `['geometry', 'dataset', 'size_tier', 'ref_area_km2', 'spherical_area_km2', 'area_rel_diff', 'is_geometry_revised', 'is_out_of_coverage']`.
   """
   if not dataset_path or not str(dataset_path).strip():
     raise ValueError("--dataset path must be a non-empty string.")
