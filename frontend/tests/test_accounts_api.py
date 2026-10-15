@@ -91,6 +91,7 @@ class AccountsApiTest(unittest.TestCase):
         _, data = self._request('GET', '/api/profile/list')
         return sorted(p['username'] for p in data['profiles'])
 
+    @pytest.mark.unit
     def test_account_lifecycle(self) -> None:
         """Verify strict login, explicit account creation, and logout."""
         assert self._usernames() == ['guest']
@@ -149,6 +150,7 @@ class AccountsApiTest(unittest.TestCase):
         assert data['profile']['username'] == 'alice'
         self._request('POST', '/api/profile/logout', {})
 
+    @pytest.mark.unit
     def test_login_without_flag_keeps_legacy_create_behavior(self) -> None:
         """Verify callers omitting `create_if_missing` create the account."""
         status, data = self._request(
@@ -162,6 +164,7 @@ class AccountsApiTest(unittest.TestCase):
         assert self._usernames() == ['carol', 'guest']
         self._request('POST', '/api/profile/logout', {})
 
+    @pytest.mark.unit
     def test_guest_keeps_data_until_restart_reset(self) -> None:
         """Verify guest data persists across account switches until reset."""
         guest = {'X-User-Profile': 'guest'}
@@ -204,6 +207,7 @@ class AccountsApiTest(unittest.TestCase):
         assert archives['archives'] == []
         assert 'bob' in self._usernames()
 
+    @pytest.mark.unit
     def test_delete_account(self) -> None:
         """Verify `/api/profile/delete` removes accounts and switches active."""
         self._request('POST', '/api/profile/create', {'username': 'alice'})
@@ -269,6 +273,7 @@ class AccountsApiTest(unittest.TestCase):
         )
         return list_file.read_text(encoding='utf-8').split()
 
+    @pytest.mark.unit
     def test_profile_settings_persist_only_to_requested_profile(self) -> None:
         """Verify `/api/profile/settings` writes the requested user's file.
 
@@ -337,6 +342,7 @@ class AccountsApiTest(unittest.TestCase):
         assert not (self.profiles_root / 'nobody').exists()
         assert self._usernames() == ['alice', 'bob', 'guest']
 
+    @pytest.mark.unit
     def test_save_watersheds_persists_payload_and_resyncs_artifacts(
         self,
     ) -> None:
