@@ -1538,7 +1538,7 @@
             <span class="text-[10px] text-[#5f6368] font-mono">m³/s</span>
           </div>
           <p class="text-[11px] text-[#5f6368] leading-relaxed">
-            Upload local gauge streamflow CSV (<code class="font-mono text-[10px]">date,discharge_cms</code>) to plot observed discharge on the forecast chart.
+            Upload local gauge streamflow CSV (<code class="font-mono text-[10px]">date,discharge_cms</code>, ISO <code class="font-mono text-[10px]">YYYY-MM-DD</code> daily dates) to plot observed discharge on the forecast chart.
           </p>
           <input type="file" id="fcStreamflowCsvInput" accept=".csv,text/csv" class="hidden" />
           <div class="flex items-center gap-2">
@@ -8839,7 +8839,10 @@
     function getObservedStreamflowForBasin(basinId) {
       const bid = String(basinId || getActiveForecastBasinId() || '').trim();
       if (!bid) return [];
-      if (Array.isArray(fcObservedStreamflowByBasin[bid]) && fcObservedStreamflowByBasin[bid].length > 0) {
+      if (
+        Object.prototype.hasOwnProperty.call(fcObservedStreamflowByBasin, bid) &&
+        Array.isArray(fcObservedStreamflowByBasin[bid])
+      ) {
         return fcObservedStreamflowByBasin[bid];
       }
       const res = fcModelResultsByBasin[bid];
@@ -8887,7 +8890,7 @@
         ['5-yr return period', rps.return_period_5 ?? rps.rp5 ?? rps['5'], '#f97316'],
         ['10-yr return period', rps.return_period_10 ?? rps.rp10 ?? rps['10'], '#ea580c'],
         ['20-yr return period', rps.return_period_20 ?? rps.rp20 ?? rps['20'], '#dc2626'],
-        ['25-yr return period', rps.return_period_25 ?? rps.rp25 ?? rps['25'], '#dc2626'],
+        ['25-yr return period', rps.return_period_25 ?? rps.rp25 ?? rps['25'], '#b91c1c'],
         ['50-yr return period', rps.return_period_50 ?? rps.rp50 ?? rps['50'], '#9333ea'],
         ['100-yr return period', rps.return_period_100 ?? rps.rp100 ?? rps['100'], '#7e22ce']
       ];
@@ -11167,12 +11170,16 @@
           headers: { 'X-User-Profile': u }
         });
         const data = await res.json();
+        const activeUser = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+        if (reqSeq !== fcStatusRequestSeq || u !== activeUser) {
+          return;
+        }
         if (res.ok && data.status === 'success') {
           fcStatusDataByBasin[basinId] = data;
           if (Array.isArray(data.observed_streamflow)) {
             fcObservedStreamflowByBasin[basinId] = data.observed_streamflow;
           }
-          if (reqSeq !== fcStatusRequestSeq && getActiveForecastBasinId() !== basinId) {
+          if (getActiveForecastBasinId() !== basinId) {
             return;
           }
           fcStatusData = data;
@@ -11326,7 +11333,7 @@
           if (!basinId) return;
           const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
           try {
-            await fetch('/api/forecast/clear-streamflow', {
+            const res = await fetch('/api/forecast/clear-streamflow', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -11337,17 +11344,35 @@
                 username: u
               })
             });
+            const data = await res.json();
+            if (!res.ok || data.status !== 'success') {
+              throw new Error(data.message || `HTTP ${res.status}`);
+            }
+            fcObservedStreamflowByBasin[basinId] = [];
+            if (fcModelResultsByBasin[basinId]) {
+              fcModelResultsByBasin[basinId].observed_streamflow = [];
+            }
+            if (Array.isArray(fcWhatIfScenariosByBasin[basinId])) {
+              fcWhatIfScenariosByBasin[basinId].forEach(sc => {
+                if (sc && sc.result) sc.result.observed_streamflow = [];
+              });
+            }
+            if (data.forecast_status && data.forecast_status.catchment_id === basinId) {
+              fcStatusData = data.forecast_status;
+              fcStatusDataByBasin[basinId] = data.forecast_status;
+            } else if (fcStatusData && fcStatusData.catchment_id === basinId) {
+              fcStatusData.observed_streamflow = [];
+              fcStatusData.has_observed_streamflow = false;
+            }
+            updateStreamflowCsvStatusUI();
+            renderForcingChart();
+            renderHydrographChart(fcModelResultsByBasin[basinId] || null);
           } catch (err) {
-            console.warn('Could not clear streamflow CSV on backend:', err);
+            if (csvStatusEl) {
+              csvStatusEl.className = 'text-[11px] text-[#c5221f] font-mono leading-snug';
+              csvStatusEl.innerText = `Clear CSV failed: ${err.message}`;
+            }
           }
-          delete fcObservedStreamflowByBasin[basinId];
-          if (fcStatusData && fcStatusData.catchment_id === basinId) {
-            fcStatusData.observed_streamflow = [];
-            fcStatusData.has_observed_streamflow = false;
-          }
-          updateStreamflowCsvStatusUI();
-          renderForcingChart();
-          renderHydrographChart(fcModelResultsByBasin[basinId] || null);
         });
       }
       if (nowcastSel) {
@@ -12180,6 +12205,9 @@
     // or the multi-model ensemble (when 2+ models are selected in Forecast View).
     function renderMaaSForecast() {
       initMaasCharts();
+      if (maasChart) {
+        maasChart.$returnPeriodThresholds = [];
+      }
       const data = currentMaaSForecastData;
       const timeline = (data && data.timeline) || {};
       const allDates = Array.isArray(timeline.dates) ? timeline.dates : [];

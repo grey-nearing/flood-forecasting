@@ -613,6 +613,73 @@ class MultiMetZarrWriter:
 
     return True
 
+  def _build_nan_skeleton_ds(
+      self,
+      store_path: str,
+      product: Product,
+      basin_coord: np.ndarray,
+      date_coord: Sequence[Any],
+      chunk_spec: Dict[str, Any],
+  ) -> xr.Dataset:
+    """Builds a NaN-initialized Dataset matching the existing store's variables and dimensions."""
+    prod_type = PRODUCT_TYPES[product]
+    is_forecast = prod_type == ProductType.FORECAST
+    num_basins = len(basin_coord)
+    num_dates = len(date_coord)
+
+    coords: Dict[str, Any] = {
+        "basin": basin_coord,
+        "date": date_coord,
+    }
+    dims = ["basin", "date"]
+    shape: Tuple[int, ...] = (num_basins, num_dates)
+
+    if is_forecast:
+      lead_steps = FORECAST_LEAD_DAYS[product]
+      coords["lead_time"] = xr.DataArray(
+          np.arange(1, lead_steps + 1, dtype=np.int64),
+          dims=["lead_time"],
+          attrs={"units": "days", "dtype": "timedelta64[ns]"},
+      )
+      dims.append("lead_time")
+      shape = (num_basins, num_dates, lead_steps)
+
+    nan_vars: Dict[str, Any] = {}
+    all_store_vars = list(PRODUCT_BANDS[product])
+    missing_var = MISSING_FRACTION_VAR.get(product)
+    if missing_var and missing_var not in all_store_vars:
+      all_store_vars.append(missing_var)
+
+    local_chunk_spec = dict(chunk_spec)
+    with xr.open_zarr(store_path) as existing_ds:
+      existing_var_names = list(existing_ds.data_vars)
+      target_var_names = (
+          existing_var_names if existing_var_names else all_store_vars
+      )
+      for band in target_var_names:
+        if band in existing_ds.data_vars and existing_ds[band].ndim == 4:
+          continue
+        nan_vars[band] = (dims, np.full(shape, np.nan, dtype=np.float32))
+      if is_forecast and "ensemble_member" in existing_ds.dims:
+        ens_coord_vals = np.asarray(existing_ds["ensemble_member"].values)
+        coords["ensemble_member"] = ens_coord_vals
+        local_chunk_spec["ensemble_member"] = len(ens_coord_vals)
+        ens_dims = ["basin", "date", "ensemble_member", "lead_time"]
+        ens_shape = (
+            num_basins,
+            num_dates,
+            len(ens_coord_vals),
+            FORECAST_LEAD_DAYS[product],
+        )
+        for v_name in existing_ds.data_vars:
+          if existing_ds[v_name].ndim == 4:
+            nan_vars[v_name] = (
+                ens_dims,
+                np.full(ens_shape, np.nan, dtype=np.float32),
+            )
+
+    return xr.Dataset(data_vars=nan_vars, coords=coords).chunk(local_chunk_spec)
+
   def append_dates(
       self,
       product: Product,
@@ -667,59 +734,17 @@ class MultiMetZarrWriter:
     prod_type = PRODUCT_TYPES[product]
     is_forecast = prod_type == ProductType.FORECAST
     num_basins = len(info["basins"])
-
-    nan_vars = {}
-    dims = ["basin", "date"]
-    shape = (num_basins, len(dates_to_add))
-    chunk_spec = {"basin": num_basins, "date": 1}
-    basin_dt = info.get("basin_dtype", "<U22")
-    coords = {
-        "basin": np.array(info["basins"], dtype=basin_dt),
-        "date": [d.to_datetime64() for d in dates_to_add],
-    }
-
+    chunk_spec: Dict[str, Any] = {"basin": num_basins, "date": 1}
     if is_forecast:
-      lead_steps = FORECAST_LEAD_DAYS[product]
-      coords["lead_time"] = xr.DataArray(
-          np.arange(1, lead_steps + 1, dtype=np.int64),
-          dims=["lead_time"],
-          attrs={"units": "days", "dtype": "timedelta64[ns]"},
-      )
-      dims.append("lead_time")
-      shape = (num_basins, len(dates_to_add), lead_steps)
-      chunk_spec["lead_time"] = lead_steps
-
-    all_store_vars = list(PRODUCT_BANDS[product])
-    missing_var = MISSING_FRACTION_VAR.get(product)
-    if missing_var and missing_var not in all_store_vars:
-      all_store_vars.append(missing_var)
-
-    with xr.open_zarr(store_path) as existing_ds:
-      existing_var_names = list(existing_ds.data_vars)
-      target_var_names = existing_var_names if existing_var_names else all_store_vars
-      for band in target_var_names:
-        if band in existing_ds.data_vars and existing_ds[band].ndim == 4:
-          continue
-        nan_vars[band] = (dims, np.full(shape, np.nan, dtype=np.float32))
-      if is_forecast and "ensemble_member" in existing_ds.dims:
-        ens_coord_vals = np.asarray(existing_ds["ensemble_member"].values)
-        coords["ensemble_member"] = ens_coord_vals
-        chunk_spec["ensemble_member"] = len(ens_coord_vals)
-        ens_dims = ["basin", "date", "ensemble_member", "lead_time"]
-        ens_shape = (
-            num_basins,
-            len(dates_to_add),
-            len(ens_coord_vals),
-            FORECAST_LEAD_DAYS[product],
-        )
-        for v_name in existing_ds.data_vars:
-          if existing_ds[v_name].ndim == 4:
-            nan_vars[v_name] = (
-                ens_dims,
-                np.full(ens_shape, np.nan, dtype=np.float32),
-            )
-
-    nan_ds = xr.Dataset(data_vars=nan_vars, coords=coords).chunk(chunk_spec)
+      chunk_spec["lead_time"] = FORECAST_LEAD_DAYS[product]
+    basin_dt = info["basin_dtype"]
+    nan_ds = self._build_nan_skeleton_ds(
+        store_path=store_path,
+        product=product,
+        basin_coord=np.array(info["basins"], dtype=basin_dt),
+        date_coord=[d.to_datetime64() for d in dates_to_add],
+        chunk_spec=chunk_spec,
+    )
     _safe_to_zarr(nan_ds, store_path, append_dim="date", consolidated=True)
     self._open_groups.pop(product, None)
 
@@ -854,7 +879,7 @@ class MultiMetZarrWriter:
       return np.dtype(f"<U{max_len}")
 
     existing_basins = [str(b) for b in info["basins"]]
-    existing_dtype = np.dtype(info.get("basin_dtype", "<U22"))
+    existing_dtype = np.dtype(info["basin_dtype"])
     existing_max_len = (
         existing_dtype.itemsize // 4 if existing_dtype.kind == "U" else 0
     )
@@ -866,6 +891,9 @@ class MultiMetZarrWriter:
     )
     target_dtype = np.dtype(f"<U{max_len}")
     if existing_dtype != target_dtype:
+      coord_ds = xr.Dataset(
+          coords={"basin": np.array(existing_basins, dtype=target_dtype)}
+      )
       is_remote = store_path.startswith(
           ("gs://", "gcs://", "s3://", "abfs://", "az://", "memory://")
       )
@@ -876,12 +904,20 @@ class MultiMetZarrWriter:
         basin_arr_path = f"{fs_path.rstrip('/')}/basin"
         if fs.exists(basin_arr_path):
           fs.rm(basin_arr_path, recursive=True)
+        _safe_to_zarr(coord_ds, store_path, mode="a", consolidated=True)
       else:
-        shutil.rmtree(os.path.join(store_path, "basin"), ignore_errors=True)
-      coord_ds = xr.Dataset(
-          coords={"basin": np.array(existing_basins, dtype=target_dtype)}
-      )
-      _safe_to_zarr(coord_ds, store_path, mode="a", consolidated=True)
+        tmp_coord_store = os.path.join(
+            self.output_dir,
+            f".tmp_coord_{product.value}_{os.getpid()}_{time.time_ns()}",
+        )
+        _safe_to_zarr(coord_ds, tmp_coord_store, mode="w", consolidated=False)
+        target_basin_dir = os.path.join(store_path, "basin")
+        backup_basin_dir = os.path.join(tmp_coord_store, "basin_old")
+        if os.path.exists(target_basin_dir):
+          os.replace(target_basin_dir, backup_basin_dir)
+        os.replace(os.path.join(tmp_coord_store, "basin"), target_basin_dir)
+        shutil.rmtree(tmp_coord_store)
+        self.consolidate_metadata(product)
       self._open_groups.pop(product, None)
     return target_dtype
 
@@ -908,65 +944,19 @@ class MultiMetZarrWriter:
 
     target_dtype = self._ensure_basin_coord_dtype(product, basins_to_add)
     existing_dates = pd.DatetimeIndex(info["dates"])
-    num_new = len(basins_to_add)
-    num_dates = len(existing_dates)
     prod_type = PRODUCT_TYPES[product]
-    is_forecast = prod_type == ProductType.FORECAST
-
-    coords: Dict[str, Any] = {
-        "basin": np.array(basins_to_add, dtype=target_dtype),
-        "date": existing_dates.values,
-    }
-    dims = ["basin", "date"]
-    shape: Tuple[int, ...] = (num_new, num_dates)
     chunk_spec = dict(
         DEFAULT_CHUNKS_NOWCAST
         if prod_type == ProductType.NOWCAST
         else DEFAULT_CHUNKS_FORECAST
     )
-
-    if is_forecast:
-      lead_steps = FORECAST_LEAD_DAYS[product]
-      coords["lead_time"] = xr.DataArray(
-          np.arange(1, lead_steps + 1, dtype=np.int64),
-          dims=["lead_time"],
-          attrs={"units": "days", "dtype": "timedelta64[ns]"},
-      )
-      dims.append("lead_time")
-      shape = (num_new, num_dates, lead_steps)
-
-    nan_vars: Dict[str, Any] = {}
-    all_store_vars = list(PRODUCT_BANDS[product])
-    missing_var = MISSING_FRACTION_VAR.get(product)
-    if missing_var and missing_var not in all_store_vars:
-      all_store_vars.append(missing_var)
-
-    with xr.open_zarr(store_path) as existing_ds:
-      existing_var_names = list(existing_ds.data_vars)
-      target_var_names = existing_var_names if existing_var_names else all_store_vars
-      for band in target_var_names:
-        if band in existing_ds.data_vars and existing_ds[band].ndim == 4:
-          continue
-        nan_vars[band] = (dims, np.full(shape, np.nan, dtype=np.float32))
-      if is_forecast and "ensemble_member" in existing_ds.dims:
-        ens_coord_vals = np.asarray(existing_ds["ensemble_member"].values)
-        coords["ensemble_member"] = ens_coord_vals
-        chunk_spec["ensemble_member"] = -1
-        ens_dims = ["basin", "date", "ensemble_member", "lead_time"]
-        ens_shape = (
-            num_new,
-            num_dates,
-            len(ens_coord_vals),
-            FORECAST_LEAD_DAYS[product],
-        )
-        for v_name in existing_ds.data_vars:
-          if existing_ds[v_name].ndim == 4:
-            nan_vars[v_name] = (
-                ens_dims,
-                np.full(ens_shape, np.nan, dtype=np.float32),
-            )
-
-    nan_ds = xr.Dataset(data_vars=nan_vars, coords=coords).chunk(chunk_spec)
+    nan_ds = self._build_nan_skeleton_ds(
+        store_path=store_path,
+        product=product,
+        basin_coord=np.array(basins_to_add, dtype=target_dtype),
+        date_coord=existing_dates.values,
+        chunk_spec=chunk_spec,
+    )
     _safe_to_zarr(nan_ds, store_path, append_dim="basin", consolidated=True)
     self._open_groups.pop(product, None)
     self.consolidate_metadata(product)
@@ -1062,8 +1052,28 @@ class MultiMetZarrWriter:
       preserve_existing_valid: bool = False,
       allow_2d_expansion: bool = False,
   ) -> str:
-    """Writes or appends a dataset into the product's Zarr store."""
-    ds_to_write = ds.copy()
+    """Writes or appends a dataset into the product's Zarr store.
+
+    Args:
+      ds: Dataset matching the MultiMet product schema.
+      product: Target MultiMet ``Product``.
+      overwrite_existing_basins: When True, incoming values for already-present
+        basins overwrite existing slices on overlapping dates (subject to
+        ``preserve_existing_valid``).
+      preserve_existing_valid: When True, existing finite values in the store
+        are preserved where incoming slices are NaN.
+      allow_2d_expansion: When True, allows simultaneously adding new basins
+        and new dates in a single call, filling unpopulated cross-quadrants
+        with NaN. Defaults to False (raises ``ValueError``).
+
+    Returns:
+      Path or URI of the updated Zarr store.
+
+    Raises:
+      ValueError: If simultaneous new basins and new dates are supplied when
+        ``allow_2d_expansion=False``, or if ``ds`` fails schema validation.
+    """
+    ds_to_write = ds.sortby("date").copy()
     for var in ds_to_write.data_vars:
       if ds_to_write[var].dtype != np.float32:
         ds_to_write[var] = ds_to_write[var].astype(np.float32)
@@ -1125,14 +1135,8 @@ class MultiMetZarrWriter:
         has_new_basins = bool(incoming_basins_set - existing_basins_set)
         has_new_dates = bool(incoming_dates_set - existing_dates_set)
 
-        # Disallow completely disjoint 2D expansion unless allow_2d_expansion=True
-        if (
-            has_new_basins
-            and has_new_dates
-            and not allow_2d_expansion
-            and incoming_basins_set.isdisjoint(existing_basins_set)
-            and incoming_dates_set.isdisjoint(existing_dates_set)
-        ):
+        # Disallow simultaneous 2D expansion unless allow_2d_expansion=True
+        if has_new_basins and has_new_dates and not allow_2d_expansion:
           existing_ds.close()
           raise ValueError(
               "Cannot add both new basins and new dates to an existing Zarr store simultaneously. "

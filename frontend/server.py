@@ -52,13 +52,15 @@ from frontend.maas_engine import (
     get_unified_maas_forecast,
 )
 from frontend.maas_networks import get_model_network
-from frontend.profile_manager import _find_zarr_dirs, get_profile_manager
+from frontend.profile_manager import find_zarr_dirs, get_profile_manager
 from frontend.realtime_forecast_service import (
     clear_realtime_streamflow_csv,
     fetch_realtime_for_basin,
     inspect_realtime_stores_for_basin,
+    is_valid_issue_date_str,
     run_hydrological_model_for_basin,
     upload_realtime_streamflow_csv,
+    validate_streamflow_csv_request,
 )
 from frontend.river_indexer import HydroRiverNetwork
 from frontend.static_attributes import (
@@ -380,7 +382,20 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(payload)))
-        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+        req_path = urllib.parse.urlparse(self.path).path
+        if req_path.startswith(
+            (
+                '/api/profile/',
+                '/api/account/',
+                '/api/forecast/',
+                '/api/watersheds',
+                '/api/archives',
+            )
+        ):
+            self.send_header(
+                'Cache-Control',
+                'no-store, no-cache, must-revalidate',
+            )
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(payload)
@@ -1015,6 +1030,18 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             'false',
             'False',
         )
+        requested_issue_date = (
+            query.get('issue_date', [''])[0].strip()
+            or query.get('requested_issue_date', [''])[0].strip()
+            or None
+        )
+        if not is_valid_issue_date_str(requested_issue_date):
+            self._send_error(
+                f'Invalid issue_date {requested_issue_date!r}; expected '
+                'YYYY-MM-DD.',
+                status=400,
+            )
+            return
 
         if not catchment_id and catchment_ids:
             catchment_id = catchment_ids[0]
@@ -1060,6 +1087,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             nowcast_lookback_days=lookback_days,
             query_upstream_if_empty=query_upstream,
             basin_ids=catchment_ids or None,
+            requested_issue_date=requested_issue_date,
         )
         self._send_json(payload)
 
@@ -1092,11 +1120,11 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         for base_dir in hist_dirs:
             if not base_dir.exists():
                 continue
-            for item in _find_zarr_dirs(base_dir):
+            for item in find_zarr_dirs(base_dir):
                 if 'forecast' in item.name or str(item) in seen_paths:
                     continue
                 seen_paths.add(str(item))
-                meta = pm._inspect_zarr_store(
+                meta = pm.inspect_zarr_store(
                     item,
                     p_dir,
                     default_category='Historical Data',
@@ -1154,11 +1182,11 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         for base_dir in fc_dirs:
             if not base_dir.exists():
                 continue
-            for item in _find_zarr_dirs(base_dir):
+            for item in find_zarr_dirs(base_dir):
                 if str(item) in seen_paths:
                     continue
                 seen_paths.add(str(item))
-                meta = pm._inspect_zarr_store(
+                meta = pm.inspect_zarr_store(
                     item,
                     p_dir,
                     default_category='Forecast Weather',
@@ -2345,36 +2373,32 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
     def _post_forecast_upload_streamflow(self, data: dict[str, Any]) -> None:
         user = self._get_request_username(data)
         catchment_id = data.get('catchment_id') or data.get('basin_id')
-        csv_content = str(
-            data.get('csv_content') or data.get('csv') or ''
-        )
+        cid_str = str(catchment_id) if catchment_id else None
+        csv_content = str(data.get('csv_content') or data.get('csv') or '')
         filename = str(data.get('filename') or 'streamflow.csv')
-        try:
-            payload = upload_realtime_streamflow_csv(
-                username=user,
-                catchment_id=str(catchment_id) if catchment_id else None,
-                csv_content=csv_content,
-                filename=filename,
-            )
-        except ValueError as exc:
-            self._send_error(str(exc), status=400)
+        err_msg = validate_streamflow_csv_request(csv_content, cid_str)
+        if err_msg is not None:
+            self._send_error(err_msg, status=400)
             return
+        payload = upload_realtime_streamflow_csv(
+            username=user,
+            catchment_id=cid_str,
+            csv_content=csv_content,
+            filename=filename,
+        )
         self._send_json(payload)
 
     def _post_forecast_clear_streamflow(self, data: dict[str, Any]) -> None:
         user = self._get_request_username(data)
         catchment_id = data.get('catchment_id') or data.get('basin_id')
-        if not catchment_id:
+        cid_str = str(catchment_id or '').strip()
+        if not cid_str:
             self._send_error('catchment_id is required', status=400)
             return
-        try:
-            payload = clear_realtime_streamflow_csv(
-                username=user,
-                catchment_id=str(catchment_id),
-            )
-        except ValueError as exc:
-            self._send_error(str(exc), status=400)
-            return
+        payload = clear_realtime_streamflow_csv(
+            username=user,
+            catchment_id=cid_str,
+        )
         self._send_json(payload)
 
     def _post_weather_refresh(self, data: dict[str, Any]) -> None:
