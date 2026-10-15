@@ -38,6 +38,10 @@ addopts = [
     "-n=auto",
     "--maxprocesses=4",
     "--dist=loadscope",
+    "--cov=maas",
+    "--cov=frontend",
+    "--cov=utils",
+    "--cov=benchmarks",
 ]
 markers = [
     "unit: fast unit tests",
