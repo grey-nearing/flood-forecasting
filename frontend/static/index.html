@@ -3491,10 +3491,14 @@
         if (btn) {
           btn.addEventListener('click', async () => {
             try {
+              const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
               const resp = await fetch('/api/profile/save_watersheds', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({})
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-User-Profile': targetUser
+                },
+                body: JSON.stringify({ username: targetUser })
               });
               const res = await resp.json();
               if (resp.ok) {
@@ -3681,7 +3685,6 @@
       document.getElementById('datasetSelect').addEventListener('change', (e) => {
         const ds = e.target.value;
         updateLegend(ds);
-        clearAllWatersheds();
         if (riverLayerGroup) riverLayerGroup.clearLayers();
         fetchAndRenderRivers(true);
       });
@@ -4210,10 +4213,14 @@
       activeWatersheds = activeWatersheds.filter(f => f.properties.catchment_id !== catchmentId);
 
       // Notify backend asynchronously
+      const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
       fetch('/api/watersheds/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ catchment_id: catchmentId })
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Profile': targetUser
+        },
+        body: JSON.stringify({ catchment_id: catchmentId, username: targetUser })
       }).catch(console.error);
 
       // Handle active selection transition
@@ -4249,7 +4256,15 @@
       lastClickedLat = null;
       lastClickedLon = null;
 
-      fetch('/api/watersheds/clear', { method: 'POST' }).catch(console.error);
+      const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+      fetch('/api/watersheds/clear', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Profile': targetUser
+        },
+        body: JSON.stringify({ username: targetUser })
+      }).catch(console.error);
 
       document.getElementById('noCatchmentNotice').classList.remove('hidden');
       document.getElementById('catchmentCard').classList.add('hidden');
@@ -4459,10 +4474,15 @@
         const snapSlider = document.getElementById('snapRadiusInput');
         const snapRadius = snapSlider ? parseFloat(snapSlider.value) : 1.0;
         
+        const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
         const resp = await fetch('/api/delineate', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Profile': targetUser
+          },
           body: JSON.stringify({
+            username: targetUser,
             dataset: dataset,
             dem_id: demId,
             latitude: lat,
