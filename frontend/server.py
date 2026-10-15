@@ -60,11 +60,15 @@ from frontend.maas_engine import (
     get_unified_maas_forecast,
 )
 from frontend.maas_networks import get_model_network
-from frontend.profile_manager import get_profile_manager
+from frontend.profile_manager import find_zarr_dirs, get_profile_manager
 from frontend.realtime_forecast_service import (
+    clear_realtime_streamflow_csv,
     fetch_realtime_for_basin,
     inspect_realtime_stores_for_basin,
+    is_valid_issue_date_str,
     run_hydrological_model_for_basin,
+    upload_realtime_streamflow_csv,
+    validate_streamflow_csv_request,
 )
 from frontend.river_indexer import HydroRiverNetwork
 from frontend.static_attributes import (
@@ -386,6 +390,20 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(payload)))
+        req_path = urllib.parse.urlparse(self.path).path
+        if req_path.startswith(
+            (
+                '/api/profile/',
+                '/api/account/',
+                '/api/forecast/',
+                '/api/watersheds',
+                '/api/archives',
+            )
+        ):
+            self.send_header(
+                'Cache-Control',
+                'no-store, no-cache, must-revalidate',
+            )
         self._send_cors_headers()
         self.end_headers()
         self.wfile.write(payload)
@@ -1057,6 +1075,18 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             'false',
             'False',
         )
+        requested_issue_date = (
+            query.get('issue_date', [''])[0].strip()
+            or query.get('requested_issue_date', [''])[0].strip()
+            or None
+        )
+        if not is_valid_issue_date_str(requested_issue_date):
+            self._send_error(
+                f'Invalid issue_date {requested_issue_date!r}; expected '
+                'YYYY-MM-DD.',
+                status=400,
+            )
+            return
 
         if not catchment_id and catchment_ids:
             catchment_id = catchment_ids[0]
@@ -1102,6 +1132,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             nowcast_lookback_days=lookback_days,
             query_upstream_if_empty=query_upstream,
             basin_ids=catchment_ids or None,
+            requested_issue_date=requested_issue_date,
         )
         self._send_json(payload)
 
@@ -1124,23 +1155,28 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         archives: list[dict[str, Any]],
         seen_paths: set[str],
     ) -> None:
+        p_dir = pm.get_profile_dir(user)
         hist_dirs = (
             pm.get_historical_dir(user),
             pm.get_dynamics_dir(user),
             pm.get_targets_dir(user),
-            pm.get_profile_dir(user) / 'archives',
+            p_dir / 'archives',
         )
         for base_dir in hist_dirs:
             if not base_dir.exists():
                 continue
-            for item in base_dir.rglob('*.zarr'):
+            for item in find_zarr_dirs(base_dir):
                 if 'forecast' in item.name or str(item) in seen_paths:
                     continue
                 seen_paths.add(str(item))
-                size_bytes = sum(
-                    f.stat().st_size for f in item.rglob('*') if f.is_file()
+                meta = pm.inspect_zarr_store(
+                    item,
+                    p_dir,
+                    default_category='Historical Data',
                 )
-                basin_list, n_times, _ = _inspect_zarr_archive(item)
+                basin_list = list(meta.get('basins') or [])
+                n_times = int(meta.get('n_timesteps') or 0)
+                size_bytes = int(meta.get('size_bytes') or 0)
                 is_master = (
                     item.name == HISTORICAL_MASTER_ZARR_NAME
                     or len(basin_list) > 1
@@ -1183,21 +1219,28 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         archives: list[dict[str, Any]],
         seen_paths: set[str],
     ) -> None:
+        p_dir = pm.get_profile_dir(user)
         fc_dirs = [pm.get_forecast_dir(user)]
-        rt_dir = pm.get_profile_dir(user) / 'realtime'
+        rt_dir = p_dir / 'realtime'
         if rt_dir.exists():
             fc_dirs.append(rt_dir)
         for base_dir in fc_dirs:
             if not base_dir.exists():
                 continue
-            for item in base_dir.rglob('*.zarr'):
+            for item in find_zarr_dirs(base_dir):
                 if str(item) in seen_paths:
                     continue
                 seen_paths.add(str(item))
-                size_bytes = sum(
-                    f.stat().st_size for f in item.rglob('*') if f.is_file()
+                meta = pm.inspect_zarr_store(
+                    item,
+                    p_dir,
+                    default_category='Forecast Weather',
                 )
-                mfc_basins, _, mfc_lead = _inspect_zarr_archive(item)
+                mfc_basins = list(meta.get('basins') or [])
+                mfc_lead = int(
+                    meta.get('lead_time_days') or meta.get('n_timesteps') or 0
+                )
+                size_bytes = int(meta.get('size_bytes') or 0)
                 cid = (
                     f'FORECAST_{len(mfc_basins)}_BASINS'
                     if len(mfc_basins) > 1
@@ -1380,6 +1423,12 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/attributes/extract': self._post_attributes_extract,
             '/api/forecast/fetch-realtime': self._post_forecast_fetch_realtime,
             '/api/forecast/run-model': self._post_forecast_run_model,
+            '/api/forecast/upload-streamflow': (
+                self._post_forecast_upload_streamflow
+            ),
+            '/api/forecast/clear-streamflow': (
+                self._post_forecast_clear_streamflow
+            ),
             '/api/finetune/upload-csv': self._post_finetune_upload_csv,
             '/api/finetune/clear-data': self._post_finetune_clear_data,
             '/api/finetune/run': self._post_finetune_run,
@@ -1536,14 +1585,16 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             settings=data.get('settings'),
             create_if_missing=create_if_missing,
         )
-        loaded_feats = pm.load_watersheds(prof.get('username'))
+        active_user = str(prof.get('username') or 'guest')
+        loaded_feats = pm.load_watersheds(active_user)
         self._send_json(
             {
                 'status': 'success',
-                'message': f"Logged in as '{prof.get('username')}'",
+                'message': f"Logged in as '{active_user}'",
                 'profile': prof,
                 'watersheds': loaded_feats,
                 'count': len(loaded_feats),
+                'account_summary': pm.get_account_summary(active_user),
             }
         )
 
@@ -1576,13 +1627,15 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             email=data.get('email'),
             display_name=data.get('display_name'),
         )
+        created_user = str(prof.get('username') or clean_user)
         self._send_json(
             {
                 'status': 'success',
-                'message': f"Created account '{prof.get('username')}'",
+                'message': f"Created account '{created_user}'",
                 'profile': prof,
                 'watersheds': [],
                 'count': 0,
+                'account_summary': pm.get_account_summary(created_user),
             }
         )
 
@@ -1623,6 +1676,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 'profile': prof,
                 'watersheds': loaded_feats,
                 'count': len(loaded_feats),
+                'account_summary': pm.get_account_summary(pm.active_username),
             }
         )
 
@@ -1637,6 +1691,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 'profile': prof,
                 'watersheds': loaded_feats,
                 'count': len(loaded_feats),
+                'account_summary': pm.get_account_summary('guest'),
             }
         )
 
@@ -2361,6 +2416,37 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             temp_overrides=temp_overrides,
             product_overrides=product_overrides,
             is_what_if=is_what_if,
+        )
+        self._send_json(payload)
+
+    def _post_forecast_upload_streamflow(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        catchment_id = data.get('catchment_id') or data.get('basin_id')
+        cid_str = str(catchment_id) if catchment_id else None
+        csv_content = str(data.get('csv_content') or data.get('csv') or '')
+        filename = str(data.get('filename') or 'streamflow.csv')
+        err_msg = validate_streamflow_csv_request(csv_content, cid_str)
+        if err_msg is not None:
+            self._send_error(err_msg, status=400)
+            return
+        payload = upload_realtime_streamflow_csv(
+            username=user,
+            catchment_id=cid_str,
+            csv_content=csv_content,
+            filename=filename,
+        )
+        self._send_json(payload)
+
+    def _post_forecast_clear_streamflow(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        catchment_id = data.get('catchment_id') or data.get('basin_id')
+        cid_str = str(catchment_id or '').strip()
+        if not cid_str:
+            self._send_error('catchment_id is required', status=400)
+            return
+        payload = clear_realtime_streamflow_csv(
+            username=user,
+            catchment_id=cid_str,
         )
         self._send_json(payload)
 

@@ -1839,11 +1839,11 @@
           </div>
         </section>
 
-        <!-- Step 1: Fetch Real-Time Forcing Data -->
+        <!-- Step 2: Fetch Real-Time Forcing Data -->
         <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
           <div class="flex items-center justify-between">
             <label class="text-xs font-bold text-[#1a73e8] uppercase tracking-wider flex items-center gap-1.5">
-              <i data-lucide="cloud-download" class="w-4 h-4"></i> 1. Fetch Real-Time Data
+              <i data-lucide="cloud-download" class="w-4 h-4"></i> 2. Fetch Real-Time Data
             </label>
             <span class="text-[10px] text-[#5f6368] font-mono">multimet.realtime</span>
           </div>
@@ -1900,11 +1900,35 @@
           </div>
         </section>
 
-        <!-- Step 2: Run Hydrological Model -->
+        <!-- Step 3: Upload Real-Time Streamflow CSV (Plot on Forecast Graph) -->
+        <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-2.5">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-bold text-[#202124] uppercase tracking-wider flex items-center gap-1.5">
+              <i data-lucide="upload" class="w-4 h-4 text-[#111827]"></i> 3. Realtime Streamflow (CSV)
+            </label>
+            <span class="text-[10px] text-[#5f6368] font-mono">m³/s</span>
+          </div>
+          <p class="text-[11px] text-[#5f6368] leading-relaxed">
+            Upload local gauge streamflow CSV (<code class="font-mono text-[10px]">date,discharge_cms</code>, ISO <code class="font-mono text-[10px]">YYYY-MM-DD</code> daily dates) to plot observed discharge on the forecast chart.
+          </p>
+          <input type="file" id="fcStreamflowCsvInput" accept=".csv,text/csv" class="hidden" />
+          <div class="flex items-center gap-2">
+            <button id="fcUploadStreamflowCsvBtn" type="button" class="flex-1 bg-white hover:bg-[#f1f3f4] text-[#202124] border border-[#dadce0] font-semibold text-xs py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition">
+              <i data-lucide="file-up" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
+              <span>Upload CSV</span>
+            </button>
+            <button id="fcClearStreamflowCsvBtn" type="button" class="hidden bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#fad2cf] font-semibold text-xs py-2 px-2.5 rounded-lg transition" title="Clear uploaded streamflow CSV">
+              Clear
+            </button>
+          </div>
+          <div id="fcStreamflowCsvStatus" class="text-[11px] text-[#5f6368] font-mono leading-snug">No CSV uploaded for active basin.</div>
+        </section>
+
+        <!-- Step 4: Run Hydrological Model -->
         <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
           <div class="flex items-center justify-between">
             <label class="text-xs font-bold text-[#1e8e3e] uppercase tracking-wider flex items-center gap-1.5">
-              <i data-lucide="play-circle" class="w-4 h-4"></i> 2. Make Forecasts
+              <i data-lucide="play-circle" class="w-4 h-4"></i> 4. Make Forecasts
             </label>
             <span class="text-[10px] text-[#5f6368] font-mono">OpenHydroNet</span>
           </div>
@@ -2467,20 +2491,20 @@
     };
     let loadedWatershedsUsername = null;
 
-    async function fetchCurrentProfile() {
+    async function fetchCurrentProfile(options = {}) {
       try {
-        const resp = await fetch('/api/profile/current');
+        const resp = await fetch('/api/profile/current', { cache: 'no-store' });
         if (!resp.ok) return;
         const data = await resp.json();
         activeProfileInfo = data.profile || { username: 'guest', is_guest: true };
         updateProfileHeaderUI();
         updateProfileModalUI(data.available_profiles || []);
         const currentUsername = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+        if (!options.skipAccountSummary && typeof loadAccountSummary === 'function') {
+          loadAccountSummary(currentUsername);
+        }
         if (loadedWatershedsUsername !== currentUsername) {
           await loadWatershedsFromServer(loadedWatershedsUsername === null);
-        }
-        if (typeof loadAccountSummary === 'function') {
-          loadAccountSummary();
         }
       } catch (err) {
         console.error('Error fetching current profile:', err);
@@ -2895,7 +2919,7 @@
       dialog.close();
       if (res.profile) activeProfileInfo = res.profile;
       if (pending.isCurrent) {
-        await refreshAfterAccountChange();  // Now on Guest: reload the map and data.
+        await refreshAfterAccountChange(res.account_summary || null);  // Now on Guest: reload the map and data.
       } else {
         await fetchCurrentProfile();
       }
@@ -3024,10 +3048,15 @@
     }
 
     // Reloads everything that depends on the active account.
-    async function refreshAfterAccountChange() {
+    async function refreshAfterAccountChange(preloadedSummary = null) {
       closeProfileModal();
       loadedWatershedsUsername = null;
-      await fetchCurrentProfile();
+      const hasPreloadedSummary = !!(preloadedSummary && typeof preloadedSummary === 'object');
+      if (hasPreloadedSummary) {
+        accountSummaryRequestSeq += 1;
+        renderAccountSummaryUI(preloadedSummary);
+      }
+      await fetchCurrentProfile({ skipAccountSummary: hasPreloadedSummary });
       // Ensure profile's watersheds are loaded onto map if fetchCurrentProfile didn't already trigger it
       const currentUsername = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
       if (loadedWatershedsUsername !== currentUsername) {
@@ -3036,8 +3065,8 @@
       if (typeof loadArchivesList === 'function') {
         loadArchivesList();
       }
-      if (typeof loadAccountSummary === 'function') {
-        loadAccountSummary();
+      if (!hasPreloadedSummary && typeof loadAccountSummary === 'function') {
+        loadAccountSummary(currentUsername);
       }
     }
 
@@ -3076,7 +3105,7 @@
         }
 
         activeProfileInfo = res.profile;
-        await refreshAfterAccountChange();
+        await refreshAfterAccountChange(res.account_summary || null);
         setAccountAuthStatus('');
         announceAccountChange(`Switched to ${accountLabel(res.profile)}.`);
         return true;
@@ -3135,7 +3164,7 @@
 
         activeProfileInfo = res.profile;
         setCreateAccountFormOpen(false);
-        await refreshAfterAccountChange();
+        await refreshAfterAccountChange(res.account_summary || null);
         const current = document.querySelector('#loginTabSavedProfilesList [aria-current="true"]');
         if (current) current.focus();
         announceAccountChange(`Created ${accountLabel(res.profile)} and switched to it.`);
@@ -3165,7 +3194,7 @@
           return false;
         }
         activeProfileInfo = res.profile || { username: 'guest', is_guest: true };
-        await refreshAfterAccountChange();
+        await refreshAfterAccountChange(res.account_summary || null);
         setAccountAuthStatus('');
         announceAccountChange('Switched to Guest.');
         return true;
@@ -3188,14 +3217,22 @@
       }, 100);
     }
 
-    async function loadAccountSummary() {
+    let accountSummaryRequestSeq = 0;
+
+    async function loadAccountSummary(targetUsername = null) {
+      const seq = ++accountSummaryRequestSeq;
       try {
-        const u = (activeProfileInfo && activeProfileInfo.username) || 'guest';
-        const resp = await fetch(`/api/account/summary?username=${encodeURIComponent(u)}`, {
+        const u = targetUsername || (activeProfileInfo && activeProfileInfo.username) || 'guest';
+        const resp = await fetch(`/api/account/summary?username=${encodeURIComponent(u)}&_t=${Date.now()}`, {
+          cache: 'no-store',
           headers: { 'X-User-Profile': u }
         });
         if (!resp.ok) return;
         const summary = await resp.json();
+        const currentActive = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+        if (seq !== accountSummaryRequestSeq || (summary && summary.username && summary.username !== currentActive)) {
+          return;
+        }
         renderAccountSummaryUI(summary);
       } catch (err) {
         console.error('Failed to load account summary:', err);
@@ -3205,6 +3242,8 @@
     function renderAccountSummaryUI(summary) {
       if (!summary) return;
       const u = summary.username || 'guest';
+      const currentActive = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+      if (u !== currentActive) return;
       const prof = summary.profile || {};
       const isGuest = prof.is_guest || u === 'guest';
       const displayName = prof.display_name || (isGuest ? 'Guest User' : u);
@@ -3662,7 +3701,13 @@
         if (typeof fcKnownCatchmentIds !== 'undefined' && fcKnownCatchmentIds) fcKnownCatchmentIds.clear();
         if (typeof fcSelectedCatchmentIds !== 'undefined' && fcSelectedCatchmentIds) fcSelectedCatchmentIds.clear();
         if (typeof fcModelResultsByBasin !== 'undefined') fcModelResultsByBasin = {};
+        if (typeof fcObservedStreamflowByBasin !== 'undefined') fcObservedStreamflowByBasin = {};
+        if (typeof fcWhatIfEditsByBasin !== 'undefined') fcWhatIfEditsByBasin = {};
+        if (typeof fcWhatIfScenariosByBasin !== 'undefined') fcWhatIfScenariosByBasin = {};
+        if (typeof fcWhatIfCounterByBasin !== 'undefined') fcWhatIfCounterByBasin = {};
+        if (typeof fcLastModelResult !== 'undefined') fcLastModelResult = null;
         if (typeof fcStatusData !== 'undefined') fcStatusData = null;
+        if (typeof fcStatusDataByBasin !== 'undefined') fcStatusDataByBasin = {};
         if (typeof geoKnownCatchmentIds !== 'undefined' && geoKnownCatchmentIds) geoKnownCatchmentIds.clear();
         if (typeof geoCheckedCatchmentIds !== 'undefined' && geoCheckedCatchmentIds) geoCheckedCatchmentIds.clear();
         if (typeof extractedAttributesById !== 'undefined') extractedAttributesById = {};
@@ -4499,7 +4544,8 @@
 
     // Select a specific watershed
     function selectWatershed(catchmentId, zoomTo = false) {
-      const feat = activeWatersheds.find(f => f.properties.catchment_id === catchmentId);
+      const targetCid = String(catchmentId || '').trim();
+      const feat = activeWatersheds.find(f => String((f && f.properties && f.properties.catchment_id) || (f && f.id) || '').trim() === targetCid);
       if (!feat) return;
 
       activeCatchmentId = catchmentId;
@@ -9173,8 +9219,11 @@
     let masterHydroChart = null;
     let fcCurrentMode = 'coldstart'; // 'coldstart' | 'hotstart'
     let fcStatusData = null;
+    let fcStatusDataByBasin = {};
+    let fcStatusRequestSeq = 0;
     let fcLastModelResult = null;
     let fcModelResultsByBasin = {};
+    let fcObservedStreamflowByBasin = {};
     let fcHydroOverlayAll = false;
     let fcSelectedNowcast = null;
     let fcSelectedForecast = null;
@@ -9199,6 +9248,69 @@
       { stroke: '#dc2626', fill: 'rgba(220, 38, 38, 0.14)' },  // Crimson Red
       { stroke: '#0d9488', fill: 'rgba(13, 148, 136, 0.14)' }  // Deep Teal
     ];
+
+    function getObservedStreamflowForBasin(basinId) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      if (!bid) return [];
+      if (
+        Object.prototype.hasOwnProperty.call(fcObservedStreamflowByBasin, bid) &&
+        Array.isArray(fcObservedStreamflowByBasin[bid])
+      ) {
+        return fcObservedStreamflowByBasin[bid];
+      }
+      const res = fcModelResultsByBasin[bid];
+      if (res && Array.isArray(res.observed_streamflow) && res.observed_streamflow.length > 0) {
+        return res.observed_streamflow;
+      }
+      if (fcStatusData && fcStatusData.catchment_id === bid && Array.isArray(fcStatusData.observed_streamflow)) {
+        return fcStatusData.observed_streamflow;
+      }
+      return [];
+    }
+
+    function updateStreamflowCsvStatusUI(customMsg) {
+      const statusEl = document.getElementById('fcStreamflowCsvStatus');
+      const clearBtn = document.getElementById('fcClearStreamflowCsvBtn');
+      const activeId = getActiveForecastBasinId();
+      const series = getObservedStreamflowForBasin(activeId);
+      const validPts = series.filter(pt => pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined);
+      if (clearBtn) {
+        clearBtn.classList.toggle('hidden', series.length === 0);
+      }
+      if (!statusEl) return;
+      if (customMsg) {
+        statusEl.className = 'text-[11px] text-[#137333] font-mono leading-snug';
+        statusEl.innerText = customMsg;
+      } else if (series.length > 0) {
+        const d0 = series[0].date;
+        const d1 = series[series.length - 1].date;
+        statusEl.className = 'text-[11px] text-[#137333] font-mono leading-snug';
+        statusEl.innerText = `Loaded ${validPts.length}/${series.length} valid obs (${d0} → ${d1})`;
+      } else {
+        statusEl.className = 'text-[11px] text-[#5f6368] font-mono leading-snug';
+        statusEl.innerText = activeId ? `No CSV uploaded for ${activeId}.` : 'No CSV uploaded for active basin.';
+      }
+    }
+
+    function extractForecastReturnPeriodThresholds(basinId, modelResult) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      const targetResult = modelResult || (bid && fcModelResultsByBasin[bid]) || null;
+      const rps = (targetResult && targetResult.return_periods) ||
+        (fcStatusData && fcStatusData.catchment_id === bid && fcStatusData.return_periods) ||
+        {};
+      const rawDefs = [
+        ['2-yr return period', rps.return_period_2 ?? rps.rp2 ?? rps['2'], '#eab308'],
+        ['5-yr return period', rps.return_period_5 ?? rps.rp5 ?? rps['5'], '#f97316'],
+        ['10-yr return period', rps.return_period_10 ?? rps.rp10 ?? rps['10'], '#ea580c'],
+        ['20-yr return period', rps.return_period_20 ?? rps.rp20 ?? rps['20'], '#dc2626'],
+        ['25-yr return period', rps.return_period_25 ?? rps.rp25 ?? rps['25'], '#b91c1c'],
+        ['50-yr return period', rps.return_period_50 ?? rps.rp50 ?? rps['50'], '#9333ea'],
+        ['100-yr return period', rps.return_period_100 ?? rps.rp100 ?? rps['100'], '#7e22ce']
+      ];
+      return rawDefs
+        .filter(([, v]) => v !== null && v !== undefined && Number.isFinite(Number(v)) && Number(v) > 0)
+        .map(([label, v, color]) => ({ label, value: Number(v), color, unit: 'm³/s' }));
+    }
 
     function getBasinWhatIfEdits(basinId) {
       const bid = String(basinId || getActiveForecastBasinId() || '').trim();
@@ -9697,6 +9809,72 @@
       }
     };
 
+    // Custom Chart.js plugin to draw horizontal return-period threshold lines ONLY when
+    // the chart's natural Y-axis maximum (yScale.max) reaches or exceeds the threshold.
+    // Never extends the Y-axis to accommodate return periods.
+    const fcReturnPeriodLinesPlugin = {
+      id: 'fcReturnPeriodLines',
+      afterDatasetsDraw(chart) {
+        const thresholds = chart.$returnPeriodThresholds;
+        if (!Array.isArray(thresholds) || thresholds.length === 0) return;
+        const yScale = chart.scales && chart.scales.y;
+        const area = chart.chartArea;
+        if (!yScale || !area) return;
+
+        const yMin = Number(yScale.min);
+        const yMax = Number(yScale.max);
+        if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMax <= yMin) return;
+
+        const ctx = chart.ctx;
+        ctx.save();
+        thresholds.forEach((t) => {
+          if (!t || !Number.isFinite(t.value) || t.value <= 0) return;
+          // Strictly do NOT draw if threshold exceeds the natural Y-axis ceiling
+          if (t.value > yMax || t.value < yMin) return;
+          const yPx = yScale.getPixelForValue(t.value);
+          if (!Number.isFinite(yPx) || yPx < area.top || yPx > area.bottom) return;
+
+          const stroke = t.color || '#dc2626';
+          ctx.beginPath();
+          ctx.setLineDash([5, 4]);
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = stroke;
+          ctx.moveTo(area.left, yPx);
+          ctx.lineTo(area.right, yPx);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          const unit = t.unit || 'm³/s';
+          const labelText = `${t.label} (${Number(t.value).toFixed(1)} ${unit})`;
+          ctx.font = '600 9.5px Inter, system-ui, sans-serif';
+          const tw = ctx.measureText(labelText).width;
+          const padX = 5;
+          const pillW = tw + padX * 2;
+          const pillH = 14;
+          const pillX = Math.max(area.left + 4, area.right - pillW - 6);
+          const pillY = Math.max(area.top + 2, Math.min(area.bottom - pillH - 2, yPx - pillH - 2));
+
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          if (typeof ctx.roundRect === 'function') {
+            ctx.roundRect(pillX, pillY, pillW, pillH, 3);
+          } else {
+            ctx.rect(pillX, pillY, pillW, pillH);
+          }
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = stroke;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(labelText, pillX + padX, pillY + pillH / 2);
+        });
+        ctx.restore();
+      }
+    };
+
     // Build a single shared timeline (allDates, labels, issueDate, t0Index) across
     // ALL available nowcast and forecast products so the top Input Forcing chart
     // and bottom Streamflow Forecast chart share identical X-axis categories and pixels.
@@ -9773,6 +9951,12 @@
         if (sc && sc.result && Array.isArray(sc.result.forecast)) {
           sc.result.forecast.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
         }
+      });
+
+      // Also include dates from uploaded local realtime streamflow CSV observations
+      const obsSeries = getObservedStreamflowForBasin(activeId);
+      obsSeries.forEach(pt => {
+        if (pt && pt.date) dateSet.add(pt.date);
       });
 
       const allDates = Array.from(dateSet).sort();
@@ -10063,7 +10247,27 @@
               }
             },
             plugins: {
-              legend: { labels: { color: '#202124', font: { size: 10 }, boxWidth: 12 } },
+              legend: {
+                labels: {
+                  color: '#202124',
+                  font: { size: 10 },
+                  boxWidth: 12,
+                  sort: (a, b, data) => {
+                    const roleOrder = {
+                      hindcast_precip: 1,
+                      forecast_precip: 2,
+                      hindcast_temp: 3,
+                      forecast_temp: 4
+                    };
+                    const dsA = (data && data.datasets && data.datasets[a.datasetIndex]) || {};
+                    const dsB = (data && data.datasets && data.datasets[b.datasetIndex]) || {};
+                    const rankA = roleOrder[dsA.$fcRole] || 99;
+                    const rankB = roleOrder[dsB.$fcRole] || 99;
+                    if (rankA !== rankB) return rankA - rankB;
+                    return (a.datasetIndex || 0) - (b.datasetIndex || 0);
+                  }
+                }
+              },
               tooltip: {
                 enabled: false
               }
@@ -10080,7 +10284,7 @@
         const ctx = hydroCanvas.getContext('2d');
         masterHydroChart = new Chart(ctx, {
           type: 'line',
-          plugins: [fcIssueDateBoundaryPlugin],
+          plugins: [fcIssueDateBoundaryPlugin, fcReturnPeriodLinesPlugin],
           data: {
             labels: [],
             datasets: []
@@ -10134,8 +10338,11 @@
         masterHydroChart.resize();
       }
 
+      const prevSeq = fcStatusRequestSeq;
       syncForecastTabBasin();
-      refreshForecastTabStatus();
+      if (fcStatusRequestSeq === prevSeq) {
+        refreshForecastTabStatus();
+      }
     }
 
     function setForecastMode(mode) {
@@ -10591,7 +10798,7 @@
       ECMWF_IFS_ENS: { bg: 'rgba(147, 51, 234, 0.84)', border: '#6b21a8' },
       IFS_ENS: { bg: 'rgba(147, 51, 234, 0.84)', border: '#6b21a8' }
     };
-    const FC_HINDCAST_TEMP_COLORS = ['#d97706', '#b45309', '#ca8a04', '#ea580c'];
+    const FC_HINDCAST_TEMP_COLORS = ['#d97706', '#b45309', '#ca8a04', '#ea580c', '#9a3412', '#f59e0b'];
     const FC_FORECAST_TEMP_PALETTE = {
       HRES: '#dc2626',
       ECMWF_AIFS: '#db2777',
@@ -11037,9 +11244,12 @@
       const timeline = buildSharedForecastTimeline(targetResult || (enabledScenarios[0] && enabledScenarios[0].result) || null);
       const { allDates, labels, issueDate, t0Index } = timeline;
       masterHydroChart.$fcTimelineMeta = allDates.length > 0 ? { issueDate, t0Index } : null;
+      masterHydroChart.$returnPeriodThresholds = extractForecastReturnPeriodThresholds(activeId, targetResult);
 
+      const obsSeries = getObservedStreamflowForBasin(activeId);
+      const hasObserved = obsSeries.some(pt => pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined);
       const hasBaseline = Boolean(targetResult && Array.isArray(targetResult.forecast) && targetResult.forecast.length > 0);
-      if (!hasBaseline && enabledScenarios.length === 0) {
+      if (!hasBaseline && enabledScenarios.length === 0 && !hasObserved) {
         masterHydroChart.data.labels = labels;
         masterHydroChart.data.datasets = allDates.length > 0
           ? [
@@ -11064,14 +11274,14 @@
         if (peakBadge) peakBadge.classList.add('hidden');
         if (subtitleEl) {
           subtitleEl.innerText = activeId
-            ? `Viewing Basin: ${activeId} · Click "2. Make Forecasts" or drag forecast bars & click "Run What-If Forecast" to generate discharge trajectories.`
-            : 'Click "2. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
+            ? `Viewing Basin: ${activeId} · Upload a realtime streamflow CSV or click "4. Make Forecasts" to generate discharge trajectories.`
+            : 'Upload a realtime streamflow CSV or click "4. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
         }
         return;
       }
 
-      const refResult = hasBaseline ? targetResult : enabledScenarios[0].result;
-      const hindcastTail = Array.isArray(refResult.hindcast_tail) ? refResult.hindcast_tail : [];
+      const refResult = hasBaseline ? targetResult : (enabledScenarios.length > 0 ? enabledScenarios[0].result : null);
+      const hindcastTail = (refResult && Array.isArray(refResult.hindcast_tail)) ? refResult.hindcast_tail : [];
       const hindcastByDate = {};
       hindcastTail.forEach(pt => { if (pt && pt.date) hindcastByDate[pt.date] = pt; });
 
@@ -11080,8 +11290,9 @@
         return (pt && pt.discharge_cms !== undefined && pt.discharge_cms !== null) ? pt.discharge_cms : null;
       });
 
-      const chartDatasets = [
-        {
+      const chartDatasets = [];
+      if (refResult) {
+        chartDatasets.push({
           label: `HINDCAST (< t₀): ${refResult.basin_id || activeId} Spin-Up Streamflow (m³/s)`,
           data: hindcastData,
           borderColor: '#0284c7',
@@ -11094,8 +11305,8 @@
           spanGaps: false,
           fill: true,
           order: 3
-        }
-      ];
+        });
+      }
 
       if (hasBaseline) {
         const forecastByDate = {};
@@ -11158,6 +11369,30 @@
         });
       });
 
+      // Overlay uploaded local realtime streamflow CSV series (plotting only, no nudging/assimilation)
+      if (hasObserved) {
+        const obsByDate = {};
+        obsSeries.forEach(pt => { if (pt && pt.date) obsByDate[pt.date] = pt.discharge_cms; });
+        const obsData = allDates.map(d => (obsByDate[d] !== undefined && obsByDate[d] !== null) ? obsByDate[d] : null);
+        chartDatasets.push({
+          label: `OBSERVED STREAMFLOW (CSV): ${activeId} (m³/s)`,
+          data: obsData,
+          $fcRole: 'observed_streamflow',
+          borderColor: '#111827',
+          backgroundColor: '#111827',
+          borderWidth: 2.4,
+          pointRadius: 3.8,
+          pointHoverRadius: 5.5,
+          pointBackgroundColor: '#111827',
+          pointBorderColor: '#ffffff',
+          pointBorderWidth: 1.5,
+          tension: 0.15,
+          spanGaps: false,
+          fill: false,
+          order: 0
+        });
+      }
+
       masterHydroChart.data.labels = labels;
       masterHydroChart.data.datasets = chartDatasets;
       masterHydroChart.update();
@@ -11171,17 +11406,32 @@
             peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s (${targetResult.peak_date || '—'})`;
           }
           peakBadge.classList.remove('hidden');
+        } else if (hasObserved) {
+          const validObsVals = obsSeries
+            .map(pt => (pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined) ? Number(pt.discharge_cms) : NaN)
+            .filter(Number.isFinite);
+          if (validObsVals.length > 0) {
+            peakBadge.innerText = `Observed CSV Max: ${Math.max(...validObsVals).toFixed(2)} m³/s (${validObsVals.length} pts)`;
+            peakBadge.classList.remove('hidden');
+          } else {
+            peakBadge.classList.add('hidden');
+          }
         } else {
           peakBadge.classList.add('hidden');
         }
       }
 
       if (subtitleEl) {
-        const modeText = refResult.mode === 'hotstart' ? 'Hot-Start' : 'Cold-Start';
-        const whatIfNote = enabledScenarios.length > 0
-          ? ` · ${enabledScenarios.length} active What-If trajectory(s) plotted`
-          : '';
-        subtitleEl.innerText = `Viewing Basin: ${refResult.basin_id || activeId} · ${modeText} baseline forecast · Issue date t₀ = ${refResult.issue_date}${whatIfNote}`;
+        const obsNote = hasObserved ? ` · ${obsSeries.filter(p => p && p.discharge_cms !== null && p.discharge_cms !== undefined).length} observed CSV point(s) plotted` : '';
+        if (refResult) {
+          const modeText = refResult.mode === 'hotstart' ? 'Hot-Start' : 'Cold-Start';
+          const whatIfNote = enabledScenarios.length > 0
+            ? ` · ${enabledScenarios.length} active What-If trajectory(s) plotted`
+            : '';
+          subtitleEl.innerText = `Viewing Basin: ${refResult.basin_id || activeId} · ${modeText} baseline forecast · Issue date t₀ = ${refResult.issue_date}${whatIfNote}${obsNote}`;
+        } else if (hasObserved) {
+          subtitleEl.innerText = `Viewing Basin: ${activeId}${obsNote} (run model to overlay forecast)`;
+        }
       }
     }
 
@@ -11298,6 +11548,7 @@
     async function refreshForecastTabStatus() {
       const basinId = getActiveForecastBasinId();
       const selectedIds = getSelectedForecastCatchmentIds();
+      const reqSeq = ++fcStatusRequestSeq;
       updateForecastControlsUI();
       updateWhatIfControlsUI();
       if (!basinId) {
@@ -11309,6 +11560,22 @@
         return;
       }
 
+      if (fcStatusDataByBasin[basinId]) {
+        fcStatusData = fcStatusDataByBasin[basinId];
+        renderForecastCatchmentChecklist();
+        populateProductDropdowns();
+        updateForecastControlsUI();
+        updateWhatIfControlsUI();
+        updateStreamflowCsvStatusUI();
+        renderForcingChart();
+        renderHydrographChart(fcModelResultsByBasin[basinId] || null);
+      } else {
+        const subtitleEl = document.getElementById('fcForcingSubtitle');
+        if (subtitleEl) {
+          subtitleEl.innerText = `Loading real-time input forcing for ${basinId}...`;
+        }
+      }
+
       try {
         const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
         const cidsParam = selectedIds.length > 0 ? `&catchment_ids=${encodeURIComponent(selectedIds.join(','))}` : '';
@@ -11316,12 +11583,24 @@
           headers: { 'X-User-Profile': u }
         });
         const data = await res.json();
+        const activeUser = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+        if (reqSeq !== fcStatusRequestSeq || u !== activeUser) {
+          return;
+        }
         if (res.ok && data.status === 'success') {
+          fcStatusDataByBasin[basinId] = data;
+          if (Array.isArray(data.observed_streamflow)) {
+            fcObservedStreamflowByBasin[basinId] = data.observed_streamflow;
+          }
+          if (getActiveForecastBasinId() !== basinId) {
+            return;
+          }
           fcStatusData = data;
           renderForecastCatchmentChecklist();
           populateProductDropdowns();
           updateForecastControlsUI();
           updateWhatIfControlsUI();
+          updateStreamflowCsvStatusUI();
           renderForcingChart();
           renderHydrographChart(fcModelResultsByBasin[basinId] || null);
         }
@@ -11381,16 +11660,132 @@
       }
       if (basinSel) {
         basinSel.addEventListener('change', (e) => {
-          const newId = e.target.value;
+          const newId = String(e.target.value || '').trim();
+          if (!newId) return;
           fcHydroOverlayAll = false;
-          if (newId && typeof selectWatershed === 'function') {
+          activeCatchmentId = newId;
+          const prevSeq = fcStatusRequestSeq;
+          if (typeof selectWatershed === 'function') {
             selectWatershed(newId);
-          } else {
-            activeCatchmentId = newId;
-            syncForecastTabBasin();
           }
-          updateWhatIfControlsUI();
-          renderHydrographChart(fcModelResultsByBasin[newId] || null);
+          if (fcStatusRequestSeq === prevSeq) {
+            syncForecastTabBasin();
+            if (fcStatusRequestSeq === prevSeq) {
+              refreshForecastTabStatus();
+            }
+          }
+        });
+      }
+
+      const uploadCsvBtn = document.getElementById('fcUploadStreamflowCsvBtn');
+      const uploadCsvInput = document.getElementById('fcStreamflowCsvInput');
+      const clearCsvBtn = document.getElementById('fcClearStreamflowCsvBtn');
+      const csvStatusEl = document.getElementById('fcStreamflowCsvStatus');
+
+      async function handleRealtimeStreamflowCsvUpload(file) {
+        const basinId = getActiveForecastBasinId();
+        if (!file || !basinId) return;
+        const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+        if (csvStatusEl) {
+          csvStatusEl.innerText = `Uploading ${file.name}...`;
+        }
+        try {
+          const csvContent = await file.text();
+          const res = await fetch('/api/forecast/upload-streamflow', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-User-Profile': u
+            },
+            body: JSON.stringify({
+              catchment_id: basinId,
+              filename: file.name,
+              csv_content: csvContent,
+              username: u
+            })
+          });
+          const data = await res.json();
+          if (!res.ok || data.status !== 'success') {
+            throw new Error(data.message || `HTTP ${res.status}`);
+          }
+          if (data.observed_by_id && typeof data.observed_by_id === 'object') {
+            Object.entries(data.observed_by_id).forEach(([cid, series]) => {
+              fcObservedStreamflowByBasin[cid] = series;
+            });
+          } else if (Array.isArray(data.observed_streamflow)) {
+            fcObservedStreamflowByBasin[basinId] = data.observed_streamflow;
+          }
+          if (fcStatusData && fcStatusData.catchment_id === basinId) {
+            fcStatusData.observed_streamflow = fcObservedStreamflowByBasin[basinId] || [];
+            fcStatusData.has_observed_streamflow = (fcStatusData.observed_streamflow.length > 0);
+          }
+          updateStreamflowCsvStatusUI(data.message);
+          renderForcingChart();
+          renderHydrographChart(fcModelResultsByBasin[basinId] || null);
+        } catch (err) {
+          if (csvStatusEl) {
+            csvStatusEl.innerText = `CSV upload failed: ${err.message}`;
+          }
+        }
+      }
+
+      if (uploadCsvBtn && uploadCsvInput) {
+        uploadCsvBtn.addEventListener('click', () => {
+          uploadCsvInput.value = '';
+          uploadCsvInput.click();
+        });
+        uploadCsvInput.addEventListener('change', (e) => {
+          const f = e.target.files && e.target.files[0];
+          if (f) handleRealtimeStreamflowCsvUpload(f);
+        });
+      }
+
+      if (clearCsvBtn) {
+        clearCsvBtn.addEventListener('click', async () => {
+          const basinId = getActiveForecastBasinId();
+          if (!basinId) return;
+          const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+          try {
+            const res = await fetch('/api/forecast/clear-streamflow', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-User-Profile': u
+              },
+              body: JSON.stringify({
+                catchment_id: basinId,
+                username: u
+              })
+            });
+            const data = await res.json();
+            if (!res.ok || data.status !== 'success') {
+              throw new Error(data.message || `HTTP ${res.status}`);
+            }
+            fcObservedStreamflowByBasin[basinId] = [];
+            if (fcModelResultsByBasin[basinId]) {
+              fcModelResultsByBasin[basinId].observed_streamflow = [];
+            }
+            if (Array.isArray(fcWhatIfScenariosByBasin[basinId])) {
+              fcWhatIfScenariosByBasin[basinId].forEach(sc => {
+                if (sc && sc.result) sc.result.observed_streamflow = [];
+              });
+            }
+            if (data.forecast_status && data.forecast_status.catchment_id === basinId) {
+              fcStatusData = data.forecast_status;
+              fcStatusDataByBasin[basinId] = data.forecast_status;
+            } else if (fcStatusData && fcStatusData.catchment_id === basinId) {
+              fcStatusData.observed_streamflow = [];
+              fcStatusData.has_observed_streamflow = false;
+            }
+            updateStreamflowCsvStatusUI();
+            renderForcingChart();
+            renderHydrographChart(fcModelResultsByBasin[basinId] || null);
+          } catch (err) {
+            if (csvStatusEl) {
+              csvStatusEl.className = 'text-[11px] text-[#c5221f] font-mono leading-snug';
+              csvStatusEl.innerText = `Clear CSV failed: ${err.message}`;
+            }
+          }
         });
       }
       if (nowcastSel) {
@@ -11478,6 +11873,10 @@
             }
 
             fcStatusData = data;
+            fcStatusDataByBasin = {};
+            if (data.catchment_id) {
+              fcStatusDataByBasin[data.catchment_id] = data;
+            }
             renderForecastCatchmentChecklist();
             populateProductDropdowns();
             renderForcingChart();
@@ -11558,6 +11957,16 @@
             }
             if (data.post_run_status) {
               fcStatusData = data.post_run_status;
+              if (data.post_run_status.catchment_id) {
+                fcStatusDataByBasin[data.post_run_status.catchment_id] = data.post_run_status;
+              }
+              if (data.post_run_status.catchments_status) {
+                Object.values(fcStatusDataByBasin).forEach(st => {
+                  if (st && st.catchments_status) {
+                    Object.assign(st.catchments_status, data.post_run_status.catchments_status);
+                  }
+                });
+              }
             }
             renderForecastCatchmentChecklist();
             renderForcingChart();
@@ -12107,6 +12516,7 @@
       maasChart = new Chart(canvas.getContext('2d'), {
         type: 'line',
         data: { labels: [], datasets: [] },
+        plugins: [fcReturnPeriodLinesPlugin],
         options: {
           responsive: true,
           maintainAspectRatio: false,
@@ -12208,6 +12618,9 @@
     // or the multi-model ensemble (when 2+ models are selected in Forecast View).
     function renderMaaSForecast() {
       initMaasCharts();
+      if (maasChart) {
+        maasChart.$returnPeriodThresholds = [];
+      }
       const data = currentMaaSForecastData;
       const timeline = (data && data.timeline) || {};
       const allDates = Array.isArray(timeline.dates) ? timeline.dates : [];
@@ -12324,12 +12737,14 @@
             borderColor: style.color, backgroundColor: style.color, borderWidth: 2.5,
             pointRadius: 2, tension: 0.3, spanGaps: true, order: 0
           });
-          maasModelThresholds(data, key).forEach(t => datasets.push({
-            label: t.label, data: Array(plotDates.length).fill(t.value), unit, isThreshold: true, borderColor: t.color,
-            backgroundColor: t.color, borderWidth: 1.5, borderDash: [5, 4], pointRadius: 0, pointHitRadius: 0, fill: false, order: 1
-          }));
+          if (maasChart) {
+            maasChart.$returnPeriodThresholds = maasModelThresholds(data, key).map(t => Object.assign({}, t, { unit }));
+          }
           note = status && status !== 'live' ? (MAAS_STATUS_NOTES[status] || null) : null;
         }
+      }
+      if (maasChart && selectedMaaSModels.size >= 2) {
+        maasChart.$returnPeriodThresholds = [];
       }
 
       const statusEl = document.getElementById('maasModelStatus');

@@ -412,3 +412,234 @@ def test_initialize_zarr_store_local_and_remote_memory_roundtrip(tmp_path):
   assert "_f32_template" not in z_grp
 
 
+def test_write_or_append_2d_expansion_and_basin_dtype_widening(
+    writer: MultiMetZarrWriter,
+):
+  """Verifies write_or_append supports adding new basins with shifted dates and varying string lengths."""
+  basins_init = [
+      "catchment_hydroatlas_POINT_38526_81631_38525_81630",
+      "catchment_hydroatlas_HYRIV_70689198_35212_81698",
+  ]
+  dates_init = pd.date_range("2025-10-12", periods=3, freq="D")
+  leads = pd.to_timedelta(range(1, 11), unit="D")
+  ds1 = xr.Dataset(
+      data_vars={
+          band: (
+              ["basin", "date", "lead_time"],
+              np.ones((2, 3, 10), dtype=np.float32),
+          )
+          for band in PRODUCT_BANDS[Product.HRES]
+      },
+      coords={
+          "basin": basins_init,
+          "date": dates_init.values,
+          "lead_time": leads.values,
+      },
+  )
+  store_path = writer.write_or_append(ds1, Product.HRES)
+
+  # 1. Add a 3rd basin (shorter string ID <U47 vs <U50) AND shifted dates (2025-10-13..2025-10-15)
+  basins_next = basins_init + [
+      "catchment_hydroatlas_HYRIV_70674197_35782_81497"
+  ]
+  dates_next = pd.date_range("2025-10-13", periods=3, freq="D")
+  ds2 = xr.Dataset(
+      data_vars={
+          band: (
+              ["basin", "date", "lead_time"],
+              np.full((3, 3, 10), 2.0, dtype=np.float32),
+          )
+          for band in PRODUCT_BANDS[Product.HRES]
+      },
+      coords={
+          "basin": basins_next,
+          "date": dates_next.values,
+          "lead_time": leads.values,
+      },
+  )
+  writer.write_or_append(
+      ds2, Product.HRES, preserve_existing_valid=True, allow_2d_expansion=True
+  )
+
+  # 2. Add a single new basin with an even longer string ID (<U60) on a new date with allow_2d_expansion=True
+  long_basin = "catchment_hydroatlas_VERY_LONG_CUSTOM_BASIN_IDENTIFIER_99999"
+  dates_single = pd.date_range("2025-10-16", periods=1, freq="D")
+  ds3 = xr.Dataset(
+      data_vars={
+          band: (
+              ["basin", "date", "lead_time"],
+              np.full((1, 1, 10), 5.0, dtype=np.float32),
+          )
+          for band in PRODUCT_BANDS[Product.HRES]
+      },
+      coords={
+          "basin": [long_basin],
+          "date": dates_single.values,
+          "lead_time": leads.values,
+      },
+  )
+  writer.write_or_append(
+      ds3, Product.HRES, preserve_existing_valid=True, allow_2d_expansion=True
+  )
+
+  with xr.open_zarr(store_path) as res_ds:
+    assert list(res_ds["basin"].values) == basins_next + [long_basin]
+    assert res_ds["hres_total_precipitation"].shape == (4, 5, 10)
+    # New basin at 2025-10-12 (before its extraction window) must be NaN
+    assert np.isnan(
+        res_ds["hres_total_precipitation"]
+        .sel(
+            basin="catchment_hydroatlas_HYRIV_70674197_35782_81497",
+            date="2025-10-12",
+        )
+        .values
+    ).all()
+    # New basin at 2025-10-15 must be 2.0
+    np.testing.assert_allclose(
+        res_ds["hres_total_precipitation"]
+        .sel(
+            basin="catchment_hydroatlas_HYRIV_70674197_35782_81497",
+            date="2025-10-15",
+        )
+        .values,
+        2.0,
+    )
+    # Long basin ID must be preserved without truncation and have 5.0 on 2025-10-16
+    np.testing.assert_allclose(
+        res_ds["hres_total_precipitation"]
+        .sel(basin=long_basin, date="2025-10-16")
+        .values,
+        5.0,
+    )
+
+
+def test_write_or_append_rejects_2d_expansion_when_disallowed(
+    writer: MultiMetZarrWriter,
+):
+  """Verifies write_or_append raises ValueError on partial-overlap 2D expansion when allow_2d_expansion=False."""
+  dates_1 = pd.date_range("2025-11-01", periods=2, freq="D")
+  ds1 = xr.Dataset(
+      data_vars={
+          band: (["basin", "date"], np.ones((2, 2), dtype=np.float32))
+          for band in PRODUCT_BANDS[Product.IMERG]
+      },
+      coords={"basin": ["b1", "b2"], "date": dates_1.values},
+  )
+  writer.write_or_append(ds1, Product.IMERG)
+
+  dates_2 = pd.date_range("2025-11-02", periods=2, freq="D")
+  ds2 = xr.Dataset(
+      data_vars={
+          band: (["basin", "date"], np.ones((2, 2), dtype=np.float32))
+          for band in PRODUCT_BANDS[Product.IMERG]
+      },
+      coords={"basin": ["b2", "b3"], "date": dates_2.values},
+  )
+  with pytest.raises(ValueError, match="Cannot add both new basins and new dates"):
+    writer.write_or_append(ds2, Product.IMERG, allow_2d_expansion=False)
+
+
+def test_write_or_append_sorts_unsorted_dates_and_preserves_untouched_basins(
+    writer: MultiMetZarrWriter,
+):
+  """Verifies unsorted incoming dates are sorted and subset overwrite_existing_basins preserves other basins."""
+  unsorted_dates = pd.to_datetime(["2025-12-03", "2025-12-01", "2025-12-02"])
+  vals = np.array([[30.0, 10.0, 20.0], [300.0, 100.0, 200.0]], dtype=np.float32)
+  ds1 = xr.Dataset(
+      data_vars={"imerg_precipitation": (["basin", "date"], vals)},
+      coords={"basin": ["b1", "b2"], "date": unsorted_dates.values},
+  )
+  store_path = writer.write_or_append(ds1, Product.IMERG)
+
+  with xr.open_zarr(store_path) as ds_sorted:
+    assert list(pd.to_datetime(ds_sorted["date"].values)) == list(
+        pd.date_range("2025-12-01", periods=3, freq="D")
+    )
+    np.testing.assert_allclose(
+        ds_sorted["imerg_precipitation"].sel(basin="b1").values,
+        [10.0, 20.0, 30.0],
+    )
+
+  # Overwrite only b1 on 2025-12-02 while preserving b2
+  ds_sub = xr.Dataset(
+      data_vars={
+          "imerg_precipitation": (
+              ["basin", "date"],
+              np.array([[99.0]], dtype=np.float32),
+          )
+      },
+      coords={
+          "basin": ["b1"],
+          "date": pd.to_datetime(["2025-12-02"]).values,
+      },
+  )
+  writer.write_or_append(
+      ds_sub,
+      Product.IMERG,
+      overwrite_existing_basins=True,
+      preserve_existing_valid=False,
+  )
+  with xr.open_zarr(store_path) as ds_after:
+    np.testing.assert_allclose(
+        ds_after["imerg_precipitation"].sel(basin="b1").values,
+        [10.0, 99.0, 30.0],
+    )
+    np.testing.assert_allclose(
+        ds_after["imerg_precipitation"].sel(basin="b2").values,
+        [100.0, 200.0, 300.0],
+    )
+
+
+def test_inspect_store_last_valid_date_tail_and_optional_bands(tmp_path):
+  """Verifies inspect_store_last_valid_date checks optional bands consistently across tail and history."""
+  from multimet.timeseries_extractors.realtime import inspect_store_last_valid_date
+
+  writer = MultiMetZarrWriter(tmp_path / "rt_inspect")
+  dates = pd.date_range("2026-01-01", periods=20, freq="D")
+  precip = np.ones((1, 20), dtype=np.float32)
+  # Last 14 days (indices 6..19) have NaN in optional band cpc_num_stations,
+  # while days 0..5 have valid cpc_num_stations.
+  stations = np.full((1, 20), np.nan, dtype=np.float32)
+  stations[:, :6] = 5.0
+  ds_cpc = xr.Dataset(
+      data_vars={
+          "cpc_precipitation": (["basin", "date"], precip),
+          "cpc_num_stations": (["basin", "date"], stations),
+      },
+      coords={"basin": ["b1"], "date": dates.values},
+  )
+  writer.write_or_append(ds_cpc, Product.CPC)
+
+  info = inspect_store_last_valid_date(
+      writer, Product.CPC, basin_ids=["b1"]
+  )
+  assert info == pd.Timestamp("2026-01-06")
+
+
+def test_imerg_version_cutover_and_missing_file_handling(monkeypatch):
+  """Verifies IMERG V07B/V07C cutover and interior vs trailing missing-date handling."""
+  import geopandas as gpd
+  from shapely.geometry import box
+  from multimet.timeseries_extractors.imerg import (
+      IMERG_V07C_CUTOVER_DATE,
+      IMERGExtractor,
+  )
+
+  gdf = gpd.GeoDataFrame(
+      {"geometry": [box(-80.0, 35.0, -79.5, 35.5)]},
+      index=pd.Index(["b1"], name="basin"),
+      crs="EPSG:4326",
+  )
+  ext = IMERGExtractor(source="gesdisc")
+  assert ext._resolve_imerg_version_for_date("20260303") == "V07B"
+  assert ext._resolve_imerg_version_for_date(IMERG_V07C_CUTOVER_DATE) == "V07C"
+  assert ext._resolve_imerg_version_for_date("20260401") == "V07C"
+
+  # Interior missing date older than MAX_PUBLICATION_LAG_DAYS must raise FileNotFoundError
+  monkeypatch.setattr(ext, "_has_daily_file", lambda dt: False)
+  with pytest.raises(FileNotFoundError, match="Missing IMERG daily"):
+    ext.extract_for_basins(gdf, start_date="2026-01-01", end_date="2026-01-15")
+
+
+
+

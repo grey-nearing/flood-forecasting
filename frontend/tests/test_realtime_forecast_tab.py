@@ -1280,8 +1280,252 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'id="fcWhatIfScenariosList"',
             'fc-whatif-toggle-cb',
             'fc-whatif-delete-btn',
+            'hindcast_precip: 1',
+            'forecast_precip: 2',
+            'hindcast_temp: 3',
+            'forecast_temp: 4',
         ):
             assert token in html
+
+    def test_upload_realtime_streamflow_csv_and_return_periods(self) -> None:
+        """Verify uploading a streamflow CSV, preserving NaNs, and plotting."""
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir,
+            basin_id=TEST_BASIN,
+            issue_date_str='2026-03-30',
+        )
+
+        # 1. Upload 2-column CSV with valid values, missing, and sentinel -999
+        csv_text = (
+            'date,discharge_cms\n'
+            '2026-03-27,14.2\n'
+            '2026-03-28,\n'
+            '2026-03-29,-999\n'
+            '2026-03-30,28.5\n'
+        )
+        code, upload_res = self._request(
+            'POST',
+            '/api/forecast/upload-streamflow',
+            {
+                'catchment_id': TEST_BASIN,
+                'filename': 'gauge_obs.csv',
+                'csv_content': csv_text,
+            },
+        )
+        assert code == HTTP_OK, f'CSV upload failed: {upload_res}'
+        assert upload_res['status'] == 'success'
+        obs_series = upload_res['observed_streamflow']
+        assert len(obs_series) == 4  # noqa: PLR2004
+        by_date = {pt['date']: pt['discharge_cms'] for pt in obs_series}
+        assert by_date['2026-03-27'] == pytest.approx(14.2)
+        assert by_date['2026-03-28'] is None
+        assert by_date['2026-03-29'] is None
+        assert by_date['2026-03-30'] == pytest.approx(28.5)
+
+        # Verify assimilation/streamflow_realtime.zarr preserves NaNs
+        zarr_path = (
+            self.profile_dir / 'assimilation' / 'streamflow_realtime.zarr'
+        )
+        assert zarr_path.exists()
+        ds_obs = xr.open_zarr(zarr_path, consolidated=False)
+        assert TEST_BASIN in ds_obs['basin'].to_numpy()
+        q_vals = ds_obs['streamflow'].sel(basin=TEST_BASIN).to_numpy()
+        assert np.isnan(q_vals[1])
+        assert np.isnan(q_vals[2])
+        assert np.isclose(q_vals[0], 14.2)
+        assert np.isclose(q_vals[3], 28.5)
+
+        # 2. Verify /api/forecast/status returns observed_streamflow
+        code, status_res = self._request(
+            'GET', f'/api/forecast/status?catchment_id={TEST_BASIN}'
+        )
+        assert code == HTTP_OK
+        assert status_res['has_observed_streamflow'] is True
+        assert len(status_res['observed_streamflow']) == 4  # noqa: PLR2004
+        assert 'return_periods' in status_res
+
+        # 3. Verify running model includes observed_streamflow without nudging
+        code, run_res = self._post_run_model(
+            {'catchment_id': TEST_BASIN, 'mode': 'coldstart'}
+        )
+        assert code == HTTP_OK
+        assert run_res['has_observed_streamflow'] is True
+        assert len(run_res['observed_streamflow']) == 4  # noqa: PLR2004
+        assert 'return_periods' in run_res
+
+        # 4. Clear uploaded CSV and confirm status resets
+        code, clear_res = self._request(
+            'POST',
+            '/api/forecast/clear-streamflow',
+            {'catchment_id': TEST_BASIN},
+        )
+        assert code == HTTP_OK
+        assert clear_res['status'] == 'success'
+        assert clear_res['observed_streamflow'] == []
+
+        code, status_after = self._request(
+            'GET', f'/api/forecast/status?catchment_id={TEST_BASIN}'
+        )
+        assert code == HTTP_OK
+        assert status_after['has_observed_streamflow'] is False
+        assert status_after['observed_streamflow'] == []
+
+        # 5. Verify frontend HTML/JS tokens for CSV upload & return periods
+        html_path = (
+            Path(__file__).resolve().parent.parent / 'static' / 'index.html'
+        )
+        html = html_path.read_text(encoding='utf-8')
+        for token in (
+            'id="fcUploadStreamflowCsvBtn"',
+            'id="fcStreamflowCsvInput"',
+            'id="fcClearStreamflowCsvBtn"',
+            'id="fcStreamflowCsvStatus"',
+            'OBSERVED STREAMFLOW (CSV)',
+            '/api/forecast/upload-streamflow',
+            '/api/forecast/clear-streamflow',
+            'fcReturnPeriodLinesPlugin',
+            'if (t.value > yMax || t.value < yMin) return;',
+        ):
+            assert token in html
+
+    def test_csv_validation_collision_and_issue_date_regressions(self) -> None:
+        """Verify CSV validation, collision-free IDs, and tail fallback."""
+        # 1. Invalid CSV payloads must return HTTP 400 with clear errors
+        bad_payloads = [
+            'col_a,col_b\n2026-03-27,10.0\n',
+            'date,discharge_cms\nnot-a-date,10.0\n',
+            'date,discharge_cms\n2026-03-27,"12,5"\n',
+            'date,discharge_cms\n2026-03-27,10.0\n2026-03-27,15.0\n',
+        ]
+        for bad_csv in bad_payloads:
+            code, err_res = self._request(
+                'POST',
+                '/api/forecast/upload-streamflow',
+                {
+                    'catchment_id': TEST_BASIN,
+                    'csv_content': bad_csv,
+                },
+            )
+            assert code == HTTP_BAD_REQUEST, f'Expected 400 for {bad_csv!r}'
+            assert err_res['status'] == 'error'
+
+        # 2. Multi-basin CSV upload returns observed_by_id for every basin
+        multi_csv = (
+            'basin,date,streamflow\n'
+            f'{TEST_BASIN},2026-03-28,11.0\n'
+            f'{TEST_BASIN_2},2026-03-28,22.5\n'
+        )
+        code, multi_res = self._request(
+            'POST',
+            '/api/forecast/upload-streamflow',
+            {
+                'catchment_id': TEST_BASIN,
+                'csv_content': multi_csv,
+            },
+        )
+        assert code == HTTP_OK
+        assert TEST_BASIN in multi_res['observed_by_id']
+        assert TEST_BASIN_2 in multi_res['observed_by_id']
+        assert multi_res['observed_by_id'][TEST_BASIN_2][0][
+            'discharge_cms'
+        ] == pytest.approx(22.5)
+
+        # 3. Disjoint date window on load_realtime_streamflow_series returns []
+        disjoint = realtime_forecast_service.load_realtime_streamflow_series(
+            TEST_USER,
+            TEST_BASIN,
+            start_date='2025-01-01',
+            end_date='2025-01-10',
+        )
+        assert disjoint == []
+
+        # 4. Basin IDs that sanitize to similar ASCII stems never collide
+        realtime_forecast_service.upload_realtime_streamflow_csv(
+            TEST_USER,
+            catchment_id='a.b',
+            csv_content='date,q\n2026-03-28,5.0\n',
+        )
+        realtime_forecast_service.upload_realtime_streamflow_csv(
+            TEST_USER,
+            catchment_id='ab',
+            csv_content='date,q\n2026-03-28,99.0\n',
+        )
+        s_dot = realtime_forecast_service.load_realtime_streamflow_series(
+            TEST_USER, 'a.b'
+        )
+        s_plain = realtime_forecast_service.load_realtime_streamflow_series(
+            TEST_USER, 'ab'
+        )
+        assert s_dot[0]['discharge_cms'] == pytest.approx(5.0)
+        assert s_plain[0]['discharge_cms'] == pytest.approx(99.0)
+
+        # 5. Invalid requested_issue_date returns HTTP 400 / raises ValueError
+        code, bad_status = self._request(
+            'GET',
+            f'/api/forecast/status?catchment_id={TEST_BASIN}&issue_date=bad-date',
+        )
+        assert code == HTTP_BAD_REQUEST
+        assert bad_status['status'] == 'error'
+        with pytest.raises(ValueError, match='Invalid issue_date'):
+            realtime_forecast_service.get_realtime_status(
+                TEST_USER,
+                TEST_BASIN,
+                requested_issue_date='bad-date',
+            )
+
+        # 6. 40-date HRES store where the last 14 dates are all-NaN resolves
+        # the last valid date (2026-01-20) instead of the final store date
+        dates_40 = pd.date_range('2026-01-01', periods=40, freq='D')
+        leads = pd.timedelta_range('1D', periods=10, freq='D')
+        arr = np.full((1, 40, 10), np.nan, dtype=np.float32)
+        arr[:, :20, :] = 3.0
+        hres_40_path = self.profile_dir / 'test_hres_40.zarr'
+        ds_40 = xr.Dataset(
+            data_vars={
+                'hres_total_precipitation': (
+                    ['basin', 'date', 'lead_time'],
+                    arr,
+                ),
+            },
+            coords={
+                'basin': [TEST_BASIN],
+                'date': dates_40,
+                'lead_time': leads,
+            },
+        )
+        ds_40.to_zarr(hres_40_path, mode='w', consolidated=True)
+        latest_valid = (
+            realtime_forecast_service._extract_latest_issue_from_store(  # noqa: SLF001
+                hres_40_path,
+                TEST_BASIN,
+            )
+        )
+        assert latest_valid is not None
+        assert latest_valid.strftime('%Y-%m-%d') == '2026-01-20'
+
+        # 7. Return period normalization handles rp_2, 25yr, nested dicts,
+        # and ignores bare integer keys and booleans
+        pm = profile_manager.get_profile_manager()
+        ws = [
+            {
+                **TEST_WATERSHED_FEATURE,
+                'properties': {
+                    **TEST_WATERSHED_FEATURE['properties'],
+                    'rp_2': 45.0,
+                    '2': 9999.0,
+                    'return_period_5': True,
+                    'return_periods_cms': {'25yr': 180.5, '10': 95.0},
+                },
+            }
+        ]
+        pm.save_watersheds(ws, username=TEST_USER)
+        rps = realtime_forecast_service.load_basin_return_periods(
+            TEST_USER, TEST_BASIN
+        )
+        assert rps['return_period_2'] == pytest.approx(45.0)
+        assert rps['return_period_10'] == pytest.approx(95.0)
+        assert rps['return_period_25'] == pytest.approx(180.5)
+        assert 'return_period_5' not in rps
 
 
 if __name__ == '__main__':

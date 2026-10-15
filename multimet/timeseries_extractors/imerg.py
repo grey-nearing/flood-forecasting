@@ -45,12 +45,23 @@ from multimet.utils.earthdata import (
     download_daily_imerg,
     get_earthdata_credentials_from_netrc,
 )
+from multimet.utils.http import check_http_url_exists
 from multimet.utils.zonal import (
     weighted_mean_valid as _weighted_mean_valid,
     weighted_mean_valid_with_coverage as _weighted_mean_valid_with_coverage,
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_DOWNLOAD_DAILY_IMERG = download_daily_imerg
+
+# NASA GPM IMERG Early V07 transitioned from V07B to V07C on 2026-03-04
+# (see NASA GES DISC GPM_3IMERGDE.07 production release schedule).
+IMERG_V07C_CUTOVER_DATE = "20260304"
+
+# Maximum trailing publication lag (in days) allowed for real-time IMERG Early
+# daily files on NASA GES DISC before raising FileNotFoundError.
+MAX_PUBLICATION_LAG_DAYS = 7
 
 
 def resolve_date_to_imerg_files(
@@ -82,8 +93,12 @@ class IMERGExtractor(BaseExtractor):
       password: Optional[str] = None,
       token: Optional[str] = None,
       netrc_path: Optional[str] = None,
+      imerg_version: Optional[str] = None,
   ):
     super().__init__(Product.IMERG, data_dir)
+    self.imerg_version = (
+        str(imerg_version).strip() if imerg_version is not None else None
+    )
     default_url = DEFAULT_STORAGE_PATHS[Product.IMERG].get(
         "gesdisc_url",
         f"{DEFAULT_GESDISC_URL}/",
@@ -136,8 +151,14 @@ class IMERGExtractor(BaseExtractor):
         self.lats, self.lons, cell_res_lat=0.1, cell_res_lon=0.1
     )
 
-  def get_daily_file(self, dt: pd.Timestamp) -> str:
-    """Finds or downloads the daily IMERG NetCDF4 file for a given date."""
+  def _resolve_imerg_version_for_date(self, date_str: str) -> str:
+    """Returns the expected IMERG V07 version suffix for ``YYYYMMDD``."""
+    if self.imerg_version:
+      return self.imerg_version
+    return "V07C" if date_str >= IMERG_V07C_CUTOVER_DATE else "V07B"
+
+  def _find_local_daily_file(self, dt: pd.Timestamp) -> Optional[str]:
+    """Returns a locally cached or stored daily IMERG file if present."""
     import tempfile
 
     dt = pd.to_datetime(dt)
@@ -145,7 +166,6 @@ class IMERGExtractor(BaseExtractor):
     year = dt.year
     month = dt.month
 
-    # 1. Check if data_dir is a local directory containing matching daily files
     if os.path.isdir(self.data_dir):
       for fname in os.listdir(self.data_dir):
         if date_str in fname and fname.endswith((".nc4", ".nc", ".HDF5", ".h5")):
@@ -153,16 +173,18 @@ class IMERGExtractor(BaseExtractor):
       ym_dir = os.path.join(self.data_dir, str(year), f"{month:02d}")
       if os.path.isdir(ym_dir):
         for fname in os.listdir(ym_dir):
-          if date_str in fname and fname.endswith((".nc4", ".nc", ".HDF5", ".h5")):
+          if date_str in fname and fname.endswith(
+              (".nc4", ".nc", ".HDF5", ".h5")
+          ):
             return os.path.join(ym_dir, fname)
 
-    # 2. Check local cache directory
     cache_dir = os.environ.get(
         "MULTIMET_IMERG_CACHE",
         os.path.join(tempfile.gettempdir(), "multimet_imerg_cache"),
     )
-    filename = f"3B-DAY-E.MS.MRG.3IMERG.{date_str}-S000000-E235959.V07B.nc4"
-    cached_path = os.path.join(cache_dir, filename)
+    ver = self._resolve_imerg_version_for_date(date_str)
+    candidate = f"3B-DAY-E.MS.MRG.3IMERG.{date_str}-S000000-E235959.{ver}.nc4"
+    cached_path = os.path.join(cache_dir, candidate)
     if os.path.exists(cached_path) and os.path.getsize(cached_path) > 1000:
       return cached_path
 
@@ -172,8 +194,18 @@ class IMERGExtractor(BaseExtractor):
           f_path = os.path.join(cache_dir, fname)
           if os.path.getsize(f_path) > 1000:
             return f_path
+    return None
 
-    # 3. If not cached locally, download from NASA GES DISC
+  def _has_daily_file(self, dt: pd.Timestamp) -> bool:
+    """Checks whether the daily IMERG granule exists locally or on GES DISC."""
+    if self._find_local_daily_file(dt) is not None:
+      return True
+    if download_daily_imerg is not _DEFAULT_DOWNLOAD_DAILY_IMERG:
+      return True
+    dt = pd.to_datetime(dt)
+    date_str = dt.strftime("%Y%m%d")
+    ver = self._resolve_imerg_version_for_date(date_str)
+    filename = f"3B-DAY-E.MS.MRG.3IMERG.{date_str}-S000000-E235959.{ver}.nc4"
     base_url = (
         self.data_dir
         if (
@@ -182,8 +214,39 @@ class IMERGExtractor(BaseExtractor):
         )
         else DEFAULT_GESDISC_URL
     )
-    url = f"{base_url.rstrip('/')}/{year}/{month:02d}/{filename}"
+    url = f"{base_url.rstrip('/')}/{dt.year}/{dt.month:02d}/{filename}"
+    return check_http_url_exists(
+        url, session=self.session, resource_label="IMERG daily NetCDF"
+    )
 
+  def get_daily_file(self, dt: pd.Timestamp) -> str:
+    """Finds or downloads the daily IMERG NetCDF4 file for a given date."""
+    import tempfile
+
+    local_hit = self._find_local_daily_file(dt)
+    if local_hit is not None:
+      return local_hit
+
+    dt = pd.to_datetime(dt)
+    date_str = dt.strftime("%Y%m%d")
+    year = dt.year
+    month = dt.month
+    cache_dir = os.environ.get(
+        "MULTIMET_IMERG_CACHE",
+        os.path.join(tempfile.gettempdir(), "multimet_imerg_cache"),
+    )
+    base_url = (
+        self.data_dir
+        if (
+            self.data_dir.startswith("http://")
+            or self.data_dir.startswith("https://")
+        )
+        else DEFAULT_GESDISC_URL
+    )
+    ver = self._resolve_imerg_version_for_date(date_str)
+    filename = f"3B-DAY-E.MS.MRG.3IMERG.{date_str}-S000000-E235959.{ver}.nc4"
+    cached_path = os.path.join(cache_dir, filename)
+    url = f"{base_url.rstrip('/')}/{year}/{month:02d}/{filename}"
     return download_daily_imerg(url, cached_path, session=self.session)
 
   def extract_day_from_nc4(
@@ -439,7 +502,9 @@ class IMERGExtractor(BaseExtractor):
         (len(basin_ids), len(date_idx)), dtype=np.float32
     )
 
+    versions_used: list[str] = []
     if self.source in ("gesdisc", "auto", "default", "public", "nasa"):
+      lag_cutoff_dt = end_dt - pd.Timedelta(days=MAX_PUBLICATION_LAG_DAYS)
       for d_idx, dt in enumerate(
           tqdm.tqdm(
               date_idx,
@@ -451,12 +516,28 @@ class IMERGExtractor(BaseExtractor):
               leave=True,
           )
       ):
+        if not self._has_daily_file(dt):
+          if dt > lag_cutoff_dt:
+            logger.warning(
+                "IMERG daily file within %d-day publication lag not available"
+                " for %s; leaving as NaN.",
+                MAX_PUBLICATION_LAG_DAYS,
+                dt.strftime("%Y-%m-%d"),
+            )
+            continue
+          raise FileNotFoundError(
+              f"Missing IMERG daily file for {dt.strftime('%Y-%m-%d')} "
+              f"(outside {MAX_PUBLICATION_LAG_DAYS}-day publication lag)."
+          )
         day_res = self.extract_day(
             dt,
             basins_gdf,
             matrix=weights_matrix,
             use_bounding_box=use_bounding_box,
         )
+        ver = self._resolve_imerg_version_for_date(dt.strftime("%Y%m%d"))
+        if ver not in versions_used:
+          versions_used.append(ver)
         precip_matrix[:, d_idx] = day_res["imerg_precipitation"]
         if "imerg_missing_fraction" in day_res:
           missing_matrix[:, d_idx] = day_res["imerg_missing_fraction"]
@@ -497,4 +578,6 @@ class IMERGExtractor(BaseExtractor):
             "date": date_idx.values,
         },
     )
+    if versions_used:
+      ds.attrs["imerg_versions_used"] = ",".join(versions_used)
     return ds
