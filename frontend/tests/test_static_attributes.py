@@ -29,7 +29,6 @@ import pandas as pd
 import pytest
 from shapely.geometry import box
 
-import frontend.config as _frontend_config
 import frontend.static_attributes as _static_attributes
 from frontend.static_attributes import (
     DEFAULT_GCS_ERA5_CLIMATE_URI,
@@ -262,6 +261,7 @@ class StaticAttributesAdapterTest(unittest.TestCase):
         self,
     ) -> None:
         """Verify extraction and map-layer GeoJSON using synthetic fixtures."""
+        self.addCleanup(reset_attributes_extractor)
         with tempfile.TemporaryDirectory() as tmp_dir:
             hydroatlas_dir, era5_dir = build_synthetic_hydroatlas_fixtures(
                 Path(tmp_dir)
@@ -274,68 +274,83 @@ class StaticAttributesAdapterTest(unittest.TestCase):
                 },
             ):
                 reset_attributes_extractor()
-                try:
-                    extractor = get_attributes_extractor()
-                    poly = box(-106.2, 39.5, -106.0, 39.7)
-                    res = extractor.extract_attributes_for_polygon(
-                        poly,
-                        catchment_id='openhydronet_test_basin',
-                        era5_source='hybas',
-                    )
-                    card = build_attribute_card_payload(res)
-                    assert card['status'] == 'success'
-                    assert card['flat_attributes']['ele_mt_sav'] > 0
-                    assert card['flat_attributes']['p_mean'] > 0
+                extractor = get_attributes_extractor()
+                poly = box(-106.2, 39.5, -106.0, 39.7)
+                res = extractor.extract_attributes_for_polygon(
+                    poly,
+                    catchment_id='openhydronet_test_basin',
+                    era5_source='hybas',
+                )
+                card = build_attribute_card_payload(res)
+                assert card['status'] == 'success'
+                assert card['flat_attributes']['ele_mt_sav'] > 0
+                assert card['flat_attributes']['p_mean'] > 0
 
-                    fc_elev = build_map_layer_geojson(
-                        extractor,
-                        (-106.5, 39.4, -105.8, 39.9),
-                        zoom=10,
-                        attribute='ele_mt_sav',
-                    )
-                    assert fc_elev['properties']['count'] == (
-                        _EXPECTED_SUBBASIN_COUNT
-                    )
-                    fc_clim = build_map_layer_geojson(
-                        extractor,
-                        (-106.5, 39.4, -105.8, 39.9),
-                        zoom=10,
-                        attribute='p_mean',
-                    )
-                    assert fc_clim['properties']['count'] == (
-                        _EXPECTED_SUBBASIN_COUNT
-                    )
-                finally:
-                    reset_attributes_extractor()
+                fc_elev = build_map_layer_geojson(
+                    extractor,
+                    (-106.5, 39.4, -105.8, 39.9),
+                    zoom=10,
+                    attribute='ele_mt_sav',
+                )
+                assert fc_elev['properties']['count'] == (
+                    _EXPECTED_SUBBASIN_COUNT
+                )
+                fc_clim = build_map_layer_geojson(
+                    extractor,
+                    (-106.5, 39.4, -105.8, 39.9),
+                    zoom=10,
+                    attribute='p_mean',
+                )
+                assert fc_clim['properties']['count'] == (
+                    _EXPECTED_SUBBASIN_COUNT
+                )
 
     def test_get_attributes_extractor_streams_from_gcs_when_no_local_gdb(
         self,
     ) -> None:
-        """Verify extractor streams from GCS when no local gdb exists."""
+        """Verify extractor streams from GCS when local caches are absent."""
         self.addCleanup(reset_attributes_extractor)
         reset_attributes_extractor()
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            hydroatlas_dir, _ = build_synthetic_hydroatlas_fixtures(root)
+            hydroatlas_dir, era5_dir = build_synthetic_hydroatlas_fixtures(root)
             empty_dir = root / 'empty_local_cache'
+            gcs_prefix = DEFAULT_GCS_HYDROATLAS_URI.replace('gs://', '').rstrip(
+                '/'
+            )
+            era5_prefix = DEFAULT_GCS_ERA5_CLIMATE_URI.replace(
+                'gs://', ''
+            ).rstrip('/')
 
             class _FakeGCSFileSystem:
+                def _resolve_local(self, path: str) -> Path:
+                    clean = path.replace('gs://', '').rstrip('/')
+                    if clean == era5_prefix:
+                        return era5_dir
+                    if clean.startswith(f'{era5_prefix}/'):
+                        return era5_dir / clean[len(era5_prefix) + 1 :]
+                    if clean == gcs_prefix:
+                        return hydroatlas_dir
+                    if clean.startswith(f'{gcs_prefix}/'):
+                        return hydroatlas_dir / clean[len(gcs_prefix) + 1 :]
+                    return empty_dir / clean
+
                 def exists(self, path: str) -> bool:
-                    rel = path.split('ancillary-data/hydroatlas/', 1)[-1]
-                    if rel.endswith('ancillary-data/hydroatlas'):
-                        return True
-                    return (hydroatlas_dir / rel).exists()
+                    return self._resolve_local(path).exists()
 
                 def ls(self, path: str) -> list[str]:
-                    rel = path.split('ancillary-data/hydroatlas/', 1)[-1]
+                    local_target = self._resolve_local(path)
+                    clean = path.replace('gs://', '').rstrip('/')
                     return [
-                        f'{path}/{p.name}'
-                        for p in sorted((hydroatlas_dir / rel).iterdir())
+                        f'{clean}/{p.name}'
+                        for p in sorted(local_target.iterdir())
                     ]
 
                 def open(self, path: str, mode: str = 'rb'):  # noqa: ANN202
-                    rel = path.split('ancillary-data/hydroatlas/', 1)[-1]
-                    return (hydroatlas_dir / rel).open(mode)
+                    return self._resolve_local(path).open(mode)
+
+                def cat_file(self, path: str) -> bytes:
+                    return self._resolve_local(path).read_bytes()
 
             env_without_overrides = {
                 k: v
@@ -365,12 +380,12 @@ class StaticAttributesAdapterTest(unittest.TestCase):
                     empty_dir / 'era5_climate',
                 ),
                 mock.patch.object(
-                    _frontend_config,
+                    _static_attributes,
                     'SHARED_HYDROATLAS_DIR',
                     empty_dir / 'shared_hydroatlas',
                 ),
                 mock.patch.object(
-                    _frontend_config,
+                    _static_attributes,
                     'HYDRO_BASINS_DIR',
                     empty_dir / 'hydro_basins',
                 ),
@@ -392,7 +407,39 @@ class StaticAttributesAdapterTest(unittest.TestCase):
                     extractor.gcs_era5_climate_uri
                     == DEFAULT_GCS_ERA5_CLIMATE_URI
                 )
-                assert 'ele_mt_sav' in extractor.all_gdb_fields
+                poly = box(-106.2, 39.5, -106.0, 39.7)
+                res_gcs = extractor.extract_attributes_for_polygon(
+                    poly,
+                    catchment_id='gcs_streamed_basin',
+                    era5_source='hybas',
+                )
+                card_gcs = build_attribute_card_payload(res_gcs)
+                assert card_gcs['status'] == 'success'
+                assert card_gcs['flat_attributes']['ele_mt_sav'] > 0
+                assert card_gcs['flat_attributes']['p_mean'] > 0
+
+                # Verify local GDB + missing local ERA5 streams ERA5 from GCS
+                # while keeping HydroATLAS on the local partitioned path.
+                reset_attributes_extractor()
+                with mock.patch.dict(
+                    os.environ,
+                    {'HYDROATLAS_GDB_PATH': str(hydroatlas_dir)},
+                ):
+                    extractor_mixed = get_attributes_extractor()
+                    assert extractor_mixed.gdb_path == hydroatlas_dir
+                    assert extractor_mixed.gcs_gdb_uri is None
+                    assert extractor_mixed.no_download is True
+                    assert extractor_mixed.era5_loader is not None
+                    res_mixed = extractor_mixed.extract_attributes_for_polygon(
+                        poly,
+                        catchment_id='mixed_local_gdb_gcs_era5',
+                        era5_source='hybas',
+                    )
+                    card_mixed = build_attribute_card_payload(res_mixed)
+                    assert (
+                        card_mixed['flat_attributes']
+                        == card_gcs['flat_attributes']
+                    )
 
 
 if __name__ == '__main__':

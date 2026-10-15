@@ -594,7 +594,10 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         ):
             call_block = self.html_text.split(f"fetch('{endpoint}'", 1)[
                 1
-            ].split('});', 1)[0]
+            ].split('})', 1)[0]
+            assert 'fetch(' not in call_block, (
+                f'{endpoint} call block must not span subsequent fetches'
+            )
             assert "'X-User-Profile': targetUser" in call_block, (
                 f'{endpoint} fetch must include X-User-Profile header'
             )
