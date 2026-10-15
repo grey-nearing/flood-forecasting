@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Helpers for tabulating evaluation results and batching samples by basin."""
+
 import itertools
-import math
 from collections import defaultdict
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
@@ -27,20 +28,16 @@ from model.datasetzoo.multimet import SampleIndexer
 def metrics_to_dataframe(
     results: dict, metrics: Iterable[str], targets: Iterable[str]
 ) -> pd.DataFrame:
-    """Extract all metric values from result dictionary and convert to pandas.DataFrame
+    """Extract all metric values from a result dictionary into a DataFrame.
 
-    Parameters
-    ----------
-    results : dict
-        Dictionary, containing the results of the model evaluation as returned by the `Tester.evaluate()`.
-    metrics : Iterable[str]
-        Iterable of metric names.
-    targets : Iterable[str]
-        Iterable of target variable names.
+    Args:
+        results: Dictionary, containing the results of the model evaluation as
+            returned by the `Tester.evaluate()`.
+        metrics: Iterable of metric names.
+        targets: Iterable of target variable names.
 
-    Returns
-    -------
-    A basin indexed DataFrame with one column per metric.
+    Returns:
+        A basin indexed DataFrame with one column per metric.
     """
     metrics_dict = defaultdict(dict)
     extra_keys: list[str] = []
@@ -59,7 +56,8 @@ def metrics_to_dataframe(
             if metric_key in basin_data:
                 metrics_dict[basin][metric_key] = basin_data[metric_key]
             else:
-                # in case the current period has no valid samples, the result dict has no metric-key
+                # in case the current period has no valid samples, the result
+                # dict has no metric-key
                 metrics_dict[basin][metric_key] = np.nan
         for extra_key in extra_keys:
             if extra_key not in metrics_dict[basin]:
@@ -76,7 +74,8 @@ def metrics_to_dataframe(
 class BasinBatchSampler(BatchSampler):
     """Groups samples by basin.
 
-    Maps every basin to samples for it, and on iterations chunks them by batch size.
+    Maps every basin to samples for it, and on iterations chunks them by batch
+    size.
     """
 
     def __init__(
@@ -85,6 +84,14 @@ class BasinBatchSampler(BatchSampler):
         batch_size: int,
         basins_indexes: np.typing.NDArray[np.integer] | None = None,
     ):
+        """Locate every basin's sample range and count the resulting batches.
+
+        Args:
+            sample_index: Sample indexer whose `basin` column is sorted.
+            batch_size: Maximum number of samples per batch.
+            basins_indexes: Basin indexes to restrict the sampler to. If None,
+                all basins in `sample_index` are used.
+        """
         super().__init__(
             SequentialSampler(range(len(sample_index))),
             batch_size,
@@ -112,16 +119,19 @@ class BasinBatchSampler(BatchSampler):
         fulls, remainders = np.divmod(self._counts, batch_size)
         self._num_batches = int(fulls.sum() + np.count_nonzero(remainders))
 
-
     def __iter__(self):
+        """Yield batches of sample indexes, never mixing basins in a batch."""
         for start, count in zip(self._starts, self._counts, strict=True):
             end = start + count
             yield from itertools.batched(range(start, end), self._batch_size)
 
     def __len__(self):
+        """Return the total number of batches over all basins."""
         return self._num_batches
 
 
-def get_samples_indexes(values: list[str], *, samples: list[str]):
-    """Returns indexes of elements from samples that are in values."""
+def get_samples_indexes(
+    values: list[str], *, samples: list[str]
+) -> np.typing.NDArray[np.intp]:
+    """Return the indexes of the elements of `values` that are in `samples`."""
     return np.flatnonzero(np.isin(values, samples))

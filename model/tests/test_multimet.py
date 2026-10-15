@@ -705,12 +705,12 @@ def test_product_name_parsing_and_normalization():
         _canonical_product_name,
         _get_products_and_bands_from_feature_strings,
         _get_products_and_bands_from_features,
-        _normalize_product_key,
         _product_name_from_feature,
     )
+    from model.utils.configutils import normalize_product_key
 
-    assert _normalize_product_key('CHIRPS_GEFS') == 'chirpsgefs'
-    assert _normalize_product_key('era5-land') == 'era5land'
+    assert normalize_product_key('CHIRPS_GEFS') == 'chirpsgefs'
+    assert normalize_product_key('era5-land') == 'era5land'
 
     assert _canonical_product_name('chirps_gefs') == 'CHIRPS_GEFS'
     assert _canonical_product_name('chirpsgefs') == 'CHIRPS_GEFS'

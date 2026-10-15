@@ -16,6 +16,7 @@ import shutil
 from collections.abc import Callable
 from math import ceil
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -32,7 +33,7 @@ from model.evaluation.tester import RegressionTester
 from model.evaluation.utils import BasinBatchSampler
 from model.modelzoo import load_model_weights
 from model.training.basetrainer import BaseTrainer
-from model.utils.config import Config
+from model.utils.config import Config, TesterSamplesReduction
 
 
 @pytest.fixture
@@ -554,3 +555,248 @@ def test_evaluate_scores_every_remaining_basin_after_all_nan_exclusion(
         'basin_03',
         'basin_05',
     ]
+
+
+def _nse(obs: np.ndarray, sim: np.ndarray) -> float:
+    """Compute the reference NSE over the valid pairs of flat arrays."""
+    valid = ~np.isnan(obs) & ~np.isnan(sim)
+    obs, sim = obs[valid], sim[valid]
+    return float(1 - np.sum((sim - obs) ** 2) / np.sum((obs - obs.mean()) ** 2))
+
+
+def _make_metric_tester(**cfg_overrides: object) -> RegressionTester:
+    """Build a tester whose config only drives the metric computation."""
+    tester = object.__new__(RegressionTester)
+    cfg = {
+        'target_variables': ['q'],
+        'clip_targets_to_zero': [],
+        'head': 'regression',
+        'tester_sample_reduction': TesterSamplesReduction.MEAN,
+    }
+    cfg.update(cfg_overrides)
+    tester.cfg = SimpleNamespace(**cfg)
+    return tester
+
+
+def _make_step_results(
+    obs_vals: np.ndarray, sim_vals: np.ndarray, time_steps: list[int]
+) -> tuple[xr.Dataset, pd.DatetimeIndex]:
+    """Wrap `(date, time_step[, samples])` arrays like `evaluate()` does."""
+    dates = pd.date_range('2020-01-01', periods=obs_vals.shape[0], freq='1D')
+    sim_dims = ('date', 'time_step', 'samples')[: sim_vals.ndim]
+    ds = xr.Dataset(
+        data_vars={
+            'q_obs': (('date', 'time_step'), obs_vals),
+            'q_sim': (sim_dims, sim_vals),
+        },
+        coords={'date': dates, 'time_step': time_steps},
+    )
+    return ds, dates
+
+
+@pytest.mark.unit
+def test_evaluate_target_metrics_pools_all_steps_including_nowcast() -> None:
+    """`NSE` pools every predicted step (nowcast included); steps get suffixes.
+
+    The per-step errors grow with the step, so the pooled value differs from
+    the first step (`time_step == 0`) and the last step alone.
+    """
+    rng = np.random.default_rng(0)
+    base = rng.gamma(shape=2.0, scale=5.0, size=90)
+    obs_vals = base[:, None] + np.array([0.0, 0.5, 1.0])
+    sim_vals = obs_vals + np.array([0.3, 2.0, 6.0]) * rng.normal(size=(90, 3))
+    # Missing pairs must be masked out, not propagated.
+    obs_vals[3, 1] = np.nan
+    sim_vals[7, 2] = np.nan
+    ds, dates = _make_step_results(obs_vals, sim_vals, time_steps=[0, 1, 2])
+
+    results = _make_metric_tester()._evaluate_target_metrics(  # noqa: SLF001
+        xr=ds,
+        basin='basin_a',
+        target_variable='q',
+        var_metrics=['NSE', 'MSE'],
+        date_range=dates,
+    )
+
+    assert set(results) == {
+        'NSE',
+        'MSE',
+        'NSE_hindcast',
+        'NSE_lead1',
+        'NSE_lead2',
+        'MSE_hindcast',
+        'MSE_lead1',
+        'MSE_lead2',
+    }
+    obs_flat = obs_vals.T.reshape(-1)
+    sim_flat = sim_vals.T.reshape(-1)
+    assert results['NSE'] == pytest.approx(_nse(obs_flat, sim_flat))
+    assert results['MSE'] == pytest.approx(
+        np.nanmean((sim_flat - obs_flat) ** 2)
+    )
+    for step_idx, suffix in enumerate(['hindcast', 'lead1', 'lead2']):
+        assert results[f'NSE_{suffix}'] == pytest.approx(
+            _nse(obs_vals[:, step_idx], sim_vals[:, step_idx])
+        )
+    assert results['NSE'] != pytest.approx(results['NSE_hindcast'])
+    assert results['NSE'] != pytest.approx(results['NSE_lead2'])
+
+
+@pytest.mark.unit
+def test_evaluate_target_metrics_single_step_has_no_step_suffix() -> None:
+    """With one predicted step the aggregate is that step; no suffixed keys."""
+    obs_vals = np.linspace(1.0, 20.0, 20)[:, None]
+    sim_vals = obs_vals * 1.1
+    ds, dates = _make_step_results(obs_vals, sim_vals, time_steps=[2])
+
+    results = _make_metric_tester()._evaluate_target_metrics(  # noqa: SLF001
+        xr=ds,
+        basin='basin_a',
+        target_variable='q',
+        var_metrics=['NSE'],
+        date_range=dates,
+    )
+
+    assert set(results) == {'NSE'}
+    assert results['NSE'] == pytest.approx(_nse(obs_vals[:, 0], sim_vals[:, 0]))
+
+
+@pytest.mark.unit
+def test_evaluate_target_metrics_reduces_samples_and_clips() -> None:
+    """Uncertainty samples are reduced and clipped before pooling."""
+    obs_vals = np.tile(np.linspace(1.0, 10.0, 10)[:, None], (1, 2))
+    samples = np.stack(
+        [obs_vals - 3.0, obs_vals + 1.0, obs_vals + 2.0, obs_vals + 4.0],
+        axis=-1,
+    )
+    ds, dates = _make_step_results(obs_vals, samples, time_steps=[1, 2])
+    tester = _make_metric_tester(
+        head='cmal',
+        tester_sample_reduction=TesterSamplesReduction.MEDIAN,
+        clip_targets_to_zero=['q'],
+    )
+
+    results = tester._evaluate_target_metrics(  # noqa: SLF001
+        xr=ds,
+        basin='basin_a',
+        target_variable='q',
+        var_metrics=['NSE'],
+        date_range=dates,
+    )
+
+    reduced = np.clip(np.median(samples, axis=-1), 0, None)
+    assert results['NSE'] == pytest.approx(
+        _nse(obs_vals.T.reshape(-1), reduced.T.reshape(-1))
+    )
+    assert results['NSE_lead1'] == pytest.approx(
+        _nse(obs_vals[:, 0], reduced[:, 0])
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('all_nan_variable', ['obs', 'sim'])
+def test_evaluate_target_metrics_all_nan_sets_every_metric_to_nan(
+    all_nan_variable: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """All-NaN obs or sim yields NaN metrics explicitly, without raising."""
+    obs_vals = np.linspace(1.0, 10.0, 10)[:, None].repeat(2, axis=1)
+    sim_vals = obs_vals.copy()
+    if all_nan_variable == 'obs':
+        obs_vals[:] = np.nan
+    else:
+        sim_vals[:] = np.nan
+    ds, dates = _make_step_results(obs_vals, sim_vals, time_steps=[1, 2])
+
+    with caplog.at_level('WARNING', logger='model.evaluation.tester'):
+        results = _make_metric_tester()._evaluate_target_metrics(  # noqa: SLF001
+            xr=ds,
+            basin='basin_a',
+            target_variable='q',
+            var_metrics=['NSE', 'KGE'],
+            date_range=dates,
+        )
+
+    assert set(results) == {
+        'NSE',
+        'KGE',
+        'NSE_lead1',
+        'NSE_lead2',
+        'KGE_lead1',
+        'KGE_lead2',
+    }
+    assert all(np.isnan(value) for value in results.values())
+    assert 'Basin basin_a target q has all-NaN obs or sim' in caplog.text
+
+
+@pytest.mark.integration
+def test_evaluate_reports_pooled_and_per_lead_metrics_in_both_periods(
+    make_minimal_config: Callable[..., Config], tmp_path: Path
+) -> None:
+    """Validation logs and test CSVs carry pooled and per-lead metrics.
+
+    With `lead_time == 2` and `predict_last_n == 3` the predicted steps are
+    `time_step = 0, 1, 2`. The un-suffixed `NSE` must equal the NSE of the
+    pairs pooled over all three steps of the saved results, and each suffixed
+    key the NSE of its own step.
+    """
+    run_dir = tmp_path / 'per_lead_run'
+    cfg = make_minimal_config(
+        {
+            'experiment_name': 'per_lead_test',
+            'run_dir': run_dir,
+            'base_run_dir': run_dir,
+            'predict_last_n': 3,
+            'validate_every': 1,
+            'validate_n_random_basins': 0,
+            'metrics': ['NSE'],
+        }
+    )
+    trainer = BaseTrainer(cfg)
+    trainer.initialize_training()
+
+    logged_steps: list[dict] = []
+    real_log_step = trainer.experiment_logger.log_step
+
+    def _spy_log_step(**kwargs: object) -> None:
+        logged_steps.append(kwargs)
+        real_log_step(**kwargs)
+
+    trainer.experiment_logger.log_step = _spy_log_step
+    trainer.train_and_validate()
+
+    per_lead_keys = {'NSE', 'NSE_hindcast', 'NSE_lead1', 'NSE_lead2'}
+    metric_steps = [step for step in logged_steps if 'NSE' in step]
+    assert metric_steps, 'validation logged no metrics'
+    assert all(set(step) == per_lead_keys for step in metric_steps)
+    validation_csv = (
+        trainer.cfg.run_dir
+        / 'validation'
+        / 'model_epoch001'
+        / 'validation_metrics.csv'
+    )
+    validation_metrics = pd.read_csv(validation_csv, index_col='basin')
+    assert set(validation_metrics.columns) == per_lead_keys
+
+    tester = get_tester(
+        cfg=trainer.cfg,
+        run_dir=trainer.cfg.run_dir,
+        period='test',
+        init_model=True,
+    )
+    tester.evaluate(save_results=True, metrics=['NSE'])
+
+    eval_dir = trainer.cfg.run_dir / 'test' / 'model_epoch001'
+    test_metrics = pd.read_csv(eval_dir / 'test_metrics.csv', index_col='basin')
+    assert set(test_metrics.columns) == per_lead_keys
+    saved = xr.open_zarr(eval_dir / 'test_results.zarr', consolidated=False)
+    assert list(saved['time_step'].to_numpy()) == [0, 1, 2]
+    for basin in test_metrics.index:
+        obs = saved['streamflow_obs'].sel(basin=basin).to_numpy()
+        sim = saved['streamflow_sim'].sel(basin=basin).to_numpy()
+        assert test_metrics.loc[basin, 'NSE'] == pytest.approx(
+            _nse(obs.reshape(-1), sim.reshape(-1)), rel=1e-5
+        )
+        for step_idx, suffix in enumerate(['hindcast', 'lead1', 'lead2']):
+            assert test_metrics.loc[basin, f'NSE_{suffix}'] == pytest.approx(
+                _nse(obs[:, step_idx], sim[:, step_idx]), rel=1e-5
+            )

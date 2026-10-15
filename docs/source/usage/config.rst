@@ -30,7 +30,7 @@ Validation settings
 
 -  ``validate_every``: Integer that specifies in which interval (in epochs) a validation is performed. If empty, no validation is done during training.
 -  ``validate_n_random_basins``: Integer specifying how many random basins to use per validation (use ``-1`` or ``0`` to validate on all basins).
--  ``metrics``: List of metrics to calculate. See :py:mod:`model.evaluation.metrics`. Can also be a dictionary mapping target variables to lists of metrics.
+-  ``metrics``: List of metrics to calculate. See :py:mod:`model.evaluation.metrics`. Can also be a dictionary mapping target variables to lists of metrics. Each metric (for example ``NSE``) is computed over all ``predict_last_n`` predicted steps pooled together, including ``time_step = 0``. When more than one step is predicted, every step is also scored on its own: ``NSE_lead1`` ... ``NSE_leadK`` for the forecast steps, ``NSE_hindcast`` for ``time_step = 0``, and ``NSE_hindcast<n>`` for ``time_step = -n``. Both are written to the metrics csv and logged during validation.
 -  ``save_validation_results``: True/False. If True, stores validation results to disk in a Zarr store.
 
 Evaluation settings

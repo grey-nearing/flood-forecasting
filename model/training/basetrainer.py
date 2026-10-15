@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Training loop, fine-tuning freeze logic, and checkpoint handling."""
+
 import itertools
 import logging
 import math
@@ -41,22 +43,21 @@ from model.training import (
 from model.training.logger import Logger
 from model.utils.config import Config
 from model.utils.logging_utils import setup_logging
-from model.utils.tqdm import AutoRefreshTqdm as tqdm
+from model.utils.tqdm import AutoRefreshTqdm
 
 LOGGER = logging.getLogger(__name__)
 
 
-class BaseTrainer(object):
+class BaseTrainer:
     """Default class to train a model.
 
-    Parameters
-    ----------
-    cfg : Config
-        The run configuration.
+    Args:
+        cfg: The run configuration.
     """
 
     def __init__(self, cfg: Config):
-        super(BaseTrainer, self).__init__()
+        """Create the run folder, set up logging, and seed the RNGs."""
+        super().__init__()
         self.cfg = cfg
         self.model = None
         self.optimizer = None
@@ -84,26 +85,28 @@ class BaseTrainer(object):
             cfg.logging_level,
             cfg.print_warnings_once,
         )
-        LOGGER.info(f'### Folder structure created at {self.cfg.run_dir}')
+        LOGGER.info('### Folder structure created at %s', self.cfg.run_dir)
 
         if self.cfg.is_continue_training:
             LOGGER.info(
-                f'### Continue training of run stored in {self.cfg.base_run_dir}'
+                '### Continue training of run stored in %s',
+                self.cfg.base_run_dir,
             )
 
         if self.cfg.is_finetuning:
             LOGGER.info(
-                f'### Start finetuning with pretrained model stored in {self.cfg.base_run_dir}'
+                '### Start finetuning with pretrained model stored in %s',
+                self.cfg.base_run_dir,
             )
 
-        LOGGER.info(f'### Run configurations for {self.cfg.experiment_name}')
+        LOGGER.info('### Run configurations for %s', self.cfg.experiment_name)
         for key, val in self.cfg.as_dict().items():
-            LOGGER.info(f'{key}: {val}')
+            LOGGER.info('%s: %s', key, val)
 
         self._set_random_seeds()
         self._set_device()
 
-    def _get_dataset(self, compute_scaler: bool) -> Dataset:
+    def _get_dataset(self, *, compute_scaler: bool) -> Dataset:
         return get_dataset(
             cfg=self.cfg,
             period='train',
@@ -124,7 +127,7 @@ class BaseTrainer(object):
     def _get_loss_obj(self) -> loss.BaseLoss:
         return get_loss_obj(cfg=self.cfg)
 
-    def _set_regularization(self):
+    def _set_regularization(self) -> None:
         self.loss_obj.set_regularization_terms(
             get_regularization_obj(cfg=self.cfg)
         )
@@ -223,54 +226,52 @@ class BaseTrainer(object):
                         "be unfrozen in 'finetune_modules'."
                     )
 
-    def _freeze_model_parts(self):
+    def _freeze_model_parts(self) -> None:
+        """Freeze every weight except the parts listed in `finetune_modules`.
+
+        The model is unwrapped from a `torch.compile` `OptimizedModule`
+        (`_orig_mod`) before its module parts are inspected, so the names in
+        `finetune_modules` always match the underlying model attributes.
+
+        Raises:
+            ValueError: If a name in `finetune_modules` is not one of the
+                model's `module_parts`.
+        """
+        target_model = getattr(self.model, '_orig_mod', self.model)
+
         # freeze all model weights
-        for param in self.model.parameters():
+        for param in target_model.parameters():
             param.requires_grad = False
 
-        unresolved_modules = []
-
-        # unfreeze parameters specified in config as tuneable parameters
-        if isinstance(self.cfg.finetune_modules, list):
-            for module_part in self.cfg.finetune_modules:
-                if module_part in self.model.module_parts:
-                    module = getattr(self.model, module_part)
-                    for param in module.parameters():
-                        param.requires_grad = True
-                else:
-                    unresolved_modules.append(module_part)
+        available_modules = set(target_model.module_parts)
+        finetune_modules = self.cfg.finetune_modules
+        if isinstance(finetune_modules, list):
+            # a plain list unfreezes every parameter of each listed part
+            module_specs = dict.fromkeys(finetune_modules, True)
         else:
             # if it was no list, it has to be a dictionary
-            for module_group, module_parts in self.cfg.finetune_modules.items():
-                if module_group in self.model.module_parts:
-                    group_obj = getattr(self.model, module_group)
-                    self._unfreeze_module_group(
-                        group_obj, module_group, module_parts
-                    )
-                else:
-                    unresolved_modules.append(module_group)
+            module_specs = finetune_modules
+
+        unresolved_modules = [
+            module_group
+            for module_group in module_specs
+            if module_group not in available_modules
+        ]
         if unresolved_modules:
-            LOGGER.warning(
-                f'Could not resolve the following module parts for finetuning: {unresolved_modules}'
+            raise ValueError(
+                "Unresolved module name(s) in 'finetune_modules': "
+                f'{unresolved_modules}. Available modules: '
+                f'{sorted(available_modules)}'
             )
+
+        # unfreeze parameters specified in config as tuneable parameters
+        for module_group, module_parts in module_specs.items():
+            group_obj = getattr(target_model, module_group)
+            self._unfreeze_module_group(group_obj, module_group, module_parts)
         self._validate_newly_initialized_embeddings_unfrozen()
 
-    def initialize_training(self):
-        """Initialize the training class.
-
-        This method will load the model, initialize loss, regularization, optimizer, dataset and dataloader,
-        tensorboard logging, and Tester class.
-        If called in a ``continue_training`` context, this model will also restore the model and optimizer state.
-        """
-        # Initialize dataset before the model is loaded.
-        ds = self._get_dataset(compute_scaler=(not self.cfg.is_finetuning))
-        if len(ds) == 0:
-            raise ValueError('Dataset contains no samples.')
-        self.loader = self._get_data_loader(ds=ds)
-
-        LOGGER.debug('init model')
-        self.model = self._get_model().to(self.device)
-
+    def _load_initial_weights(self) -> None:
+        """Load the checkpoint a new (non-resumed) training run starts from."""
         if self.cfg.checkpoint_path is not None:
             LOGGER.info(
                 'Starting training from Checkpoint %s',
@@ -280,19 +281,35 @@ class BaseTrainer(object):
                 self.cfg.checkpoint_path,
                 allow_new_embeddings=self.cfg.is_finetuning,
             )
-        elif self.cfg.checkpoint_path is None and self.cfg.is_finetuning:
+        elif self.cfg.is_finetuning:
             # the default for finetuning is the last model state
-            checkpoint_path = [
-                x
-                for x in sorted(
-                    list(self.cfg.base_run_dir.glob('model_epoch*.pt'))
-                )
-            ][-1]
+            checkpoint_path = max(self.cfg.base_run_dir.glob('model_epoch*.pt'))
             LOGGER.info('Starting training from checkpoint %s', checkpoint_path)
             self._load_model_weights(
                 checkpoint_path,
                 allow_new_embeddings=True,
             )
+
+    def initialize_training(self) -> None:
+        """Initialize the training class.
+
+        This method will load the model, initialize loss, regularization,
+        optimizer, dataset and dataloader, tensorboard logging, and Tester
+        class. If called in a ``continue_training`` context, this model will
+        also restore the model and optimizer state.
+
+        Raises:
+            ValueError: If the training dataset contains no samples.
+        """
+        # Initialize dataset before the model is loaded.
+        ds = self._get_dataset(compute_scaler=(not self.cfg.is_finetuning))
+        if len(ds) == 0:
+            raise ValueError('Dataset contains no samples.')
+        self.loader = self._get_data_loader(ds=ds)
+
+        LOGGER.debug('init model')
+        self.model = self._get_model().to(self.device)
+        self._load_initial_weights()
 
         # Freeze model parts from pre-trained model.
         if self.cfg.is_finetuning:
@@ -314,17 +331,19 @@ class BaseTrainer(object):
             self.experiment_logger.start_tb()
 
         if self.cfg.is_continue_training:
-            # set epoch and iteration step counter to continue from the selected checkpoint
+            # set epoch and iteration step counter to continue from the
+            # selected checkpoint
             self.experiment_logger.epoch = self._epoch
             self.experiment_logger.update = len(self.loader) * self._epoch
 
         if self.cfg.validate_every is not None:
             if self.cfg.validate_n_random_basins < 1:
-                warn_msg = [
-                    f'Validation set to validate every {self.cfg.validate_every} epoch(s), but ',
-                    "'validate_n_random_basins' not set or set to zero. Will validate on the entire validation set.",
-                ]
-                LOGGER.warning(''.join(warn_msg))
+                LOGGER.warning(
+                    'Validation set to validate every %s epoch(s), but '
+                    "'validate_n_random_basins' not set or set to zero. Will "
+                    'validate on the entire validation set.',
+                    self.cfg.validate_every,
+                )
                 self.cfg.validate_n_random_basins = self.cfg.number_of_basins
             self.validator = self._get_tester()
 
@@ -343,7 +362,7 @@ class BaseTrainer(object):
             ]
             self._target_std = torch.tensor(target_stds).to(self.device)
 
-    def _create_lr_scheduler(self):
+    def _create_lr_scheduler(self) -> tuple[object, object]:
         match self.cfg.learning_rate_strategy:
             case 'ConstantLR':
                 # Keep learning rate constant.
@@ -353,52 +372,57 @@ class BaseTrainer(object):
                     total_iters=1,
                 )
 
-                def lr_step(loss: float):
+                def lr_step(loss: float) -> None:
                     pass
 
             case 'StepLR':
-                # Step down by a factor every step size epocs, regardless of loss.
+                # Step down by a factor every step size epocs, regardless of
+                # loss.
                 lr_scheduler = torch.optim.lr_scheduler.StepLR(
                     self.optimizer,
                     step_size=self.cfg.learning_rate_epochs_drop,
                     gamma=self.cfg.learning_rate_drop_factor,
                 )
 
-                def lr_step(loss: float):
+                def lr_step(loss: float) -> None:  # noqa: ARG001
                     lr_scheduler.step()
             case 'ReduceLROnPlateau':
-                # Step down by a factor every epoc w.r.t. to change in loss between patience epocs.
+                # Step down by a factor every epoc w.r.t. to change in loss
+                # between patience epocs.
                 lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                     self.optimizer,
                     factor=self.cfg.learning_rate_drop_factor,
                     patience=self.cfg.learning_rate_epochs_drop,
                 )
 
-                def lr_step(loss: float):
+                def lr_step(loss: float) -> None:
                     lr_scheduler.step(loss)
             case _:
                 raise ValueError(
-                    f'learning_rate_strategy unsupported: {self.cfg.learning_rate_strategy}'
+                    'learning_rate_strategy unsupported: '
+                    f'{self.cfg.learning_rate_strategy}'
                 )
         return lr_scheduler, lr_step
 
-    def train_and_validate(self):
+    def train_and_validate(self) -> None:
         """Train and validate the model.
 
-        Train the model for the number of epochs specified in the run configuration, and perform validation after every
-        ``validate_every`` epochs. Model and optimizer state are saved after every ``save_weights_every`` epochs.
+        Train the model for the number of epochs specified in the run
+        configuration, and perform validation after every ``validate_every``
+        epochs. Model and optimizer state are saved after every
+        ``save_weights_every`` epochs.
         """
         lr_scheduler, lr_step = self._create_lr_scheduler()
 
         for epoch in range(self._epoch + 1, self._epoch + self.cfg.epochs + 1):
-            LOGGER.info(f'learning rate is {lr_scheduler.get_last_lr()}')
+            LOGGER.info('learning rate is %s', lr_scheduler.get_last_lr())
 
             self._train_epoch(epoch=epoch)
             avg_losses = self.experiment_logger.summarise()
             lr_step(avg_losses['avg_loss'])
 
             loss_str = ', '.join(f'{k}: {v:.5f}' for k, v in avg_losses.items())
-            LOGGER.info(f'Epoch {epoch} average loss: {loss_str}')
+            LOGGER.info('Epoch %d average loss: %s', epoch, loss_str)
 
             if epoch % self.cfg.save_weights_every == 0:
                 self._save_weights_and_optimizer(epoch)
@@ -420,9 +444,12 @@ class BaseTrainer(object):
                 valid_metrics = {
                     'avg_total_loss': math.nan
                 } | self.experiment_logger.summarise()
-                print_msg = f'Epoch {epoch} average validation loss: {valid_metrics["avg_total_loss"]:.5f}'
+                print_msg = (
+                    f'Epoch {epoch} average validation loss: '
+                    f'{valid_metrics["avg_total_loss"]:.5f}'
+                )
                 if self.cfg.metrics:
-                    print_msg += f' -- Median validation metrics: '
+                    print_msg += ' -- Median validation metrics: '
                     print_msg += ', '.join(
                         f'{k}: {v:.5f}'
                         for k, v in valid_metrics.items()
@@ -438,33 +465,23 @@ class BaseTrainer(object):
         if self.cfg.log_tensorboard:
             self.experiment_logger.stop_tb()
 
-    def _get_start_epoch_number(self):
+    def _get_start_epoch_number(self) -> int:
         if self.cfg.is_continue_training:
             if self.cfg.continue_from_epoch is not None:
                 epoch = self.cfg.continue_from_epoch
             else:
-                weight_path = [
-                    x
-                    for x in sorted(
-                        list(self.cfg.run_dir.glob('model_epoch*.pt'))
-                    )
-                ][-1]
+                weight_path = max(self.cfg.run_dir.glob('model_epoch*.pt'))
                 epoch = weight_path.name[-6:-3]
         else:
             epoch = 0
         return int(epoch)
 
-    def _restore_training_state(self):
+    def _restore_training_state(self) -> None:
         if self.cfg.continue_from_epoch is not None:
             epoch = f'{self.cfg.continue_from_epoch:03d}'
             weight_path = self.cfg.base_run_dir / f'model_epoch{epoch}.pt'
         else:
-            weight_path = [
-                x
-                for x in sorted(
-                    list(self.cfg.base_run_dir.glob('model_epoch*.pt'))
-                )
-            ][-1]
+            weight_path = max(self.cfg.base_run_dir.glob('model_epoch*.pt'))
             epoch = weight_path.name[-6:-3]
 
         optimizer_path = (
@@ -472,7 +489,11 @@ class BaseTrainer(object):
         )
 
         LOGGER.info('Continue training from epoch %d', int(epoch))
-        self._load_model_weights(weight_path)
+        # A resumed fine-tuning run may carry product embeddings that are
+        # not in the checkpoint; only fine-tuning may add them.
+        self._load_model_weights(
+            weight_path, allow_new_embeddings=self.cfg.is_finetuning
+        )
         self.optimizer.load_state_dict(
             torch.load(
                 str(optimizer_path), map_location=self.device, weights_only=True
@@ -485,7 +506,7 @@ class BaseTrainer(object):
         *,
         allow_new_embeddings: bool = False,
     ) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
-        """Loads model state_dict while handling torch.compile prefixes."""
+        """Load the model state_dict while handling torch.compile prefixes."""
         return load_model_weights(
             self.model,
             checkpoint_path,
@@ -493,7 +514,7 @@ class BaseTrainer(object):
             allow_new_embeddings=allow_new_embeddings,
         )
 
-    def _save_weights_and_optimizer(self, epoch: int):
+    def _save_weights_and_optimizer(self, epoch: int) -> None:
         weight_path = self.cfg.run_dir / f'model_epoch{epoch:03d}.pt'
         torch.save(self.model.state_dict(), str(weight_path))
 
@@ -502,7 +523,15 @@ class BaseTrainer(object):
         )
         torch.save(self.optimizer.state_dict(), str(optimizer_path))
 
-    def _train_epoch(self, epoch: int):
+    def _move_batch_to_device(self, batch: dict) -> None:
+        """Move every tensor of `batch` to `self.device` in place."""
+        for key, value in batch.items():
+            if key.startswith('x_d'):
+                batch[key] = {k: v.to(self.device) for k, v in value.items()}
+            elif not key.startswith('date'):
+                batch[key] = value.to(self.device)
+
+    def _train_epoch(self, epoch: int) -> None:
         self.model.train()
         self.experiment_logger.train()
 
@@ -510,7 +539,7 @@ class BaseTrainer(object):
         n_limit = self._max_updates_per_epoch
         n_length = len(self.loader)
         n_iter = n_limit if 0 < n_limit <= n_length else n_length
-        pbar = tqdm(
+        pbar = AutoRefreshTqdm(
             itertools.islice(self.loader, n_iter),
             file=sys.stdout,
             disable=self._disable_pbar,
@@ -521,28 +550,24 @@ class BaseTrainer(object):
         # Iterate in batches over training set
         nan_count = 0
         gradient_norms = []
-        for i, data in enumerate(pbar):
-            for key in data.keys():
-                if key.startswith('x_d'):
-                    data[key] = {
-                        k: v.to(self.device) for k, v in data[key].items()
-                    }
-                elif not key.startswith('date'):
-                    data[key] = data[key].to(self.device)
+        for i, batch in enumerate(pbar):
+            self._move_batch_to_device(batch)
 
             with autocast(
                 self.device.type, enabled=(self.device.type == 'cuda')
             ):
-                # apply possible pre-processing to the batch before the forward pass
-                data = self.model.pre_model_hook(data, is_train=True)
+                # apply possible pre-processing to the batch before the
+                # forward pass
+                data = self.model.pre_model_hook(batch, is_train=True)
 
                 # get predictions
                 predictions = self.model(data)
 
                 if self.noise_sampler_y is not None:
-                    for key in filter(lambda k: 'y' in k, data.keys()):
+                    for key in filter(lambda k: 'y' in k, data):
                         noise = self.noise_sampler_y.sample(data[key].shape)
-                        # make sure we add near-zero noise to originally near-zero targets
+                        # make sure we add near-zero noise to originally
+                        # near-zero targets
                         data[key] += (
                             data[key] + self._target_mean / self._target_std
                         ) * noise.to(self.device)
@@ -554,10 +579,13 @@ class BaseTrainer(object):
                 nan_count += 1
                 if nan_count > self._allow_subsequent_nan_losses:
                     raise RuntimeError(
-                        f'Loss was NaN for {nan_count} times in a row. Stopped training.'
+                        f'Loss was NaN for {nan_count} times in a row. '
+                        'Stopped training.'
                     )
                 LOGGER.warning(
-                    f'Loss is Nan; ignoring step. (#{nan_count}/{self._allow_subsequent_nan_losses})'
+                    'Loss is Nan; ignoring step. (#%d/%d)',
+                    nan_count,
+                    self._allow_subsequent_nan_losses,
                 )
             else:
                 nan_count = 0
@@ -599,17 +627,19 @@ class BaseTrainer(object):
                 norms, self.cfg.clip_gradient_norm, epoch
             )
 
-    def _set_random_seeds(self):
+    def _set_random_seeds(self) -> None:
+        # The global legacy NumPy RNG is what downstream sampling code uses,
+        # so it is seeded (and drawn from) directly.
         if self.cfg.seed is None:
-            self.cfg.seed = int(np.random.uniform(low=0, high=1e6))
+            self.cfg.seed = int(np.random.uniform(low=0, high=1e6))  # noqa: NPY002
 
         # fix random seeds for various packages
         random.seed(self.cfg.seed)
-        np.random.seed(self.cfg.seed)
+        np.random.seed(self.cfg.seed)  # noqa: NPY002
         torch.cuda.manual_seed(self.cfg.seed)
         torch.manual_seed(self.cfg.seed)
 
-    def _set_device(self):
+    def _set_device(self) -> None:
         if self.cfg.device is not None:
             if self.cfg.device.startswith('cuda'):
                 gpu_id = int(self.cfg.device.split(':')[-1])
@@ -617,8 +647,7 @@ class BaseTrainer(object):
                     raise RuntimeError(
                         f'This machine does not have GPU #{gpu_id} '
                     )
-                else:
-                    self.device = torch.device(self.cfg.device)
+                self.device = torch.device(self.cfg.device)
             elif self.cfg.device == 'mps':
                 if torch.backends.mps.is_available():
                     self.device = torch.device('mps')
@@ -626,16 +655,15 @@ class BaseTrainer(object):
                     raise RuntimeError('MPS device is not available.')
             else:
                 self.device = torch.device('cpu')
+        elif torch.cuda.is_available():
+            self.device = torch.device('cuda:0')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
         else:
-            if torch.cuda.is_available():
-                self.device = torch.device('cuda:0')
-            elif torch.backends.mps.is_available():
-                self.device = torch.device('mps')
-            else:
-                self.device = torch.device('cpu')
-        LOGGER.info(f'### Device {self.device} will be used for training')
+            self.device = torch.device('cpu')
+        LOGGER.info('### Device %s will be used for training', self.device)
 
-    def _create_folder_structure(self):
+    def _create_folder_structure(self) -> None:
         # create as subdirectory within run directory of base run
         if self.cfg.is_continue_training:
             folder_name = f'continue_training_from_epoch{self._epoch:03d}'
@@ -646,15 +674,18 @@ class BaseTrainer(object):
 
         # create as new folder structure
         else:
-            now = datetime.now()
+            # Run folders are stamped with the local wall-clock time.
+            now = datetime.now()  # noqa: DTZ005
             day = f'{now.day}'.zfill(2)
             month = f'{now.month}'.zfill(2)
             hour = f'{now.hour}'.zfill(2)
             minute = f'{now.minute}'.zfill(2)
             second = f'{now.second}'.zfill(2)
-            run_name = f'{self.cfg.experiment_name}_{day}{month}_{hour}{minute}{second}'
+            timestamp = f'{day}{month}_{hour}{minute}{second}'
+            run_name = f'{self.cfg.experiment_name}_{timestamp}'
 
-            # if no directory for the runs is specified, a 'runs' folder will be created in the current working dir
+            # if no directory for the runs is specified, a 'runs' folder will
+            # be created in the current working dir
             if self.cfg.run_dir is None:
                 self.cfg.run_dir = Path().cwd() / 'runs' / run_name
             else:

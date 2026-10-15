@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Evaluation metrics for observed and simulated discharge time series."""
+
 import logging
 from collections.abc import Callable
 
@@ -25,31 +27,38 @@ from model.utils.errors import AllNaNError
 
 LOGGER = logging.getLogger(__name__)
 
+# Pearson's r (and therefore the KGE) is undefined for fewer than two samples.
+_MIN_SAMPLES_FOR_CORRELATION = 2
+# The KGE weights one term each for the correlation, alpha and beta.
+_NUM_KGE_WEIGHTS = 3
+# The FLV needs at least two low-flow values; a single value sums to zero.
+_MIN_LOW_FLOW_SAMPLES = 2
+
 
 def get_available_metrics() -> list[str]:
     """Get list of available metrics.
 
-    Returns
-    -------
-    list[str]
+    Returns:
         List of implemented metric names.
     """
     return list(_METRIC_FUNCTIONS)
 
 
-def _validate_inputs(obs: DataArray, sim: DataArray):
+def _validate_inputs(obs: DataArray, sim: DataArray) -> None:
     if obs.shape != sim.shape:
         raise RuntimeError('Shapes of observations and simulations must match')
 
     if (len(obs.shape) > 1) and (obs.shape[1] > 1):
         raise RuntimeError(
-            'Metrics only defined for time series (1d or 2d with second dimension 1)'
+            'Metrics only defined for time series '
+            '(1d or 2d with second dimension 1)'
         )
 
 
 def _mask_valid(obs: DataArray, sim: DataArray) -> tuple[DataArray, DataArray]:
-    # mask of invalid entries. NaNs in simulations can happen during validation/testing
-    idx = (~sim.isnull()) & (~obs.isnull())
+    # mask of invalid entries. NaNs in simulations can happen during
+    # validation/testing
+    idx = (~sim.isnull()) & (~obs.isnull())  # noqa: PD003
 
     obs = obs[idx]
     sim = sim[idx]
@@ -68,33 +77,31 @@ def _get_fdc(da: DataArray) -> np.ndarray:
 
 
 def nse(obs: DataArray, sim: DataArray) -> float:
-    r"""Calculate Nash-Sutcliffe Efficiency [#]_
+    r"""Calculate Nash-Sutcliffe Efficiency [#]_.
 
-    Nash-Sutcliffe Efficiency is the R-square between observed and simulated discharge.
+    Nash-Sutcliffe Efficiency is the R-square between observed and simulated
+    discharge.
 
-    .. math:: \text{NSE} = 1 - \frac{\sum_{t=1}^{T}(Q_m^t - Q_o^t)^2}{\sum_{t=1}^T(Q_o^t - \overline{Q}_o)^2},
+    .. math::
+        \text{NSE} = 1 - \frac{\sum_{t=1}^{T}(Q_m^t - Q_o^t)^2}
+        {\sum_{t=1}^T(Q_o^t - \overline{Q}_o)^2},
 
-    where :math:`Q_m` are the simulations (here, `sim`) and :math:`Q_o` are observations (here, `obs`).
+    where :math:`Q_m` are the simulations (here, `sim`) and :math:`Q_o` are
+    observations (here, `obs`).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
 
-    Returns
-    -------
-    float
-        Nash-Sutcliffe Efficiency
+    Returns:
+        Nash-Sutcliffe Efficiency.
 
-    References
-    ----------
-    .. [#] Nash, J. E.; Sutcliffe, J. V. (1970). "River flow forecasting through conceptual models part I - A
-        discussion of principles". Journal of Hydrology. 10 (3): 282-290. doi:10.1016/0022-1694(70)90255-6.
-
+    References:
+        .. [#] Nash, J. E.; Sutcliffe, J. V. (1970). "River flow forecasting
+            through conceptual models part I - A discussion of principles".
+            Journal of Hydrology. 10 (3): 282-290.
+            doi:10.1016/0022-1694(70)90255-6.
     """
-
     # verify inputs
     _validate_inputs(obs, sim)
 
@@ -114,23 +121,16 @@ def mse(obs: DataArray, sim: DataArray) -> float:
 
     .. math:: \text{MSE} = \frac{1}{T}\sum_{t=1}^T (\widehat{y}_t - y_t)^2,
 
-    where :math:`\widehat{y}` are the simulations (here, `sim`) and :math:`y` are observations
-    (here, `obs`).
+    where :math:`\widehat{y}` are the simulations (here, `sim`) and :math:`y`
+    are observations (here, `obs`).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
 
-    Returns
-    -------
-    float
+    Returns:
         Mean squared error.
-
     """
-
     # verify inputs
     _validate_inputs(obs, sim)
 
@@ -143,58 +143,47 @@ def mse(obs: DataArray, sim: DataArray) -> float:
 def rmse(obs: DataArray, sim: DataArray) -> float:
     r"""Calculate root mean squared error.
 
-    .. math:: \text{RMSE} = \sqrt{\frac{1}{T}\sum_{t=1}^T (\widehat{y}_t - y_t)^2},
+    .. math::
+        \text{RMSE} = \sqrt{\frac{1}{T}\sum_{t=1}^T (\widehat{y}_t - y_t)^2},
 
-    where :math:`\widehat{y}` are the simulations (here, `sim`) and :math:`y` are observations
-    (here, `obs`).
+    where :math:`\widehat{y}` are the simulations (here, `sim`) and :math:`y`
+    are observations (here, `obs`).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
 
-    Returns
-    -------
-    float
-        Root mean sqaured error.
-
+    Returns:
+        Root mean squared error.
     """
-
     return np.sqrt(mse(obs, sim))
 
 
 def alpha_nse(obs: DataArray, sim: DataArray) -> float:
-    r"""Calculate the alpha NSE decomposition [#]_
+    r"""Calculate the alpha NSE decomposition [#]_.
 
-    The alpha NSE decomposition is the fraction of the standard deviations of simulations and observations.
+    The alpha NSE decomposition is the fraction of the standard deviations of
+    simulations and observations.
 
     .. math:: \alpha = \frac{\sigma_s}{\sigma_o},
 
-    where :math:`\sigma_s` is the standard deviation of the simulations (here, `sim`) and :math:`\sigma_o` is the
-    standard deviation of the observations (here, `obs`).
+    where :math:`\sigma_s` is the standard deviation of the simulations (here,
+    `sim`) and :math:`\sigma_o` is the standard deviation of the observations
+    (here, `obs`).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
 
-    Returns
-    -------
-    float
+    Returns:
         Alpha NSE decomposition.
 
-    References
-    ----------
-    .. [#] Gupta, H. V., Kling, H., Yilmaz, K. K., & Martinez, G. F. (2009). Decomposition of the mean squared error
-        and NSE performance criteria: Implications for improving hydrological modelling. Journal of hydrology, 377(1-2),
-        80-91.
-
+    References:
+        .. [#] Gupta, H. V., Kling, H., Yilmaz, K. K., & Martinez, G. F.
+            (2009). Decomposition of the mean squared error and NSE
+            performance criteria: Implications for improving hydrological
+            modelling. Journal of hydrology, 377(1-2), 80-91.
     """
-
     # verify inputs
     _validate_inputs(obs, sim)
 
@@ -205,34 +194,29 @@ def alpha_nse(obs: DataArray, sim: DataArray) -> float:
 
 
 def beta_nse(obs: DataArray, sim: DataArray) -> float:
-    r"""Calculate the beta NSE decomposition [#]_
+    r"""Calculate the beta NSE decomposition [#]_.
 
-    The beta NSE decomposition is the difference of the mean simulation and mean observation divided by the standard
-    deviation of the observations.
+    The beta NSE decomposition is the difference of the mean simulation and
+    mean observation divided by the standard deviation of the observations.
 
     .. math:: \beta = \frac{\mu_s - \mu_o}{\sigma_o},
 
-    where :math:`\mu_s` is the mean of the simulations (here, `sim`), :math:`\mu_o` is the mean of the observations
-    (here, `obs`) and :math:`\sigma_o` the standard deviation of the observations.
+    where :math:`\mu_s` is the mean of the simulations (here, `sim`),
+    :math:`\mu_o` is the mean of the observations (here, `obs`) and
+    :math:`\sigma_o` the standard deviation of the observations.
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
 
-    Returns
-    -------
-    float
+    Returns:
         Beta NSE decomposition.
 
-    References
-    ----------
-    .. [#] Gupta, H. V., Kling, H., Yilmaz, K. K., & Martinez, G. F. (2009). Decomposition of the mean squared error
-        and NSE performance criteria: Implications for improving hydrological modelling. Journal of hydrology, 377(1-2),
-        80-91.
-
+    References:
+        .. [#] Gupta, H. V., Kling, H., Yilmaz, K. K., & Martinez, G. F.
+            (2009). Decomposition of the mean squared error and NSE
+            performance criteria: Implications for improving hydrological
+            modelling. Journal of hydrology, 377(1-2), 80-91.
     """
     # verify inputs
     _validate_inputs(obs, sim)
@@ -244,33 +228,28 @@ def beta_nse(obs: DataArray, sim: DataArray) -> float:
 
 
 def beta_kge(obs: DataArray, sim: DataArray) -> float:
-    r"""Calculate the beta KGE term [#]_
+    r"""Calculate the beta KGE term [#]_.
 
-    The beta term of the Kling-Gupta Efficiency is defined as the fraction of the means.
+    The beta term of the Kling-Gupta Efficiency is defined as the fraction of
+    the means.
 
     .. math:: \beta_{\text{KGE}} = \frac{\mu_s}{\mu_o},
 
-    where :math:`\mu_s` is the mean of the simulations (here, `sim`) and :math:`\mu_o` is the mean of the observations
-    (here, `obs`).
+    where :math:`\mu_s` is the mean of the simulations (here, `sim`) and
+    :math:`\mu_o` is the mean of the observations (here, `obs`).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
 
-    Returns
-    -------
-    float
-        Beta NSE decomposition.
+    Returns:
+        Beta KGE term.
 
-    References
-    ----------
-    .. [#] Gupta, H. V., Kling, H., Yilmaz, K. K., & Martinez, G. F. (2009). Decomposition of the mean squared error
-        and NSE performance criteria: Implications for improving hydrological modelling. Journal of hydrology, 377(1-2),
-        80-91.
-
+    References:
+        .. [#] Gupta, H. V., Kling, H., Yilmaz, K. K., & Martinez, G. F.
+            (2009). Decomposition of the mean squared error and NSE
+            performance criteria: Implications for improving hydrological
+            modelling. Journal of hydrology, 377(1-2), 80-91.
     """
     # verify inputs
     _validate_inputs(obs, sim)
@@ -286,40 +265,35 @@ def kge(
     sim: DataArray,
     weights: list[float] | None = None,
 ) -> float:
-    r"""Calculate the Kling-Gupta Efficieny [#]_
+    r"""Calculate the Kling-Gupta Efficiency [#]_.
 
     .. math::
         \text{KGE} = 1 - \sqrt{[ s_r (r - 1)]^2 + [s_\alpha ( \alpha - 1)]^2 +
             [s_\beta(\beta_{\text{KGE}} - 1)]^2},
 
-    where :math:`r` is the correlation coefficient, :math:`\alpha` the :math:`\alpha`-NSE decomposition,
-    :math:`\beta_{\text{KGE}}` the fraction of the means and :math:`s_r, s_\alpha, s_\beta` the corresponding weights
+    where :math:`r` is the correlation coefficient, :math:`\alpha` the
+    :math:`\alpha`-NSE decomposition, :math:`\beta_{\text{KGE}}` the fraction
+    of the means and :math:`s_r, s_\alpha, s_\beta` the corresponding weights
     (here the three float values in the `weights` parameter).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
-    weights : list[float]
-        Weighting factors of the 3 KGE parts, by default each part has a weight of 1.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
+        weights: Weighting factors of the 3 KGE parts, by default each part
+            has a weight of 1.
 
-    Returns
-    -------
-    float
-        Kling-Gupta Efficiency
+    Returns:
+        Kling-Gupta Efficiency.
 
-    References
-    ----------
-    .. [#] Gupta, H. V., Kling, H., Yilmaz, K. K., & Martinez, G. F. (2009). Decomposition of the mean squared error
-        and NSE performance criteria: Implications for improving hydrological modelling. Journal of hydrology, 377(1-2),
-        80-91.
-
+    References:
+        .. [#] Gupta, H. V., Kling, H., Yilmaz, K. K., & Martinez, G. F.
+            (2009). Decomposition of the mean squared error and NSE
+            performance criteria: Implications for improving hydrological
+            modelling. Journal of hydrology, 377(1-2), 80-91.
     """
     if weights is None:
         weights = [1.0, 1.0, 1.0]
-    if len(weights) != 3:
+    if len(weights) != _NUM_KGE_WEIGHTS:
         raise ValueError('Weights of the KGE must be a list of three values')
 
     # verify inputs
@@ -328,7 +302,7 @@ def kge(
     # get time series with only valid observations
     obs, sim = _mask_valid(obs, sim)
 
-    if len(obs) < 2:
+    if len(obs) < _MIN_SAMPLES_FOR_CORRELATION:
         return np.nan
 
     r, _ = stats.pearsonr(obs.values, sim.values)
@@ -346,29 +320,22 @@ def kge(
 
 
 def pearsonr(obs: DataArray, sim: DataArray) -> float:
-    """Calculate pearson correlation coefficient (using scipy.stats.pearsonr)
+    """Calculate pearson correlation coefficient (using scipy.stats.pearsonr).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
 
-    Returns
-    -------
-    float
-        Pearson correlation coefficient
-
+    Returns:
+        Pearson correlation coefficient.
     """
-
     # verify inputs
     _validate_inputs(obs, sim)
 
     # get time series with only valid observations
     obs, sim = _mask_valid(obs, sim)
 
-    if len(obs) < 2:
+    if len(obs) < _MIN_SAMPLES_FOR_CORRELATION:
         return np.nan
 
     r, _ = stats.pearsonr(obs.values, sim.values)
@@ -379,39 +346,37 @@ def pearsonr(obs: DataArray, sim: DataArray) -> float:
 def fdc_fms(
     obs: DataArray, sim: DataArray, lower: float = 0.2, upper: float = 0.7
 ) -> float:
-    r"""Calculate the slope of the middle section of the flow duration curve [#]_
+    r"""Calculate the middle-section slope of the flow duration curve [#]_.
 
     .. math::
-        \%\text{BiasFMS} = \frac{\left | \log(Q_{s,\text{lower}}) - \log(Q_{s,\text{upper}}) \right | -
-            \left | \log(Q_{o,\text{lower}}) - \log(Q_{o,\text{upper}}) \right |}{\left |
-            \log(Q_{s,\text{lower}}) - \log(Q_{s,\text{upper}}) \right |} \times 100,
+        \%\text{BiasFMS} = \frac{
+        \left | \log(Q_{s,\text{lower}}) - \log(Q_{s,\text{upper}}) \right | -
+        \left | \log(Q_{o,\text{lower}}) - \log(Q_{o,\text{upper}}) \right |}
+        {\left | \log(Q_{s,\text{lower}}) - \log(Q_{s,\text{upper}}) \right |}
+        \times 100,
 
-    where :math:`Q_{s,\text{lower/upper}}` corresponds to the FDC of the simulations (here, `sim`) at the `lower` and
-    `upper` bound of the middle section and :math:`Q_{o,\text{lower/upper}}` similarly for the observations (here,
-    `obs`).
+    where :math:`Q_{s,\text{lower/upper}}` corresponds to the FDC of the
+    simulations (here, `sim`) at the `lower` and `upper` bound of the middle
+    section and :math:`Q_{o,\text{lower/upper}}` similarly for the
+    observations (here, `obs`).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
-    lower : float, optional
-        Lower bound of the middle section in range ]0,1[, by default 0.2
-    upper : float, optional
-        Upper bound of the middle section in range ]0,1[, by default 0.7
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
+        lower: Lower bound of the middle section in range ]0,1[, by default
+            0.2.
+        upper: Upper bound of the middle section in range ]0,1[, by default
+            0.7.
 
-    Returns
-    -------
-    float
+    Returns:
         Slope of the middle section of the flow duration curve. Returns NaN
         if the rounded bounds do not select two distinct, valid ranks.
 
-    References
-    ----------
-    .. [#] Yilmaz, K. K., Gupta, H. V., and Wagener, T. ( 2008), A process-based diagnostic approach to model
-        evaluation: Application to the NWS distributed hydrologic model, Water Resour. Res., 44, W09417,
-        doi:10.1029/2007WR006716.
+    References:
+        .. [#] Yilmaz, K. K., Gupta, H. V., and Wagener, T. ( 2008), A
+            process-based diagnostic approach to model evaluation: Application
+            to the NWS distributed hydrologic model, Water Resour. Res., 44,
+            W09417, doi:10.1029/2007WR006716.
     """
     # verify inputs
     _validate_inputs(obs, sim)
@@ -422,7 +387,7 @@ def fdc_fms(
     if len(obs) < 1:
         return np.nan
 
-    if any([(x <= 0) or (x >= 1) for x in [upper, lower]]):
+    if any((x <= 0) or (x >= 1) for x in [upper, lower]):
         raise ValueError('upper and lower have to be in range ]0,1[')
 
     if lower >= upper:
@@ -439,7 +404,8 @@ def fdc_fms(
     obs = _get_fdc(obs)
     sim = _get_fdc(sim)
 
-    # for numerical reasons change 0s to 1e-6. Simulations can still contain negatives, so also reset those.
+    # for numerical reasons change 0s to 1e-6. Simulations can still contain
+    # negatives, so also reset those.
     sim[sim <= 0] = 1e-6
     obs[obs == 0] = 1e-6
 
@@ -457,32 +423,30 @@ def fdc_fms(
 
 
 def fdc_fhv(obs: DataArray, sim: DataArray, h: float = 0.02) -> float:
-    r"""Calculate the peak flow bias of the flow duration curve [#]_
+    r"""Calculate the peak flow bias of the flow duration curve [#]_.
 
-    .. math:: \%\text{BiasFHV} = \frac{\sum_{h=1}^{H}(Q_{s,h} - Q_{o,h})}{\sum_{h=1}^{H}Q_{o,h}} \times 100,
+    .. math::
+        \%\text{BiasFHV} = \frac{\sum_{h=1}^{H}(Q_{s,h} - Q_{o,h})}
+        {\sum_{h=1}^{H}Q_{o,h}} \times 100,
 
-    where :math:`Q_s` are the simulations (here, `sim`), :math:`Q_o` the observations (here, `obs`) and `H` is the upper
-    fraction of flows of the FDC (here, `h`).
+    where :math:`Q_s` are the simulations (here, `sim`), :math:`Q_o` the
+    observations (here, `obs`) and `H` is the upper fraction of flows of the
+    FDC (here, `h`).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
-    h : float, optional
-        Fraction of upper flows to consider as peak flows of range ]0,1[, be default 0.02.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
+        h: Fraction of upper flows to consider as peak flows of range ]0,1[,
+            by default 0.02.
 
-    Returns
-    -------
-    float
+    Returns:
         Peak flow bias. Returns NaN if the selected high-flow tail is empty.
 
-    References
-    ----------
-    .. [#] Yilmaz, K. K., Gupta, H. V., and Wagener, T. ( 2008), A process-based diagnostic approach to model
-        evaluation: Application to the NWS distributed hydrologic model, Water Resour. Res., 44, W09417,
-        doi:10.1029/2007WR006716.
+    References:
+        .. [#] Yilmaz, K. K., Gupta, H. V., and Wagener, T. ( 2008), A
+            process-based diagnostic approach to model evaluation: Application
+            to the NWS distributed hydrologic model, Water Resour. Res., 44,
+            W09417, doi:10.1029/2007WR006716.
     """
     # verify inputs
     _validate_inputs(obs, sim)
@@ -495,7 +459,8 @@ def fdc_fhv(obs: DataArray, sim: DataArray, h: float = 0.02) -> float:
 
     if (h <= 0) or (h >= 1):
         raise ValueError(
-            'h has to be in range ]0,1[. Consider small values, e.g. 0.02 for 2% peak flows'
+            'h has to be in range ]0,1[. '
+            'Consider small values, e.g. 0.02 for 2% peak flows'
         )
 
     n_high = int(np.round(h * len(obs)))
@@ -515,36 +480,33 @@ def fdc_fhv(obs: DataArray, sim: DataArray, h: float = 0.02) -> float:
     return fhv * 100
 
 
-def fdc_flv(obs: DataArray, sim: DataArray, l: float = 0.3) -> float:
-    r"""Calculate the low flow bias of the flow duration curve [#]_
+def fdc_flv(obs: DataArray, sim: DataArray, l: float = 0.3) -> float:  # noqa: E741
+    r"""Calculate the low flow bias of the flow duration curve [#]_.
 
     .. math::
-        \%\text{BiasFLV} = -1 \times \frac{\sum_{l=1}^{L}[\log(Q_{s,l}) - \log(Q_{s,L})] - \sum_{l=1}^{L}[\log(Q_{o,l})
-            - \log(Q_{o,L})]}{\sum_{l=1}^{L}[\log(Q_{o,l}) - \log(Q_{o,L})]} \times 100,
+        \%\text{BiasFLV} = -1 \times \frac{\sum_{l=1}^{L}[\log(Q_{s,l}) -
+        \log(Q_{s,L})] - \sum_{l=1}^{L}[\log(Q_{o,l}) - \log(Q_{o,L})]}
+        {\sum_{l=1}^{L}[\log(Q_{o,l}) - \log(Q_{o,L})]} \times 100,
 
-    where :math:`Q_s` are the simulations (here, `sim`), :math:`Q_o` the observations (here, `obs`) and `L` is the lower
-    fraction of flows of the FDC (here, `l`).
+    where :math:`Q_s` are the simulations (here, `sim`), :math:`Q_o` the
+    observations (here, `obs`) and `L` is the lower fraction of flows of the
+    FDC (here, `l`).
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
-    l : float, optional
-        Fraction of lower flows to consider as low flows of range ]0,1[, be default 0.3.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
+        l: Fraction of lower flows to consider as low flows of range ]0,1[,
+            by default 0.3.
 
-    Returns
-    -------
-    float
+    Returns:
         Low flow bias. Returns NaN if fewer than two valid samples fall in
         the selected low-flow tail.
 
-    References
-    ----------
-    .. [#] Yilmaz, K. K., Gupta, H. V., and Wagener, T. ( 2008), A process-based diagnostic approach to model
-        evaluation: Application to the NWS distributed hydrologic model, Water Resour. Res., 44, W09417,
-        doi:10.1029/2007WR006716.
+    References:
+        .. [#] Yilmaz, K. K., Gupta, H. V., and Wagener, T. ( 2008), A
+            process-based diagnostic approach to model evaluation: Application
+            to the NWS distributed hydrologic model, Water Resour. Res., 44,
+            W09417, doi:10.1029/2007WR006716.
     """
     # verify inputs
     _validate_inputs(obs, sim)
@@ -557,18 +519,20 @@ def fdc_flv(obs: DataArray, sim: DataArray, l: float = 0.3) -> float:
 
     if (l <= 0) or (l >= 1):
         raise ValueError(
-            'l has to be in range ]0,1[. Consider small values, e.g. 0.3 for 30% low flows'
+            'l has to be in range ]0,1[. '
+            'Consider small values, e.g. 0.3 for 30% low flows'
         )
 
     n_low = int(np.round(l * len(obs)))
-    if n_low < 2:
+    if n_low < _MIN_LOW_FLOW_SAMPLES:
         return np.nan
 
     # get arrays of sorted (descending) discharges
     obs = _get_fdc(obs)
     sim = _get_fdc(sim)
 
-    # for numerical reasons change 0s to 1e-6. Simulations can still contain negatives, so also reset those.
+    # for numerical reasons change 0s to 1e-6. Simulations can still contain
+    # negatives, so also reset those.
     sim[sim <= 0] = 1e-6
     obs[obs == 0] = 1e-6
 
@@ -591,51 +555,52 @@ def fdc_flv(obs: DataArray, sim: DataArray, l: float = 0.3) -> float:
 def mean_peak_timing(
     obs: DataArray,
     sim: DataArray,
-    window: int = None,
+    window: int | None = None,
     resolution: str = '1D',
-    datetime_coord: str = None,
+    datetime_coord: str | None = None,
 ) -> float:
-    """Mean difference in peak flow timing.
+    r"""Mean difference in peak flow timing.
 
-    Uses scipy.find_peaks to find peaks in the observed time series. Starting with all observed peaks, those with a
-    prominence of less than the standard deviation of the observed time series are discarded. Next, the lowest peaks
-    are subsequently discarded until all remaining peaks have a distance of at least 100 steps. Finally, the
-    corresponding peaks in the simulated time series are searched in a window of size `window` on either side of the
-    observed peaks and the absolute time differences between observed and simulated peaks is calculated.
-    The final metric is the mean absolute time difference across all peaks. For more details, see Appendix of [#]_
+    Uses scipy.find_peaks to find peaks in the observed time series. Starting
+    with all observed peaks, those with a prominence of less than the standard
+    deviation of the observed time series are discarded. Next, the lowest peaks
+    are subsequently discarded until all remaining peaks have a distance of at
+    least 100 steps. Finally, the corresponding peaks in the simulated time
+    series are searched in a window of size `window` on either side of the
+    observed peaks and the absolute time differences between observed and
+    simulated peaks is calculated. The final metric is the mean absolute time
+    difference across all peaks. For more details, see Appendix of [#]_.
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
-    window : int, optional
-        Size of window to consider on each side of the observed peak for finding the simulated peak. That is, the total
-        window length to find the peak in the simulations is :math:`2 * \\text{window} + 1` centered at the observed
-        peak. The default depends on the temporal resolution, e.g. for a resolution of '1D', a window of 3 is used and
-        for a resolution of '1h' the the window size is 12.
-    resolution : str, optional
-        Temporal resolution of the time series in pandas format, e.g. '1D' for daily and '1h' for hourly.
-    datetime_coord : str, optional
-        Name of datetime coordinate. Tried to infer automatically if not specified.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
+        window: Size of window to consider on each side of the observed peak
+            for finding the simulated peak. That is, the total window length
+            to find the peak in the simulations is
+            :math:`2 * \text{window} + 1` centered at the observed peak. The
+            default depends on the temporal resolution, e.g. for a resolution
+            of '1D', a window of 3 is used and for a resolution of '1h' the
+            window size is 12.
+        resolution: Temporal resolution of the time series in pandas format,
+            e.g. '1D' for daily and '1h' for hourly.
+        datetime_coord: Name of datetime coordinate. Tried to infer
+            automatically if not specified.
 
-
-    Returns
-    -------
-    float
+    Returns:
         Mean peak time difference.
 
-    References
-    ----------
-    .. [#] Kratzert, F., Klotz, D., Hochreiter, S., and Nearing, G. S.: A note on leveraging synergy in multiple
-        meteorological datasets with deep learning for rainfall-runoff modeling, Hydrol. Earth Syst. Sci. Discuss.,
-        https://doi.org/10.5194/hess-2020-221, in review, 2020.
+    References:
+        .. [#] Kratzert, F., Klotz, D., Hochreiter, S., and Nearing, G. S.: A
+            note on leveraging synergy in multiple meteorological datasets with
+            deep learning for rainfall-runoff modeling, Hydrol. Earth Syst.
+            Sci. Discuss., https://doi.org/10.5194/hess-2020-221, in review,
+            2020.
     """
     # verify inputs
     _validate_inputs(obs, sim)
 
-    # get time series with only valid observations (scipy's find_peaks doesn't guarantee correctness with NaNs)
+    # get time series with only valid observations (scipy's find_peaks doesn't
+    # guarantee correctness with NaNs)
     obs, sim = _mask_valid(obs, sim)
 
     # heuristic to get indices of peaks and their corresponding height.
@@ -654,8 +619,9 @@ def mean_peak_timing(
     # evaluate timing
     timing_errors = []
     for idx in peaks:
-        # skip peaks at the start and end of the sequence and peaks around missing observations
-        # (NaNs that were removed in obs & sim would result in windows that span too much time).
+        # skip peaks at the start and end of the sequence and peaks around
+        # missing observations (NaNs that were removed in obs & sim would
+        # result in windows that span too much time).
         if (
             (idx - window < 0)
             or (idx + window >= len(obs))
@@ -678,7 +644,8 @@ def mean_peak_timing(
             values = sim[idx - window : idx + window + 1]
             peak_sim = values[values.argmax()]
 
-        # get xarray object of qobs peak, for getting the date and calculating the datetime offset
+        # get xarray object of qobs peak, for getting the date and calculating
+        # the datetime offset
         peak_obs = obs[idx]
 
         # calculate the time difference between the peaks
@@ -686,54 +653,52 @@ def mean_peak_timing(
             peak_obs.coords[datetime_coord] - peak_sim.coords[datetime_coord]
         )
 
-        timing_error = np.abs(delta.values / pd.to_timedelta(resolution))
+        timing_error = np.abs(delta.to_numpy() / pd.to_timedelta(resolution))
 
         timing_errors.append(timing_error)
 
     return np.mean(timing_errors) if len(timing_errors) > 0 else np.nan
 
 
-def missed_peaks(
+def missed_peaks(  # noqa: PLR0913, PLR0917
     obs: DataArray,
     sim: DataArray,
-    window: int = None,
+    window: int | None = None,
     resolution: str = '1D',
     percentile: float = 80,
-    datetime_coord: str = None,
+    datetime_coord: str | None = None,
 ) -> float:
-    """Fraction of missed peaks.
+    r"""Fraction of missed peaks.
 
-    Uses scipy.find_peaks to find peaks in the observed and simulated time series above a certain percentile. Counts
-    the number of peaks in obs that do not exist in sim within the specified window.
+    Uses scipy.find_peaks to find peaks in the observed and simulated time
+    series above a certain percentile. Counts the number of peaks in obs that
+    do not exist in sim within the specified window.
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
-    window : int, optional
-        Size of window to consider on each side of the observed peak for finding the simulated peak. That is, the total
-        window length to find the peak in the simulations is :math:`2 * \\text{window} + 1` centered at the observed
-        peak. The default depends on the temporal resolution, e.g. for a resolution of '1D', a window of 1 is used and
-        for a resolution of '1h' the the window size is 12. Note that this is a different default window size than is
-        used in the peak-timing metric for '1D'.
-    resolution : str, optional
-        Temporal resolution of the time series in pandas format, e.g. '1D' for daily and '1h' for hourly.
-    percentile: float, optional
-        Only consider peaks above this flow percentile (0, 100).
-    datetime_coord : str, optional
-        Name of datetime coordinate. Tried to infer automatically if not specified.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
+        window: Size of window to consider on each side of the observed peak
+            for finding the simulated peak. That is, the total window length
+            to find the peak in the simulations is
+            :math:`2 * \text{window} + 1` centered at the observed peak. The
+            default depends on the temporal resolution, e.g. for a resolution
+            of '1D', a window of 1 is used and for a resolution of '1h' the
+            window size is 12. Note that this is a different default window
+            size than is used in the peak-timing metric for '1D'.
+        resolution: Temporal resolution of the time series in pandas format,
+            e.g. '1D' for daily and '1h' for hourly.
+        percentile: Only consider peaks above this flow percentile (0, 100).
+        datetime_coord: Name of datetime coordinate. Tried to infer
+            automatically if not specified.
 
-    Returns
-    -------
-    float
+    Returns:
         Fraction of missed peaks.
     """
     # verify inputs
     _validate_inputs(obs, sim)
 
-    # get time series with only valid observations (scipy's find_peaks doesn't guarantee correctness with NaNs)
+    # get time series with only valid observations (scipy's find_peaks doesn't
+    # guarantee correctness with NaNs)
     obs, sim = _mask_valid(obs, sim)
 
     # minimum height of a peak, as defined by percentile, which can be passed
@@ -764,8 +729,9 @@ def missed_peaks(
     valid_peaks = 0
 
     for idx in peaks_obs_times:
-        # skip peaks at the start and end of the sequence and peaks around missing observations
-        # (NaNs that were removed in obs & sim would result in windows that span too much time).
+        # skip peaks at the start and end of the sequence and peaks around
+        # missing observations (NaNs that were removed in obs & sim would
+        # result in windows that span too much time).
         if (
             (idx - window < 0)
             or (idx + window >= len(obs))
@@ -793,27 +759,26 @@ def missed_peaks(
 def mean_absolute_percentage_peak_error(
     obs: DataArray, sim: DataArray
 ) -> float:
-    r"""Calculate the mean absolute percentage error (MAPE) for peaks
+    r"""Calculate the mean absolute percentage error (MAPE) for peaks.
 
-    .. math:: \text{MAPE}_\text{peak} = \frac{1}{P}\sum_{p=1}^{P} \left |\frac{Q_{s,p} - Q_{o,p}}{Q_{o,p}} \right | \times 100,
+    .. math::
+        \text{MAPE}_\text{peak} = \frac{1}{P}\sum_{p=1}^{P}
+        \left |\frac{Q_{s,p} - Q_{o,p}}{Q_{o,p}} \right | \times 100,
 
-    where :math:`Q_{s,p}` are the simulated peaks (here, `sim`), :math:`Q_{o,p}` the observed peaks (here, `obs`) and
-    `P` is the number of peaks.
+    where :math:`Q_{s,p}` are the simulated peaks (here, `sim`),
+    :math:`Q_{o,p}` the observed peaks (here, `obs`) and `P` is the number of
+    peaks.
 
-    Uses scipy.find_peaks to find peaks in the observed time series. The observed peaks indices are used to subset
-    observed and simulated flows. Finally, the MAPE metric is calculated as the mean absolute percentage error
-    of observed peak flows and corresponding simulated flows.
+    Uses scipy.find_peaks to find peaks in the observed time series. The
+    observed peaks indices are used to subset observed and simulated flows.
+    Finally, the MAPE metric is calculated as the mean absolute percentage
+    error of observed peak flows and corresponding simulated flows.
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
 
-    Returns
-    -------
-    float
+    Returns:
         Mean absolute percentage error (MAPE) for peaks.
     """
     # verify inputs
@@ -836,13 +801,11 @@ def mean_absolute_percentage_peak_error(
         return np.nan
 
     # subset data to only peak values
-    obs = obs[peaks].values
-    sim = sim[peaks].values
+    obs = obs[peaks].to_numpy()
+    sim = sim[peaks].to_numpy()
 
     # calculate the mean absolute percentage peak error
-    peak_mape = np.sum(np.abs((sim - obs) / obs)) / peaks.size * 100
-
-    return peak_mape
+    return np.sum(np.abs((sim - obs) / obs)) / peaks.size * 100
 
 
 # Keep discovery, explicit selection, and the all-metrics path in sync.
@@ -868,30 +831,24 @@ def calculate_all_metrics(
     obs: DataArray,
     sim: DataArray,
     resolution: str = '1D',
-    datetime_coord: str = None,
+    datetime_coord: str | None = None,
 ) -> dict[str, float]:
     """Calculate all metrics with default values.
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
-    resolution : str, optional
-        Temporal resolution of the time series in pandas format, e.g. '1D' for daily and '1h' for hourly.
-    datetime_coord : str, optional
-        Datetime coordinate in the passed DataArray. Tried to infer automatically if not specified.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
+        resolution: Temporal resolution of the time series in pandas format,
+            e.g. '1D' for daily and '1h' for hourly.
+        datetime_coord: Datetime coordinate in the passed DataArray. Tried to
+            infer automatically if not specified.
 
-    Returns
-    -------
-    dict[str, float]
-        Dictionary with keys corresponding to metric name and values corresponding to metric values.
+    Returns:
+        Dictionary with keys corresponding to metric name and values
+        corresponding to metric values.
 
-    Raises
-    ------
-    AllNaNError
-        If all observations or all simulations are NaN.
+    Raises:
+        AllNaNError: If all observations or all simulations are NaN.
     """
     return calculate_metrics(
         obs,
@@ -907,32 +864,25 @@ def calculate_metrics(
     sim: DataArray,
     metrics: list[str],
     resolution: str = '1D',
-    datetime_coord: str = None,
+    datetime_coord: str | None = None,
 ) -> dict[str, float]:
     """Calculate specific metrics with default values.
 
-    Parameters
-    ----------
-    obs : DataArray
-        Observed time series.
-    sim : DataArray
-        Simulated time series.
-    metrics : list[str]
-        List of metric names.
-    resolution : str, optional
-        Temporal resolution of the time series in pandas format, e.g. '1D' for daily and '1h' for hourly.
-    datetime_coord : str, optional
-        Datetime coordinate in the passed DataArray. Tried to infer automatically if not specified.
+    Args:
+        obs: Observed time series.
+        sim: Simulated time series.
+        metrics: List of metric names.
+        resolution: Temporal resolution of the time series in pandas format,
+            e.g. '1D' for daily and '1h' for hourly.
+        datetime_coord: Datetime coordinate in the passed DataArray. Tried to
+            infer automatically if not specified.
 
-    Returns
-    -------
-    dict[str, float]
-        Dictionary with keys corresponding to metric name and values corresponding to metric values.
+    Returns:
+        Dictionary with keys corresponding to metric name and values
+        corresponding to metric values.
 
-    Raises
-    ------
-    AllNaNError
-        If all observations or all simulations are NaN.
+    Raises:
+        AllNaNError: If all observations or all simulations are NaN.
     """
     if 'all' in metrics:
         metrics = get_available_metrics()
@@ -956,13 +906,11 @@ def calculate_metrics(
     return values
 
 
-def _check_all_nan(obs: DataArray, sim: DataArray):
-    """Check if all observations or simulations are NaN and raise an exception if this is the case.
+def _check_all_nan(obs: DataArray, sim: DataArray) -> None:
+    """Raise `AllNaNError` if all observations or all simulations are NaN.
 
-    Raises
-    ------
-    AllNaNError
-        If all observations or all simulations are NaN.
+    Raises:
+        AllNaNError: If all observations or all simulations are NaN.
     """
     if bool(np.isnan(obs.values).all()):
         raise AllNaNError(

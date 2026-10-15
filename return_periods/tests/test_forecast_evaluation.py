@@ -408,9 +408,10 @@ class _StubTester(BaseTester):
         var_metrics: list[str],
         date_range: pd.DatetimeIndex,
     ) -> dict[str, float]:
-        """Invoke `_evaluate_per_step_metrics` on `ds`."""
-        return self._evaluate_per_step_metrics(
+        """Invoke `_evaluate_target_metrics` on `ds`."""
+        return self._evaluate_target_metrics(
             xr=ds,
+            basin='stub_basin',
             target_variable=target_variable,
             var_metrics=var_metrics,
             date_range=date_range,
@@ -445,6 +446,9 @@ def test_tester_per_step_metrics_and_dataframe_consistency() -> None:
         var_metrics=['NSE'],
         date_range=dates,
     )
+    # The un-suffixed value pools every step; the all-NaN step 2 pairs are
+    # masked out, so the pooled series is a perfect fit.
+    assert step_metrics['NSE'] == pytest.approx(1.0)
     assert 'NSE_hindcast' in step_metrics
     assert 'NSE_lead1' in step_metrics
     assert 'NSE_lead2' in step_metrics
@@ -458,7 +462,6 @@ def test_tester_per_step_metrics_and_dataframe_consistency() -> None:
         'basin_empty': {'xr': ds},
         'basin_valid': {
             'xr': ds,
-            'NSE': 1.0,
             **step_metrics,
         },
     }
