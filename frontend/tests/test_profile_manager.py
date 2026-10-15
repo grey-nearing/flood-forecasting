@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,6 +41,7 @@ class ProfileManagerTest(unittest.TestCase):
         self.temp_dir.cleanup()
         super().tearDown()
 
+    @pytest.mark.unit
     def test_guest_default_state(self) -> None:
         """Verify the default session starts as `guest` with no watersheds."""
         assert self.pm.active_username == 'guest'
@@ -48,6 +50,7 @@ class ProfileManagerTest(unittest.TestCase):
         assert info['is_guest']
         assert self.pm.load_watersheds() == []
 
+    @pytest.mark.unit
     def test_login_and_persistence(self) -> None:
         """Verify profile login, default empty email, and watershed saving."""
         info = self.pm.login_profile(
@@ -94,6 +97,7 @@ class ProfileManagerTest(unittest.TestCase):
         gs_prof = next(p for p in profiles if p['username'] == 'test_user')
         assert gs_prof['watersheds_count'] == 1
 
+    @pytest.mark.unit
     def test_logout_and_switch_profile(self) -> None:
         """Verify per-user watershed isolation and logout to `guest`."""
         self.pm.login_profile(username='user1', email='user1@example.com')
@@ -115,6 +119,7 @@ class ProfileManagerTest(unittest.TestCase):
         assert self.pm.active_username == 'guest'
         assert self.pm.load_watersheds('guest') == []
 
+    @pytest.mark.unit
     def test_organized_directories(self) -> None:
         """Verify standard profile subdirectories are provisioned on login."""
         info = self.pm.login_profile(username='test_user')
@@ -132,6 +137,7 @@ class ProfileManagerTest(unittest.TestCase):
         assert attr_dir.name == 'attributes'
         assert fc_dir.name == 'forecast'
 
+    @pytest.mark.unit
     def test_guest_data_kept_during_session_and_cleared_on_restart(
         self,
     ) -> None:
@@ -168,6 +174,7 @@ class ProfileManagerTest(unittest.TestCase):
         assert new_pm.get_polygons_dir('guest').exists()
         assert new_pm.account_exists('test_user')
 
+    @pytest.mark.unit
     def test_create_account(self) -> None:
         """Verify explicit account creation and duplicate/invalid rejection."""
         info = self.pm.create_account(
@@ -189,6 +196,7 @@ class ProfileManagerTest(unittest.TestCase):
             with pytest.raises(ValueError, match=r'.+'):
                 self.pm.create_account(bad_name)
 
+    @pytest.mark.unit
     def test_create_account_preserves_preexisting_folder(self) -> None:
         """Verify `create_account` never deletes a pre-existing user folder."""
         leftover = self.pm.get_polygons_dir('reused_name') / 'old.geojson'
@@ -197,6 +205,7 @@ class ProfileManagerTest(unittest.TestCase):
         self.pm.create_account('reused_name')
         assert leftover.exists()
 
+    @pytest.mark.unit
     def test_strict_login_requires_existing_account(self) -> None:
         """Verify `create_if_missing=False` raises `LookupError` if absent."""
         with pytest.raises(LookupError):
@@ -211,6 +220,7 @@ class ProfileManagerTest(unittest.TestCase):
         self.pm.login_profile('guest', create_if_missing=False)
         assert self.pm.active_username == 'guest'
 
+    @pytest.mark.unit
     def test_list_profiles_only_lists_guest_and_accounts(self) -> None:
         """Verify scratch folders without `profile.json` are excluded."""
         assert [p['username'] for p in self.pm.list_profiles()] == ['guest']
@@ -219,12 +229,14 @@ class ProfileManagerTest(unittest.TestCase):
         names = sorted(p['username'] for p in self.pm.list_profiles())
         assert names == ['guest', 'real_user']
 
+    @pytest.mark.unit
     def test_username_cannot_escape_profiles_folder(self) -> None:
         """Verify path-traversal characters in usernames stay under root."""
         for name in ('..', '.', '../outside', '.hidden'):
             p_dir = self.pm.get_profile_dir(name)
             assert p_dir.parent.resolve() == self.profiles_root.resolve()
 
+    @pytest.mark.unit
     def test_delete_account(self) -> None:
         """Verify `delete_account` removes the account folder and resets."""
         self.pm.create_account('keeper')
@@ -256,6 +268,7 @@ class ProfileManagerTest(unittest.TestCase):
         assert self.pm.load_watersheds('doomed') == []
         assert not model_file.exists()
 
+    @pytest.mark.unit
     def test_delete_account_rejects_guest_and_unknown_names(self) -> None:
         """Verify `delete_account` rejects `guest` and non-existent accounts."""
         self.pm.save_watersheds(
@@ -272,6 +285,42 @@ class ProfileManagerTest(unittest.TestCase):
             self.pm.delete_account('scratch_folder')
         assert len(self.pm.load_watersheds('guest')) == 1
         assert self.pm.active_username == 'guest'
+
+    @pytest.mark.unit
+    def test_save_settings_targets_named_profile_without_switching(
+        self,
+    ) -> None:
+        """Verify `save_settings(username=...)` leaves the active profile alone.
+
+        The `/api/profile/settings` handler relies on this contract so that a
+        request for one account can never rewrite another account's
+        ``profile.json`` through the process-global active profile (Issue #119).
+        """
+        self.pm.create_account('writer')
+        self.pm.create_account('active')
+        assert self.pm.active_username == 'active'
+
+        info = self.pm.save_settings(
+            {'default_hydro_dataset': 'merit-hydro'},
+            username='writer',
+        )
+        assert info['username'] == 'writer'
+        assert info['settings']['default_hydro_dataset'] == 'merit-hydro'
+        assert info['settings']['default_weather_source'] == 'cpc'
+        assert self.pm.active_username == 'active'
+
+        on_disk = json.loads(
+            (self.profiles_root / 'writer' / 'profile.json').read_text(
+                encoding='utf-8'
+            )
+        )
+        assert on_disk['settings']['default_hydro_dataset'] == 'merit-hydro'
+        assert (
+            self.pm.get_profile_info('active')['settings'][
+                'default_hydro_dataset'
+            ]
+            == 'hydroatlas'
+        )
 
 
 if __name__ == '__main__':
