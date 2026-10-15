@@ -1047,22 +1047,12 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
 
     def _get_finetune_status(self, query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
-        pm = get_profile_manager()
-        basin_id = (
+        raw_basin_id = (
             query.get('basin_id', [''])[0]
             or query.get('catchment_id', [''])[0]
             or ''
-        ).strip()
-        if not basin_id:
-            ws = pm.load_watersheds(user)
-            if ws:
-                basin_id = str(
-                    ws[0].get('properties', {}).get('catchment_id')
-                    or ws[0].get('id')
-                    or ''
-                )
-        if not basin_id:
-            basin_id = 'custom_basin_01'
+        )
+        basin_id = self._resolve_finetune_basin_id(user, raw_basin_id)
         model_id = (
             query.get('model_id', ['google-floodhub-settings-110-epochs'])[0]
             or 'google-floodhub-settings-110-epochs'
