@@ -599,6 +599,24 @@ def mean_peak_timing(
     # verify inputs
     _validate_inputs(obs, sim)
 
+    # Handle pooled MultiIndex arrays (e.g. across lead times) cleanly
+    if obs.dims and isinstance(obs.indexes.get(obs.dims[0]), pd.MultiIndex):
+        dim = obs.dims[0]
+        obs_unstacked, sim_unstacked = obs.unstack(dim), sim.unstack(dim)  # noqa: PD010
+        group_dim = obs_unstacked.dims[0]
+        errors = []
+        for i in range(obs_unstacked.sizes[group_dim]):
+            err = mean_peak_timing(
+                obs_unstacked.isel({group_dim: i}),
+                sim_unstacked.isel({group_dim: i}),
+                window,
+                resolution,
+                datetime_coord,
+            )
+            if not np.isnan(err):
+                errors.append(err)
+        return float(np.mean(errors)) if errors else np.nan
+
     # get time series with only valid observations (scipy's find_peaks doesn't
     # guarantee correctness with NaNs)
     obs, sim = _mask_valid(obs, sim)
@@ -696,6 +714,24 @@ def missed_peaks(  # noqa: PLR0913, PLR0917
     """
     # verify inputs
     _validate_inputs(obs, sim)
+
+    # Handle pooled MultiIndex arrays (e.g. across lead times) cleanly
+    if obs.dims and isinstance(obs.indexes.get(obs.dims[0]), pd.MultiIndex):
+        dim = obs.dims[0]
+        obs_unstacked, sim_unstacked = obs.unstack(dim), sim.unstack(dim)  # noqa: PD010
+        group_dim = obs_unstacked.dims[0]
+        errors = []
+        for i in range(obs_unstacked.sizes[group_dim]):
+            err = mean_peak_timing(
+                obs_unstacked.isel({group_dim: i}),
+                sim_unstacked.isel({group_dim: i}),
+                window,
+                resolution,
+                datetime_coord,
+            )
+            if not np.isnan(err):
+                errors.append(err)
+        return float(np.mean(errors)) if errors else np.nan
 
     # get time series with only valid observations (scipy's find_peaks doesn't
     # guarantee correctness with NaNs)
