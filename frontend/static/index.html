@@ -327,11 +327,7 @@
     </button>
     <button data-tab="tab-training" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="cpu" class="w-4 h-4"></i>
-      <span>Training</span>
-    </button>
-    <button data-tab="tab-finetuning" id="finetuningTabBtn" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
-      <i data-lucide="sliders" class="w-4 h-4"></i>
-      <span>Fine Tuning</span>
+      <span>Training & Fine Tuning</span>
     </button>
     <button data-tab="tab-forecasting" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="activity" class="w-4 h-4"></i>
@@ -366,13 +362,10 @@
           </button>
         </div>
 
-        <!-- Map-screen model & river network selector (multi-select pill buttons to view 1, 2, or all 3 hydrofabrics at once) -->
+        <!-- Map-screen model & river network selector (single-select pill buttons) -->
         <div id="maasMapModelPicker" class="bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-4 flex flex-col gap-2.5">
-          <div class="flex items-center justify-between gap-1">
-            <div class="text-[10px] font-bold uppercase tracking-wider text-[#5f6368]">Map River Networks &amp; Live Alerts</div>
-            <span class="text-[9.5px] text-[#80868b]" title="Select one or multiple hydrofabrics to overlay on the map">1–3 networks</span>
-          </div>
-          <div id="maasMapMultiModelList" role="group" aria-label="Map models and river networks (click one or multiple)" class="flex items-center gap-1.5 flex-wrap"></div>
+          <div class="text-[10px] font-bold uppercase tracking-wider text-[#5f6368]">Map River Network &amp; Live Alerts</div>
+          <div id="maasMapMultiModelList" role="radiogroup" aria-label="Map model and river network" class="flex items-center gap-1.5 flex-wrap"></div>
           <div class="flex items-center gap-1.5 pt-1 border-t border-[#e8eaed] pl-0.5">
             <span id="maasMapModelDot" class="w-2 h-2 rounded-full flex-shrink-0" style="background:#007b83"></span>
             <div id="maasNetworkCaption" class="text-[11px] font-medium text-[#5f6368] leading-tight">LISFLOOD 0.05° river grid</div>
@@ -1255,7 +1248,7 @@
               </div>
               <div>
                 <h2 class="text-sm font-bold text-[#202124] flex items-center gap-2">
-                  Hydrological Model Training Workbench
+                  Hydrological Model Training & Fine-Tuning Workbench
                   <span class="text-xs bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2 py-0.5 rounded-full font-mono">MTS-LSTM / PyTorch</span>
                 </h2>
                 <p class="text-xs text-[#5f6368]">Curate multi-basin meteorological Zarr stores, configure LSTM architectures, and launch transfer learning</p>
@@ -1382,380 +1375,8 @@
               <i data-lucide="share-2" class="w-3.5 h-3.5"></i> Export Dataset to CNS / GCS
             </button>
             <button type="button" class="bg-[#1a73e8] hover:bg-[#1557b0] text-white font-medium text-xs py-2 px-4 rounded-lg flex items-center gap-1.5 transition shadow-md shadow-amber-600/20">
-              <i data-lucide="play" class="w-3.5 h-3.5"></i> Launch Multi-Basin Training Job
+              <i data-lucide="play" class="w-3.5 h-3.5"></i> Launch Local Fine-Tuning Job
             </button>
-          </div>
-        </div>
-      </main>
-    </section>
-
-    <!-- Tab: Interactive Per-Basin Fine-Tuning Workbench -->
-    <section id="tab-finetuning" class="tab-content hidden flex-1 flex overflow-hidden w-full h-full">
-      <!-- Left Sidebar: Model Inventory, Local CSV Upload, Tunable Components, Hyperparameters & Partition Slider -->
-      <aside id="finetuningSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-4">
-        <div class="sidebar-header-bar">
-          <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
-            <i data-lucide="sliders" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Interactive Fine-Tuning
-          </span>
-          <button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar" title="Collapse left control panel" aria-label="Collapse left control panel">
-            <i data-lucide="panel-left-close" class="w-3.5 h-3.5"></i>
-            <span>Hide</span>
-          </button>
-        </div>
-
-        <!-- Step 1: Base Model Inventory Selection -->
-        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-[#1a73e8] flex items-center gap-1.5">
-              <i data-lucide="cpu" class="w-3.5 h-3.5"></i> 1. Base Model Inventory
-            </span>
-            <span id="ftModelArchBadge" class="text-[10px] bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc] px-2 py-0.5 rounded font-mono">MeanEmbeddingForecastLSTM</span>
-          </div>
-          <div>
-            <label for="ftModelSelect" class="text-[11px] text-[#5f6368] block mb-1">Select Pretrained Model</label>
-            <select id="ftModelSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2.5 py-2 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
-              <option value="google-floodhub-settings-110-epochs" selected>Google FloodHub Pretrained (110 Epochs, CMAL)</option>
-              <option value="5-basin-example">5-Basin Tutorial Pretrained (5 Epochs, Regression)</option>
-            </select>
-          </div>
-          <div id="ftModelMetaSummary" class="grid grid-cols-3 gap-1.5 text-[10px] font-mono bg-white border border-[#dadce0] rounded-lg p-2 text-[#3c4043]">
-            <div><span class="text-[#5f6368] block">Head / Loss</span><strong id="ftMetaHeadLoss">cmal / CMALLoss</strong></div>
-            <div><span class="text-[#5f6368] block">Seq / Lead</span><strong id="ftMetaSeqLead">365d / 7d</strong></div>
-            <div><span class="text-[#5f6368] block">Checkpoint</span><strong id="ftMetaCkptEpoch">Epoch 110</strong></div>
-          </div>
-        </div>
-
-        <!-- Step 2: Per-Basin Local Data Upload (CSV: time x lead_time) -->
-        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-[#1e8e3e] flex items-center gap-1.5">
-              <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i> 2. Local Basin Data (CSV)
-            </span>
-            <span id="ftDataReadyBadge" class="text-[10px] bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2 py-0.5 rounded font-mono">Awaiting CSVs</span>
-          </div>
-
-          <div class="grid grid-cols-2 gap-2">
-            <div>
-              <label for="ftBasinSelect" class="text-[11px] text-[#5f6368] block mb-1">Active Watershed</label>
-              <select id="ftBasinSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2 py-1.5 text-[#202124]">
-                <option value="custom_basin_01" selected>custom_basin_01</option>
-              </select>
-            </div>
-            <div>
-              <label for="ftBasinIdInput" class="text-[11px] text-[#5f6368] block mb-1">Or Basin ID</label>
-              <input id="ftBasinIdInput" type="text" value="custom_basin_01" placeholder="e.g. basin_01" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2 py-1.5 text-[#202124] font-mono">
-            </div>
-          </div>
-
-          <p class="text-[10.5px] text-[#5f6368] leading-snug">
-            Upload per-basin CSVs structured as <code class="bg-white px-1 py-0.5 rounded border border-[#dadce0] font-mono">date, lead_1, ..., lead_7</code> (time &times; lead_time) or daily <code class="bg-white px-1 py-0.5 rounded border border-[#dadce0] font-mono">date, value</code>.
-          </p>
-
-          <!-- Local Precipitation CSV -->
-          <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-1.5">
-            <div class="flex items-center justify-between">
-              <span class="text-[11px] font-semibold text-[#202124] flex items-center gap-1.5">
-                <i data-lucide="cloud-rain" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Local Precipitation (mm/day)
-              </span>
-              <span id="ftPrecipStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <input type="file" id="ftPrecipFileInput" accept=".csv" class="hidden">
-              <button type="button" id="ftUploadPrecipBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
-                <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Choose Precip CSV
-              </button>
-            </div>
-          </div>
-
-          <!-- Local Temperature CSV -->
-          <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-1.5">
-            <div class="flex items-center justify-between">
-              <span class="text-[11px] font-semibold text-[#202124] flex items-center gap-1.5">
-                <i data-lucide="thermometer" class="w-3.5 h-3.5 text-[#e65100]"></i> Local Temperature (&deg;C)
-              </span>
-              <span id="ftTempStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <input type="file" id="ftTempFileInput" accept=".csv" class="hidden">
-              <button type="button" id="ftUploadTempBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
-                <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#e65100]"></i> Choose Temp CSV
-              </button>
-            </div>
-          </div>
-
-          <!-- Target Streamflow CSV -->
-          <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-1.5">
-            <div class="flex items-center justify-between">
-              <span class="text-[11px] font-semibold text-[#202124] flex items-center gap-1.5">
-                <i data-lucide="waves" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Target Streamflow
-              </span>
-              <span id="ftStreamflowStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
-            </div>
-            <div class="grid grid-cols-2 gap-1.5">
-              <div>
-                <label for="ftStreamflowUnitsSelect" class="text-[10px] text-[#5f6368] block">Units</label>
-                <select id="ftStreamflowUnitsSelect" class="w-full bg-[#f8f9fa] border border-[#dadce0] text-[11px] rounded px-1.5 py-1 text-[#202124]">
-                  <option value="mm/day" selected>mm/day</option>
-                  <option value="m3/s">m&sup3;/s (CMS)</option>
-                </select>
-              </div>
-              <div>
-                <label for="ftBasinAreaInput" class="text-[10px] text-[#5f6368] block">Area km&sup2; (if m&sup3;/s)</label>
-                <input id="ftBasinAreaInput" type="number" step="any" min="0.1" value="250" class="w-full bg-[#f8f9fa] border border-[#dadce0] text-[11px] rounded px-1.5 py-1 text-[#202124] font-mono">
-              </div>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <input type="file" id="ftStreamflowFileInput" accept=".csv" class="hidden">
-              <button type="button" id="ftUploadStreamflowBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
-                <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Choose Streamflow CSV
-              </button>
-            </div>
-          </div>
-
-          <!-- Sample Data & Template Helpers -->
-          <div class="flex items-center gap-1.5 pt-1">
-            <button type="button" id="ftLoadSampleDataBtn" class="flex-1 bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#174ea6] border border-[#d2e3fc] text-[11px] font-semibold py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition" title="Generate realistic time x lead_time precip, temp, and streamflow CSVs for immediate interactive fine-tuning">
-              <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> Load Sample Basin CSVs
-            </button>
-            <button type="button" id="ftDownloadTemplateBtn" class="bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] text-[11px] font-medium py-1.5 px-2 rounded-lg flex items-center gap-1 transition" title="Download time x lead_time CSV template">
-              <i data-lucide="download" class="w-3.5 h-3.5"></i> Template
-            </button>
-            <button type="button" id="ftClearDataBtn" class="bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#dadce0] text-[11px] font-medium py-1.5 px-2 rounded-lg transition" title="Clear uploaded data">
-              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-            </button>
-          </div>
-        </div>
-
-        <!-- Step 3: Train / Validation Partition Slider -->
-        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-[#b06000] flex items-center gap-1.5">
-              <i data-lucide="split-square-horizontal" class="w-3.5 h-3.5"></i> 3. Train / Validation Split
-            </span>
-            <span id="ftSplitRatioLabel" class="text-[10px] bg-white border border-[#dadce0] text-[#202124] px-2 py-0.5 rounded font-mono font-semibold">70% Train / 30% Val</span>
-          </div>
-          <input id="ftSplitRatioSlider" type="range" min="20" max="90" step="1" value="70" class="w-full accent-[#1a73e8] h-1.5 bg-[#e8eaed] rounded-lg cursor-pointer">
-          <div id="ftSplitDateSummary" class="grid grid-cols-2 gap-1.5 text-[10px] font-mono">
-            <div class="bg-[#e8f0fe]/70 border border-[#d2e3fc] rounded p-1.5 text-[#174ea6]">
-              <span class="block text-[9px] uppercase font-bold">Training Period</span>
-              <span id="ftTrainDateRangeText">&mdash;</span>
-            </div>
-            <div class="bg-[#fef7e0]/80 border border-[#fde293] rounded p-1.5 text-[#b06000]">
-              <span class="block text-[9px] uppercase font-bold">Validation Period</span>
-              <span id="ftValDateRangeText">&mdash;</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Step 4: Dynamic Tunable Model Components -->
-        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-[#7627bb] flex items-center gap-1.5">
-              <i data-lucide="layers" class="w-3.5 h-3.5"></i> 4. Tunable Model Components
-            </span>
-            <span id="ftTrainableParamsBadge" class="text-[10px] bg-[#f3e8fd] text-[#7627bb] border border-[#e9d2fd] px-2 py-0.5 rounded font-mono">Dynamic</span>
-          </div>
-          <p class="text-[10.5px] text-[#5f6368] leading-snug">
-            Drawn dynamically from <code class="font-mono">BaseModel.module_parts</code>. Adjust which components are unfrozen at any pause step:
-          </p>
-          <div class="flex flex-wrap gap-1">
-            <button type="button" id="ftPresetLocalHeadBtn" class="text-[10px] bg-white hover:bg-[#f3e8fd] text-[#7627bb] border border-[#dadce0] px-2 py-1 rounded font-medium transition">Local + Head</button>
-            <button type="button" id="ftPresetDecoderBtn" class="text-[10px] bg-white hover:bg-[#f3e8fd] text-[#7627bb] border border-[#dadce0] px-2 py-1 rounded font-medium transition">Local + Forecast LSTM + Head</button>
-            <button type="button" id="ftPresetAllBtn" class="text-[10px] bg-white hover:bg-[#f3e8fd] text-[#7627bb] border border-[#dadce0] px-2 py-1 rounded font-medium transition">Unfreeze All</button>
-          </div>
-          <div id="ftTunableComponentsList" class="space-y-1.5 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
-            <!-- Populated dynamically by renderFineTuneComponents() -->
-          </div>
-        </div>
-
-        <!-- Step 5: Hyperparameters & Interactive Step Execution -->
-        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-[#202124] flex items-center gap-1.5">
-              <i data-lucide="gauge" class="w-3.5 h-3.5 text-[#1a73e8]"></i> 5. Hyperparameters &amp; Step Control
-            </span>
-            <span id="ftCurrentEpochBadge" class="text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2 py-0.5 rounded font-mono font-semibold">Epoch 0</span>
-          </div>
-
-          <div class="grid grid-cols-2 gap-2 text-xs">
-            <div>
-              <label for="ftEpochsPerStepInput" class="text-[11px] text-[#5f6368] block mb-1">Epochs to Run Next</label>
-              <input id="ftEpochsPerStepInput" type="number" min="1" max="100" value="3" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2.5 py-1.5 text-[#202124] font-mono">
-            </div>
-            <div>
-              <label for="ftLearningRateInput" class="text-[11px] text-[#5f6368] block mb-1">Learning Rate</label>
-              <input id="ftLearningRateInput" type="number" step="any" min="1e-6" max="1.0" value="0.001" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2.5 py-1.5 text-[#202124] font-mono">
-            </div>
-          </div>
-
-          <div class="grid grid-cols-3 gap-2 text-xs">
-            <div>
-              <label for="ftLossSelect" class="text-[11px] text-[#5f6368] block mb-1">Loss</label>
-              <select id="ftLossSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2 py-1.5 text-[#202124] font-mono">
-                <option value="CMALLoss" selected>CMALLoss</option>
-                <option value="MSE">MSE</option>
-                <option value="NSE">NSE</option>
-                <option value="RMSE">RMSE</option>
-              </select>
-            </div>
-            <div>
-              <label for="ftLrStrategySelect" class="text-[11px] text-[#5f6368] block mb-1">LR Schedule</label>
-              <select id="ftLrStrategySelect" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2 py-1.5 text-[#202124]">
-                <option value="constant" selected>Constant</option>
-                <option value="ReduceLROnPlateau">Plateau</option>
-                <option value="StepLR">StepLR</option>
-                <option value="ExponentialLR">Exponential</option>
-              </select>
-            </div>
-            <div>
-              <label for="ftBatchSizeInput" class="text-[11px] text-[#5f6368] block mb-1">Batch Size</label>
-              <input id="ftBatchSizeInput" type="number" min="1" max="256" value="16" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2 py-1.5 text-[#202124] font-mono">
-            </div>
-          </div>
-
-          <div class="flex items-center gap-2 pt-1">
-            <button type="button" id="ftRunEpochsBtn" class="flex-1 bg-[#1a73e8] hover:bg-[#1557b0] disabled:bg-[#f1f3f4] disabled:text-[#80868b] text-white font-semibold text-xs py-2.5 px-3 rounded-lg flex items-center justify-center gap-2 transition shadow-sm">
-              <i data-lucide="play" class="w-4 h-4"></i>
-              <span id="ftRunEpochsBtnText">Run 3 Epochs &amp; Pause</span>
-            </button>
-            <button type="button" id="ftResetSessionBtn" class="bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#dadce0] text-xs font-medium py-2.5 px-3 rounded-lg flex items-center gap-1 transition" title="Reset fine-tuning session back to Epoch 0 (pretrained weights)">
-              <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i> Reset
-            </button>
-          </div>
-          <div id="ftStatusMessage" class="hidden text-[11px] rounded-lg px-2.5 py-2 border"></div>
-        </div>
-
-        <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
-      </aside>
-
-      <!-- Right Main Panel: Interactive Graphical Progress, Hydrograph + Hanging Hyetograph & Epoch Inspector -->
-      <main id="finetuningMainPanel" class="flex-1 flex flex-col p-5 bg-[#f8f9fa] overflow-y-auto custom-scrollbar space-y-4">
-        <!-- Top Interactive Control & Epoch Scrubber Banner -->
-        <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-wrap items-center justify-between gap-4 shadow-sm">
-          <div class="flex items-center gap-3">
-            <div class="w-9 h-9 rounded-xl bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] flex items-center justify-center font-bold">
-              <i data-lucide="sliders" class="w-5 h-5"></i>
-            </div>
-            <div>
-              <div class="flex items-center gap-2">
-                <h2 class="text-sm font-bold text-[#202124]">Interactive Per-Basin Fine-Tuning &amp; Visual Inspection</h2>
-                <span id="ftSessionStatePill" class="text-[10px] bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] px-2 py-0.5 rounded-full font-mono font-semibold">Ready</span>
-              </div>
-              <p id="ftSessionSubtitle" class="text-xs text-[#5f6368]">
-                Upload local basin CSVs (or load sample data), choose tunable model components, and advance training epoch-by-epoch.
-              </p>
-            </div>
-          </div>
-
-          <!-- Epoch Inspector Scrubber (Active when epochs > 0) -->
-          <div id="ftEpochInspectorBar" class="flex items-center gap-2 bg-[#f8f9fa] border border-[#dadce0] rounded-xl px-3 py-2">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-[#5f6368]">Inspect Epoch:</span>
-            <button type="button" id="ftPrevEpochBtn" class="p-1 rounded hover:bg-[#e8eaed] text-[#3c4043] disabled:opacity-40" title="Previous Epoch">
-              <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i>
-            </button>
-            <input id="ftEpochScrubber" type="range" min="0" max="0" step="1" value="0" class="w-28 accent-[#1a73e8] h-1.5 bg-[#dadce0] rounded-lg cursor-pointer">
-            <button type="button" id="ftNextEpochBtn" class="p-1 rounded hover:bg-[#e8eaed] text-[#3c4043] disabled:opacity-40" title="Next Epoch">
-              <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
-            </button>
-            <span id="ftInspectedEpochBadge" class="text-xs font-mono font-bold text-[#1a73e8] min-w-[68px] text-center">Epoch 0</span>
-          </div>
-        </div>
-
-        <!-- KPI Strip for Inspected Epoch -->
-        <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
-          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
-            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Train Loss</span>
-            <span id="ftKpiTrainLoss" class="text-base font-mono font-bold text-[#1a73e8]">&mdash;</span>
-          </div>
-          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
-            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Validation Loss</span>
-            <span id="ftKpiValLoss" class="text-base font-mono font-bold text-[#b06000]">&mdash;</span>
-          </div>
-          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
-            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Train NSE</span>
-            <span id="ftKpiTrainNse" class="text-base font-mono font-bold text-[#202124]">&mdash;</span>
-          </div>
-          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
-            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Validation NSE</span>
-            <span id="ftKpiValNse" class="text-base font-mono font-bold text-[#1e8e3e]">&mdash;</span>
-          </div>
-          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
-            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Validation KGE</span>
-            <span id="ftKpiValKge" class="text-base font-mono font-bold text-[#7627bb]">&mdash;</span>
-          </div>
-        </div>
-
-        <!-- Primary Chart: Hydrograph + Hanging Hyetograph with Visual Train/Validation Partition -->
-        <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-3 min-h-[380px]">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 class="text-xs font-bold text-[#202124] flex items-center gap-2">
-                <i data-lucide="activity" class="w-4 h-4 text-[#1e8e3e]"></i>
-                Basin Hydrograph &amp; Hanging Hyetograph (Train vs. Validation Partition)
-              </h3>
-              <p id="ftHydroChartSubtitle" class="text-[11px] text-[#5f6368]">
-                Inverted top bars show local precipitation (mm/day); bottom curves compare Observed vs. Baseline (Epoch 0) vs. Fine-Tuned Streamflow (mm/day).
-              </p>
-            </div>
-            <div class="flex items-center gap-3 text-[11px] font-mono">
-              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc]">
-                <span class="w-2 h-2 rounded-full bg-[#1a73e8]"></span> Training Partition
-              </span>
-              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293]">
-                <span class="w-2 h-2 rounded-full bg-[#f9ab00]"></span> Validation Partition
-              </span>
-            </div>
-          </div>
-          <div class="flex-1 relative min-h-[320px]">
-            <canvas id="ftHydrographCanvas"></canvas>
-          </div>
-        </div>
-
-        <!-- Bottom Grid: Epoch-by-Epoch Loss/NSE Progress Chart + Epoch History Table -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <!-- Left: Epoch-by-Epoch Loss & NSE Curve -->
-          <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-2 min-h-[260px]">
-            <div class="flex items-center justify-between">
-              <h3 class="text-xs font-bold text-[#202124] flex items-center gap-2">
-                <i data-lucide="trending-down" class="w-4 h-4 text-[#1a73e8]"></i>
-                Epoch-by-Epoch Fine-Tuning Progress (Click any epoch to inspect)
-              </h3>
-              <span id="ftLossChartBadge" class="text-[10px] font-mono bg-[#f1f3f4] text-[#3c4043] px-2 py-0.5 rounded">0 Epochs Run</span>
-            </div>
-            <div class="flex-1 relative min-h-[210px]">
-              <canvas id="ftLossCurveCanvas"></canvas>
-            </div>
-          </div>
-
-          <!-- Right: Interactive Epoch Telemetry Log -->
-          <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-2 min-h-[260px]">
-            <div class="flex items-center justify-between">
-              <h3 class="text-xs font-bold text-[#202124] flex items-center gap-2">
-                <i data-lucide="list-ordered" class="w-4 h-4 text-[#7627bb]"></i>
-                Epoch Checkpoint History &amp; Active Tuned Components
-              </h3>
-              <span class="text-[10px] text-[#5f6368]">Click row to view hydrograph</span>
-            </div>
-            <div class="flex-1 overflow-y-auto max-h-[215px] custom-scrollbar border border-[#dadce0] rounded-lg">
-              <table class="w-full text-left border-collapse text-[11px] font-mono">
-                <thead class="bg-[#f8f9fa] text-[#5f6368] sticky top-0 border-b border-[#dadce0]">
-                  <tr>
-                    <th class="py-1.5 px-2">Epoch</th>
-                    <th class="py-1.5 px-2">Train Loss</th>
-                    <th class="py-1.5 px-2">Val Loss</th>
-                    <th class="py-1.5 px-2">Val NSE</th>
-                    <th class="py-1.5 px-2">Val KGE</th>
-                    <th class="py-1.5 px-2">LR</th>
-                    <th class="py-1.5 px-2">Tuned Modules</th>
-                  </tr>
-                </thead>
-                <tbody id="ftEpochHistoryTableBody" class="divide-y divide-[#e8eaed] text-[#202124]">
-                  <tr>
-                    <td colspan="7" class="py-6 text-center text-[#5f6368] font-sans">No epochs run yet. Upload CSVs or click "Load Sample Basin CSVs", then click "Run Epochs &amp; Pause".</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
           </div>
         </div>
       </main>
@@ -1847,11 +1468,11 @@
           </div>
         </section>
 
-        <!-- Step 1: Fetch Real-Time Forcing Data -->
+        <!-- Step 2: Fetch Real-Time Forcing Data -->
         <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
           <div class="flex items-center justify-between">
             <label class="text-xs font-bold text-[#1a73e8] uppercase tracking-wider flex items-center gap-1.5">
-              <i data-lucide="cloud-download" class="w-4 h-4"></i> 1. Fetch Real-Time Data
+              <i data-lucide="cloud-download" class="w-4 h-4"></i> 2. Fetch Real-Time Data
             </label>
             <span class="text-[10px] text-[#5f6368] font-mono">multimet.realtime</span>
           </div>
@@ -1908,11 +1529,35 @@
           </div>
         </section>
 
-        <!-- Step 2: Run Hydrological Model -->
+        <!-- Step 3: Upload Real-Time Streamflow CSV (Plot on Forecast Graph) -->
+        <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-2.5">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-bold text-[#202124] uppercase tracking-wider flex items-center gap-1.5">
+              <i data-lucide="upload" class="w-4 h-4 text-[#111827]"></i> 3. Realtime Streamflow (CSV)
+            </label>
+            <span class="text-[10px] text-[#5f6368] font-mono">m³/s</span>
+          </div>
+          <p class="text-[11px] text-[#5f6368] leading-relaxed">
+            Upload local gauge streamflow CSV (<code class="font-mono text-[10px]">date,discharge_cms</code>) to plot observed discharge on the forecast chart.
+          </p>
+          <input type="file" id="fcStreamflowCsvInput" accept=".csv,text/csv" class="hidden" />
+          <div class="flex items-center gap-2">
+            <button id="fcUploadStreamflowCsvBtn" type="button" class="flex-1 bg-white hover:bg-[#f1f3f4] text-[#202124] border border-[#dadce0] font-semibold text-xs py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition">
+              <i data-lucide="file-up" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
+              <span>Upload CSV</span>
+            </button>
+            <button id="fcClearStreamflowCsvBtn" type="button" class="hidden bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#fad2cf] font-semibold text-xs py-2 px-2.5 rounded-lg transition" title="Clear uploaded streamflow CSV">
+              Clear
+            </button>
+          </div>
+          <div id="fcStreamflowCsvStatus" class="text-[11px] text-[#5f6368] font-mono leading-snug">No CSV uploaded for active basin.</div>
+        </section>
+
+        <!-- Step 4: Run Hydrological Model -->
         <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
           <div class="flex items-center justify-between">
             <label class="text-xs font-bold text-[#1e8e3e] uppercase tracking-wider flex items-center gap-1.5">
-              <i data-lucide="play-circle" class="w-4 h-4"></i> 2. Make Forecasts
+              <i data-lucide="play-circle" class="w-4 h-4"></i> 4. Make Forecasts
             </label>
             <span class="text-[10px] text-[#5f6368] font-mono">OpenHydroNet</span>
           </div>
@@ -1926,27 +1571,6 @@
           </button>
 
           <div id="fcRunBlockedReason" class="text-[11px] text-[#b06000] leading-relaxed"></div>
-        </section>
-
-        <!-- Step 3: Upload Real-Time Streamflow CSV -->
-        <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-2.5">
-          <div class="flex items-center justify-between">
-            <label class="text-xs font-bold text-[#202124] uppercase tracking-wider flex items-center gap-1.5">
-              <i data-lucide="upload" class="w-4 h-4 text-[#1a73e8]"></i> 3. Realtime Streamflow (CSV)
-            </label>
-            <button id="fcClearStreamflowCsvBtn" type="button" class="hidden text-[10px] font-semibold text-[#c5221f] hover:underline">
-              Clear
-            </button>
-          </div>
-          <p class="text-xs text-[#5f6368] leading-relaxed">
-            Upload local gauge discharge (<code class="font-mono text-[10px]">date,streamflow</code> in m³/s) to plot on the forecast hydrograph.
-          </p>
-          <input id="fcStreamflowCsvInput" type="file" accept=".csv,text/csv" class="hidden" />
-          <button id="fcUploadStreamflowCsvBtn" type="button" class="w-full bg-white hover:bg-[#f1f3f4] border border-[#dadce0] text-[#202124] font-semibold text-xs py-2 px-3 rounded-lg flex items-center justify-center gap-2 transition shadow-2xs">
-            <i data-lucide="upload" class="w-4 h-4 text-[#1a73e8]"></i>
-            <span id="fcUploadStreamflowBtnLabel">Upload Streamflow CSV</span>
-          </button>
-          <div id="fcStreamflowCsvStatus" class="hidden text-[11px] text-[#5f6368] font-mono leading-relaxed"></div>
         </section>
 
         <!-- Hidden Legacy DOM Elements for 100% Backwards-Compatibility with Existing Listeners/Tests -->
@@ -6966,17 +6590,16 @@
         }
       }
 
-      // 5. Initialize or resize charts for Tab 2, Fine Tuning, and Tab 6, or refresh the Account tab
+      // 5. Initialize or resize charts for Tab 2 and Tab 6, or refresh the Account tab
       if (targetTabId === 'tab-forecasting' || targetTabId === 'tab-modeling') {
         initModelingCharts();
-      } else if (targetTabId === 'tab-finetuning') {
-        if (typeof refreshFineTuningTab === 'function') refreshFineTuningTab();
       } else if (targetTabId === 'tab-maas') {
         initMaasCharts();
       } else if (targetTabId === 'tab-account') {
         if (accountRemoveMode) setAccountRemoveMode(false);  // Always open in the normal view.
         fetchCurrentProfile();
         if (typeof loadArchivesList === 'function') loadArchivesList();
+        if (typeof loadAccountSummary === 'function') loadAccountSummary();
       }
 
       // 6. Re-create Lucide icons for newly visible elements
@@ -7250,7 +6873,7 @@
 
     function loadWeatherModelsInfo() {
       weatherModelsInfoLoading = true;
-      return fetch('/api/weather/models', { cache: 'no-store' })
+      return fetch('/api/weather/models')
         .then(res => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.json();
@@ -7299,7 +6922,7 @@
         }
       }
 
-      const req = { async: true, force: false, model: modelKey };
+      const req = { async: true, force: true, model: modelKey };
 
       fetch('/api/weather/refresh', {
         method: 'POST',
@@ -7307,63 +6930,50 @@
         body: JSON.stringify(req)
       }).then(res => res.json()).then(data => {
         if (data.status === 'queued' && data.job_id) {
-          pollWeatherRefreshJob(data.job_id, modelKey, 0);
+          pollWeatherRefreshJob(data.job_id, modelKey);
         } else {
-          finishWeatherRefreshUI(modelKey, 'completed', data);
+          finishWeatherRefreshUI(modelKey, 'completed');
         }
       }).catch(err => {
         console.error('Refresh failed:', err);
-        finishWeatherRefreshUI(modelKey, 'error', null);
+        finishWeatherRefreshUI(modelKey, 'error');
       });
     }
 
-    function pollWeatherRefreshJob(jobId, modelKey, tick = 0) {
-      fetch(`/api/jobs/${jobId}`, { cache: 'no-store' })
+    function pollWeatherRefreshJob(jobId, modelKey) {
+      fetch(`/api/jobs/${jobId}`)
         .then(res => res.json())
         .then(job => {
           if (job.status === 'running' || job.status === 'queued') {
-            if (tick > 0 && tick % 2 === 0 && !weatherModelsInfoLoading) {
-              loadWeatherModelsInfo();
-            }
-            setTimeout(() => pollWeatherRefreshJob(jobId, modelKey, tick + 1), 1500);
+            setTimeout(() => pollWeatherRefreshJob(jobId, modelKey), 1500);
           } else {
-            finishWeatherRefreshUI(modelKey, job.status, job.result || null);
+            finishWeatherRefreshUI(modelKey, job.status);
           }
         }).catch(err => {
           console.error('Job polling failed:', err);
-          finishWeatherRefreshUI(modelKey, 'error', null);
+          finishWeatherRefreshUI(modelKey, 'error');
         });
     }
 
-    function finishWeatherRefreshUI(modelKey, status, jobResult = null) {
+    function finishWeatherRefreshUI(modelKey, status) {
       const banner = document.getElementById('weatherRefreshStatusBanner');
       const label = modelKey === 'all'
         ? 'All weather products'
         : ((WEATHER_MODEL_META[modelKey] && WEATHER_MODEL_META[modelKey].name) || modelKey);
-      const syncOutcome = jobResult && jobResult.result ? jobResult.result : null;
-      const lastResult = syncOutcome && syncOutcome.last_result ? syncOutcome.last_result : null;
-      const syncMsg = syncOutcome && syncOutcome.message ? syncOutcome.message : '';
-      const isOk = (status === 'completed' || status === 'done') && lastResult !== 'error' && lastResult !== 'partial';
-      const isPartial = (status === 'completed' || status === 'done') && (lastResult === 'partial' || lastResult === 'busy');
+      const isOk = (status === 'completed' || status === 'done');
       if (banner) {
         if (isOk) {
-          const doneText = lastResult === 'up_to_date'
-            ? `${label}: already at newest upstream run.`
-            : `${label} refresh complete.`;
           banner.className = "text-[10.5px] leading-snug text-[#0f5132] bg-[#d1e7dd] border border-[#badbcc] p-1.5 rounded flex items-center gap-1";
-          banner.innerHTML = `<i data-lucide="check-circle-2" class="w-3 h-3 text-[#0f5132] flex-shrink-0"></i><span class="text-[#0f5132]">${doneText}</span>`;
-        } else if (isPartial) {
-          banner.className = "text-[10.5px] leading-snug text-[#664d03] bg-[#fff3cd] border border-[#ffecb5] p-1.5 rounded flex items-center gap-1";
-          banner.innerHTML = `<i data-lucide="alert-triangle" class="w-3 h-3 flex-shrink-0"></i><span>${syncMsg || (label + ' partially refreshed.')}</span>`;
+          banner.innerHTML = `<i data-lucide="check-circle-2" class="w-3 h-3 text-[#0f5132]"></i><span class="text-[#0f5132]">${label} refresh complete.</span>`;
         } else {
           banner.className = "text-[10.5px] leading-snug text-[#842029] bg-[#f8d7da] border border-[#f5c2c7] p-1.5 rounded flex items-center gap-1";
-          banner.innerHTML = `<i data-lucide="alert-circle" class="w-3 h-3 flex-shrink-0"></i><span>${syncMsg || (label + ' refresh ' + status + '.')}</span>`;
+          banner.innerHTML = `<i data-lucide="alert-circle" class="w-3 h-3"></i><span>${label} refresh ${status}.</span>`;
         }
         if (window.lucide) window.lucide.createIcons();
         setTimeout(() => {
           banner.classList.add('hidden');
           banner.className = "hidden text-[10.5px] leading-snug text-[#0f5132] bg-[#d1e7dd] border border-[#badbcc] p-1.5 rounded flex items-center gap-1";
-        }, 6000);
+        }, 4000);
       }
 
       document.querySelectorAll('[data-refresh-model]').forEach(btn => {
@@ -9200,6 +8810,7 @@
     let fcStatusRequestSeq = 0;
     let fcLastModelResult = null;
     let fcModelResultsByBasin = {};
+    let fcObservedStreamflowByBasin = {};
     let fcHydroOverlayAll = false;
     let fcSelectedNowcast = null;
     let fcSelectedForecast = null;
@@ -9215,62 +8826,6 @@
     let fcWhatIfCounterByBasin = {};
     let fcWhatIfDragState = null;
     let fcWhatIfCanvasBound = false;
-    let fcObservedStreamflowByBasin = {};
-
-    function getObservedStreamflowForBasin(basinId) {
-      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
-      if (!bid) return [];
-      if (Array.isArray(fcObservedStreamflowByBasin[bid]) && fcObservedStreamflowByBasin[bid].length > 0) {
-        return fcObservedStreamflowByBasin[bid];
-      }
-      if (fcStatusData && fcStatusData.catchment_id === bid && Array.isArray(fcStatusData.observed_streamflow)) {
-        return fcStatusData.observed_streamflow;
-      }
-      const res = fcModelResultsByBasin[bid];
-      if (res && Array.isArray(res.observed_streamflow)) {
-        return res.observed_streamflow;
-      }
-      return [];
-    }
-
-    function updateStreamflowCsvStatusUI() {
-      const statusEl = document.getElementById('fcStreamflowCsvStatus');
-      const clearBtn = document.getElementById('fcClearStreamflowCsvBtn');
-      const basinId = getActiveForecastBasinId();
-      const series = getObservedStreamflowForBasin(basinId);
-      const validPts = series.filter(pt => pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined);
-      if (validPts.length > 0) {
-        if (clearBtn) clearBtn.classList.remove('hidden');
-        if (statusEl) {
-          const firstDate = validPts[0].date;
-          const lastDate = validPts[validPts.length - 1].date;
-          statusEl.className = 'text-[11px] text-[#1e8e3e] font-mono leading-relaxed';
-          statusEl.innerText = `${validPts.length} obs plotted (${firstDate} → ${lastDate})`;
-          statusEl.classList.remove('hidden');
-        }
-      } else {
-        if (clearBtn) clearBtn.classList.add('hidden');
-        if (statusEl && !statusEl.dataset.hasError) {
-          statusEl.innerText = '';
-          statusEl.classList.add('hidden');
-        }
-      }
-    }
-
-    function extractForecastReturnPeriodThresholds(targetResult, statusData) {
-      const rpSrc = (targetResult && targetResult.return_periods) || (statusData && statusData.return_periods) || {};
-      const defs = [
-        ['2-yr return period', rpSrc.return_period_2, '#eab308'],
-        ['5-yr return period', rpSrc.return_period_5, '#dc2626'],
-        ['10-yr return period', rpSrc.return_period_10, '#ea580c'],
-        ['20-yr return period', rpSrc.return_period_20, '#9333ea'],
-        ['50-yr return period', rpSrc.return_period_50, '#7e22ce'],
-        ['100-yr return period', rpSrc.return_period_100, '#581c87']
-      ];
-      return defs
-        .filter(([, v]) => v !== null && v !== undefined && Number.isFinite(Number(v)) && Number(v) > 0)
-        .map(([label, v, color]) => ({ label, value: Number(v), color }));
-    }
 
     const FC_WHATIF_COLORS = [
       { stroke: '#7c3aed', fill: 'rgba(124, 58, 237, 0.14)' }, // Vivid Violet
@@ -9280,6 +8835,66 @@
       { stroke: '#dc2626', fill: 'rgba(220, 38, 38, 0.14)' },  // Crimson Red
       { stroke: '#0d9488', fill: 'rgba(13, 148, 136, 0.14)' }  // Deep Teal
     ];
+
+    function getObservedStreamflowForBasin(basinId) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      if (!bid) return [];
+      if (Array.isArray(fcObservedStreamflowByBasin[bid]) && fcObservedStreamflowByBasin[bid].length > 0) {
+        return fcObservedStreamflowByBasin[bid];
+      }
+      const res = fcModelResultsByBasin[bid];
+      if (res && Array.isArray(res.observed_streamflow) && res.observed_streamflow.length > 0) {
+        return res.observed_streamflow;
+      }
+      if (fcStatusData && fcStatusData.catchment_id === bid && Array.isArray(fcStatusData.observed_streamflow)) {
+        return fcStatusData.observed_streamflow;
+      }
+      return [];
+    }
+
+    function updateStreamflowCsvStatusUI(customMsg) {
+      const statusEl = document.getElementById('fcStreamflowCsvStatus');
+      const clearBtn = document.getElementById('fcClearStreamflowCsvBtn');
+      const activeId = getActiveForecastBasinId();
+      const series = getObservedStreamflowForBasin(activeId);
+      const validPts = series.filter(pt => pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined);
+      if (clearBtn) {
+        clearBtn.classList.toggle('hidden', series.length === 0);
+      }
+      if (!statusEl) return;
+      if (customMsg) {
+        statusEl.className = 'text-[11px] text-[#137333] font-mono leading-snug';
+        statusEl.innerText = customMsg;
+      } else if (series.length > 0) {
+        const d0 = series[0].date;
+        const d1 = series[series.length - 1].date;
+        statusEl.className = 'text-[11px] text-[#137333] font-mono leading-snug';
+        statusEl.innerText = `Loaded ${validPts.length}/${series.length} valid obs (${d0} → ${d1})`;
+      } else {
+        statusEl.className = 'text-[11px] text-[#5f6368] font-mono leading-snug';
+        statusEl.innerText = activeId ? `No CSV uploaded for ${activeId}.` : 'No CSV uploaded for active basin.';
+      }
+    }
+
+    function extractForecastReturnPeriodThresholds(basinId, modelResult) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      const targetResult = modelResult || (bid && fcModelResultsByBasin[bid]) || null;
+      const rps = (targetResult && targetResult.return_periods) ||
+        (fcStatusData && fcStatusData.catchment_id === bid && fcStatusData.return_periods) ||
+        {};
+      const rawDefs = [
+        ['2-yr return period', rps.return_period_2 ?? rps.rp2 ?? rps['2'], '#eab308'],
+        ['5-yr return period', rps.return_period_5 ?? rps.rp5 ?? rps['5'], '#f97316'],
+        ['10-yr return period', rps.return_period_10 ?? rps.rp10 ?? rps['10'], '#ea580c'],
+        ['20-yr return period', rps.return_period_20 ?? rps.rp20 ?? rps['20'], '#dc2626'],
+        ['25-yr return period', rps.return_period_25 ?? rps.rp25 ?? rps['25'], '#dc2626'],
+        ['50-yr return period', rps.return_period_50 ?? rps.rp50 ?? rps['50'], '#9333ea'],
+        ['100-yr return period', rps.return_period_100 ?? rps.rp100 ?? rps['100'], '#7e22ce']
+      ];
+      return rawDefs
+        .filter(([, v]) => v !== null && v !== undefined && Number.isFinite(Number(v)) && Number(v) > 0)
+        .map(([label, v, color]) => ({ label, value: Number(v), color, unit: 'm³/s' }));
+    }
 
     function getBasinWhatIfEdits(basinId) {
       const bid = String(basinId || getActiveForecastBasinId() || '').trim();
@@ -9922,7 +9537,7 @@
         }
       });
 
-      // Include dates from uploaded real-time observed streamflow CSV for the active catchment
+      // Also include dates from uploaded local realtime streamflow CSV observations
       const obsSeries = getObservedStreamflowForBasin(activeId);
       obsSeries.forEach(pt => {
         if (pt && pt.date) dateSet.add(pt.date);
@@ -11209,16 +10824,14 @@
       const targetResult = (activeId && fcModelResultsByBasin[activeId]) ? fcModelResultsByBasin[activeId] : modelResult;
       const scenarios = (activeId && fcWhatIfScenariosByBasin[activeId]) || [];
       const enabledScenarios = scenarios.filter(sc => sc && sc.enabled && sc.result && Array.isArray(sc.result.forecast));
-      const obsSeries = getObservedStreamflowForBasin(activeId);
-      const hasObserved = obsSeries.some(pt => pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined);
-
-      updateStreamflowCsvStatusUI();
 
       const timeline = buildSharedForecastTimeline(targetResult || (enabledScenarios[0] && enabledScenarios[0].result) || null);
       const { allDates, labels, issueDate, t0Index } = timeline;
       masterHydroChart.$fcTimelineMeta = allDates.length > 0 ? { issueDate, t0Index } : null;
-      masterHydroChart.$returnPeriodThresholds = extractForecastReturnPeriodThresholds(targetResult, fcStatusData);
+      masterHydroChart.$returnPeriodThresholds = extractForecastReturnPeriodThresholds(activeId, targetResult);
 
+      const obsSeries = getObservedStreamflowForBasin(activeId);
+      const hasObserved = obsSeries.some(pt => pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined);
       const hasBaseline = Boolean(targetResult && Array.isArray(targetResult.forecast) && targetResult.forecast.length > 0);
       if (!hasBaseline && enabledScenarios.length === 0 && !hasObserved) {
         masterHydroChart.data.labels = labels;
@@ -11245,16 +10858,14 @@
         if (peakBadge) peakBadge.classList.add('hidden');
         if (subtitleEl) {
           subtitleEl.innerText = activeId
-            ? `Viewing Basin: ${activeId} · Click "2. Make Forecasts" or upload a Realtime Streamflow CSV to plot discharge.`
-            : 'Click "2. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
+            ? `Viewing Basin: ${activeId} · Upload a realtime streamflow CSV or click "4. Make Forecasts" to generate discharge trajectories.`
+            : 'Upload a realtime streamflow CSV or click "4. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
         }
         return;
       }
 
-      const refResult = hasBaseline
-        ? targetResult
-        : (enabledScenarios.length > 0 ? enabledScenarios[0].result : { basin_id: activeId, hindcast_tail: [], issue_date: issueDate, mode: fcCurrentMode });
-      const hindcastTail = Array.isArray(refResult.hindcast_tail) ? refResult.hindcast_tail : [];
+      const refResult = hasBaseline ? targetResult : (enabledScenarios.length > 0 ? enabledScenarios[0].result : null);
+      const hindcastTail = (refResult && Array.isArray(refResult.hindcast_tail)) ? refResult.hindcast_tail : [];
       const hindcastByDate = {};
       hindcastTail.forEach(pt => { if (pt && pt.date) hindcastByDate[pt.date] = pt; });
 
@@ -11264,7 +10875,7 @@
       });
 
       const chartDatasets = [];
-      if (hasBaseline || enabledScenarios.length > 0) {
+      if (refResult) {
         chartDatasets.push({
           label: `HINDCAST (< t₀): ${refResult.basin_id || activeId} Spin-Up Streamflow (m³/s)`,
           data: hindcastData,
@@ -11965,30 +11576,22 @@
       unavailable: 'No forecast from this model at this location.'
     };
     let currentMaaSModel = 'glofas';
-    const selectedMaaSMapModels = new Set(['glofas']); // 1..3 hydrofabrics visible on the map at once
-    const selectedMaaSModels = new Set(['glofas']); // 1..3 models plotted in the forecast view
+    const selectedMaaSModels = new Set(['glofas']);
     let currentMaaSView = 'map'; // 'map' | 'forecast'
     let currentMaaSProbe = null; // { lat, lon, gaugeId, riverId, label, meta } of the selected reach
     let currentMaaSForecastData = null; // /api/maas/forecast payload for currentMaaSProbe
     let currentMaaSForecastNote = null; // loading / error text while there is no payload
-    let maasForecastFullPending = false; // true while the 3-model background fetch is still in flight
     let maasForecastRequestSeq = 0; // drops responses superseded by a newer click or a close
     let maasChart = null;
     let maasRiversLayerGroup = null;
-    const maasModelSubLayers = {}; // { floodhub: L.LayerGroup, glofas: L.LayerGroup, geoglows: L.LayerGroup }
-    const maasRiversLoadedByModel = {}; // { [model]: view }
-    const maasRiversAbortByModel = {}; // { [model]: AbortController }
     let maasRiversAbortController = null;
     let maasRiverRenderer = null;
     let maasActiveProbeMarker = null;
-    let maasSnappedReachesLayerGroup = null;
     let maasHidMainRivers = false;
 
     // Provider-standard return-period color schemes:
-    // - When 1 hydrofabric is shown on the map, normal rivers (< 2-yr return period) are Blue (#1a73e8).
-    // - When 2+ hydrofabrics are shown on the map at once, normal rivers use each hydrofabric's signature color
-    //   (#1a73e8 HydroSHEDS, #007b83 LISFLOOD, #1e8e3e TDX-Hydro) so overlaid networks are easy to distinguish.
-    // - Return-period exceedances always use each provider's official operational flood color standard:
+    // - All normal or below-threshold rivers (< 2-yr return period / below FloodHub Warning) are Blue (#1a73e8).
+    // - Return-period exceedances use each provider's official operational flood color standard:
     //   * Google FloodHub: Orange (Warning >=2-yr), Red (Danger >=5-yr), Dark Red (Extreme >=20-yr)
     //   * Copernicus GloFAS: Yellow (Medium >=2-yr), Red (High >=5-yr), Purple (Severe >=20-yr)
     //   * GEOGLOWS ECMWF: Yellow (>=2-yr), Orange (>=10-yr), Red (>=25-yr), Purple (>=50-yr)
@@ -12031,60 +11634,11 @@
       }
     };
 
-    function updateMaaSMapNetworkCaption() {
-      const activeMapModels = MAAS_MODEL_ORDER.filter(k => selectedMaaSMapModels.has(k));
-      const dot = document.getElementById('maasMapModelDot');
-      const caption = document.getElementById('maasNetworkCaption');
-      if (!caption) return;
-      if (activeMapModels.length <= 1) {
-        const key = activeMapModels[0] || currentMaaSModel || 'glofas';
-        const meta = MAAS_MODELS[key] || MAAS_MODELS.glofas;
-        if (dot) {
-          dot.classList.remove('hidden');
-          dot.style.background = meta.color;
-        }
-        caption.textContent = meta.networkLabel;
-      } else {
-        if (dot) dot.classList.add('hidden');
-        caption.innerHTML = activeMapModels.map(k => {
-          const m = MAAS_MODELS[k];
-          return `<span class="inline-flex items-center gap-1 mr-2"><span class="w-2 h-2 rounded-full inline-block" style="background:${m.color}"></span><span>${maasEscapeHtml(m.streamMap)}</span></span>`;
-        }).join('');
-      }
-    }
-
     function renderMaaSFlowLegend(modelKey) {
-      const activeMapModels = MAAS_MODEL_ORDER.filter(k => selectedMaaSMapModels.has(k));
+      const cfg = MAAS_PROVIDER_PALETTES[modelKey] || MAAS_PROVIDER_PALETTES.glofas;
       const titleEl = document.getElementById('maasFlowLegendTitle');
-      const itemsEl = document.getElementById('maasFlowLegendItems');
-      if (activeMapModels.length >= 2) {
-        if (titleEl) titleEl.textContent = 'Hydrofabrics & Flood Alerts';
-        if (itemsEl) {
-          const netRows = activeMapModels.map(k => {
-            const m = MAAS_MODELS[k];
-            return `<span class="flex items-center gap-1.5"><span class="w-3.5 rounded-full inline-block" style="background:${m.color};height:4px"></span><span class="font-medium text-[#202124]">${maasEscapeHtml(m.shortName)}</span><span class="text-[#5f6368]">(${maasEscapeHtml(m.streamMap)})</span></span>`;
-          });
-          const alertRows = [
-            { color: '#eab308', label: '≥2-yr Warning / Medium', bold: true },
-            { color: '#dc2626', label: '≥5-yr Danger / High', bold: true },
-            { color: '#9333ea', label: '≥20-yr Extreme / Severe', bold: true }
-          ];
-          if (selectedMaaSMapModels.has('floodhub')) {
-            alertRows.push({ color: '#9aa0a6', label: 'No FloodHub forecast', dashed: true });
-          }
-          const alertHtml = alertRows.map(it => {
-            const swatchStyle = it.dashed
-              ? `border-top:2px dashed ${it.color};height:0`
-              : `background:${it.color};height:${it.bold ? '6px' : '4px'}`;
-            return `<span class="flex items-center gap-1.5"><span class="w-3.5 rounded-full inline-block" style="${swatchStyle}"></span><span class="${it.bold ? 'font-medium text-[#202124]' : 'text-[#5f6368]'}">${maasEscapeHtml(it.label)}</span></span>`;
-          });
-          itemsEl.innerHTML = netRows.concat(['<div class="border-t border-[#e8eaed] my-0.5"></div>'], alertHtml).join('');
-        }
-        return;
-      }
-      const effKey = activeMapModels[0] || modelKey || currentMaaSModel || 'glofas';
-      const cfg = MAAS_PROVIDER_PALETTES[effKey] || MAAS_PROVIDER_PALETTES.glofas;
       if (titleEl) titleEl.textContent = cfg.title;
+      const itemsEl = document.getElementById('maasFlowLegendItems');
       if (itemsEl) {
         itemsEl.innerHTML = cfg.legend.map(it => {
           const swatchStyle = it.dashed
@@ -12095,28 +11649,24 @@
       }
     }
 
-    function maasFlowPercentileColor(props, modelKey, multiHydrofabricMode = false) {
+    function maasFlowPercentileColor(props, modelKey) {
       const cfg = MAAS_PROVIDER_PALETTES[modelKey] || MAAS_PROVIDER_PALETTES.glofas;
-      const normalColor = multiHydrofabricMode
-        ? ((MAAS_MODELS[modelKey] && MAAS_MODELS[modelKey].color) || MAAS_NORMAL_BLUE)
-        : MAAS_NORMAL_BLUE;
-      if (!props) return normalColor;
+      if (!props) return MAAS_NORMAL_BLUE;
       const rank = Number(props.exceedance_rank);
       if (props.exceedance_rank !== null && props.exceedance_rank !== undefined && isFinite(rank) && rank >= 1) {
         const idx = Math.min(Math.max(Math.round(rank), 1), cfg.colors.length - 1);
         return cfg.colors[idx];
       }
-      return normalColor;
+      return MAAS_NORMAL_BLUE;
     }
 
     function maasModelPillButtonHtml(attrName, key, isSelected) {
       const m = MAAS_MODELS[key];
-      const role = 'checkbox';
+      const role = attrName === 'data-maas-map-model' ? 'radio' : 'checkbox';
       const btnCls = isSelected
         ? 'bg-[#e8f0fe] border-[#d2e3fc] text-[#174ea6] font-medium shadow-[0_1px_2px_rgba(26,115,232,0.08)]'
         : 'bg-[#f8f9fa] border-[#dadce0] text-[#5f6368] hover:bg-[#f1f3f4]';
-      const subLabel = attrName === 'data-maas-map-model' ? ` title="${maasEscapeHtml(m.name)} — ${maasEscapeHtml(m.networkLabel)}"` : '';
-      return `<button type="button" ${attrName}="${key}" role="${role}" aria-checked="${isSelected}"${subLabel} class="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition ${btnCls}">
+      return `<button type="button" ${attrName}="${key}" role="${role}" aria-checked="${isSelected}" class="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition ${btnCls}">
         <span class="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0" style="border-color:${isSelected ? m.color : '#80868b'}">
           ${isSelected ? `<span class="w-1.5 h-1.5 rounded-full" style="background:${m.color}"></span>` : ''}
         </span>
@@ -12128,7 +11678,7 @@
       const mapList = document.getElementById('maasMapMultiModelList');
       if (mapList) {
         mapList.innerHTML = MAAS_MODEL_ORDER.map(k =>
-          maasModelPillButtonHtml('data-maas-map-model', k, selectedMaaSMapModels.has(k))
+          maasModelPillButtonHtml('data-maas-map-model', k, k === currentMaaSModel)
         ).join('');
       }
       const fcList = document.getElementById('maasForecastMultiModelList');
@@ -12137,7 +11687,6 @@
           maasModelPillButtonHtml('data-maas-forecast-model', k, selectedMaaSModels.has(k))
         ).join('');
       }
-      updateMaaSMapNetworkCaption();
     }
 
     function toggleMaaSMultiModel(key) {
@@ -12147,47 +11696,26 @@
         selectedMaaSModels.delete(key);
       } else {
         selectedMaaSModels.add(key);
-        // If this model's forecast is not yet in currentMaaSForecastData and no full fetch is in flight, fetch all models now.
-        const hasModelPayload = currentMaaSForecastData && currentMaaSForecastData.models && currentMaaSForecastData.models[key];
-        if (!hasModelPayload && !maasForecastFullPending && currentMaaSProbe) {
-          const p = currentMaaSProbe;
-          fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta, true);
-        }
       }
       renderMaaSMultiModelLists();
       if (currentMaaSView === 'forecast') renderMaaSForecast();
     }
 
-    function toggleMaaSMapModel(key) {
-      if (!MAAS_MODELS[key]) return;
-      if (selectedMaaSMapModels.has(key)) {
-        if (selectedMaaSMapModels.size <= 1) return; // keep at least one hydrofabric active on the map
-        selectedMaaSMapModels.delete(key);
-        if (currentMaaSModel === key) {
-          currentMaaSModel = MAAS_MODEL_ORDER.find(k => selectedMaaSMapModels.has(k)) || 'glofas';
-        }
-      } else {
-        selectedMaaSMapModels.add(key);
-        currentMaaSModel = key;
-      }
-      renderMaaSMultiModelLists();
-      renderMaaSFlowLegend(currentMaaSModel);
-      clearTimeout(maasLiveRefreshTimer);
-      maasLiveRetryCount = 0;
-      if (currentActiveTabId === 'tab-maas') fetchMaaSViewportRivers(false);
-    }
-
     function setMaaSModel(key) {
       if (!MAAS_MODELS[key]) return;
-      const changed = key !== currentMaaSModel || selectedMaaSMapModels.size !== 1 || !selectedMaaSMapModels.has(key);
+      const changed = key !== currentMaaSModel;
       currentMaaSModel = key;
-      selectedMaaSMapModels.clear();
-      selectedMaaSMapModels.add(key);
+      const meta = MAAS_MODELS[key];
+      const dot = document.getElementById('maasMapModelDot');
+      if (dot) dot.style.background = meta.color;
+      const caption = document.getElementById('maasNetworkCaption');
+      if (caption) caption.textContent = meta.networkLabel;
       renderMaaSMultiModelLists();
       renderMaaSFlowLegend(key);
       if (changed) {
         clearTimeout(maasLiveRefreshTimer);
         maasLiveRetryCount = 0;
+        maasRiversLoaded = null;
         if (currentActiveTabId === 'tab-maas') fetchMaaSViewportRivers(false);
       }
     }
@@ -12197,8 +11725,6 @@
       renderMaaSFlowLegend(currentMaaSModel);
       if (!maasRiversLayerGroup) maasRiversLayerGroup = L.layerGroup();
       if (!map.hasLayer(maasRiversLayerGroup)) maasRiversLayerGroup.addTo(map);
-      if (!maasSnappedReachesLayerGroup) maasSnappedReachesLayerGroup = L.layerGroup();
-      if (!map.hasLayer(maasSnappedReachesLayerGroup)) maasSnappedReachesLayerGroup.addTo(map);
       // The Delineation tab's river layer would duplicate the MaaS reaches (and go stale on pan).
       if (riverLayerGroup && map.hasLayer(riverLayerGroup)) {
         map.removeLayer(riverLayerGroup);
@@ -12211,12 +11737,7 @@
       clearTimeout(maasLiveRefreshTimer);
       maasLiveRetryCount = 0;
       if (maasRiversAbortController) maasRiversAbortController.abort();
-      Object.values(maasRiversAbortByModel).forEach(c => { if (c) c.abort(); });
       if (maasRiversLayerGroup && map.hasLayer(maasRiversLayerGroup)) map.removeLayer(maasRiversLayerGroup);
-      if (maasSnappedReachesLayerGroup && map.hasLayer(maasSnappedReachesLayerGroup)) {
-        maasSnappedReachesLayerGroup.clearLayers();
-        map.removeLayer(maasSnappedReachesLayerGroup);
-      }
       // The reach canvas would otherwise sit on top of the shared overlay canvas and swallow its clicks.
       if (maasRiverRenderer && map.hasLayer(maasRiverRenderer)) map.removeLayer(maasRiverRenderer);
       if (currentMaaSView === 'forecast') closeMaaSForecastView();
@@ -12244,11 +11765,9 @@
 
     function closeMaaSForecastView() {
       maasForecastRequestSeq++; // ignore a response that is still in flight
-      maasForecastFullPending = false;
       setMaaSView('map');
       if (maasActiveProbeMarker && map) map.removeLayer(maasActiveProbeMarker);
       maasActiveProbeMarker = null;
-      if (maasSnappedReachesLayerGroup) maasSnappedReachesLayerGroup.clearLayers();
     }
 
     // DOM marker (not canvas), so it never intercepts clicks meant for the river reaches below it.
@@ -12265,82 +11784,6 @@
           html: '<div style="width:16px;height:16px;border-radius:50%;background:#1a73e8;border:3px solid #fff;box-shadow:0 1px 4px rgba(60,64,67,0.45)"></div>'
         })
       }).addTo(map);
-    }
-
-    // Renders per-hydrofabric snapped reach markers and subtle connector lines when a reach is selected,
-    // so users viewing multiple hydrofabrics can see the exact cross-network match on every model.
-    function updateMaaSSnappedReachMarkers(data) {
-      if (!map) return;
-      if (!maasSnappedReachesLayerGroup) {
-        maasSnappedReachesLayerGroup = L.layerGroup().addTo(map);
-      }
-      maasSnappedReachesLayerGroup.clearLayers();
-      if (!data || currentMaaSView !== 'forecast') return;
-      const reaches = data.reaches || {};
-      const vs = data.virtual_station || {};
-      const probe = currentMaaSProbe;
-      const fh = reaches.floodhub || vs.floodhub_gauge;
-      const gl = reaches.glofas || vs.glofas_cell;
-      const gg = reaches.geoglows || vs.geoglows_reach;
-      const candidates = [
-        fh && isFinite(Number(fh.lat)) && isFinite(Number(fh.lon)) ? {
-          key: 'floodhub',
-          lat: Number(fh.lat),
-          lon: Number(fh.lon),
-          idLabel: fh.gauge_id || fh.reach_id || 'HydroSHEDS reach',
-          areaKm2: fh.upstream_area_km2
-        } : null,
-        gl && isFinite(Number(gl.cell_center_lat)) && isFinite(Number(gl.cell_center_lon)) ? {
-          key: 'glofas',
-          lat: Number(gl.cell_center_lat),
-          lon: Number(gl.cell_center_lon),
-          idLabel: `Cell (${Number(gl.cell_center_lat).toFixed(3)}°, ${Number(gl.cell_center_lon).toFixed(3)}°)`,
-          areaKm2: gl.upstream_area_km2
-        } : null,
-        gg && isFinite(Number(gg.lat)) && isFinite(Number(gg.lon)) ? {
-          key: 'geoglows',
-          lat: Number(gg.lat),
-          lon: Number(gg.lon),
-          idLabel: gg.river_id ? `TDX-Hydro #${gg.river_id}` : 'TDX-Hydro reach',
-          areaKm2: gg.upstream_area_km2
-        } : null
-      ].filter(Boolean);
-
-      for (const item of candidates) {
-        const m = MAAS_MODELS[item.key];
-        if (!m) continue;
-        if (probe && isFinite(probe.lat) && isFinite(probe.lon)) {
-          const dDeg = Math.hypot(item.lat - probe.lat, item.lon - probe.lon);
-          if (dDeg > 0.002) {
-            const line = L.polyline([[probe.lat, probe.lon], [item.lat, item.lon]], {
-              color: m.color,
-              weight: 1.8,
-              opacity: 0.75,
-              dashArray: '3, 4',
-              interactive: false
-            });
-            maasSnappedReachesLayerGroup.addLayer(line);
-          }
-        }
-        const areaText = Number(item.areaKm2) > 0
-          ? ` · ${Math.round(Number(item.areaKm2)).toLocaleString()} km²`
-          : '';
-        const marker = L.marker([item.lat, item.lon], {
-          interactive: true,
-          keyboard: false,
-          icon: L.divIcon({
-            className: '',
-            iconSize: [12, 12],
-            iconAnchor: [6, 6],
-            html: `<div style="width:12px;height:12px;border-radius:50%;background:${m.color};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4)"></div>`
-          })
-        });
-        marker.bindTooltip(
-          `<span style="color:${m.color};font-weight:600">${maasEscapeHtml(m.shortName)} (${maasEscapeHtml(m.streamMap)})</span><br>${maasEscapeHtml(item.idLabel)}${maasEscapeHtml(areaText)}`,
-          { direction: 'top', offset: [0, -6] }
-        );
-        maasSnappedReachesLayerGroup.addLayer(marker);
-      }
     }
 
     function maasEscapeHtml(value) {
@@ -12361,8 +11804,7 @@
     // fetches new reaches while staying within the same level reuses the drawn layer.
     function maasLodKey(model, zoom) {
       const z = Math.min(Math.max(zoom, 3), 11);
-      const modeTag = selectedMaaSMapModels.size >= 2 ? 'multi' : 'single';
-      return `${model}:${z}:${modeTag}`;
+      return `${model}:${z}`;
     }
 
     // Projects a click (within the 6 px canvas hit tolerance) onto the clicked polyline.
@@ -12389,7 +11831,7 @@
     let maasRiversDebounceTimer = null;
     let maasLiveRefreshTimer = null;
     let maasLiveRetryCount = 0;
-    let maasRiversLoaded = null; // legacy alias of the primary model's loaded view
+    let maasRiversLoaded = null; // view bounds + lodKey of the reaches currently drawn
     function loadMaaSViewportRivers() {
       clearTimeout(maasRiversDebounceTimer);
       clearTimeout(maasLiveRefreshTimer);
@@ -12397,13 +11839,12 @@
       maasRiversDebounceTimer = setTimeout(() => fetchMaaSViewportRivers(false), 80);
     }
 
-    // Manually clears cached live statuses for the active model(s) and re-fetches newest upstream forecasts.
+    // Manually clears cached live statuses for the active model and re-fetches newest upstream forecasts.
     function refreshMaaSLiveData() {
       clearTimeout(maasRiversDebounceTimer);
       clearTimeout(maasLiveRefreshTimer);
       maasLiveRetryCount = 0;
       maasRiversLoaded = null;
-      Object.keys(maasRiversLoadedByModel).forEach(k => { delete maasRiversLoadedByModel[k]; });
       const iconEl = document.getElementById('maasRefreshLiveIcon');
       if (iconEl) iconEl.classList.add('animate-spin');
       const liveBadgeEl = document.getElementById('maasLiveColorBadge');
@@ -12417,232 +11858,160 @@
         currentMaaSForecastData = null;
         currentMaaSForecastNote = 'Refreshing forecast…';
         renderMaaSForecast();
-        fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta, true);
+        fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta);
       }
     }
 
-    // River networks of the selected map hydrofabric(s) for the current viewport at telescoping spatial resolution;
-    // supports viewing 1, 2, or all 3 hydrofabrics simultaneously. Clicking any reach opens its cross-network forecast.
+    // River network of the selected model for the current viewport at telescoping spatial resolution; clicking a line opens its forecast.
     async function fetchMaaSViewportRivers(isLiveRefresh = false, forceManualRefresh = false) {
       if (!map || currentActiveTabId !== 'tab-maas') return;
       initMaaSMapLayers();
       const bounds = map.getBounds();
       const zoom = map.getZoom();
-      const activeMapModels = MAAS_MODEL_ORDER.filter(k => selectedMaaSMapModels.has(k));
-      const multiHydrofabricMode = activeMapModels.length >= 2;
-      updateMaaSMapNetworkCaption();
-
-      // Remove layers and abort in-flight requests for models that are no longer active on the map
-      for (const m of MAAS_MODEL_ORDER) {
-        if (!selectedMaaSMapModels.has(m)) {
-          if (maasRiversAbortByModel[m]) {
-            maasRiversAbortByModel[m].abort();
-            delete maasRiversAbortByModel[m];
-          }
-          if (maasModelSubLayers[m] && maasRiversLayerGroup) {
-            maasModelSubLayers[m].clearLayers();
-            maasRiversLayerGroup.removeLayer(maasModelSubLayers[m]);
-          }
-          delete maasRiversLoadedByModel[m];
-        }
-      }
-
-      const bboxCoords = {
+      const model = currentMaaSModel;
+      const lodKey = maasLodKey(model, zoom);
+      const view = {
         west: Math.max(-180, bounds.getWest()), south: Math.max(-85, bounds.getSouth()),
-        east: Math.min(180, bounds.getEast()), north: Math.min(85, bounds.getNorth()),
+        east: Math.min(180, bounds.getEast()), north: Math.min(85, bounds.getNorth()), lodKey,
       };
-      const bbox = [bboxCoords.west, bboxCoords.south, bboxCoords.east, bboxCoords.north].map(v => v.toFixed(4)).join(',');
-      if (!maasRiverRenderer) maasRiverRenderer = L.canvas({ tolerance: 6 });
-
-      let totalLiveColored = 0;
-      let totalLivePending = 0;
-      let totalActiveFloods = 0;
-      let anyFetched = false;
-
-      await Promise.all(activeMapModels.map(async (model) => {
-        const lodKey = maasLodKey(model, zoom);
-        const view = { ...bboxCoords, lodKey };
-        const loaded = maasRiversLoadedByModel[model];
-        const subGroup = maasModelSubLayers[model] || (maasModelSubLayers[model] = L.layerGroup());
-        if (!maasRiversLayerGroup.hasLayer(subGroup)) {
-          maasRiversLayerGroup.addLayer(subGroup);
+      // Panning or zooming within an already-loaded extent at the same level of detail needs no refetch unless refreshing live statuses.
+      const loaded = maasRiversLoaded;
+      if (!isLiveRefresh && !forceManualRefresh && loaded && loaded.lodKey === lodKey && view.west >= loaded.west && view.east <= loaded.east &&
+          view.south >= loaded.south && view.north <= loaded.north && maasRiversLayerGroup.getLayers().length) return;
+      const bbox = [view.west, view.south, view.east, view.north].map(v => v.toFixed(4)).join(',');
+      if (maasRiversAbortController) maasRiversAbortController.abort();
+      const controller = new AbortController();
+      maasRiversAbortController = controller;
+      try {
+        const refreshParam = forceManualRefresh ? '&refresh=1' : '';
+        const resp = await fetch(`/api/maas/network?model=${encodeURIComponent(model)}&bbox=${bbox}&zoom=${zoom}${refreshParam}`, { signal: controller.signal });
+        if (!resp.ok) return;
+        const geojson = await resp.json();
+        if (controller.signal.aborted || currentActiveTabId !== 'tab-maas' || model !== currentMaaSModel) return;
+        maasRiversLayerGroup.clearLayers();
+        maasRiversLoaded = view;
+        if (!geojson || !Array.isArray(geojson.features) || !geojson.features.length) return;
+        // A wider hit tolerance than the default canvas renderer makes thin reaches easy to click.
+        if (!maasRiverRenderer) maasRiverRenderer = L.canvas({ tolerance: 6 });
+        const modelMeta = MAAS_MODELS[model] || MAAS_MODELS.glofas;
+        const paletteCfg = MAAS_PROVIDER_PALETTES[model] || MAAS_PROVIDER_PALETTES.glofas;
+        const gProps = geojson.properties || {};
+        const captionEl = document.getElementById('maasNetworkCaption');
+        if (captionEl) {
+          captionEl.textContent = modelMeta.networkLabel;
         }
-        if (!isLiveRefresh && !forceManualRefresh && loaded && loaded.lodKey === lodKey &&
-            view.west >= loaded.west && view.east <= loaded.east &&
-            view.south >= loaded.south && view.north <= loaded.north &&
-            subGroup.getLayers().length) {
-          totalLiveColored += Number(loaded.liveColored || 0);
-          totalLivePending += Number(loaded.livePending || 0);
-          totalActiveFloods += Number(loaded.activeFloods || 0);
-          return;
+        const liveColored = Number(gProps.live_colored_count || 0);
+        const livePending = Number(gProps.live_pending_count || 0);
+        const activeFloods = Number(gProps.active_flood_count || 0);
+        const liveBadgeEl = document.getElementById('maasLiveColorBadge');
+        const iconEl = document.getElementById('maasRefreshLiveIcon');
+        if (liveBadgeEl) {
+          if (livePending > 0 && maasLiveRetryCount < 8) {
+            if (iconEl) iconEl.classList.add('animate-spin');
+            const floodPrefix = activeFloods > 0 ? `${activeFloods} flood${activeFloods === 1 ? '' : 's'} · ` : '';
+            liveBadgeEl.textContent = liveColored > 0 ? `${floodPrefix}${liveColored.toLocaleString()} live · updating…` : 'Fetching live flows…';
+            liveBadgeEl.className = 'text-[9.5px] font-mono text-[#e8710a]';
+          } else {
+            if (iconEl) iconEl.classList.remove('animate-spin');
+            const floodPrefix = activeFloods > 0 ? `${activeFloods} flood alert${activeFloods === 1 ? '' : 's'} · ` : '';
+            liveBadgeEl.textContent = liveColored > 0 ? `${floodPrefix}${liveColored.toLocaleString()} live` : 'Real-time';
+            liveBadgeEl.className = activeFloods > 0
+              ? 'text-[9.5px] font-mono font-semibold text-[#d93025]'
+              : 'text-[9.5px] font-mono text-[#1e8e3e]';
+          }
         }
-        if (maasRiversAbortByModel[model]) maasRiversAbortByModel[model].abort();
-        const controller = new AbortController();
-        maasRiversAbortByModel[model] = controller;
-        if (model === currentMaaSModel) maasRiversAbortController = controller;
-        try {
-          const refreshParam = forceManualRefresh ? '&refresh=1' : '';
-          const resp = await fetch(`/api/maas/network?model=${encodeURIComponent(model)}&bbox=${bbox}&zoom=${zoom}${refreshParam}`, { signal: controller.signal });
-          if (!resp.ok) return;
-          const geojson = await resp.json();
-          if (controller.signal.aborted || currentActiveTabId !== 'tab-maas' || !selectedMaaSMapModels.has(model)) return;
-          subGroup.clearLayers();
-          const gProps = (geojson && geojson.properties) || {};
-          const liveColored = Number(gProps.live_colored_count || 0);
-          const livePending = Number(gProps.live_pending_count || 0);
-          const activeFloods = Number(gProps.active_flood_count || 0);
-          view.liveColored = liveColored;
-          view.livePending = livePending;
-          view.activeFloods = activeFloods;
-          maasRiversLoadedByModel[model] = view;
-          if (model === currentMaaSModel) maasRiversLoaded = view;
-          totalLiveColored += liveColored;
-          totalLivePending += livePending;
-          totalActiveFloods += activeFloods;
-          anyFetched = true;
-
-          if (!geojson || !Array.isArray(geojson.features) || !geojson.features.length) return;
-          const modelMeta = MAAS_MODELS[model] || MAAS_MODELS.glofas;
-          const paletteCfg = MAAS_PROVIDER_PALETTES[model] || MAAS_PROVIDER_PALETTES.glofas;
-
-          // Draw non-forecast reaches first, then normal rivers, and active flood alerts LAST (on top) so they pop at every zoom level.
-          const reachArea = (f) => Number((f.properties || {}).upstream_area_km2 || 0);
-          const reachRank = (f) => Number((f.properties || {}).exceedance_rank || 0);
-          const hasFhForecast = (f) => (f.properties || {}).has_forecast !== false;
-          geojson.features.sort((a, b) => {
+        clearTimeout(maasLiveRefreshTimer);
+        if (livePending > 0 && maasLiveRetryCount < 8) {
+          maasLiveRetryCount++;
+          maasLiveRefreshTimer = setTimeout(() => fetchMaaSViewportRivers(true, false), 1400);
+        }
+        // Draw non-forecast reaches first, then normal blue rivers, and active flood alerts LAST (on top) so they pop at every zoom level.
+        const reachArea = (f) => Number((f.properties || {}).upstream_area_km2 || 0);
+        const reachRank = (f) => Number((f.properties || {}).exceedance_rank || 0);
+        const hasFhForecast = (f) => (f.properties || {}).has_forecast !== false;
+        geojson.features.sort((a, b) => {
+          if (model === 'floodhub') {
+            const fa = hasFhForecast(a) ? 1 : 0;
+            const fb = hasFhForecast(b) ? 1 : 0;
+            if (fa !== fb) return fa - fb;
+          }
+          const ra = reachRank(a), rb = reachRank(b);
+          if (ra !== rb) return ra - rb;
+          return reachArea(a) - reachArea(b);
+        });
+        const riverLayer = L.geoJSON(geojson, {
+          renderer: maasRiverRenderer,
+          style: (feat) => {
+            const p = feat.properties || {};
+            const areaKm2 = reachArea(feat);
+            const baseWeight = Math.max(1.2, Math.min(4.6, 0.82 * Math.log10(Math.max(areaKm2, 50)) - 0.5));
+            if (model === 'floodhub' && p.has_forecast === false) {
+              return {
+                color: '#9aa0a6',
+                weight: Math.max(0.9, baseWeight * 0.68),
+                opacity: 0.38,
+                dashArray: '3, 4',
+                lineCap: 'round',
+                lineJoin: 'round'
+              };
+            }
+            const rank = Number(p.exceedance_rank || 0);
+            const isFlood = isFinite(rank) && rank >= 1;
+            const color = maasFlowPercentileColor(p, model);
+            // Active flood exceedances get a bolder stroke and high opacity so they visually pop on the world view and when zooming in.
+            const weight = isFlood ? Math.max(baseWeight + 1.8, 3.3) : baseWeight;
+            const opacity = isFlood ? 0.98 : 0.76;
+            return { color, weight, opacity, lineCap: 'round', lineJoin: 'round' };
+          },
+          onEachFeature: (feat, layer) => {
+            const p = feat.properties || {};
+            const reachId = p.river_id || p.reach_id || p.HYRIV_ID || null;
+            const gaugeId = p.gauge_id || null;
+            const name = reachId
+              ? (model === 'geoglows' ? `TDX-Hydro #${reachId}` : `Reach ${String(reachId).replace(/^HYRIV_/, '')}`)
+              : modelMeta.reachLabel;
+            const area = Number(p.upstream_area_km2) > 0 ? `${Math.round(Number(p.upstream_area_km2)).toLocaleString()} km² upstream` : '';
+            const flowNote = (p.current_flow_m3s !== null && p.current_flow_m3s !== undefined && isFinite(Number(p.current_flow_m3s)))
+              ? `<br>Forecast flow: <b>${Number(p.current_flow_m3s).toLocaleString(undefined, { maximumFractionDigits: 1 })} m³/s</b>${(p.return_period_2yr && isFinite(Number(p.return_period_2yr))) ? ` (2-yr: ${Number(p.return_period_2yr).toLocaleString(undefined, { maximumFractionDigits: 1 })} m³/s)` : ''}`
+              : '';
+            const rankIdx = Math.min(Math.max(Math.round(Number(p.exceedance_rank || 0)), 0), paletteCfg.labels.length - 1);
+            const statusColor = paletteCfg.colors[rankIdx];
+            const statusLabel = paletteCfg.labels[rankIdx];
+            const pctNote = (p.flow_percentile !== null && p.flow_percentile !== undefined && isFinite(Number(p.flow_percentile)))
+              ? `<br>Status: <b style="color:${statusColor}">${maasEscapeHtml(statusLabel)}</b> (${Number(p.flow_percentile).toFixed(0)}th pct)`
+              : '';
+            let fhNote = '<br><span style="color:#5f6368">Click for forecast</span>';
             if (model === 'floodhub') {
-              const fa = hasFhForecast(a) ? 1 : 0;
-              const fb = hasFhForecast(b) ? 1 : 0;
-              if (fa !== fb) return fa - fb;
+              if (p.has_forecast === false) {
+                fhNote = '<br><span style="color:#80868b">No FloodHub forecast on this reach (click for other models)</span>';
+              } else {
+                fhNote = `${gaugeId ? `<br><span style="color:#1a73e8">FloodHub: ${maasEscapeHtml(gaugeId)}</span>` : ''}<br><span style="color:#1e8e3e">✓ FloodHub forecast available — click to view</span>`;
+              }
             }
-            const ra = reachRank(a), rb = reachRank(b);
-            if (ra !== rb) return ra - rb;
-            return reachArea(a) - reachArea(b);
-          });
-
-          const riverLayer = L.geoJSON(geojson, {
-            renderer: maasRiverRenderer,
-            style: (feat) => {
-              const p = feat.properties || {};
-              const areaKm2 = reachArea(feat);
-              const baseWeight = Math.max(1.2, Math.min(4.6, 0.82 * Math.log10(Math.max(areaKm2, 50)) - 0.5));
-              if (model === 'floodhub' && p.has_forecast === false) {
-                return {
-                  color: '#9aa0a6',
-                  weight: Math.max(0.9, baseWeight * 0.68),
-                  opacity: multiHydrofabricMode ? 0.28 : 0.38,
-                  dashArray: '3, 4',
-                  lineCap: 'round',
-                  lineJoin: 'round'
-                };
-              }
-              const rank = Number(p.exceedance_rank || 0);
-              const isFlood = isFinite(rank) && rank >= 1;
-              const color = maasFlowPercentileColor(p, model, multiHydrofabricMode);
-              const weight = isFlood ? Math.max(baseWeight + 1.8, 3.3) : baseWeight;
-              const opacity = isFlood ? 0.98 : (multiHydrofabricMode ? 0.82 : 0.76);
-              return { color, weight, opacity, lineCap: 'round', lineJoin: 'round' };
-            },
-            onEachFeature: (feat, layer) => {
-              const p = feat.properties || {};
-              const reachId = p.river_id || p.reach_id || p.HYRIV_ID || null;
-              const gaugeId = p.gauge_id || null;
-              const name = reachId
-                ? (model === 'geoglows' ? `TDX-Hydro #${reachId}` : `Reach ${String(reachId).replace(/^HYRIV_/, '')}`)
-                : modelMeta.reachLabel;
-              const area = Number(p.upstream_area_km2) > 0 ? `${Math.round(Number(p.upstream_area_km2)).toLocaleString()} km² upstream` : '';
-              const flowNote = (p.current_flow_m3s !== null && p.current_flow_m3s !== undefined && isFinite(Number(p.current_flow_m3s)))
-                ? `<br>Forecast flow: <b>${Number(p.current_flow_m3s).toLocaleString(undefined, { maximumFractionDigits: 1 })} m³/s</b>${(p.return_period_2yr && isFinite(Number(p.return_period_2yr))) ? ` (2-yr: ${Number(p.return_period_2yr).toLocaleString(undefined, { maximumFractionDigits: 1 })} m³/s)` : ''}`
-                : '';
-              const rankIdx = Math.min(Math.max(Math.round(Number(p.exceedance_rank || 0)), 0), paletteCfg.labels.length - 1);
-              const statusColor = paletteCfg.colors[rankIdx];
-              const statusLabel = paletteCfg.labels[rankIdx];
-              const pctNote = (p.flow_percentile !== null && p.flow_percentile !== undefined && isFinite(Number(p.flow_percentile)))
-                ? `<br>Status: <b style="color:${statusColor}">${maasEscapeHtml(statusLabel)}</b> (${Number(p.flow_percentile).toFixed(0)}th pct)`
-                : '';
-              let fhNote = '<br><span style="color:#5f6368">Click for forecast</span>';
-              if (model === 'floodhub') {
-                if (p.has_forecast === false) {
-                  fhNote = '<br><span style="color:#80868b">No FloodHub forecast on this reach (click for other models)</span>';
-                } else {
-                  fhNote = `${gaugeId ? `<br><span style="color:#1a73e8">FloodHub: ${maasEscapeHtml(gaugeId)}</span>` : ''}<br><span style="color:#1e8e3e">✓ FloodHub forecast available — click to view</span>`;
-                }
-              }
-              const netHeader = `<span style="color:${modelMeta.color};font-weight:600">${maasEscapeHtml(modelMeta.shortName)} · ${maasEscapeHtml(modelMeta.streamMap)}</span><br>`;
-              layer.bindTooltip(`${netHeader}<b>${maasEscapeHtml(name)}</b>${area ? `<br>${maasEscapeHtml(area)}` : ''}${flowNote}${pctNote}${fhNote}`, { sticky: true });
-              layer.on('mouseover', () => layer.setStyle({ color: modelMeta.color, weight: (layer.options.weight || 2) + 2, opacity: 1.0, dashArray: null }));
-              layer.on('mouseout', () => riverLayer.resetStyle(layer));
-              layer.on('click', (e) => {
-                L.DomEvent.stopPropagation(e);
-                const pt = maasSnapToFeature(feat, e.latlng);
-                probeMaaSPoint(pt.lat, pt.lon, gaugeId, reachId, area ? `${name} · ${area}` : name, {
-                  upstreamAreaKm2: p.upstream_area_km2, areaMinKm2: p.area_min_km2, network: model,
-                });
+            layer.bindTooltip(`<b>${maasEscapeHtml(name)}</b>${area ? `<br>${maasEscapeHtml(area)}` : ''}${flowNote}${pctNote}${fhNote}`, { sticky: true });
+            layer.on('mouseover', () => layer.setStyle({ color: '#174ea6', weight: (layer.options.weight || 2) + 2, opacity: 1.0, dashArray: null }));
+            layer.on('mouseout', () => riverLayer.resetStyle(layer));
+            layer.on('click', (e) => {
+              L.DomEvent.stopPropagation(e);
+              const pt = maasSnapToFeature(feat, e.latlng);
+              probeMaaSPoint(pt.lat, pt.lon, gaugeId, reachId, area ? `${name} · ${area}` : name, {
+                upstreamAreaKm2: p.upstream_area_km2, areaMinKm2: p.area_min_km2, network: model,
               });
-            }
-          });
-          subGroup.addLayer(riverLayer);
-        } catch (err) {
-          if (err.name !== 'AbortError') console.warn(`MaaS river fetch error (${model}):`, err);
-        }
-      }));
-
-      if (!anyFetched && !isLiveRefresh && !forceManualRefresh) return;
-      const liveBadgeEl = document.getElementById('maasLiveColorBadge');
-      const iconEl = document.getElementById('maasRefreshLiveIcon');
-      if (liveBadgeEl) {
-        if (totalLivePending > 0 && maasLiveRetryCount < 8) {
-          if (iconEl) iconEl.classList.add('animate-spin');
-          const floodPrefix = totalActiveFloods > 0 ? `${totalActiveFloods} flood${totalActiveFloods === 1 ? '' : 's'} · ` : '';
-          liveBadgeEl.textContent = totalLiveColored > 0 ? `${floodPrefix}${totalLiveColored.toLocaleString()} live · updating…` : 'Fetching live flows…';
-          liveBadgeEl.className = 'text-[9.5px] font-mono text-[#e8710a]';
-        } else {
-          if (iconEl) iconEl.classList.remove('animate-spin');
-          const floodPrefix = totalActiveFloods > 0 ? `${totalActiveFloods} flood alert${totalActiveFloods === 1 ? '' : 's'} · ` : '';
-          liveBadgeEl.textContent = totalLiveColored > 0 ? `${floodPrefix}${totalLiveColored.toLocaleString()} live` : 'Real-time';
-          liveBadgeEl.className = totalActiveFloods > 0
-            ? 'text-[9.5px] font-mono font-semibold text-[#d93025]'
-            : 'text-[9.5px] font-mono text-[#1e8e3e]';
-        }
-      }
-      clearTimeout(maasLiveRefreshTimer);
-      if (totalLivePending > 0 && maasLiveRetryCount < 8) {
-        maasLiveRetryCount++;
-        maasLiveRefreshTimer = setTimeout(() => fetchMaaSViewportRivers(true, false), 1400);
+            });
+          }
+        });
+        maasRiversLayerGroup.addLayer(riverLayer);
+      } catch (err) {
+        if (err.name !== 'AbortError') console.warn('MaaS river fetch error:', err);
       }
     }
 
-    // Opens the forecast view for a clicked reach and fetches every model via /api/maas/forecast;
+    // Opens the forecast view for a clicked reach and fetches every model once via /api/maas/forecast;
     // the forecast model buttons then toggle models without refetching.
     function probeMaaSPoint(lat, lon, gaugeId = null, riverId = null, label = null, meta = null) {
       currentMaaSProbe = { lat, lon, gaugeId, riverId, label, meta };
       currentMaaSForecastData = null;
       currentMaaSForecastNote = 'Loading forecast…';
-      // Ensure the forecast view includes the model(s) corresponding to the clicked hydrofabric / active map view
-      // when opening a reach, so clicking a FloodHub or GEOGLOWS reach immediately shows its forecast.
-      const clickedNet = meta && meta.network && MAAS_MODELS[meta.network] ? meta.network : null;
-      if (clickedNet) {
-        if (currentMaaSView !== 'forecast') {
-          if (selectedMaaSMapModels.size >= 2) {
-            selectedMaaSModels.clear();
-            for (const m of selectedMaaSMapModels) selectedMaaSModels.add(m);
-            selectedMaaSModels.add(clickedNet);
-          } else if (selectedMaaSModels.size === 1) {
-            selectedMaaSModels.clear();
-            selectedMaaSModels.add(clickedNet);
-          } else {
-            selectedMaaSModels.add(clickedNet);
-          }
-        } else if (!selectedMaaSModels.has(clickedNet)) {
-          if (selectedMaaSMapModels.size === 1 && selectedMaaSModels.size === 1) {
-            selectedMaaSModels.clear();
-            selectedMaaSModels.add(clickedNet);
-          } else {
-            selectedMaaSModels.add(clickedNet);
-          }
-        }
-        renderMaaSMultiModelLists();
-      }
       const coords = maasFormatCoords(lat, lon);
       const titleEl = document.getElementById('maasStationTitle');
       if (titleEl) {
@@ -12657,7 +12026,7 @@
       setTimeout(() => { if (map && currentMaaSView === 'forecast') map.panTo([lat, lon]); }, 300);
     }
 
-    async function fetchMaaSForecast(lat, lon, gaugeId, riverId, meta = null, forceAllModels = false) {
+    async function fetchMaaSForecast(lat, lon, gaugeId, riverId, meta = null) {
       const requestSeq = ++maasForecastRequestSeq;
       let url = `/api/maas/forecast?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
       if (gaugeId) url += `&gauge_id=${encodeURIComponent(gaugeId)}`;
@@ -12666,42 +12035,31 @@
       if (meta && meta.areaMinKm2) url += `&area_min_km2=${encodeURIComponent(meta.areaMinKm2)}`;
       if (meta && meta.network) url += `&network=${encodeURIComponent(meta.network)}`;
       try {
-        if (!forceAllModels && selectedMaaSModels.size === 1) {
+        if (selectedMaaSModels.size === 1) {
           const [onlyModel] = selectedMaaSModels;
-          maasForecastFullPending = true;
-          // Fire both the fast single-model request and the full 3-model request concurrently so the
-          // active model plots immediately and switching to any other model in Forecast View is seamless.
-          const fullPromise = fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
           const fastResp = await fetch(`${url}&models=${encodeURIComponent(onlyModel)}`);
           if (!fastResp.ok) throw new Error(`HTTP ${fastResp.status}`);
           const fastData = await fastResp.json();
           if (requestSeq !== maasForecastRequestSeq) return;
           currentMaaSForecastData = fastData;
           currentMaaSForecastNote = null;
-          updateMaaSSnappedReachMarkers(fastData);
           renderMaaSForecast();
-          const fullData = await fullPromise;
-          if (requestSeq !== maasForecastRequestSeq) return;
-          maasForecastFullPending = false;
-          if (fullData) {
+          // Prefetch all models in the background so selecting additional models in Forecast View is instant.
+          fetch(url).then(r => r.ok ? r.json() : null).then(fullData => {
+            if (!fullData || requestSeq !== maasForecastRequestSeq) return;
             currentMaaSForecastData = fullData;
-            updateMaaSSnappedReachMarkers(fullData);
-          }
-          renderMaaSForecast();
+            renderMaaSForecast();
+          }).catch(() => {});
           return;
         }
-        maasForecastFullPending = true;
         const resp = await fetch(url);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         if (requestSeq !== maasForecastRequestSeq) return; // superseded by a newer click or a close
-        maasForecastFullPending = false;
         currentMaaSForecastData = data;
         currentMaaSForecastNote = null;
-        updateMaaSSnappedReachMarkers(data);
       } catch (err) {
         if (requestSeq !== maasForecastRequestSeq) return;
-        maasForecastFullPending = false;
         console.error('Failed to fetch MaaS forecast:', err);
         currentMaaSForecastNote = 'Could not load the forecast. Click the reach again to retry.';
       }
@@ -12837,13 +12195,9 @@
         const activeKeys = MAAS_MODEL_ORDER.filter(k => selectedMaaSModels.has(k));
         const usable = [];
         const skipped = [];
-        const loading = [];
         for (const k of activeKeys) {
           const s = (timeline.series || {})[k];
-          const hasModelEntry = data.models && data.models[k];
-          if (!hasModelEntry && maasForecastFullPending) {
-            loading.push(`${MAAS_MODELS[k].shortName} (loading…)`);
-          } else if (!s || !hasValues(s.central)) {
+          if (!s || !hasValues(s.central)) {
             skipped.push(`${MAAS_MODELS[k].shortName} (no forecast)`);
           } else if (s.axis === 'stage' || s.unit === 'm') {
             skipped.push(`${MAAS_MODELS[k].shortName} (stage-only gauge in m)`);
@@ -12852,11 +12206,7 @@
           }
         }
         if (!usable.length || !allDates.length) {
-          if (loading.length) {
-            note = `Loading forecast for ${loading.join(', ')}…`;
-          } else {
-            note = skipped.length ? `No discharge forecast available for selected models: ${skipped.join(', ')}.` : MAAS_STATUS_NOTES.unavailable;
-          }
+          note = skipped.length ? `No discharge forecast available for selected models: ${skipped.join(', ')}.` : MAAS_STATUS_NOTES.unavailable;
         } else {
           const [i0, i1] = maasActiveDateRange(allDates.length, usable.map(k => timeline.series[k].central));
           plotDates = allDates.slice(i0, i1 + 1);
@@ -12907,7 +12257,7 @@
           }
           const reachNote = maasSnappedReachSummary(data, usable);
           const agreementNote = (data.flood_summary && data.flood_summary.agreement) ? data.flood_summary.agreement : null;
-          note = [reachNote, agreementNote, loading.length ? `Loading: ${loading.join(', ')}` : null, skipped.length ? `Skipped: ${skipped.join(', ')}` : null].filter(Boolean).join(' · ') || null;
+          note = [reachNote, agreementNote, skipped.length ? `Skipped: ${skipped.join(', ')}` : null].filter(Boolean).join(' · ') || null;
         }
       } else {
         const [selectedKey] = selectedMaaSModels;
@@ -12915,10 +12265,7 @@
         const style = MAAS_MODELS[key];
         const series = (timeline.series || {})[key];
         const status = (timeline.status || {})[key] || null;
-        const hasModelEntry = data.models && data.models[key];
-        if (!hasModelEntry && maasForecastFullPending) {
-          note = `Loading ${style.shortName} forecast…`;
-        } else if (!series || !hasValues(series.central) || !allDates.length) {
+        if (!series || !hasValues(series.central) || !allDates.length) {
           note = MAAS_STATUS_NOTES[status] || MAAS_STATUS_NOTES.unavailable;
           const severity = key === 'floodhub' ? ((data.models || {}).floodhub || {}).severity : null;
           if (status === 'severity_only' && severity) {
@@ -12952,9 +12299,7 @@
           if (maasChart) {
             maasChart.$returnPeriodThresholds = maasModelThresholds(data, key).map(t => Object.assign({}, t, { unit }));
           }
-          const reachNote = maasSnappedReachSummary(data, [key]);
-          const statusNote = status && status !== 'live' ? (MAAS_STATUS_NOTES[status] || null) : null;
-          note = [reachNote, statusNote].filter(Boolean).join(' · ') || null;
+          note = status && status !== 'live' ? (MAAS_STATUS_NOTES[status] || null) : null;
         }
       }
       if (maasChart && selectedMaaSModels.size >= 2) {
@@ -12982,7 +12327,7 @@
       if (mapList) {
         mapList.addEventListener('click', (e) => {
           const btn = e.target.closest('[data-maas-map-model]');
-          if (btn) toggleMaaSMapModel(btn.getAttribute('data-maas-map-model'));
+          if (btn) setMaaSModel(btn.getAttribute('data-maas-map-model'));
         });
       }
       const fcList = document.getElementById('maasForecastMultiModelList');
@@ -13278,1077 +12623,10 @@
       });
     });
 
-    // =========================================================
-    // Interactive Per-Basin Fine-Tuning Controller
-    // =========================================================
-    let ftWorkspaceState = null;
-    let ftHydroChart = null;
-    let ftLossChart = null;
-    let ftInspectedEpochIndex = 0;
-    let ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'head']);
-    let ftIsRunning = false;
-
-    const ftPartitionOverlayPlugin = {
-      id: 'ftPartitionOverlay',
-      beforeDraw(chart) {
-        const part = chart.$ftPartition;
-        const labels = chart.data.labels || [];
-        if (!part || !labels.length) return;
-        const xScale = chart.scales.x;
-        const chartArea = chart.chartArea;
-        if (!xScale || !chartArea) return;
-
-        const splitIdx = labels.indexOf(part.split_date);
-        const trainStartIdx = labels.indexOf(part.train_start_date);
-        const valStartIdx = labels.indexOf(part.validation_start_date);
-        const valEndIdx = labels.indexOf(part.validation_end_date);
-        if (splitIdx < 0) return;
-
-        const ctx = chart.ctx;
-        ctx.save();
-
-        const trainLeftX = trainStartIdx >= 0 ? xScale.getPixelForValue(trainStartIdx) : chartArea.left;
-        const splitX = xScale.getPixelForValue(splitIdx);
-        const valRightX = valEndIdx >= 0 ? xScale.getPixelForValue(valEndIdx) : chartArea.right;
-
-        // Shaded Training Partition
-        if (splitX > trainLeftX) {
-          ctx.fillStyle = 'rgba(26, 115, 232, 0.06)';
-          ctx.fillRect(trainLeftX, chartArea.top, splitX - trainLeftX, chartArea.bottom - chartArea.top);
-        }
-
-        // Shaded Validation Partition
-        const valStartX = valStartIdx >= 0 ? xScale.getPixelForValue(valStartIdx) : splitX;
-        if (valRightX > valStartX) {
-          ctx.fillStyle = 'rgba(249, 171, 0, 0.08)';
-          ctx.fillRect(valStartX, chartArea.top, valRightX - valStartX, chartArea.bottom - chartArea.top);
-        }
-
-        // Vertical Split Boundary Line
-        ctx.beginPath();
-        ctx.setLineDash([5, 4]);
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = '#d93025';
-        ctx.moveTo(splitX, chartArea.top);
-        ctx.lineTo(splitX, chartArea.bottom);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Partition Labels
-        ctx.font = 'bold 10px Inter, sans-serif';
-        if (splitX - trainLeftX > 90) {
-          ctx.fillStyle = '#174ea6';
-          ctx.fillText('TRAINING (' + part.train_sample_days + 'd)', trainLeftX + 6, chartArea.top + 14);
-        }
-        if (valRightX - valStartX > 90) {
-          ctx.fillStyle = '#b06000';
-          ctx.fillText('VALIDATION (' + part.validation_sample_days + 'd)', valStartX + 6, chartArea.top + 14);
-        }
-
-        ctx.restore();
-      }
-    };
-
-    function setFtStatusBanner(msg, tone = 'info') {
-      const box = document.getElementById('ftStatusMessage');
-      if (!box) return;
-      if (!msg) {
-        box.classList.add('hidden');
-        box.textContent = '';
-        return;
-      }
-      box.classList.remove('hidden', 'bg-[#e8f0fe]', 'text-[#174ea6]', 'border-[#d2e3fc]', 'bg-[#fce8e6]', 'text-[#c5221f]', 'border-[#f5c2c7]', 'bg-[#e6f4ea]', 'text-[#137333]', 'border-[#ceead6]');
-      if (tone === 'error') {
-        box.classList.add('bg-[#fce8e6]', 'text-[#c5221f]', 'border-[#f5c2c7]');
-      } else if (tone === 'success') {
-        box.classList.add('bg-[#e6f4ea]', 'text-[#137333]', 'border-[#ceead6]');
-      } else {
-        box.classList.add('bg-[#e8f0fe]', 'text-[#174ea6]', 'border-[#d2e3fc]');
-      }
-      box.textContent = msg;
-    }
-
-    function getActiveFtBasinId() {
-      const inp = document.getElementById('ftBasinIdInput');
-      const sel = document.getElementById('ftBasinSelect');
-      const val = (inp && inp.value.trim()) || (sel && sel.value) || activeCatchmentId || 'custom_basin_01';
-      return val;
-    }
-
-    function syncFtBasinDropdown() {
-      const sel = document.getElementById('ftBasinSelect');
-      const inp = document.getElementById('ftBasinIdInput');
-      if (!sel) return;
-      const currentVal = (inp && inp.value.trim()) || sel.value || activeCatchmentId || 'custom_basin_01';
-      while (sel.firstChild) sel.removeChild(sel.firstChild);
-
-      const seen = new Set();
-      const addOpt = (id, label) => {
-        if (!id || seen.has(id)) return;
-        seen.add(id);
-        const opt = document.createElement('option');
-        opt.value = id;
-        opt.textContent = label || id;
-        if (id === currentVal) opt.selected = true;
-        sel.appendChild(opt);
-      };
-
-      if (Array.isArray(activeWatersheds)) {
-        activeWatersheds.forEach(f => {
-          const cid = f && f.properties && f.properties.catchment_id;
-          const name = f && f.properties && f.properties.name;
-          if (cid) addOpt(String(cid), name ? (cid + ' — ' + name) : String(cid));
-        });
-      }
-      addOpt('custom_basin_01', 'custom_basin_01 (Local Basin)');
-      if (!seen.has(currentVal)) addOpt(currentVal, currentVal);
-      if (inp && !inp.value.trim()) inp.value = sel.value;
-    }
-
-    function updateFtTrainableParamsBadge(modelInfo) {
-      const badge = document.getElementById('ftTrainableParamsBadge');
-      if (!badge || !modelInfo || !Array.isArray(modelInfo.tunable_components)) return;
-      let trainable = 0;
-      const total = modelInfo.total_parameters || 0;
-      modelInfo.tunable_components.forEach(comp => {
-        if (Array.isArray(comp.subcomponents) && comp.subcomponents.length > 0) {
-          if (ftSelectedModulesSet.has(comp.id)) {
-            trainable += comp.num_parameters || 0;
-          } else {
-            comp.subcomponents.forEach(sub => {
-              if (sub.required || ftSelectedModulesSet.has(sub.id)) {
-                trainable += sub.num_parameters || 0;
-              }
-            });
-          }
-        } else if (ftSelectedModulesSet.has(comp.id)) {
-          trainable += comp.num_parameters || 0;
-        }
-      });
-      const pct = total > 0 ? ((trainable / total) * 100).toFixed(1) : '0.0';
-      badge.textContent = trainable.toLocaleString() + ' / ' + total.toLocaleString() + ' params (' + pct + '%)';
-    }
-
-    function renderFineTuneComponents(modelInfo) {
-      const container = document.getElementById('ftTunableComponentsList');
-      if (!container || !modelInfo || !Array.isArray(modelInfo.tunable_components)) return;
-      while (container.firstChild) container.removeChild(container.firstChild);
-
-      modelInfo.tunable_components.forEach(comp => {
-        const hasSubs = Array.isArray(comp.subcomponents) && comp.subcomponents.length > 0;
-        const card = document.createElement('div');
-        card.className = 'bg-white border border-[#dadce0] rounded-lg p-2 space-y-1.5';
-
-        const headerRow = document.createElement('div');
-        headerRow.className = 'flex items-center justify-between gap-2';
-
-        const labelEl = document.createElement('label');
-        labelEl.className = 'flex items-center gap-2 cursor-pointer flex-1 min-w-0';
-
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.className = 'accent-[#7627bb] rounded';
-        cb.dataset.componentId = comp.id;
-
-        if (hasSubs) {
-          const allChecked = comp.subcomponents.every(s => s.required || ftSelectedModulesSet.has(s.id) || ftSelectedModulesSet.has(comp.id));
-          cb.checked = allChecked;
-          cb.addEventListener('change', () => {
-            if (cb.checked) {
-              comp.subcomponents.forEach(s => ftSelectedModulesSet.add(s.id));
-            } else {
-              ftSelectedModulesSet.delete(comp.id);
-              comp.subcomponents.forEach(s => {
-                if (!s.required) ftSelectedModulesSet.delete(s.id);
-              });
-            }
-            renderFineTuneComponents(modelInfo);
-            updateFtTrainableParamsBadge(modelInfo);
-          });
-        } else {
-          cb.checked = ftSelectedModulesSet.has(comp.id);
-          cb.addEventListener('change', () => {
-            if (cb.checked) ftSelectedModulesSet.add(comp.id);
-            else ftSelectedModulesSet.delete(comp.id);
-            updateFtTrainableParamsBadge(modelInfo);
-          });
-        }
-
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'text-[11px] font-mono font-semibold text-[#202124] truncate';
-        nameSpan.textContent = comp.name;
-
-        labelEl.appendChild(cb);
-        labelEl.appendChild(nameSpan);
-
-        const paramSpan = document.createElement('span');
-        paramSpan.className = 'text-[10px] font-mono text-[#5f6368] flex-shrink-0';
-        paramSpan.textContent = (comp.num_parameters || 0).toLocaleString() + ' p';
-
-        headerRow.appendChild(labelEl);
-        headerRow.appendChild(paramSpan);
-        card.appendChild(headerRow);
-
-        if (hasSubs) {
-          const subGrid = document.createElement('div');
-          subGrid.className = 'pl-4 pt-1 border-t border-[#f1f3f4] grid grid-cols-1 gap-1';
-          comp.subcomponents.forEach(sub => {
-            if (sub.required) ftSelectedModulesSet.add(sub.id);
-            const subLabel = document.createElement('label');
-            subLabel.className = 'flex items-center justify-between gap-1.5 text-[10.5px] cursor-pointer py-0.5';
-
-            const leftWrap = document.createElement('span');
-            leftWrap.className = 'flex items-center gap-1.5 min-w-0';
-
-            const subCb = document.createElement('input');
-            subCb.type = 'checkbox';
-            subCb.className = 'accent-[#7627bb] rounded';
-            subCb.dataset.componentId = sub.id;
-            subCb.checked = sub.required || ftSelectedModulesSet.has(sub.id) || ftSelectedModulesSet.has(comp.id);
-            subCb.disabled = Boolean(sub.required);
-            subCb.addEventListener('change', () => {
-              if (subCb.checked) ftSelectedModulesSet.add(sub.id);
-              else {
-                ftSelectedModulesSet.delete(sub.id);
-                ftSelectedModulesSet.delete(comp.id);
-              }
-              updateFtTrainableParamsBadge(modelInfo);
-            });
-
-            const subName = document.createElement('span');
-            subName.className = 'font-mono text-[#3c4043] truncate';
-            subName.textContent = sub.name;
-
-            leftWrap.appendChild(subCb);
-            leftWrap.appendChild(subName);
-
-            if (sub.newly_initialized) {
-              const newTag = document.createElement('span');
-              newTag.className = 'text-[9px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-1 rounded font-sans font-semibold';
-              newTag.textContent = 'NEW LOCAL (Required)';
-              leftWrap.appendChild(newTag);
-            }
-
-            const subParams = document.createElement('span');
-            subParams.className = 'text-[9.5px] font-mono text-[#80868b] flex-shrink-0';
-            subParams.textContent = (sub.num_parameters || 0).toLocaleString() + ' p';
-
-            subLabel.appendChild(leftWrap);
-            subLabel.appendChild(subParams);
-            subGrid.appendChild(subLabel);
-          });
-          card.appendChild(subGrid);
-        }
-
-        container.appendChild(card);
-      });
-
-      updateFtTrainableParamsBadge(modelInfo);
-    }
-
-    function recomputeClientPartition(dates, baseSeqLen, leadTime, splitRatio) {
-      if (!Array.isArray(dates) || dates.length < leadTime + 14) return null;
-      const numDays = dates.length;
-      const maxAllowedSeq = Math.max(7, Math.floor((numDays - leadTime - 6) / 2));
-      const effSeq = Math.min(baseSeqLen, maxAllowedSeq);
-      const firstSampleIdx = effSeq;
-      const lastSampleIdx = numDays - leadTime;
-      const totalSampleDays = lastSampleIdx - firstSampleIdx + 1;
-      if (totalSampleDays < 4) return null;
-      const clamped = Math.max(0.2, Math.min(0.9, splitRatio));
-      const trainCount = Math.max(2, Math.min(totalSampleDays - 2, Math.round(totalSampleDays * clamped)));
-      const splitIdx = firstSampleIdx + trainCount - 1;
-      const valStartIdx = splitIdx + 1;
-      return {
-        effective_seq_length: effSeq,
-        lead_time: leadTime,
-        split_ratio: Number((trainCount / totalSampleDays).toFixed(3)),
-        train_start_date: dates[firstSampleIdx],
-        train_end_date: dates[splitIdx],
-        validation_start_date: dates[valStartIdx],
-        validation_end_date: dates[lastSampleIdx],
-        split_date: dates[splitIdx],
-        train_sample_days: trainCount,
-        validation_sample_days: totalSampleDays - trainCount,
-        total_days: numDays,
-      };
-    }
-
-    function renderFtChartsAndKpis() {
-      if (!ftWorkspaceState) return;
-      const ts = ftWorkspaceState.timeseries;
-      const part = ftWorkspaceState.partition;
-      const history = (ftWorkspaceState.session && ftWorkspaceState.session.epoch_history) || [];
-
-      // Update partition date labels
-      const trainRangeEl = document.getElementById('ftTrainDateRangeText');
-      const valRangeEl = document.getElementById('ftValDateRangeText');
-      if (part) {
-        if (trainRangeEl) trainRangeEl.textContent = part.train_start_date + ' → ' + part.train_end_date + ' (' + part.train_sample_days + 'd)';
-        if (valRangeEl) valRangeEl.textContent = part.validation_start_date + ' → ' + part.validation_end_date + ' (' + part.validation_sample_days + 'd)';
-      } else {
-        if (trainRangeEl) trainRangeEl.textContent = 'Upload CSVs first';
-        if (valRangeEl) valRangeEl.textContent = 'Upload CSVs first';
-      }
-
-      // Clamp inspected epoch index
-      if (history.length > 0) {
-        ftInspectedEpochIndex = Math.max(0, Math.min(history.length - 1, ftInspectedEpochIndex));
-      } else {
-        ftInspectedEpochIndex = 0;
-      }
-      const inspectedEntry = history[ftInspectedEpochIndex] || null;
-      const baselineEntry = history[0] || null;
-
-      // Scrubber controls
-      const scrubber = document.getElementById('ftEpochScrubber');
-      const prevBtn = document.getElementById('ftPrevEpochBtn');
-      const nextBtn = document.getElementById('ftNextEpochBtn');
-      const inspBadge = document.getElementById('ftInspectedEpochBadge');
-      if (scrubber) {
-        scrubber.max = String(Math.max(0, history.length - 1));
-        scrubber.value = String(ftInspectedEpochIndex);
-        scrubber.disabled = history.length <= 1;
-      }
-      if (prevBtn) prevBtn.disabled = ftInspectedEpochIndex <= 0;
-      if (nextBtn) nextBtn.disabled = ftInspectedEpochIndex >= history.length - 1;
-      if (inspBadge) {
-        inspBadge.textContent = inspectedEntry ? ('Epoch ' + inspectedEntry.epoch) : 'Epoch 0';
-      }
-
-      // KPI Strip
-      const fmtVal = (v, digits = 4) => (v !== null && v !== undefined && Number.isFinite(Number(v))) ? Number(v).toFixed(digits) : '—';
-      const kpiTrLoss = document.getElementById('ftKpiTrainLoss');
-      const kpiValLoss = document.getElementById('ftKpiValLoss');
-      const kpiTrNse = document.getElementById('ftKpiTrainNse');
-      const kpiValNse = document.getElementById('ftKpiValNse');
-      const kpiValKge = document.getElementById('ftKpiValKge');
-      if (kpiTrLoss) kpiTrLoss.textContent = inspectedEntry ? fmtVal(inspectedEntry.train_loss, 4) : '—';
-      if (kpiValLoss) kpiValLoss.textContent = inspectedEntry ? fmtVal(inspectedEntry.val_loss, 4) : '—';
-      if (kpiTrNse) kpiTrNse.textContent = inspectedEntry ? fmtVal(inspectedEntry.train_nse, 3) : '—';
-      if (kpiValNse) kpiValNse.textContent = inspectedEntry ? fmtVal(inspectedEntry.val_nse, 3) : '—';
-      if (kpiValKge) kpiValKge.textContent = inspectedEntry ? fmtVal(inspectedEntry.val_kge, 3) : '—';
-
-      // 1. Render Hydrograph + Hanging Hyetograph Chart
-      const hydroCanvas = document.getElementById('ftHydrographCanvas');
-      if (hydroCanvas && typeof Chart !== 'undefined') {
-        const dates = ts ? ts.dates : [];
-        const precip = ts ? ts.precip : [];
-        const obsFlow = ts ? ts.streamflow_obs : [];
-        const baseSim = baselineEntry ? baselineEntry.streamflow_sim_lead1 : [];
-        const activeSim = inspectedEntry ? inspectedEntry.streamflow_sim_lead1 : [];
-
-        const maxPrecip = precip.reduce((m, v) => (v !== null && v > m ? v : m), 10);
-
-        if (!ftHydroChart) {
-          ftHydroChart = new Chart(hydroCanvas.getContext('2d'), {
-            type: 'line',
-            plugins: [ftPartitionOverlayPlugin],
-            data: {
-              labels: dates,
-              datasets: [
-                {
-                  type: 'bar',
-                  label: 'Local Precip (mm/day)',
-                  data: precip,
-                  yAxisID: 'yPrecip',
-                  backgroundColor: 'rgba(26, 115, 232, 0.38)',
-                  borderColor: 'rgba(26, 115, 232, 0.65)',
-                  borderWidth: 1,
-                  barPercentage: 1.0,
-                  categoryPercentage: 1.0,
-                  order: 4,
-                },
-                {
-                  type: 'line',
-                  label: 'Observed Streamflow (mm/day)',
-                  data: obsFlow,
-                  yAxisID: 'yFlow',
-                  borderColor: '#202124',
-                  backgroundColor: 'rgba(32, 33, 36, 0.08)',
-                  borderWidth: 2,
-                  pointRadius: 0,
-                  tension: 0.2,
-                  order: 2,
-                },
-                {
-                  type: 'line',
-                  label: 'Pretrained Baseline (Epoch 0)',
-                  data: baseSim,
-                  yAxisID: 'yFlow',
-                  borderColor: '#80868b',
-                  borderDash: [4, 4],
-                  borderWidth: 1.5,
-                  pointRadius: 0,
-                  tension: 0.2,
-                  order: 3,
-                },
-                {
-                  type: 'line',
-                  label: inspectedEntry ? ('Fine-Tuned (Epoch ' + inspectedEntry.epoch + ')') : 'Fine-Tuned Streamflow',
-                  data: activeSim,
-                  yAxisID: 'yFlow',
-                  borderColor: '#1e8e3e',
-                  backgroundColor: 'rgba(30, 142, 62, 0.1)',
-                  borderWidth: 2.4,
-                  pointRadius: 0,
-                  tension: 0.2,
-                  order: 1,
-                },
-              ],
-            },
-            options: {
-              responsive: true,
-              maintainAspectRatio: false,
-              interaction: { mode: 'index', intersect: false },
-              plugins: {
-                legend: {
-                  position: 'top',
-                  labels: { boxWidth: 12, font: { size: 11 } },
-                },
-              },
-              scales: {
-                x: {
-                  ticks: { maxTicksLimit: 10, font: { size: 10 } },
-                  grid: { color: 'rgba(0,0,0,0.04)' },
-                },
-                yFlow: {
-                  type: 'linear',
-                  position: 'left',
-                  title: { display: true, text: 'Streamflow (mm/day)', font: { size: 11, weight: 'bold' } },
-                  beginAtZero: true,
-                  suggestedMax: 15,
-                  grid: { color: 'rgba(0,0,0,0.06)' },
-                },
-                yPrecip: {
-                  type: 'linear',
-                  position: 'right',
-                  reverse: true,
-                  min: 0,
-                  suggestedMax: Math.max(25, maxPrecip * 3.0),
-                  title: { display: true, text: 'Hanging Hyetograph: Precip (mm/day)', font: { size: 10 } },
-                  grid: { drawOnChartArea: false },
-                },
-              },
-            },
-          });
-        } else {
-          ftHydroChart.data.labels = dates;
-          ftHydroChart.data.datasets[0].data = precip;
-          ftHydroChart.data.datasets[1].data = obsFlow;
-          ftHydroChart.data.datasets[2].data = baseSim;
-          ftHydroChart.data.datasets[3].data = activeSim;
-          ftHydroChart.data.datasets[3].label = inspectedEntry
-            ? ('Fine-Tuned (Epoch ' + inspectedEntry.epoch + ')')
-            : 'Fine-Tuned Streamflow';
-          ftHydroChart.options.scales.yPrecip.suggestedMax = Math.max(25, maxPrecip * 3.0);
-        }
-        ftHydroChart.$ftPartition = part;
-        ftHydroChart.update();
-      }
-
-      // 2. Render Epoch-by-Epoch Loss & NSE Curve
-      const lossCanvas = document.getElementById('ftLossCurveCanvas');
-      const lossBadge = document.getElementById('ftLossChartBadge');
-      if (lossBadge) {
-        const maxEp = history.length > 0 ? history[history.length - 1].epoch : 0;
-        lossBadge.textContent = maxEp + ' Epochs Run';
-      }
-      if (lossCanvas && typeof Chart !== 'undefined') {
-        const epLabels = history.map(h => 'Ep ' + h.epoch);
-        const trLosses = history.map(h => h.train_loss);
-        const valLosses = history.map(h => h.val_loss);
-        const valNses = history.map(h => h.val_nse);
-        const pointRadii = history.map((_, idx) => (idx === ftInspectedEpochIndex ? 6 : 3));
-
-        if (!ftLossChart) {
-          ftLossChart = new Chart(lossCanvas.getContext('2d'), {
-            type: 'line',
-            data: {
-              labels: epLabels,
-              datasets: [
-                {
-                  label: 'Train Loss',
-                  data: trLosses,
-                  yAxisID: 'yLoss',
-                  borderColor: '#1a73e8',
-                  backgroundColor: '#1a73e8',
-                  borderWidth: 2,
-                  pointRadius: pointRadii,
-                  tension: 0.15,
-                },
-                {
-                  label: 'Validation Loss',
-                  data: valLosses,
-                  yAxisID: 'yLoss',
-                  borderColor: '#f9ab00',
-                  backgroundColor: '#f9ab00',
-                  borderWidth: 2,
-                  pointRadius: pointRadii,
-                  tension: 0.15,
-                },
-                {
-                  label: 'Validation NSE',
-                  data: valNses,
-                  yAxisID: 'yNse',
-                  borderColor: '#1e8e3e',
-                  backgroundColor: '#1e8e3e',
-                  borderDash: [4, 3],
-                  borderWidth: 2,
-                  pointRadius: pointRadii,
-                  tension: 0.15,
-                },
-              ],
-            },
-            options: {
-              responsive: true,
-              maintainAspectRatio: false,
-              onClick(_evt, elements) {
-                if (elements && elements.length > 0) {
-                  ftInspectedEpochIndex = elements[0].index;
-                  renderFtChartsAndKpis();
-                }
-              },
-              plugins: {
-                legend: { position: 'top', labels: { boxWidth: 10, font: { size: 10 } } },
-              },
-              scales: {
-                yLoss: {
-                  type: 'linear',
-                  position: 'left',
-                  title: { display: true, text: 'Loss', font: { size: 10, weight: 'bold' } },
-                },
-                yNse: {
-                  type: 'linear',
-                  position: 'right',
-                  title: { display: true, text: 'Validation NSE', font: { size: 10, weight: 'bold' } },
-                  grid: { drawOnChartArea: false },
-                },
-              },
-            },
-          });
-        } else {
-          ftLossChart.data.labels = epLabels;
-          ftLossChart.data.datasets[0].data = trLosses;
-          ftLossChart.data.datasets[0].pointRadius = pointRadii;
-          ftLossChart.data.datasets[1].data = valLosses;
-          ftLossChart.data.datasets[1].pointRadius = pointRadii;
-          ftLossChart.data.datasets[2].data = valNses;
-          ftLossChart.data.datasets[2].pointRadius = pointRadii;
-          ftLossChart.update();
-        }
-      }
-
-      // 3. Render Epoch History Table
-      const tbody = document.getElementById('ftEpochHistoryTableBody');
-      if (tbody) {
-        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
-        if (!history.length) {
-          const tr = document.createElement('tr');
-          const td = document.createElement('td');
-          td.colSpan = 7;
-          td.className = 'py-6 text-center text-[#5f6368] font-sans';
-          td.textContent = 'No epochs run yet. Upload CSVs or click "Load Sample Basin CSVs", then click "Run Epochs & Pause".';
-          tr.appendChild(td);
-          tbody.appendChild(tr);
-        } else {
-          history.slice().reverse().forEach(entry => {
-            const origIdx = history.findIndex(h => h.epoch === entry.epoch);
-            const tr = document.createElement('tr');
-            tr.className = 'cursor-pointer transition ' + (origIdx === ftInspectedEpochIndex ? 'bg-[#e8f0fe] font-semibold' : 'hover:bg-[#f8f9fa]');
-            tr.addEventListener('click', () => {
-              ftInspectedEpochIndex = origIdx;
-              renderFtChartsAndKpis();
-            });
-
-            const cells = [
-              entry.epoch === 0 ? '0 (Base)' : String(entry.epoch),
-              fmtVal(entry.train_loss, 4),
-              fmtVal(entry.val_loss, 4),
-              fmtVal(entry.val_nse, 3),
-              fmtVal(entry.val_kge, 3),
-              entry.learning_rate ? Number(entry.learning_rate).toExponential(1) : '—',
-              Array.isArray(entry.unfrozen_components) ? entry.unfrozen_components.map(c => c.replace('shared_embeddings_fc.', '')).join(', ') : '—',
-            ];
-            cells.forEach((txt, cIdx) => {
-              const td = document.createElement('td');
-              td.className = 'py-1.5 px-2 ' + (cIdx === 6 ? 'truncate max-w-[150px]' : '');
-              td.textContent = txt;
-              if (cIdx === 6) td.title = txt;
-              tr.appendChild(td);
-            });
-            tbody.appendChild(tr);
-          });
-        }
-      }
-    }
-
-    function applyFtWorkspacePayload(payload, { preserveComponentSelection = false } = {}) {
-      if (!payload) return;
-      ftWorkspaceState = payload;
-
-      // 1. Model Inventory Dropdown
-      const modelSel = document.getElementById('ftModelSelect');
-      if (modelSel && Array.isArray(payload.models) && payload.models.length > 0) {
-        while (modelSel.firstChild) modelSel.removeChild(modelSel.firstChild);
-        payload.models.forEach(m => {
-          const opt = document.createElement('option');
-          opt.value = m.model_id;
-          opt.textContent = m.label + ' (' + m.architecture_class + ')';
-          if (m.model_id === payload.model_id) opt.selected = true;
-          modelSel.appendChild(opt);
-        });
-      }
-
-      const selModel = payload.selected_model;
-      if (selModel) {
-        const archBadge = document.getElementById('ftModelArchBadge');
-        const headLossEl = document.getElementById('ftMetaHeadLoss');
-        const seqLeadEl = document.getElementById('ftMetaSeqLead');
-        const ckptEl = document.getElementById('ftMetaCkptEpoch');
-        if (archBadge) archBadge.textContent = selModel.architecture_class || selModel.architecture;
-        if (headLossEl) headLossEl.textContent = selModel.head + ' / ' + selModel.default_loss;
-        if (seqLeadEl) seqLeadEl.textContent = selModel.seq_length + 'd / ' + selModel.lead_time + 'd';
-        if (ckptEl) ckptEl.textContent = 'Epoch ' + selModel.checkpoint_epoch;
-
-        // Loss select options
-        const lossSel = document.getElementById('ftLossSelect');
-        if (lossSel && Array.isArray(selModel.allowed_losses)) {
-          const prevLoss = lossSel.value;
-          while (lossSel.firstChild) lossSel.removeChild(lossSel.firstChild);
-          selModel.allowed_losses.forEach(lName => {
-            const opt = document.createElement('option');
-            opt.value = lName;
-            opt.textContent = lName;
-            if (lName === prevLoss || lName === selModel.default_loss) opt.selected = true;
-            lossSel.appendChild(opt);
-          });
-        }
-
-        if (!preserveComponentSelection) {
-          const savedMods = payload.session && payload.session.last_hyperparameters && payload.session.last_hyperparameters.finetune_modules;
-          if (Array.isArray(savedMods) && savedMods.length > 0) {
-            ftSelectedModulesSet = new Set(savedMods);
-          } else {
-            ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'head']);
-          }
-        }
-        renderFineTuneComponents(selModel);
-      }
-
-      // 2. Upload Status Badges
-      const upMeta = payload.upload_meta || {};
-      const setUploadBadge = (elId, info) => {
-        const el = document.getElementById(elId);
-        if (!el) return;
-        if (info && info.num_days) {
-          el.textContent = info.num_days + 'd (' + info.num_lead_columns + ' lead cols)';
-          el.className = 'text-[10px] font-mono text-[#137333] font-semibold';
-        } else {
-          el.textContent = 'Not uploaded';
-          el.className = 'text-[10px] font-mono text-[#5f6368]';
-        }
-      };
-      setUploadBadge('ftPrecipStatusBadge', upMeta.precip);
-      setUploadBadge('ftTempStatusBadge', upMeta.temp);
-      setUploadBadge('ftStreamflowStatusBadge', upMeta.streamflow);
-
-      const readyBadge = document.getElementById('ftDataReadyBadge');
-      if (readyBadge) {
-        if (payload.data_ready) {
-          readyBadge.textContent = 'Zarr Ready (' + (payload.partition ? payload.partition.total_days : 0) + 'd)';
-          readyBadge.className = 'text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2 py-0.5 rounded font-mono font-semibold';
-        } else {
-          readyBadge.textContent = 'Awaiting CSVs';
-          readyBadge.className = 'text-[10px] bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2 py-0.5 rounded font-mono';
-        }
-      }
-
-      // 3. Session state & epoch badges
-      const sess = payload.session || {};
-      const curEpoch = sess.current_epoch || 0;
-      const curEpBadge = document.getElementById('ftCurrentEpochBadge');
-      const statePill = document.getElementById('ftSessionStatePill');
-      const runBtnText = document.getElementById('ftRunEpochsBtnText');
-      const epochsInput = document.getElementById('ftEpochsPerStepInput');
-      const nextN = (epochsInput && parseInt(epochsInput.value, 10)) || 3;
-
-      if (curEpBadge) curEpBadge.textContent = 'Epoch ' + curEpoch;
-      if (statePill) {
-        if (curEpoch > 0) {
-          statePill.textContent = 'Paused at Epoch ' + curEpoch + ' (Inspect & Continue)';
-          statePill.className = 'text-[10px] bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2.5 py-0.5 rounded-full font-mono font-semibold';
-        } else if (payload.data_ready) {
-          statePill.textContent = 'Ready to Fine-Tune (Epoch 0)';
-          statePill.className = 'text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2.5 py-0.5 rounded-full font-mono font-semibold';
-        } else {
-          statePill.textContent = 'Awaiting Local Basin Data';
-          statePill.className = 'text-[10px] bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0] px-2.5 py-0.5 rounded-full font-mono';
-        }
-      }
-      if (runBtnText) {
-        runBtnText.textContent = curEpoch > 0
-          ? ('Continue (+' + nextN + ' Epochs) & Pause')
-          : ('Run ' + nextN + ' Epochs & Pause');
-      }
-
-      // Set inspected epoch to latest
-      const hist = sess.epoch_history || [];
-      ftInspectedEpochIndex = Math.max(0, hist.length - 1);
-      renderFtChartsAndKpis();
-    }
-
-    async function refreshFineTuningTab() {
-      syncFtBasinDropdown();
-      const basinId = getActiveFtBasinId();
-      const modelSel = document.getElementById('ftModelSelect');
-      const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
-      const slider = document.getElementById('ftSplitRatioSlider');
-      const splitRatio = slider ? (parseInt(slider.value, 10) / 100.0) : 0.7;
-
-      const resp = await fetch(
-        '/api/finetune/status?basin_id=' + encodeURIComponent(basinId) +
-        '&model_id=' + encodeURIComponent(modelId) +
-        '&split_ratio=' + encodeURIComponent(splitRatio)
-      );
-      if (resp.ok) {
-        const data = await resp.json();
-        applyFtWorkspacePayload(data);
-      }
-    }
-
-    async function handleFtCsvFileUpload(dataType, fileInput) {
-      if (!fileInput || !fileInput.files || !fileInput.files[0]) return;
-      const file = fileInput.files[0];
-      const text = await file.text();
-      const basinId = getActiveFtBasinId();
-      const modelSel = document.getElementById('ftModelSelect');
-      const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
-      const unitsSel = document.getElementById('ftStreamflowUnitsSelect');
-      const areaInp = document.getElementById('ftBasinAreaInput');
-
-      setFtStatusBanner('Uploading ' + file.name + '...', 'info');
-      const resp = await fetch('/api/finetune/upload-csv', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          basin_id: basinId,
-          model_id: modelId,
-          data_type: dataType,
-          filename: file.name,
-          csv_content: text,
-          units: unitsSel ? unitsSel.value : 'mm/day',
-          area_km2: areaInp ? parseFloat(areaInp.value) : 250.0,
-        }),
-      });
-      const payload = await resp.json();
-      if (!resp.ok) {
-        setFtStatusBanner(payload.error || 'CSV upload failed', 'error');
-        return;
-      }
-      setFtStatusBanner('Uploaded ' + file.name + ' (' + payload.upload.num_days + ' days).', 'success');
-      applyFtWorkspacePayload(payload.workspace, { preserveComponentSelection: true });
-    }
-
-    function initFineTuningInteractivity() {
-      const modelSel = document.getElementById('ftModelSelect');
-      const basinSel = document.getElementById('ftBasinSelect');
-      const basinInp = document.getElementById('ftBasinIdInput');
-      const splitSlider = document.getElementById('ftSplitRatioSlider');
-      const splitLabel = document.getElementById('ftSplitRatioLabel');
-      const epochsInput = document.getElementById('ftEpochsPerStepInput');
-
-      if (modelSel) {
-        modelSel.addEventListener('change', () => {
-          refreshFineTuningTab();
-        });
-      }
-      if (basinSel) {
-        basinSel.addEventListener('change', () => {
-          if (basinInp) basinInp.value = basinSel.value;
-          refreshFineTuningTab();
-        });
-      }
-      if (basinInp) {
-        basinInp.addEventListener('change', () => {
-          refreshFineTuningTab();
-        });
-      }
-
-      if (splitSlider) {
-        splitSlider.addEventListener('input', () => {
-          const pct = parseInt(splitSlider.value, 10) || 70;
-          if (splitLabel) splitLabel.textContent = pct + '% Train / ' + (100 - pct) + '% Val';
-          if (ftWorkspaceState && ftWorkspaceState.timeseries && ftWorkspaceState.selected_model) {
-            const newPart = recomputeClientPartition(
-              ftWorkspaceState.timeseries.dates,
-              ftWorkspaceState.selected_model.seq_length || 60,
-              ftWorkspaceState.selected_model.lead_time || 7,
-              pct / 100.0
-            );
-            if (newPart) {
-              ftWorkspaceState.partition = newPart;
-              renderFtChartsAndKpis();
-            }
-          }
-        });
-      }
-
-      if (epochsInput) {
-        epochsInput.addEventListener('input', () => {
-          const n = parseInt(epochsInput.value, 10) || 3;
-          const curEp = (ftWorkspaceState && ftWorkspaceState.session && ftWorkspaceState.session.current_epoch) || 0;
-          const btnTxt = document.getElementById('ftRunEpochsBtnText');
-          if (btnTxt) {
-            btnTxt.textContent = curEp > 0
-              ? ('Continue (+' + n + ' Epochs) & Pause')
-              : ('Run ' + n + ' Epochs & Pause');
-          }
-        });
-      }
-
-      // File upload buttons
-      const wireUpload = (btnId, inputId, dtype) => {
-        const btn = document.getElementById(btnId);
-        const inp = document.getElementById(inputId);
-        if (btn && inp) {
-          btn.addEventListener('click', () => inp.click());
-          inp.addEventListener('change', () => handleFtCsvFileUpload(dtype, inp));
-        }
-      };
-      wireUpload('ftUploadPrecipBtn', 'ftPrecipFileInput', 'precip');
-      wireUpload('ftUploadTempBtn', 'ftTempFileInput', 'temp');
-      wireUpload('ftUploadStreamflowBtn', 'ftStreamflowFileInput', 'streamflow');
-
-      // Sample Data button
-      const sampleBtn = document.getElementById('ftLoadSampleDataBtn');
-      if (sampleBtn) {
-        sampleBtn.addEventListener('click', async () => {
-          const basinId = getActiveFtBasinId();
-          const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
-          setFtStatusBanner('Generating sample time × lead_time CSVs for ' + basinId + '...', 'info');
-          sampleBtn.disabled = true;
-          const resp = await fetch('/api/finetune/sample-data', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ basin_id: basinId, model_id: modelId, num_days: 240, lead_time: 7 }),
-          });
-          sampleBtn.disabled = false;
-          const payload = await resp.json();
-          if (!resp.ok) {
-            setFtStatusBanner(payload.error || 'Failed to generate sample data', 'error');
-            return;
-          }
-          setFtStatusBanner('Loaded 240-day time × lead_time sample CSVs (precip, temp, streamflow). Ready to fine-tune!', 'success');
-          applyFtWorkspacePayload(payload.workspace);
-        });
-      }
-
-      // Download Template button
-      const tmplBtn = document.getElementById('ftDownloadTemplateBtn');
-      if (tmplBtn) {
-        tmplBtn.addEventListener('click', () => {
-          const lines = [
-            'date,lead_1,lead_2,lead_3,lead_4,lead_5,lead_6,lead_7',
-            '2023-01-01,2.4,1.8,0.0,0.0,5.2,3.1,0.4',
-            '2023-01-02,1.9,0.0,0.0,4.8,2.9,0.5,0.0',
-            '2023-01-03,0.0,0.0,4.5,3.0,0.6,0.0,1.2',
-          ];
-          const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/csv;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = 'basin_time_by_lead_template.csv';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        });
-      }
-
-      // Clear Data button
-      const clearBtn = document.getElementById('ftClearDataBtn');
-      if (clearBtn) {
-        clearBtn.addEventListener('click', async () => {
-          const basinId = getActiveFtBasinId();
-          const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
-          const resp = await fetch('/api/finetune/clear-data', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ basin_id: basinId, model_id: modelId }),
-          });
-          if (resp.ok) {
-            const payload = await resp.json();
-            setFtStatusBanner('Cleared uploaded data and session for ' + basinId + '.', 'info');
-            applyFtWorkspacePayload(payload.workspace);
-          }
-        });
-      }
-
-      // Component Preset Buttons
-      const presetLocalHead = document.getElementById('ftPresetLocalHeadBtn');
-      const presetDecoder = document.getElementById('ftPresetDecoderBtn');
-      const presetAll = document.getElementById('ftPresetAllBtn');
-      if (presetLocalHead) {
-        presetLocalHead.addEventListener('click', () => {
-          ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'head']);
-          if (ftWorkspaceState && ftWorkspaceState.selected_model) {
-            renderFineTuneComponents(ftWorkspaceState.selected_model);
-          }
-        });
-      }
-      if (presetDecoder) {
-        presetDecoder.addEventListener('click', () => {
-          ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'static_embedding_fc', 'forecast_lstm', 'head']);
-          if (ftWorkspaceState && ftWorkspaceState.selected_model) {
-            renderFineTuneComponents(ftWorkspaceState.selected_model);
-          }
-        });
-      }
-      if (presetAll) {
-        presetAll.addEventListener('click', () => {
-          if (ftWorkspaceState && ftWorkspaceState.selected_model) {
-            const allIds = [];
-            ftWorkspaceState.selected_model.tunable_components.forEach(c => {
-              allIds.push(c.id);
-              if (Array.isArray(c.subcomponents)) {
-                c.subcomponents.forEach(s => allIds.push(s.id));
-              }
-            });
-            ftSelectedModulesSet = new Set(allIds);
-            renderFineTuneComponents(ftWorkspaceState.selected_model);
-          }
-        });
-      }
-
-      // Epoch Inspector Scrubber & Prev/Next buttons
-      const scrubber = document.getElementById('ftEpochScrubber');
-      const prevEpBtn = document.getElementById('ftPrevEpochBtn');
-      const nextEpBtn = document.getElementById('ftNextEpochBtn');
-      if (scrubber) {
-        scrubber.addEventListener('input', () => {
-          ftInspectedEpochIndex = parseInt(scrubber.value, 10) || 0;
-          renderFtChartsAndKpis();
-        });
-      }
-      if (prevEpBtn) {
-        prevEpBtn.addEventListener('click', () => {
-          if (ftInspectedEpochIndex > 0) {
-            ftInspectedEpochIndex -= 1;
-            renderFtChartsAndKpis();
-          }
-        });
-      }
-      if (nextEpBtn) {
-        nextEpBtn.addEventListener('click', () => {
-          const hist = (ftWorkspaceState && ftWorkspaceState.session && ftWorkspaceState.session.epoch_history) || [];
-          if (ftInspectedEpochIndex < hist.length - 1) {
-            ftInspectedEpochIndex += 1;
-            renderFtChartsAndKpis();
-          }
-        });
-      }
-
-      // Run / Continue Epochs Button
-      const runBtn = document.getElementById('ftRunEpochsBtn');
-      if (runBtn) {
-        runBtn.addEventListener('click', async () => {
-          if (ftIsRunning) return;
-          const basinId = getActiveFtBasinId();
-          const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
-          const epochs = (epochsInput && parseInt(epochsInput.value, 10)) || 3;
-          const lrInp = document.getElementById('ftLearningRateInput');
-          const lr = (lrInp && parseFloat(lrInp.value)) || 0.001;
-          const lossSel = document.getElementById('ftLossSelect');
-          const lossVal = (lossSel && lossSel.value) || 'CMALLoss';
-          const stratSel = document.getElementById('ftLrStrategySelect');
-          const lrStrat = (stratSel && stratSel.value) || 'constant';
-          const bsInp = document.getElementById('ftBatchSizeInput');
-          const batchSize = (bsInp && parseInt(bsInp.value, 10)) || 16;
-          const splitRatio = splitSlider ? (parseInt(splitSlider.value, 10) / 100.0) : 0.7;
-
-          const prevHistoryLen = (ftWorkspaceState && ftWorkspaceState.session && ftWorkspaceState.session.epoch_history)
-            ? ftWorkspaceState.session.epoch_history.length
-            : 0;
-
-          ftIsRunning = true;
-          runBtn.disabled = true;
-          const statePill = document.getElementById('ftSessionStatePill');
-          if (statePill) {
-            statePill.textContent = 'Running ' + epochs + ' Epoch(s)...';
-            statePill.className = 'text-[10px] bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] px-2.5 py-0.5 rounded-full font-mono font-semibold animate-pulse';
-          }
-          setFtStatusBanner('Fine-tuning ' + modelId + ' on ' + basinId + ' for ' + epochs + ' epoch(s)...', 'info');
-
-          const resp = await fetch('/api/finetune/run', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              basin_id: basinId,
-              model_id: modelId,
-              epochs: epochs,
-              learning_rate: lr,
-              loss: lossVal,
-              learning_rate_strategy: lrStrat,
-              batch_size: batchSize,
-              finetune_modules: Array.from(ftSelectedModulesSet),
-              split_ratio: splitRatio,
-            }),
-          });
-          ftIsRunning = false;
-          runBtn.disabled = false;
-
-          const payload = await resp.json();
-          if (!resp.ok) {
-            setFtStatusBanner(payload.error || 'Fine-tuning failed', 'error');
-            return;
-          }
-
-          ftWorkspaceState = payload;
-          const newHistory = (payload.session && payload.session.epoch_history) || [];
-          // Animate epoch-by-epoch progression for visual feedback before pausing at the latest epoch
-          const startIdx = Math.max(0, prevHistoryLen);
-          for (let idx = startIdx; idx < newHistory.length; idx++) {
-            ftInspectedEpochIndex = idx;
-            renderFtChartsAndKpis();
-            if (idx < newHistory.length - 1) {
-              await new Promise(r => setTimeout(r, 220));
-            }
-          }
-          applyFtWorkspacePayload(payload, { preserveComponentSelection: true });
-          const curEp = payload.session ? payload.session.current_epoch : epochs;
-          setFtStatusBanner(
-            'Paused at Epoch ' + curEp + '. Inspect the hydrograph & loss curve, adjust any hyperparameters or tunable components, and click Continue!',
-            'success'
-          );
-        });
-      }
-
-      // Reset Session Button
-      const resetBtn = document.getElementById('ftResetSessionBtn');
-      if (resetBtn) {
-        resetBtn.addEventListener('click', async () => {
-          const basinId = getActiveFtBasinId();
-          const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
-          const resp = await fetch('/api/finetune/reset', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ basin_id: basinId, model_id: modelId }),
-          });
-          if (resp.ok) {
-            const payload = await resp.json();
-            applyFtWorkspacePayload(payload, { preserveComponentSelection: true });
-            setFtStatusBanner('Reset fine-tuning session to Epoch 0 (pretrained weights).', 'info');
-          }
-        });
-      }
-    }
-
     // Initialize interactive modules
     initUnifiedSidebar();
     initWeatherViewerInteractivity();
     initModelingInteractivity();
-    if (typeof initFineTuningInteractivity === 'function') initFineTuningInteractivity();
     updateActiveBasinHeader();
 
     // Start Map
