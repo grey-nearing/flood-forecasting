@@ -112,6 +112,7 @@ DYNAMICAL_FORECAST_EXTRACTOR_CLASSES: Mapping[
 DEFAULT_COLDSTART_LOOKBACK_DAYS: int = 365
 DEFAULT_HOTSTART_LOOKBACK_DAYS: int = 7
 DEFAULT_FULL_FORECAST_DAYS: int = 2
+_STORE_INSPECTION_TAIL_DAYS: int = 14
 SUPPORTED_IMERG_SOURCES: Tuple[str, ...] = ("gesdisc",)
 
 
@@ -265,50 +266,68 @@ def inspect_store_last_valid_date(
     if any(b not in ds_sub.data_vars for b in required_bands):
       return None
 
-    band_arrays = [
-        np.asarray(ds_sub[b].values, dtype=np.float32) for b in required_bands
-    ]
-    for b in PRODUCT_BANDS[product]:
-      if b not in required_bands and b in ds_sub.data_vars:
-        arr_opt = np.asarray(ds_sub[b].values, dtype=np.float32)
-        if not np.all(np.isnan(arr_opt)):
-          band_arrays.append(arr_opt)
     missing_var = MISSING_FRACTION_VAR.get(product)
-    miss_vals = (
-        np.asarray(ds_sub[missing_var].values, dtype=np.float32)
-        if missing_var and missing_var in ds_sub.data_vars
-        else None
-    )
-    dates = pd.DatetimeIndex(pd.to_datetime(ds_sub["date"].values).floor("D"))
     is_forecast = PRODUCT_TYPES[product] == ProductType.FORECAST
+    active_optional_bands = [
+        b
+        for b in PRODUCT_BANDS[product]
+        if b not in required_bands
+        and b in ds_sub.data_vars
+        and bool(ds_sub[b].notnull().any())
+    ]
+    checked_bands = list(required_bands) + active_optional_bands
+    total_dates = len(ds_sub["date"])
+    candidate_slices = (
+        [
+            ds_sub.isel(date=slice(-_STORE_INSPECTION_TAIL_DAYS, None)),
+            ds_sub.isel(date=slice(None, -_STORE_INSPECTION_TAIL_DAYS)),
+        ]
+        if total_dates > _STORE_INSPECTION_TAIL_DAYS
+        else [ds_sub]
+    )
 
-    for d_idx in range(len(dates) - 1, -1, -1):
-      dt = dates[d_idx]
-      if is_forecast:
-        need_all_leads = require_all_leads_on_last_date or (
-            require_all_leads_from is not None and dt >= require_all_leads_from
-        )
-        if need_all_leads:
-          valid = all(
-              bool(np.all(~np.isnan(arr[:, d_idx, :]))) for arr in band_arrays
+    for ds_win in candidate_slices:
+      band_arrays = [
+          np.asarray(ds_win[b].values, dtype=np.float32) for b in checked_bands
+      ]
+      miss_vals = (
+          np.asarray(ds_win[missing_var].values, dtype=np.float32)
+          if missing_var and missing_var in ds_win.data_vars
+          else None
+      )
+      dates = pd.DatetimeIndex(
+          pd.to_datetime(ds_win["date"].values).floor("D")
+      )
+
+      for d_idx in range(len(dates) - 1, -1, -1):
+        dt = dates[d_idx]
+        if is_forecast:
+          need_all_leads = require_all_leads_on_last_date or (
+              require_all_leads_from is not None and dt >= require_all_leads_from
           )
-          if valid and miss_vals is not None:
-            valid = bool(np.all(miss_vals[:, d_idx, :] < 1.0))
+          if need_all_leads:
+            valid = all(
+                bool(np.all(~np.isnan(arr[:, d_idx, :])))
+                for arr in band_arrays
+            )
+            if valid and miss_vals is not None:
+              valid = bool(np.all(miss_vals[:, d_idx, :] < 1.0))
+          else:
+            valid = all(
+                bool(np.all(~np.isnan(arr[:, d_idx, 0])))
+                for arr in band_arrays
+            )
+            if valid and miss_vals is not None:
+              valid = bool(np.all(miss_vals[:, d_idx, 0] < 1.0))
         else:
           valid = all(
-              bool(np.all(~np.isnan(arr[:, d_idx, 0]))) for arr in band_arrays
+              bool(np.all(~np.isnan(arr[:, d_idx]))) for arr in band_arrays
           )
           if valid and miss_vals is not None:
-            valid = bool(np.all(miss_vals[:, d_idx, 0] < 1.0))
-      else:
-        valid = all(
-            bool(np.all(~np.isnan(arr[:, d_idx]))) for arr in band_arrays
-        )
-        if valid and miss_vals is not None:
-          valid = bool(np.all(miss_vals[:, d_idx] < 1.0))
+            valid = bool(np.all(miss_vals[:, d_idx] < 1.0))
 
-      if valid:
-        return dt
+        if valid:
+          return dt
   return None
 
 
@@ -669,6 +688,91 @@ class RealtimeForcingFetcher:
         f"Supported real-time products: {list(SUPPORTED_REALTIME_PRODUCTS)}"
     )
 
+  def _backfill_new_basins(
+      self,
+      prod_name: str,
+      prod_enum: Product,
+      basins_gdf: gpd.GeoDataFrame,
+      basin_ids: Sequence[str],
+      start_dt: pd.Timestamp,
+      ref_dt: pd.Timestamp,
+      mode: str,
+      lookback_days: Optional[int],
+      state_dt: Optional[pd.Timestamp],
+      spinup_only_lead_1d: bool,
+      full_forecast_days: int,
+  ) -> pd.Timestamp:
+    """Backfills only newly added basins across ``[start_dt, present_start - 1d]``.
+
+    When an existing Zarr store already holds historical spin-up data for a
+    subset of ``basin_ids``, extracting all basins from ``start_dt`` would
+    redundantly re-fetch existing basins across the full spin-up window. This
+    helper extracts only the missing basins over ``[start_dt, present_start - 1d]``
+    and returns ``present_start`` so the caller extracts all basins only over
+    ``[present_start, end_dt]``.
+
+    Note: This optimization requires ``loaded_weights is None`` so per-basin
+    zonal weights are computed on the subset ``basins_gdf.loc[missing_basins]``
+    without mismatched weight-matrix row dimensions.
+    """
+    if not self.writer.store_exists(prod_enum):
+      return start_dt
+    store_info = self.writer.get_store_info(prod_enum)
+    if (
+        store_info is None
+        or not store_info["bands"]
+        or len(store_info["dates"]) == 0
+    ):
+      return start_dt
+
+    store_basins = set(store_info["basins"])
+    present_basins = [b for b in basin_ids if b in store_basins]
+    missing_basins = [b for b in basin_ids if b not in store_basins]
+    if not (present_basins and missing_basins):
+      return start_dt
+
+    present_start, _ = self.plan_product_window(
+        prod_enum,
+        basin_ids=present_basins,
+        reference_date=ref_dt,
+        mode=mode,
+        lookback_days=lookback_days,
+        hot_start_state_date=state_dt,
+        overwrite=False,
+        spinup_only_lead_1d=spinup_only_lead_1d,
+        full_forecast_days=full_forecast_days,
+    )
+    if present_start <= start_dt:
+      return start_dt
+
+    hist_end_dt = present_start - pd.Timedelta(days=1)
+    logger.info(
+        "[%s] Backfilling %d newly added basin(s) for %s over [%s .. %s]...",
+        mode.upper(),
+        len(missing_basins),
+        prod_name,
+        start_dt.strftime("%Y-%m-%d"),
+        hist_end_dt.strftime("%Y-%m-%d"),
+    )
+    ds_missing = self._extract_product_dataset(
+        prod_name,
+        basins_gdf=basins_gdf.loc[missing_basins],
+        start_dt=start_dt,
+        end_dt=hist_end_dt,
+        reference_dt=ref_dt,
+        spinup_only_lead_1d=spinup_only_lead_1d,
+        full_forecast_days=full_forecast_days,
+        weights_matrix=None,
+    )
+    self.writer.write_or_append(
+        ds_missing,
+        prod_enum,
+        overwrite_existing_basins=False,
+        preserve_existing_valid=True,
+        allow_2d_expansion=True,
+    )
+    return present_start
+
   def fetch(
       self,
       basins: Union[
@@ -786,10 +890,28 @@ class RealtimeForcingFetcher:
           ref_dt.strftime("%Y-%m-%d"),
       )
 
+      active_start_dt = (
+          self._backfill_new_basins(
+              prod_name=prod_name,
+              prod_enum=prod_enum,
+              basins_gdf=basins_gdf,
+              basin_ids=basin_ids,
+              start_dt=start_dt,
+              ref_dt=ref_dt,
+              mode=mode,
+              lookback_days=lookback_days,
+              state_dt=state_dt,
+              spinup_only_lead_1d=spinup_only_lead_1d,
+              full_forecast_days=full_forecast_days,
+          )
+          if not overwrite and loaded_weights is None
+          else start_dt
+      )
+
       ds = self._extract_product_dataset(
           prod_name,
           basins_gdf=basins_gdf,
-          start_dt=start_dt,
+          start_dt=active_start_dt,
           end_dt=end_dt,
           reference_dt=ref_dt,
           spinup_only_lead_1d=spinup_only_lead_1d,
@@ -802,6 +924,7 @@ class RealtimeForcingFetcher:
           prod_enum,
           overwrite_existing_basins=overwrite,
           preserve_existing_valid=not overwrite,
+          allow_2d_expansion=True,
       )
       self.writer.consolidate_metadata(prod_enum)
       stores[prod_name] = store_path

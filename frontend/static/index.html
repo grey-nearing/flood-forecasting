@@ -327,7 +327,11 @@
     </button>
     <button data-tab="tab-training" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="cpu" class="w-4 h-4"></i>
-      <span>Training & Fine Tuning</span>
+      <span>Training</span>
+    </button>
+    <button data-tab="tab-finetuning" id="finetuningTabBtn" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
+      <i data-lucide="sliders" class="w-4 h-4"></i>
+      <span>Fine Tuning</span>
     </button>
     <button data-tab="tab-forecasting" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="activity" class="w-4 h-4"></i>
@@ -1253,7 +1257,7 @@
               </div>
               <div>
                 <h2 class="text-sm font-bold text-[#202124] flex items-center gap-2">
-                  Hydrological Model Training & Fine-Tuning Workbench
+                  Hydrological Model Training Workbench
                   <span class="text-xs bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2 py-0.5 rounded-full font-mono">MTS-LSTM / PyTorch</span>
                 </h2>
                 <p class="text-xs text-[#5f6368]">Curate multi-basin meteorological Zarr stores, configure LSTM architectures, and launch transfer learning</p>
@@ -1380,8 +1384,375 @@
               <i data-lucide="share-2" class="w-3.5 h-3.5"></i> Export Dataset to CNS / GCS
             </button>
             <button type="button" class="bg-[#1a73e8] hover:bg-[#1557b0] text-white font-medium text-xs py-2 px-4 rounded-lg flex items-center gap-1.5 transition shadow-md shadow-amber-600/20">
-              <i data-lucide="play" class="w-3.5 h-3.5"></i> Launch Local Fine-Tuning Job
+              <i data-lucide="play" class="w-3.5 h-3.5"></i> Launch Multi-Basin Training Job
             </button>
+          </div>
+        </div>
+      </main>
+    </section>
+
+    <!-- Tab: Interactive Per-Basin Fine-Tuning Workbench -->
+    <section id="tab-finetuning" class="tab-content hidden flex-1 flex overflow-hidden w-full h-full">
+      <!-- Left Sidebar: Model Inventory, Local CSV Upload, Tunable Components, Hyperparameters & Partition Slider -->
+      <aside id="finetuningSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-5 space-y-4">
+        <div class="sidebar-header-bar">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
+            <i data-lucide="sliders" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Interactive Fine-Tuning
+          </span>
+          <button type="button" class="sidebar-collapse-btn" data-action="collapse-sidebar" title="Collapse left control panel" aria-label="Collapse left control panel">
+            <i data-lucide="panel-left-close" class="w-3.5 h-3.5"></i>
+            <span>Hide</span>
+          </button>
+        </div>
+
+        <!-- Step 1: Base Model Inventory Selection -->
+        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-bold uppercase tracking-wider text-[#1a73e8] flex items-center gap-1.5">
+              <i data-lucide="cpu" class="w-3.5 h-3.5"></i> 1. Base Model Inventory
+            </span>
+            <span id="ftModelArchBadge" class="text-[10px] bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc] px-2 py-0.5 rounded font-mono">MeanEmbeddingForecastLSTM</span>
+          </div>
+          <div>
+            <label for="ftModelSelect" class="text-[11px] text-[#5f6368] block mb-1">Select Pretrained Model</label>
+            <select id="ftModelSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2.5 py-2 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
+              <option value="google-floodhub-settings-110-epochs" selected>Google FloodHub Pretrained (110 Epochs, CMAL)</option>
+            </select>
+          </div>
+          <div id="ftModelMetaSummary" class="grid grid-cols-3 gap-1.5 text-[10px] font-mono bg-white border border-[#dadce0] rounded-lg p-2 text-[#3c4043]">
+            <div><span class="text-[#5f6368] block">Head / Loss</span><strong id="ftMetaHeadLoss">cmal / CMALLoss</strong></div>
+            <div><span class="text-[#5f6368] block">Seq / Lead</span><strong id="ftMetaSeqLead">365d / 7d</strong></div>
+            <div><span class="text-[#5f6368] block">Checkpoint</span><strong id="ftMetaCkptEpoch">Epoch 110</strong></div>
+          </div>
+        </div>
+
+        <!-- Step 2: Per-Basin Local Data Upload (CSV: time x lead_time) -->
+        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-bold uppercase tracking-wider text-[#1e8e3e] flex items-center gap-1.5">
+              <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i> 2. Local Basin Data (CSV)
+            </span>
+            <span id="ftDataReadyBadge" class="text-[10px] bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2 py-0.5 rounded font-mono">Awaiting CSVs</span>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label for="ftBasinSelect" class="text-[11px] text-[#5f6368] block mb-1">Active Watershed</label>
+              <select id="ftBasinSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2 py-1.5 text-[#202124]">
+                <option value="custom_basin_01" selected>custom_basin_01</option>
+              </select>
+            </div>
+            <div>
+              <label for="ftBasinIdInput" class="text-[11px] text-[#5f6368] block mb-1">Or Basin ID</label>
+              <input id="ftBasinIdInput" type="text" value="custom_basin_01" placeholder="e.g. basin_01" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2 py-1.5 text-[#202124] font-mono">
+            </div>
+          </div>
+
+          <p class="text-[10.5px] text-[#5f6368] leading-snug">
+            Upload per-basin CSVs structured as <code class="bg-white px-1 py-0.5 rounded border border-[#dadce0] font-mono">date, lead_1, ..., lead_7</code> (time &times; lead_time) or daily <code class="bg-white px-1 py-0.5 rounded border border-[#dadce0] font-mono">date, value</code>.
+          </p>
+
+          <!-- Local Precipitation CSV -->
+          <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-1.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-semibold text-[#202124] flex items-center gap-1.5">
+                <i data-lucide="cloud-rain" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Local Precipitation (mm/day)
+              </span>
+              <span id="ftPrecipStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <input type="file" id="ftPrecipFileInput" accept=".csv" class="hidden">
+              <button type="button" id="ftUploadPrecipBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
+                <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Choose Precip CSV
+              </button>
+            </div>
+          </div>
+
+          <!-- Local Temperature CSV -->
+          <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-1.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-semibold text-[#202124] flex items-center gap-1.5">
+                <i data-lucide="thermometer" class="w-3.5 h-3.5 text-[#e65100]"></i> Local Temperature (&deg;C)
+              </span>
+              <span id="ftTempStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <input type="file" id="ftTempFileInput" accept=".csv" class="hidden">
+              <button type="button" id="ftUploadTempBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
+                <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#e65100]"></i> Choose Temp CSV
+              </button>
+            </div>
+          </div>
+
+          <!-- Target Streamflow CSV -->
+          <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-1.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-semibold text-[#202124] flex items-center gap-1.5">
+                <i data-lucide="waves" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Target Streamflow
+              </span>
+              <span id="ftStreamflowStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
+            </div>
+            <div class="grid grid-cols-2 gap-1.5">
+              <div>
+                <label for="ftStreamflowUnitsSelect" class="text-[10px] text-[#5f6368] block">Units</label>
+                <select id="ftStreamflowUnitsSelect" class="w-full bg-[#f8f9fa] border border-[#dadce0] text-[11px] rounded px-1.5 py-1 text-[#202124]">
+                  <option value="mm/day" selected>mm/day</option>
+                  <option value="m3/s">m&sup3;/s (CMS)</option>
+                </select>
+              </div>
+              <div>
+                <label for="ftBasinAreaInput" class="text-[10px] text-[#5f6368] block">Area km&sup2; (if m&sup3;/s)</label>
+                <input id="ftBasinAreaInput" type="number" step="any" min="0.1" placeholder="e.g. 250.0" class="w-full bg-[#f8f9fa] border border-[#dadce0] text-[11px] rounded px-1.5 py-1 text-[#202124] font-mono">
+              </div>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <input type="file" id="ftStreamflowFileInput" accept=".csv" class="hidden">
+              <button type="button" id="ftUploadStreamflowBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
+                <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Choose Streamflow CSV
+              </button>
+            </div>
+          </div>
+
+          <!-- Template & Clear Helpers -->
+          <div class="flex items-center gap-1.5 pt-1">
+            <button type="button" id="ftDownloadTemplateBtn" class="flex-1 bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] text-[11px] font-medium py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition" title="Download time x lead_time CSV template">
+              <i data-lucide="download" class="w-3.5 h-3.5"></i> Download CSV Template
+            </button>
+            <button type="button" id="ftClearDataBtn" class="bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#dadce0] text-[11px] font-medium py-1.5 px-2 rounded-lg transition" title="Clear uploaded data">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Step 3: Train / Validation Partition Slider -->
+        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-bold uppercase tracking-wider text-[#b06000] flex items-center gap-1.5">
+              <i data-lucide="split-square-horizontal" class="w-3.5 h-3.5"></i> 3. Train / Validation Split
+            </span>
+            <span id="ftSplitRatioLabel" class="text-[10px] bg-white border border-[#dadce0] text-[#202124] px-2 py-0.5 rounded font-mono font-semibold">70% Train / 30% Val</span>
+          </div>
+          <input id="ftSplitRatioSlider" type="range" min="20" max="90" step="1" value="70" class="w-full accent-[#1a73e8] h-1.5 bg-[#e8eaed] rounded-lg cursor-pointer">
+          <div id="ftSplitDateSummary" class="grid grid-cols-2 gap-1.5 text-[10px] font-mono">
+            <div class="bg-[#e8f0fe]/70 border border-[#d2e3fc] rounded p-1.5 text-[#174ea6]">
+              <span class="block text-[9px] uppercase font-bold">Training Period</span>
+              <span id="ftTrainDateRangeText">&mdash;</span>
+            </div>
+            <div class="bg-[#fef7e0]/80 border border-[#fde293] rounded p-1.5 text-[#b06000]">
+              <span class="block text-[9px] uppercase font-bold">Validation Period</span>
+              <span id="ftValDateRangeText">&mdash;</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 4: Dynamic Tunable Model Components -->
+        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-bold uppercase tracking-wider text-[#7627bb] flex items-center gap-1.5">
+              <i data-lucide="layers" class="w-3.5 h-3.5"></i> 4. Tunable Model Components
+            </span>
+            <span id="ftTrainableParamsBadge" class="text-[10px] bg-[#f3e8fd] text-[#7627bb] border border-[#e9d2fd] px-2 py-0.5 rounded font-mono">Dynamic</span>
+          </div>
+          <p class="text-[10.5px] text-[#5f6368] leading-snug">
+            Drawn dynamically from <code class="font-mono">BaseModel.module_parts</code>. Adjust which components are unfrozen at any pause step:
+          </p>
+          <div class="flex flex-wrap gap-1">
+            <button type="button" id="ftPresetLocalHeadBtn" class="text-[10px] bg-white hover:bg-[#f3e8fd] text-[#7627bb] border border-[#dadce0] px-2 py-1 rounded font-medium transition">Local + Head</button>
+            <button type="button" id="ftPresetDecoderBtn" class="text-[10px] bg-white hover:bg-[#f3e8fd] text-[#7627bb] border border-[#dadce0] px-2 py-1 rounded font-medium transition">Local + Forecast LSTM + Head</button>
+            <button type="button" id="ftPresetAllBtn" class="text-[10px] bg-white hover:bg-[#f3e8fd] text-[#7627bb] border border-[#dadce0] px-2 py-1 rounded font-medium transition">Unfreeze All</button>
+          </div>
+          <div id="ftTunableComponentsList" class="space-y-1.5 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
+            <!-- Populated dynamically by renderFineTuneComponents() -->
+          </div>
+        </div>
+
+        <!-- Step 5: Hyperparameters & Interactive Step Execution -->
+        <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-bold uppercase tracking-wider text-[#202124] flex items-center gap-1.5">
+              <i data-lucide="gauge" class="w-3.5 h-3.5 text-[#1a73e8]"></i> 5. Hyperparameters &amp; Step Control
+            </span>
+            <span id="ftCurrentEpochBadge" class="text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2 py-0.5 rounded font-mono font-semibold">Epoch 0</span>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <label for="ftEpochsPerStepInput" class="text-[11px] text-[#5f6368] block mb-1">Epochs to Run Next</label>
+              <input id="ftEpochsPerStepInput" type="number" min="1" max="100" value="3" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2.5 py-1.5 text-[#202124] font-mono">
+            </div>
+            <div>
+              <label for="ftLearningRateInput" class="text-[11px] text-[#5f6368] block mb-1">Learning Rate</label>
+              <input id="ftLearningRateInput" type="number" step="any" min="1e-6" max="1.0" value="0.001" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2.5 py-1.5 text-[#202124] font-mono">
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-2 text-xs">
+            <div>
+              <label for="ftLossSelect" class="text-[11px] text-[#5f6368] block mb-1">Loss</label>
+              <select id="ftLossSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2 py-1.5 text-[#202124] font-mono">
+                <option value="CMALLoss" selected>CMALLoss</option>
+                <option value="MSE">MSE</option>
+                <option value="NSE">NSE</option>
+                <option value="RMSE">RMSE</option>
+              </select>
+            </div>
+            <div>
+              <label for="ftLrStrategySelect" class="text-[11px] text-[#5f6368] block mb-1">LR Schedule</label>
+              <select id="ftLrStrategySelect" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2 py-1.5 text-[#202124]">
+                <option value="ConstantLR" selected>ConstantLR</option>
+                <option value="ReduceLROnPlateau">ReduceLROnPlateau</option>
+                <option value="StepLR">StepLR</option>
+              </select>
+            </div>
+            <div>
+              <label for="ftBatchSizeInput" class="text-[11px] text-[#5f6368] block mb-1">Batch Size</label>
+              <input id="ftBatchSizeInput" type="number" min="1" max="256" value="16" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2 py-1.5 text-[#202124] font-mono">
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 pt-1">
+            <button type="button" id="ftRunEpochsBtn" class="flex-1 bg-[#1a73e8] hover:bg-[#1557b0] disabled:bg-[#f1f3f4] disabled:text-[#80868b] text-white font-semibold text-xs py-2.5 px-3 rounded-lg flex items-center justify-center gap-2 transition shadow-sm">
+              <i data-lucide="play" class="w-4 h-4"></i>
+              <span id="ftRunEpochsBtnText">Run 3 Epochs &amp; Pause</span>
+            </button>
+            <button type="button" id="ftResetSessionBtn" class="bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#dadce0] text-xs font-medium py-2.5 px-3 rounded-lg flex items-center gap-1 transition" title="Reset fine-tuning session back to Epoch 0 (pretrained weights)">
+              <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i> Reset
+            </button>
+          </div>
+          <div id="ftStatusMessage" class="hidden text-[11px] rounded-lg px-2.5 py-2 border"></div>
+        </div>
+
+        <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize left control panel" title="Drag to resize control panel"></div>
+      </aside>
+
+      <!-- Right Main Panel: Interactive Graphical Progress, Hydrograph + Hanging Hyetograph & Epoch Inspector -->
+      <main id="finetuningMainPanel" class="flex-1 flex flex-col p-5 bg-[#f8f9fa] overflow-y-auto custom-scrollbar space-y-4">
+        <!-- Top Interactive Control & Epoch Scrubber Banner -->
+        <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-wrap items-center justify-between gap-4 shadow-sm">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] flex items-center justify-center font-bold">
+              <i data-lucide="sliders" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <div class="flex items-center gap-2">
+                <h2 class="text-sm font-bold text-[#202124]">Interactive Per-Basin Fine-Tuning &amp; Visual Inspection</h2>
+                <span id="ftSessionStatePill" class="text-[10px] bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] px-2 py-0.5 rounded-full font-mono font-semibold">Ready</span>
+              </div>
+              <p id="ftSessionSubtitle" class="text-xs text-[#5f6368]">
+                Upload local basin CSVs, choose tunable model components, and advance training epoch-by-epoch.
+              </p>
+            </div>
+          </div>
+
+          <!-- Epoch Inspector Scrubber (Active when epochs > 0) -->
+          <div id="ftEpochInspectorBar" class="flex items-center gap-2 bg-[#f8f9fa] border border-[#dadce0] rounded-xl px-3 py-2">
+            <span class="text-[10px] font-bold uppercase tracking-wider text-[#5f6368]">Inspect Epoch:</span>
+            <button type="button" id="ftPrevEpochBtn" class="p-1 rounded hover:bg-[#e8eaed] text-[#3c4043] disabled:opacity-40" title="Previous Epoch">
+              <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i>
+            </button>
+            <input id="ftEpochScrubber" type="range" min="0" max="0" step="1" value="0" class="w-28 accent-[#1a73e8] h-1.5 bg-[#dadce0] rounded-lg cursor-pointer">
+            <button type="button" id="ftNextEpochBtn" class="p-1 rounded hover:bg-[#e8eaed] text-[#3c4043] disabled:opacity-40" title="Next Epoch">
+              <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+            </button>
+            <span id="ftInspectedEpochBadge" class="text-xs font-mono font-bold text-[#1a73e8] min-w-[68px] text-center">Epoch 0</span>
+          </div>
+        </div>
+
+        <!-- KPI Strip for Inspected Epoch -->
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
+            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Train Loss</span>
+            <span id="ftKpiTrainLoss" class="text-base font-mono font-bold text-[#1a73e8]">&mdash;</span>
+          </div>
+          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
+            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Validation Loss</span>
+            <span id="ftKpiValLoss" class="text-base font-mono font-bold text-[#b06000]">&mdash;</span>
+          </div>
+          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
+            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Train NSE</span>
+            <span id="ftKpiTrainNse" class="text-base font-mono font-bold text-[#202124]">&mdash;</span>
+          </div>
+          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
+            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Validation NSE</span>
+            <span id="ftKpiValNse" class="text-base font-mono font-bold text-[#1e8e3e]">&mdash;</span>
+          </div>
+          <div class="bg-white border border-[#dadce0] rounded-xl p-3">
+            <span class="text-[10px] uppercase font-bold text-[#5f6368] block">Validation KGE</span>
+            <span id="ftKpiValKge" class="text-base font-mono font-bold text-[#7627bb]">&mdash;</span>
+          </div>
+        </div>
+
+        <!-- Primary Chart: Hydrograph + Hanging Hyetograph with Visual Train/Validation Partition -->
+        <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-3 min-h-[380px]">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-xs font-bold text-[#202124] flex items-center gap-2">
+                <i data-lucide="activity" class="w-4 h-4 text-[#1e8e3e]"></i>
+                Basin Hydrograph &amp; Hanging Hyetograph (Train vs. Validation Partition)
+              </h3>
+              <p id="ftHydroChartSubtitle" class="text-[11px] text-[#5f6368]">
+                Inverted top bars show local precipitation (mm/day); bottom curves compare Observed vs. Baseline (Epoch 0) vs. Fine-Tuned Streamflow (mm/day).
+              </p>
+            </div>
+            <div class="flex items-center gap-3 text-[11px] font-mono">
+              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc]">
+                <span class="w-2 h-2 rounded-full bg-[#1a73e8]"></span> Training Partition
+              </span>
+              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293]">
+                <span class="w-2 h-2 rounded-full bg-[#f9ab00]"></span> Validation Partition
+              </span>
+            </div>
+          </div>
+          <div class="flex-1 relative min-h-[320px]">
+            <canvas id="ftHydrographCanvas"></canvas>
+          </div>
+        </div>
+
+        <!-- Bottom Grid: Epoch-by-Epoch Loss/NSE Progress Chart + Epoch History Table -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <!-- Left: Epoch-by-Epoch Loss & NSE Curve -->
+          <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-2 min-h-[260px]">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-bold text-[#202124] flex items-center gap-2">
+                <i data-lucide="trending-down" class="w-4 h-4 text-[#1a73e8]"></i>
+                Epoch-by-Epoch Fine-Tuning Progress (Click any epoch to inspect)
+              </h3>
+              <span id="ftLossChartBadge" class="text-[10px] font-mono bg-[#f1f3f4] text-[#3c4043] px-2 py-0.5 rounded">0 Epochs Run</span>
+            </div>
+            <div class="flex-1 relative min-h-[210px]">
+              <canvas id="ftLossCurveCanvas"></canvas>
+            </div>
+          </div>
+
+          <!-- Right: Interactive Epoch Telemetry Log -->
+          <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-2 min-h-[260px]">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-bold text-[#202124] flex items-center gap-2">
+                <i data-lucide="list-ordered" class="w-4 h-4 text-[#7627bb]"></i>
+                Epoch Checkpoint History &amp; Active Tuned Components
+              </h3>
+              <span class="text-[10px] text-[#5f6368]">Click row to view hydrograph</span>
+            </div>
+            <div class="flex-1 overflow-y-auto max-h-[215px] custom-scrollbar border border-[#dadce0] rounded-lg">
+              <table class="w-full text-left border-collapse text-[11px] font-mono">
+                <thead class="bg-[#f8f9fa] text-[#5f6368] sticky top-0 border-b border-[#dadce0]">
+                  <tr>
+                    <th class="py-1.5 px-2">Epoch</th>
+                    <th class="py-1.5 px-2">Train Loss</th>
+                    <th class="py-1.5 px-2">Val Loss</th>
+                    <th class="py-1.5 px-2">Val NSE</th>
+                    <th class="py-1.5 px-2">Val KGE</th>
+                    <th class="py-1.5 px-2">LR</th>
+                    <th class="py-1.5 px-2">Tuned Modules</th>
+                  </tr>
+                </thead>
+                <tbody id="ftEpochHistoryTableBody" class="divide-y divide-[#e8eaed] text-[#202124]">
+                  <tr>
+                    <td colspan="7" class="py-6 text-center text-[#5f6368] font-sans">No epochs run yet. Upload CSVs or click "Load Sample Basin CSVs", then click "Run Epochs &amp; Pause".</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </main>
@@ -1473,11 +1844,11 @@
           </div>
         </section>
 
-        <!-- Step 1: Fetch Real-Time Forcing Data -->
+        <!-- Step 2: Fetch Real-Time Forcing Data -->
         <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
           <div class="flex items-center justify-between">
             <label class="text-xs font-bold text-[#1a73e8] uppercase tracking-wider flex items-center gap-1.5">
-              <i data-lucide="cloud-download" class="w-4 h-4"></i> 1. Fetch Real-Time Data
+              <i data-lucide="cloud-download" class="w-4 h-4"></i> 2. Fetch Real-Time Data
             </label>
             <span class="text-[10px] text-[#5f6368] font-mono">multimet.realtime</span>
           </div>
@@ -1534,11 +1905,35 @@
           </div>
         </section>
 
-        <!-- Step 2: Run Hydrological Model -->
+        <!-- Step 3: Upload Real-Time Streamflow CSV (Plot on Forecast Graph) -->
+        <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-2.5">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-bold text-[#202124] uppercase tracking-wider flex items-center gap-1.5">
+              <i data-lucide="upload" class="w-4 h-4 text-[#111827]"></i> 3. Realtime Streamflow (CSV)
+            </label>
+            <span class="text-[10px] text-[#5f6368] font-mono">m³/s</span>
+          </div>
+          <p class="text-[11px] text-[#5f6368] leading-relaxed">
+            Upload local gauge streamflow CSV (<code class="font-mono text-[10px]">date,discharge_cms</code>, ISO <code class="font-mono text-[10px]">YYYY-MM-DD</code> daily dates) to plot observed discharge on the forecast chart.
+          </p>
+          <input type="file" id="fcStreamflowCsvInput" accept=".csv,text/csv" class="hidden" />
+          <div class="flex items-center gap-2">
+            <button id="fcUploadStreamflowCsvBtn" type="button" class="flex-1 bg-white hover:bg-[#f1f3f4] text-[#202124] border border-[#dadce0] font-semibold text-xs py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition">
+              <i data-lucide="file-up" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
+              <span>Upload CSV</span>
+            </button>
+            <button id="fcClearStreamflowCsvBtn" type="button" class="hidden bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#fad2cf] font-semibold text-xs py-2 px-2.5 rounded-lg transition" title="Clear uploaded streamflow CSV">
+              Clear
+            </button>
+          </div>
+          <div id="fcStreamflowCsvStatus" class="text-[11px] text-[#5f6368] font-mono leading-snug">No CSV uploaded for active basin.</div>
+        </section>
+
+        <!-- Step 4: Run Hydrological Model -->
         <section class="bg-[#f8f9fa] p-4 rounded-xl border border-[#dadce0] space-y-3">
           <div class="flex items-center justify-between">
             <label class="text-xs font-bold text-[#1e8e3e] uppercase tracking-wider flex items-center gap-1.5">
-              <i data-lucide="play-circle" class="w-4 h-4"></i> 2. Make Forecasts
+              <i data-lucide="play-circle" class="w-4 h-4"></i> 4. Make Forecasts
             </label>
             <span class="text-[10px] text-[#5f6368] font-mono">OpenHydroNet</span>
           </div>
@@ -2101,20 +2496,20 @@
     };
     let loadedWatershedsUsername = null;
 
-    async function fetchCurrentProfile() {
+    async function fetchCurrentProfile(options = {}) {
       try {
-        const resp = await fetch('/api/profile/current');
+        const resp = await fetch('/api/profile/current', { cache: 'no-store' });
         if (!resp.ok) return;
         const data = await resp.json();
         activeProfileInfo = data.profile || { username: 'guest', is_guest: true };
         updateProfileHeaderUI();
         updateProfileModalUI(data.available_profiles || []);
         const currentUsername = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+        if (!options.skipAccountSummary && typeof loadAccountSummary === 'function') {
+          loadAccountSummary(currentUsername);
+        }
         if (loadedWatershedsUsername !== currentUsername) {
           await loadWatershedsFromServer(loadedWatershedsUsername === null);
-        }
-        if (typeof loadAccountSummary === 'function') {
-          loadAccountSummary();
         }
       } catch (err) {
         console.error('Error fetching current profile:', err);
@@ -2529,7 +2924,7 @@
       dialog.close();
       if (res.profile) activeProfileInfo = res.profile;
       if (pending.isCurrent) {
-        await refreshAfterAccountChange();  // Now on Guest: reload the map and data.
+        await refreshAfterAccountChange(res.account_summary || null);  // Now on Guest: reload the map and data.
       } else {
         await fetchCurrentProfile();
       }
@@ -2658,10 +3053,15 @@
     }
 
     // Reloads everything that depends on the active account.
-    async function refreshAfterAccountChange() {
+    async function refreshAfterAccountChange(preloadedSummary = null) {
       closeProfileModal();
       loadedWatershedsUsername = null;
-      await fetchCurrentProfile();
+      const hasPreloadedSummary = !!(preloadedSummary && typeof preloadedSummary === 'object');
+      if (hasPreloadedSummary) {
+        accountSummaryRequestSeq += 1;
+        renderAccountSummaryUI(preloadedSummary);
+      }
+      await fetchCurrentProfile({ skipAccountSummary: hasPreloadedSummary });
       // Ensure profile's watersheds are loaded onto map if fetchCurrentProfile didn't already trigger it
       const currentUsername = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
       if (loadedWatershedsUsername !== currentUsername) {
@@ -2670,8 +3070,8 @@
       if (typeof loadArchivesList === 'function') {
         loadArchivesList();
       }
-      if (typeof loadAccountSummary === 'function') {
-        loadAccountSummary();
+      if (!hasPreloadedSummary && typeof loadAccountSummary === 'function') {
+        loadAccountSummary(currentUsername);
       }
     }
 
@@ -2710,7 +3110,7 @@
         }
 
         activeProfileInfo = res.profile;
-        await refreshAfterAccountChange();
+        await refreshAfterAccountChange(res.account_summary || null);
         setAccountAuthStatus('');
         announceAccountChange(`Switched to ${accountLabel(res.profile)}.`);
         return true;
@@ -2769,7 +3169,7 @@
 
         activeProfileInfo = res.profile;
         setCreateAccountFormOpen(false);
-        await refreshAfterAccountChange();
+        await refreshAfterAccountChange(res.account_summary || null);
         const current = document.querySelector('#loginTabSavedProfilesList [aria-current="true"]');
         if (current) current.focus();
         announceAccountChange(`Created ${accountLabel(res.profile)} and switched to it.`);
@@ -2799,7 +3199,7 @@
           return false;
         }
         activeProfileInfo = res.profile || { username: 'guest', is_guest: true };
-        await refreshAfterAccountChange();
+        await refreshAfterAccountChange(res.account_summary || null);
         setAccountAuthStatus('');
         announceAccountChange('Switched to Guest.');
         return true;
@@ -2822,14 +3222,22 @@
       }, 100);
     }
 
-    async function loadAccountSummary() {
+    let accountSummaryRequestSeq = 0;
+
+    async function loadAccountSummary(targetUsername = null) {
+      const seq = ++accountSummaryRequestSeq;
       try {
-        const u = (activeProfileInfo && activeProfileInfo.username) || 'guest';
-        const resp = await fetch(`/api/account/summary?username=${encodeURIComponent(u)}`, {
+        const u = targetUsername || (activeProfileInfo && activeProfileInfo.username) || 'guest';
+        const resp = await fetch(`/api/account/summary?username=${encodeURIComponent(u)}&_t=${Date.now()}`, {
+          cache: 'no-store',
           headers: { 'X-User-Profile': u }
         });
         if (!resp.ok) return;
         const summary = await resp.json();
+        const currentActive = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+        if (seq !== accountSummaryRequestSeq || (summary && summary.username && summary.username !== currentActive)) {
+          return;
+        }
         renderAccountSummaryUI(summary);
       } catch (err) {
         console.error('Failed to load account summary:', err);
@@ -2839,6 +3247,8 @@
     function renderAccountSummaryUI(summary) {
       if (!summary) return;
       const u = summary.username || 'guest';
+      const currentActive = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+      if (u !== currentActive) return;
       const prof = summary.profile || {};
       const isGuest = prof.is_guest || u === 'guest';
       const displayName = prof.display_name || (isGuest ? 'Guest User' : u);
@@ -3296,7 +3706,13 @@
         if (typeof fcKnownCatchmentIds !== 'undefined' && fcKnownCatchmentIds) fcKnownCatchmentIds.clear();
         if (typeof fcSelectedCatchmentIds !== 'undefined' && fcSelectedCatchmentIds) fcSelectedCatchmentIds.clear();
         if (typeof fcModelResultsByBasin !== 'undefined') fcModelResultsByBasin = {};
+        if (typeof fcObservedStreamflowByBasin !== 'undefined') fcObservedStreamflowByBasin = {};
+        if (typeof fcWhatIfEditsByBasin !== 'undefined') fcWhatIfEditsByBasin = {};
+        if (typeof fcWhatIfScenariosByBasin !== 'undefined') fcWhatIfScenariosByBasin = {};
+        if (typeof fcWhatIfCounterByBasin !== 'undefined') fcWhatIfCounterByBasin = {};
+        if (typeof fcLastModelResult !== 'undefined') fcLastModelResult = null;
         if (typeof fcStatusData !== 'undefined') fcStatusData = null;
+        if (typeof fcStatusDataByBasin !== 'undefined') fcStatusDataByBasin = {};
         if (typeof geoKnownCatchmentIds !== 'undefined' && geoKnownCatchmentIds) geoKnownCatchmentIds.clear();
         if (typeof geoCheckedCatchmentIds !== 'undefined' && geoCheckedCatchmentIds) geoCheckedCatchmentIds.clear();
         if (typeof extractedAttributesById !== 'undefined') extractedAttributesById = {};
@@ -4144,7 +4560,8 @@
 
     // Select a specific watershed
     function selectWatershed(catchmentId, zoomTo = false) {
-      const feat = activeWatersheds.find(f => f.properties.catchment_id === catchmentId);
+      const targetCid = String(catchmentId || '').trim();
+      const feat = activeWatersheds.find(f => String((f && f.properties && f.properties.catchment_id) || (f && f.id) || '').trim() === targetCid);
       if (!feat) return;
 
       activeCatchmentId = catchmentId;
@@ -6641,9 +7058,11 @@
         }
       }
 
-      // 5. Initialize or resize charts for Tab 2 and Tab 6, or refresh the Account tab
+      // 5. Initialize or resize charts for Tab 2, Fine Tuning, and Tab 6, or refresh the Account tab
       if (targetTabId === 'tab-forecasting' || targetTabId === 'tab-modeling') {
         initModelingCharts();
+      } else if (targetTabId === 'tab-finetuning') {
+        if (typeof refreshFineTuningTab === 'function') refreshFineTuningTab();
       } else if (targetTabId === 'tab-maas') {
         initMaasCharts();
       } else if (targetTabId === 'tab-account') {
@@ -6924,7 +7343,7 @@
 
     function loadWeatherModelsInfo() {
       weatherModelsInfoLoading = true;
-      return fetch('/api/weather/models')
+      return fetch('/api/weather/models', { cache: 'no-store' })
         .then(res => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.json();
@@ -6973,7 +7392,7 @@
         }
       }
 
-      const req = { async: true, force: true, model: modelKey };
+      const req = { async: true, force: false, model: modelKey };
 
       fetch('/api/weather/refresh', {
         method: 'POST',
@@ -6981,50 +7400,70 @@
         body: JSON.stringify(req)
       }).then(res => res.json()).then(data => {
         if (data.status === 'queued' && data.job_id) {
-          pollWeatherRefreshJob(data.job_id, modelKey);
+          pollWeatherRefreshJob(data.job_id, modelKey, 0);
         } else {
-          finishWeatherRefreshUI(modelKey, 'completed');
+          finishWeatherRefreshUI(modelKey, 'completed', data);
         }
       }).catch(err => {
         console.error('Refresh failed:', err);
-        finishWeatherRefreshUI(modelKey, 'error');
+        finishWeatherRefreshUI(modelKey, 'error', null);
       });
     }
 
-    function pollWeatherRefreshJob(jobId, modelKey) {
-      fetch(`/api/jobs/${jobId}`)
+    function pollWeatherRefreshJob(jobId, modelKey, tick = 0) {
+      fetch(`/api/jobs/${jobId}`, { cache: 'no-store' })
         .then(res => res.json())
         .then(job => {
           if (job.status === 'running' || job.status === 'queued') {
-            setTimeout(() => pollWeatherRefreshJob(jobId, modelKey), 1500);
+            if (tick > 0 && tick % 6 === 0 && !weatherModelsInfoLoading) {
+              loadWeatherModelsInfo();
+            }
+            setTimeout(() => pollWeatherRefreshJob(jobId, modelKey, tick + 1), 1500);
           } else {
-            finishWeatherRefreshUI(modelKey, job.status);
+            finishWeatherRefreshUI(modelKey, job.status, job.result || null);
           }
         }).catch(err => {
           console.error('Job polling failed:', err);
-          finishWeatherRefreshUI(modelKey, 'error');
+          finishWeatherRefreshUI(modelKey, 'error', null);
         });
     }
 
-    function finishWeatherRefreshUI(modelKey, status) {
+    function finishWeatherRefreshUI(modelKey, status, jobResult = null) {
       const banner = document.getElementById('weatherRefreshStatusBanner');
       const label = modelKey === 'all'
         ? 'All weather products'
         : ((WEATHER_MODEL_META[modelKey] && WEATHER_MODEL_META[modelKey].name) || modelKey);
-      const isOk = (status === 'completed' || status === 'done');
+      const syncOutcome = jobResult && jobResult.result ? jobResult.result : null;
+      const lastResult = syncOutcome && syncOutcome.last_result ? syncOutcome.last_result : null;
+      const syncMsg = syncOutcome && syncOutcome.message ? syncOutcome.message : '';
+      const isDone = (status === 'completed' || status === 'done');
+      const isPartial = isDone && (lastResult === 'partial' || lastResult === 'busy');
+      const isOk = isDone && !isPartial && lastResult !== 'error';
       if (banner) {
+        const msgSpan = document.createElement('span');
         if (isOk) {
+          const doneText = lastResult === 'up_to_date'
+            ? `${label}: already at newest upstream run.`
+            : `${label} refresh complete.`;
           banner.className = "text-[10.5px] leading-snug text-[#0f5132] bg-[#d1e7dd] border border-[#badbcc] p-1.5 rounded flex items-center gap-1";
-          banner.innerHTML = `<i data-lucide="check-circle-2" class="w-3 h-3 text-[#0f5132]"></i><span class="text-[#0f5132]">${label} refresh complete.</span>`;
+          banner.innerHTML = '<i data-lucide="check-circle-2" class="w-3 h-3 text-[#0f5132] flex-shrink-0"></i>';
+          msgSpan.className = 'text-[#0f5132]';
+          msgSpan.textContent = doneText;
+        } else if (isPartial) {
+          banner.className = "text-[10.5px] leading-snug text-[#664d03] bg-[#fff3cd] border border-[#ffecb5] p-1.5 rounded flex items-center gap-1";
+          banner.innerHTML = '<i data-lucide="alert-triangle" class="w-3 h-3 flex-shrink-0"></i>';
+          msgSpan.textContent = syncMsg || `${label} partially refreshed.`;
         } else {
           banner.className = "text-[10.5px] leading-snug text-[#842029] bg-[#f8d7da] border border-[#f5c2c7] p-1.5 rounded flex items-center gap-1";
-          banner.innerHTML = `<i data-lucide="alert-circle" class="w-3 h-3"></i><span>${label} refresh ${status}.</span>`;
+          banner.innerHTML = '<i data-lucide="alert-circle" class="w-3 h-3 flex-shrink-0"></i>';
+          msgSpan.textContent = syncMsg || `${label} refresh ${status}.`;
         }
+        banner.appendChild(msgSpan);
         if (window.lucide) window.lucide.createIcons();
         setTimeout(() => {
           banner.classList.add('hidden');
           banner.className = "hidden text-[10.5px] leading-snug text-[#0f5132] bg-[#d1e7dd] border border-[#badbcc] p-1.5 rounded flex items-center gap-1";
-        }, 4000);
+        }, 6000);
       }
 
       document.querySelectorAll('[data-refresh-model]').forEach(btn => {
@@ -8857,8 +9296,11 @@
     let masterHydroChart = null;
     let fcCurrentMode = 'coldstart'; // 'coldstart' | 'hotstart'
     let fcStatusData = null;
+    let fcStatusDataByBasin = {};
+    let fcStatusRequestSeq = 0;
     let fcLastModelResult = null;
     let fcModelResultsByBasin = {};
+    let fcObservedStreamflowByBasin = {};
     let fcHydroOverlayAll = false;
     let fcSelectedNowcast = null;
     let fcSelectedForecast = null;
@@ -8883,6 +9325,69 @@
       { stroke: '#dc2626', fill: 'rgba(220, 38, 38, 0.14)' },  // Crimson Red
       { stroke: '#0d9488', fill: 'rgba(13, 148, 136, 0.14)' }  // Deep Teal
     ];
+
+    function getObservedStreamflowForBasin(basinId) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      if (!bid) return [];
+      if (
+        Object.prototype.hasOwnProperty.call(fcObservedStreamflowByBasin, bid) &&
+        Array.isArray(fcObservedStreamflowByBasin[bid])
+      ) {
+        return fcObservedStreamflowByBasin[bid];
+      }
+      const res = fcModelResultsByBasin[bid];
+      if (res && Array.isArray(res.observed_streamflow) && res.observed_streamflow.length > 0) {
+        return res.observed_streamflow;
+      }
+      if (fcStatusData && fcStatusData.catchment_id === bid && Array.isArray(fcStatusData.observed_streamflow)) {
+        return fcStatusData.observed_streamflow;
+      }
+      return [];
+    }
+
+    function updateStreamflowCsvStatusUI(customMsg) {
+      const statusEl = document.getElementById('fcStreamflowCsvStatus');
+      const clearBtn = document.getElementById('fcClearStreamflowCsvBtn');
+      const activeId = getActiveForecastBasinId();
+      const series = getObservedStreamflowForBasin(activeId);
+      const validPts = series.filter(pt => pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined);
+      if (clearBtn) {
+        clearBtn.classList.toggle('hidden', series.length === 0);
+      }
+      if (!statusEl) return;
+      if (customMsg) {
+        statusEl.className = 'text-[11px] text-[#137333] font-mono leading-snug';
+        statusEl.innerText = customMsg;
+      } else if (series.length > 0) {
+        const d0 = series[0].date;
+        const d1 = series[series.length - 1].date;
+        statusEl.className = 'text-[11px] text-[#137333] font-mono leading-snug';
+        statusEl.innerText = `Loaded ${validPts.length}/${series.length} valid obs (${d0} → ${d1})`;
+      } else {
+        statusEl.className = 'text-[11px] text-[#5f6368] font-mono leading-snug';
+        statusEl.innerText = activeId ? `No CSV uploaded for ${activeId}.` : 'No CSV uploaded for active basin.';
+      }
+    }
+
+    function extractForecastReturnPeriodThresholds(basinId, modelResult) {
+      const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+      const targetResult = modelResult || (bid && fcModelResultsByBasin[bid]) || null;
+      const rps = (targetResult && targetResult.return_periods) ||
+        (fcStatusData && fcStatusData.catchment_id === bid && fcStatusData.return_periods) ||
+        {};
+      const rawDefs = [
+        ['2-yr return period', rps.return_period_2 ?? rps.rp2 ?? rps['2'], '#eab308'],
+        ['5-yr return period', rps.return_period_5 ?? rps.rp5 ?? rps['5'], '#f97316'],
+        ['10-yr return period', rps.return_period_10 ?? rps.rp10 ?? rps['10'], '#ea580c'],
+        ['20-yr return period', rps.return_period_20 ?? rps.rp20 ?? rps['20'], '#dc2626'],
+        ['25-yr return period', rps.return_period_25 ?? rps.rp25 ?? rps['25'], '#b91c1c'],
+        ['50-yr return period', rps.return_period_50 ?? rps.rp50 ?? rps['50'], '#9333ea'],
+        ['100-yr return period', rps.return_period_100 ?? rps.rp100 ?? rps['100'], '#7e22ce']
+      ];
+      return rawDefs
+        .filter(([, v]) => v !== null && v !== undefined && Number.isFinite(Number(v)) && Number(v) > 0)
+        .map(([label, v, color]) => ({ label, value: Number(v), color, unit: 'm³/s' }));
+    }
 
     function getBasinWhatIfEdits(basinId) {
       const bid = String(basinId || getActiveForecastBasinId() || '').trim();
@@ -9381,6 +9886,72 @@
       }
     };
 
+    // Custom Chart.js plugin to draw horizontal return-period threshold lines ONLY when
+    // the chart's natural Y-axis maximum (yScale.max) reaches or exceeds the threshold.
+    // Never extends the Y-axis to accommodate return periods.
+    const fcReturnPeriodLinesPlugin = {
+      id: 'fcReturnPeriodLines',
+      afterDatasetsDraw(chart) {
+        const thresholds = chart.$returnPeriodThresholds;
+        if (!Array.isArray(thresholds) || thresholds.length === 0) return;
+        const yScale = chart.scales && chart.scales.y;
+        const area = chart.chartArea;
+        if (!yScale || !area) return;
+
+        const yMin = Number(yScale.min);
+        const yMax = Number(yScale.max);
+        if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMax <= yMin) return;
+
+        const ctx = chart.ctx;
+        ctx.save();
+        thresholds.forEach((t) => {
+          if (!t || !Number.isFinite(t.value) || t.value <= 0) return;
+          // Strictly do NOT draw if threshold exceeds the natural Y-axis ceiling
+          if (t.value > yMax || t.value < yMin) return;
+          const yPx = yScale.getPixelForValue(t.value);
+          if (!Number.isFinite(yPx) || yPx < area.top || yPx > area.bottom) return;
+
+          const stroke = t.color || '#dc2626';
+          ctx.beginPath();
+          ctx.setLineDash([5, 4]);
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = stroke;
+          ctx.moveTo(area.left, yPx);
+          ctx.lineTo(area.right, yPx);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          const unit = t.unit || 'm³/s';
+          const labelText = `${t.label} (${Number(t.value).toFixed(1)} ${unit})`;
+          ctx.font = '600 9.5px Inter, system-ui, sans-serif';
+          const tw = ctx.measureText(labelText).width;
+          const padX = 5;
+          const pillW = tw + padX * 2;
+          const pillH = 14;
+          const pillX = Math.max(area.left + 4, area.right - pillW - 6);
+          const pillY = Math.max(area.top + 2, Math.min(area.bottom - pillH - 2, yPx - pillH - 2));
+
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          if (typeof ctx.roundRect === 'function') {
+            ctx.roundRect(pillX, pillY, pillW, pillH, 3);
+          } else {
+            ctx.rect(pillX, pillY, pillW, pillH);
+          }
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = stroke;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(labelText, pillX + padX, pillY + pillH / 2);
+        });
+        ctx.restore();
+      }
+    };
+
     // Build a single shared timeline (allDates, labels, issueDate, t0Index) across
     // ALL available nowcast and forecast products so the top Input Forcing chart
     // and bottom Streamflow Forecast chart share identical X-axis categories and pixels.
@@ -9457,6 +10028,12 @@
         if (sc && sc.result && Array.isArray(sc.result.forecast)) {
           sc.result.forecast.forEach(pt => { if (pt && pt.date) dateSet.add(pt.date); });
         }
+      });
+
+      // Also include dates from uploaded local realtime streamflow CSV observations
+      const obsSeries = getObservedStreamflowForBasin(activeId);
+      obsSeries.forEach(pt => {
+        if (pt && pt.date) dateSet.add(pt.date);
       });
 
       const allDates = Array.from(dateSet).sort();
@@ -9747,7 +10324,27 @@
               }
             },
             plugins: {
-              legend: { labels: { color: '#202124', font: { size: 10 }, boxWidth: 12 } },
+              legend: {
+                labels: {
+                  color: '#202124',
+                  font: { size: 10 },
+                  boxWidth: 12,
+                  sort: (a, b, data) => {
+                    const roleOrder = {
+                      hindcast_precip: 1,
+                      forecast_precip: 2,
+                      hindcast_temp: 3,
+                      forecast_temp: 4
+                    };
+                    const dsA = (data && data.datasets && data.datasets[a.datasetIndex]) || {};
+                    const dsB = (data && data.datasets && data.datasets[b.datasetIndex]) || {};
+                    const rankA = roleOrder[dsA.$fcRole] || 99;
+                    const rankB = roleOrder[dsB.$fcRole] || 99;
+                    if (rankA !== rankB) return rankA - rankB;
+                    return (a.datasetIndex || 0) - (b.datasetIndex || 0);
+                  }
+                }
+              },
               tooltip: {
                 enabled: false
               }
@@ -9764,7 +10361,7 @@
         const ctx = hydroCanvas.getContext('2d');
         masterHydroChart = new Chart(ctx, {
           type: 'line',
-          plugins: [fcIssueDateBoundaryPlugin],
+          plugins: [fcIssueDateBoundaryPlugin, fcReturnPeriodLinesPlugin],
           data: {
             labels: [],
             datasets: []
@@ -9818,8 +10415,11 @@
         masterHydroChart.resize();
       }
 
+      const prevSeq = fcStatusRequestSeq;
       syncForecastTabBasin();
-      refreshForecastTabStatus();
+      if (fcStatusRequestSeq === prevSeq) {
+        refreshForecastTabStatus();
+      }
     }
 
     function setForecastMode(mode) {
@@ -10275,7 +10875,7 @@
       ECMWF_IFS_ENS: { bg: 'rgba(147, 51, 234, 0.84)', border: '#6b21a8' },
       IFS_ENS: { bg: 'rgba(147, 51, 234, 0.84)', border: '#6b21a8' }
     };
-    const FC_HINDCAST_TEMP_COLORS = ['#d97706', '#b45309', '#ca8a04', '#ea580c'];
+    const FC_HINDCAST_TEMP_COLORS = ['#d97706', '#b45309', '#ca8a04', '#ea580c', '#9a3412', '#f59e0b'];
     const FC_FORECAST_TEMP_PALETTE = {
       HRES: '#dc2626',
       ECMWF_AIFS: '#db2777',
@@ -10721,9 +11321,12 @@
       const timeline = buildSharedForecastTimeline(targetResult || (enabledScenarios[0] && enabledScenarios[0].result) || null);
       const { allDates, labels, issueDate, t0Index } = timeline;
       masterHydroChart.$fcTimelineMeta = allDates.length > 0 ? { issueDate, t0Index } : null;
+      masterHydroChart.$returnPeriodThresholds = extractForecastReturnPeriodThresholds(activeId, targetResult);
 
+      const obsSeries = getObservedStreamflowForBasin(activeId);
+      const hasObserved = obsSeries.some(pt => pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined);
       const hasBaseline = Boolean(targetResult && Array.isArray(targetResult.forecast) && targetResult.forecast.length > 0);
-      if (!hasBaseline && enabledScenarios.length === 0) {
+      if (!hasBaseline && enabledScenarios.length === 0 && !hasObserved) {
         masterHydroChart.data.labels = labels;
         masterHydroChart.data.datasets = allDates.length > 0
           ? [
@@ -10748,14 +11351,14 @@
         if (peakBadge) peakBadge.classList.add('hidden');
         if (subtitleEl) {
           subtitleEl.innerText = activeId
-            ? `Viewing Basin: ${activeId} · Click "2. Make Forecasts" or drag forecast bars & click "Run What-If Forecast" to generate discharge trajectories.`
-            : 'Click "2. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
+            ? `Viewing Basin: ${activeId} · Upload a realtime streamflow CSV or click "4. Make Forecasts" to generate discharge trajectories.`
+            : 'Upload a realtime streamflow CSV or click "4. Make Forecasts" after fetching real-time data to generate the discharge forecast.';
         }
         return;
       }
 
-      const refResult = hasBaseline ? targetResult : enabledScenarios[0].result;
-      const hindcastTail = Array.isArray(refResult.hindcast_tail) ? refResult.hindcast_tail : [];
+      const refResult = hasBaseline ? targetResult : (enabledScenarios.length > 0 ? enabledScenarios[0].result : null);
+      const hindcastTail = (refResult && Array.isArray(refResult.hindcast_tail)) ? refResult.hindcast_tail : [];
       const hindcastByDate = {};
       hindcastTail.forEach(pt => { if (pt && pt.date) hindcastByDate[pt.date] = pt; });
 
@@ -10764,8 +11367,9 @@
         return (pt && pt.discharge_cms !== undefined && pt.discharge_cms !== null) ? pt.discharge_cms : null;
       });
 
-      const chartDatasets = [
-        {
+      const chartDatasets = [];
+      if (refResult) {
+        chartDatasets.push({
           label: `HINDCAST (< t₀): ${refResult.basin_id || activeId} Spin-Up Streamflow (m³/s)`,
           data: hindcastData,
           borderColor: '#0284c7',
@@ -10778,8 +11382,8 @@
           spanGaps: false,
           fill: true,
           order: 3
-        }
-      ];
+        });
+      }
 
       if (hasBaseline) {
         const forecastByDate = {};
@@ -10842,6 +11446,30 @@
         });
       });
 
+      // Overlay uploaded local realtime streamflow CSV series (plotting only, no nudging/assimilation)
+      if (hasObserved) {
+        const obsByDate = {};
+        obsSeries.forEach(pt => { if (pt && pt.date) obsByDate[pt.date] = pt.discharge_cms; });
+        const obsData = allDates.map(d => (obsByDate[d] !== undefined && obsByDate[d] !== null) ? obsByDate[d] : null);
+        chartDatasets.push({
+          label: `OBSERVED STREAMFLOW (CSV): ${activeId} (m³/s)`,
+          data: obsData,
+          $fcRole: 'observed_streamflow',
+          borderColor: '#111827',
+          backgroundColor: '#111827',
+          borderWidth: 2.4,
+          pointRadius: 3.8,
+          pointHoverRadius: 5.5,
+          pointBackgroundColor: '#111827',
+          pointBorderColor: '#ffffff',
+          pointBorderWidth: 1.5,
+          tension: 0.15,
+          spanGaps: false,
+          fill: false,
+          order: 0
+        });
+      }
+
       masterHydroChart.data.labels = labels;
       masterHydroChart.data.datasets = chartDatasets;
       masterHydroChart.update();
@@ -10855,17 +11483,32 @@
             peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s (${targetResult.peak_date || '—'})`;
           }
           peakBadge.classList.remove('hidden');
+        } else if (hasObserved) {
+          const validObsVals = obsSeries
+            .map(pt => (pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined) ? Number(pt.discharge_cms) : NaN)
+            .filter(Number.isFinite);
+          if (validObsVals.length > 0) {
+            peakBadge.innerText = `Observed CSV Max: ${Math.max(...validObsVals).toFixed(2)} m³/s (${validObsVals.length} pts)`;
+            peakBadge.classList.remove('hidden');
+          } else {
+            peakBadge.classList.add('hidden');
+          }
         } else {
           peakBadge.classList.add('hidden');
         }
       }
 
       if (subtitleEl) {
-        const modeText = refResult.mode === 'hotstart' ? 'Hot-Start' : 'Cold-Start';
-        const whatIfNote = enabledScenarios.length > 0
-          ? ` · ${enabledScenarios.length} active What-If trajectory(s) plotted`
-          : '';
-        subtitleEl.innerText = `Viewing Basin: ${refResult.basin_id || activeId} · ${modeText} baseline forecast · Issue date t₀ = ${refResult.issue_date}${whatIfNote}`;
+        const obsNote = hasObserved ? ` · ${obsSeries.filter(p => p && p.discharge_cms !== null && p.discharge_cms !== undefined).length} observed CSV point(s) plotted` : '';
+        if (refResult) {
+          const modeText = refResult.mode === 'hotstart' ? 'Hot-Start' : 'Cold-Start';
+          const whatIfNote = enabledScenarios.length > 0
+            ? ` · ${enabledScenarios.length} active What-If trajectory(s) plotted`
+            : '';
+          subtitleEl.innerText = `Viewing Basin: ${refResult.basin_id || activeId} · ${modeText} baseline forecast · Issue date t₀ = ${refResult.issue_date}${whatIfNote}${obsNote}`;
+        } else if (hasObserved) {
+          subtitleEl.innerText = `Viewing Basin: ${activeId}${obsNote} (run model to overlay forecast)`;
+        }
       }
     }
 
@@ -10982,6 +11625,7 @@
     async function refreshForecastTabStatus() {
       const basinId = getActiveForecastBasinId();
       const selectedIds = getSelectedForecastCatchmentIds();
+      const reqSeq = ++fcStatusRequestSeq;
       updateForecastControlsUI();
       updateWhatIfControlsUI();
       if (!basinId) {
@@ -10993,6 +11637,22 @@
         return;
       }
 
+      if (fcStatusDataByBasin[basinId]) {
+        fcStatusData = fcStatusDataByBasin[basinId];
+        renderForecastCatchmentChecklist();
+        populateProductDropdowns();
+        updateForecastControlsUI();
+        updateWhatIfControlsUI();
+        updateStreamflowCsvStatusUI();
+        renderForcingChart();
+        renderHydrographChart(fcModelResultsByBasin[basinId] || null);
+      } else {
+        const subtitleEl = document.getElementById('fcForcingSubtitle');
+        if (subtitleEl) {
+          subtitleEl.innerText = `Loading real-time input forcing for ${basinId}...`;
+        }
+      }
+
       try {
         const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
         const cidsParam = selectedIds.length > 0 ? `&catchment_ids=${encodeURIComponent(selectedIds.join(','))}` : '';
@@ -11000,12 +11660,24 @@
           headers: { 'X-User-Profile': u }
         });
         const data = await res.json();
+        const activeUser = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+        if (reqSeq !== fcStatusRequestSeq || u !== activeUser) {
+          return;
+        }
         if (res.ok && data.status === 'success') {
+          fcStatusDataByBasin[basinId] = data;
+          if (Array.isArray(data.observed_streamflow)) {
+            fcObservedStreamflowByBasin[basinId] = data.observed_streamflow;
+          }
+          if (getActiveForecastBasinId() !== basinId) {
+            return;
+          }
           fcStatusData = data;
           renderForecastCatchmentChecklist();
           populateProductDropdowns();
           updateForecastControlsUI();
           updateWhatIfControlsUI();
+          updateStreamflowCsvStatusUI();
           renderForcingChart();
           renderHydrographChart(fcModelResultsByBasin[basinId] || null);
         }
@@ -11065,16 +11737,132 @@
       }
       if (basinSel) {
         basinSel.addEventListener('change', (e) => {
-          const newId = e.target.value;
+          const newId = String(e.target.value || '').trim();
+          if (!newId) return;
           fcHydroOverlayAll = false;
-          if (newId && typeof selectWatershed === 'function') {
+          activeCatchmentId = newId;
+          const prevSeq = fcStatusRequestSeq;
+          if (typeof selectWatershed === 'function') {
             selectWatershed(newId);
-          } else {
-            activeCatchmentId = newId;
-            syncForecastTabBasin();
           }
-          updateWhatIfControlsUI();
-          renderHydrographChart(fcModelResultsByBasin[newId] || null);
+          if (fcStatusRequestSeq === prevSeq) {
+            syncForecastTabBasin();
+            if (fcStatusRequestSeq === prevSeq) {
+              refreshForecastTabStatus();
+            }
+          }
+        });
+      }
+
+      const uploadCsvBtn = document.getElementById('fcUploadStreamflowCsvBtn');
+      const uploadCsvInput = document.getElementById('fcStreamflowCsvInput');
+      const clearCsvBtn = document.getElementById('fcClearStreamflowCsvBtn');
+      const csvStatusEl = document.getElementById('fcStreamflowCsvStatus');
+
+      async function handleRealtimeStreamflowCsvUpload(file) {
+        const basinId = getActiveForecastBasinId();
+        if (!file || !basinId) return;
+        const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+        if (csvStatusEl) {
+          csvStatusEl.innerText = `Uploading ${file.name}...`;
+        }
+        try {
+          const csvContent = await file.text();
+          const res = await fetch('/api/forecast/upload-streamflow', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-User-Profile': u
+            },
+            body: JSON.stringify({
+              catchment_id: basinId,
+              filename: file.name,
+              csv_content: csvContent,
+              username: u
+            })
+          });
+          const data = await res.json();
+          if (!res.ok || data.status !== 'success') {
+            throw new Error(data.message || `HTTP ${res.status}`);
+          }
+          if (data.observed_by_id && typeof data.observed_by_id === 'object') {
+            Object.entries(data.observed_by_id).forEach(([cid, series]) => {
+              fcObservedStreamflowByBasin[cid] = series;
+            });
+          } else if (Array.isArray(data.observed_streamflow)) {
+            fcObservedStreamflowByBasin[basinId] = data.observed_streamflow;
+          }
+          if (fcStatusData && fcStatusData.catchment_id === basinId) {
+            fcStatusData.observed_streamflow = fcObservedStreamflowByBasin[basinId] || [];
+            fcStatusData.has_observed_streamflow = (fcStatusData.observed_streamflow.length > 0);
+          }
+          updateStreamflowCsvStatusUI(data.message);
+          renderForcingChart();
+          renderHydrographChart(fcModelResultsByBasin[basinId] || null);
+        } catch (err) {
+          if (csvStatusEl) {
+            csvStatusEl.innerText = `CSV upload failed: ${err.message}`;
+          }
+        }
+      }
+
+      if (uploadCsvBtn && uploadCsvInput) {
+        uploadCsvBtn.addEventListener('click', () => {
+          uploadCsvInput.value = '';
+          uploadCsvInput.click();
+        });
+        uploadCsvInput.addEventListener('change', (e) => {
+          const f = e.target.files && e.target.files[0];
+          if (f) handleRealtimeStreamflowCsvUpload(f);
+        });
+      }
+
+      if (clearCsvBtn) {
+        clearCsvBtn.addEventListener('click', async () => {
+          const basinId = getActiveForecastBasinId();
+          if (!basinId) return;
+          const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+          try {
+            const res = await fetch('/api/forecast/clear-streamflow', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-User-Profile': u
+              },
+              body: JSON.stringify({
+                catchment_id: basinId,
+                username: u
+              })
+            });
+            const data = await res.json();
+            if (!res.ok || data.status !== 'success') {
+              throw new Error(data.message || `HTTP ${res.status}`);
+            }
+            fcObservedStreamflowByBasin[basinId] = [];
+            if (fcModelResultsByBasin[basinId]) {
+              fcModelResultsByBasin[basinId].observed_streamflow = [];
+            }
+            if (Array.isArray(fcWhatIfScenariosByBasin[basinId])) {
+              fcWhatIfScenariosByBasin[basinId].forEach(sc => {
+                if (sc && sc.result) sc.result.observed_streamflow = [];
+              });
+            }
+            if (data.forecast_status && data.forecast_status.catchment_id === basinId) {
+              fcStatusData = data.forecast_status;
+              fcStatusDataByBasin[basinId] = data.forecast_status;
+            } else if (fcStatusData && fcStatusData.catchment_id === basinId) {
+              fcStatusData.observed_streamflow = [];
+              fcStatusData.has_observed_streamflow = false;
+            }
+            updateStreamflowCsvStatusUI();
+            renderForcingChart();
+            renderHydrographChart(fcModelResultsByBasin[basinId] || null);
+          } catch (err) {
+            if (csvStatusEl) {
+              csvStatusEl.className = 'text-[11px] text-[#c5221f] font-mono leading-snug';
+              csvStatusEl.innerText = `Clear CSV failed: ${err.message}`;
+            }
+          }
         });
       }
       if (nowcastSel) {
@@ -11162,6 +11950,10 @@
             }
 
             fcStatusData = data;
+            fcStatusDataByBasin = {};
+            if (data.catchment_id) {
+              fcStatusDataByBasin[data.catchment_id] = data;
+            }
             renderForecastCatchmentChecklist();
             populateProductDropdowns();
             renderForcingChart();
@@ -11242,6 +12034,16 @@
             }
             if (data.post_run_status) {
               fcStatusData = data.post_run_status;
+              if (data.post_run_status.catchment_id) {
+                fcStatusDataByBasin[data.post_run_status.catchment_id] = data.post_run_status;
+              }
+              if (data.post_run_status.catchments_status) {
+                Object.values(fcStatusDataByBasin).forEach(st => {
+                  if (st && st.catchments_status) {
+                    Object.assign(st.catchments_status, data.post_run_status.catchments_status);
+                  }
+                });
+              }
             }
             renderForecastCatchmentChecklist();
             renderForcingChart();
@@ -11791,6 +12593,7 @@
       maasChart = new Chart(canvas.getContext('2d'), {
         type: 'line',
         data: { labels: [], datasets: [] },
+        plugins: [fcReturnPeriodLinesPlugin],
         options: {
           responsive: true,
           maintainAspectRatio: false,
@@ -11892,6 +12695,9 @@
     // or the multi-model ensemble (when 2+ models are selected in Forecast View).
     function renderMaaSForecast() {
       initMaasCharts();
+      if (maasChart) {
+        maasChart.$returnPeriodThresholds = [];
+      }
       const data = currentMaaSForecastData;
       const timeline = (data && data.timeline) || {};
       const allDates = Array.isArray(timeline.dates) ? timeline.dates : [];
@@ -12008,12 +12814,14 @@
             borderColor: style.color, backgroundColor: style.color, borderWidth: 2.5,
             pointRadius: 2, tension: 0.3, spanGaps: true, order: 0
           });
-          maasModelThresholds(data, key).forEach(t => datasets.push({
-            label: t.label, data: Array(plotDates.length).fill(t.value), unit, isThreshold: true, borderColor: t.color,
-            backgroundColor: t.color, borderWidth: 1.5, borderDash: [5, 4], pointRadius: 0, pointHitRadius: 0, fill: false, order: 1
-          }));
+          if (maasChart) {
+            maasChart.$returnPeriodThresholds = maasModelThresholds(data, key).map(t => Object.assign({}, t, { unit }));
+          }
           note = status && status !== 'live' ? (MAAS_STATUS_NOTES[status] || null) : null;
         }
+      }
+      if (maasChart && selectedMaaSModels.size >= 2) {
+        maasChart.$returnPeriodThresholds = [];
       }
 
       const statusEl = document.getElementById('maasModelStatus');
@@ -12333,10 +13141,1068 @@
       });
     });
 
+    // =========================================================
+    // Interactive Per-Basin Fine-Tuning Controller
+    // =========================================================
+    let ftWorkspaceState = null;
+    let ftHydroChart = null;
+    let ftLossChart = null;
+    let ftInspectedEpochIndex = 0;
+    let ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'head']);
+    let ftIsRunning = false;
+
+    const ftPartitionOverlayPlugin = {
+      id: 'ftPartitionOverlay',
+      beforeDraw(chart) {
+        const part = chart.$ftPartition;
+        const labels = chart.data.labels || [];
+        if (!part || !labels.length) return;
+        const xScale = chart.scales.x;
+        const chartArea = chart.chartArea;
+        if (!xScale || !chartArea) return;
+
+        const splitIdx = labels.indexOf(part.split_date);
+        const trainStartIdx = labels.indexOf(part.train_start_date);
+        const valStartIdx = labels.indexOf(part.validation_start_date);
+        const valEndIdx = labels.indexOf(part.validation_end_date);
+        if (splitIdx < 0) return;
+
+        const ctx = chart.ctx;
+        ctx.save();
+
+        const trainLeftX = trainStartIdx >= 0 ? xScale.getPixelForValue(trainStartIdx) : chartArea.left;
+        const splitX = xScale.getPixelForValue(splitIdx);
+        const valRightX = valEndIdx >= 0 ? xScale.getPixelForValue(valEndIdx) : chartArea.right;
+
+        // Shaded Training Partition
+        if (splitX > trainLeftX) {
+          ctx.fillStyle = 'rgba(26, 115, 232, 0.06)';
+          ctx.fillRect(trainLeftX, chartArea.top, splitX - trainLeftX, chartArea.bottom - chartArea.top);
+        }
+
+        // Shaded Validation Partition
+        const valStartX = valStartIdx >= 0 ? xScale.getPixelForValue(valStartIdx) : splitX;
+        if (valRightX > valStartX) {
+          ctx.fillStyle = 'rgba(249, 171, 0, 0.08)';
+          ctx.fillRect(valStartX, chartArea.top, valRightX - valStartX, chartArea.bottom - chartArea.top);
+        }
+
+        // Vertical Split Boundary Line
+        ctx.beginPath();
+        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#d93025';
+        ctx.moveTo(splitX, chartArea.top);
+        ctx.lineTo(splitX, chartArea.bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Partition Labels
+        ctx.font = 'bold 10px Inter, sans-serif';
+        if (splitX - trainLeftX > 90) {
+          ctx.fillStyle = '#174ea6';
+          ctx.fillText('TRAINING (' + part.train_sample_days + 'd)', trainLeftX + 6, chartArea.top + 14);
+        }
+        if (valRightX - valStartX > 90) {
+          ctx.fillStyle = '#b06000';
+          ctx.fillText('VALIDATION (' + part.validation_sample_days + 'd)', valStartX + 6, chartArea.top + 14);
+        }
+
+        ctx.restore();
+      }
+    };
+
+    function setFtStatusBanner(msg, tone = 'info') {
+      const box = document.getElementById('ftStatusMessage');
+      if (!box) return;
+      if (!msg) {
+        box.classList.add('hidden');
+        box.textContent = '';
+        return;
+      }
+      box.classList.remove('hidden', 'bg-[#e8f0fe]', 'text-[#174ea6]', 'border-[#d2e3fc]', 'bg-[#fce8e6]', 'text-[#c5221f]', 'border-[#f5c2c7]', 'bg-[#e6f4ea]', 'text-[#137333]', 'border-[#ceead6]');
+      if (tone === 'error') {
+        box.classList.add('bg-[#fce8e6]', 'text-[#c5221f]', 'border-[#f5c2c7]');
+      } else if (tone === 'success') {
+        box.classList.add('bg-[#e6f4ea]', 'text-[#137333]', 'border-[#ceead6]');
+      } else {
+        box.classList.add('bg-[#e8f0fe]', 'text-[#174ea6]', 'border-[#d2e3fc]');
+      }
+      box.textContent = msg;
+    }
+
+    function getActiveFtBasinId() {
+      const inp = document.getElementById('ftBasinIdInput');
+      const sel = document.getElementById('ftBasinSelect');
+      const val = (inp && inp.value.trim()) || (sel && sel.value) || activeCatchmentId || 'custom_basin_01';
+      return val;
+    }
+
+    function syncFtBasinDropdown() {
+      const sel = document.getElementById('ftBasinSelect');
+      const inp = document.getElementById('ftBasinIdInput');
+      if (!sel) return;
+      const currentVal = (inp && inp.value.trim()) || sel.value || activeCatchmentId || 'custom_basin_01';
+      while (sel.firstChild) sel.removeChild(sel.firstChild);
+
+      const seen = new Set();
+      const addOpt = (id, label) => {
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = label || id;
+        if (id === currentVal) opt.selected = true;
+        sel.appendChild(opt);
+      };
+
+      if (Array.isArray(activeWatersheds)) {
+        activeWatersheds.forEach(f => {
+          const cid = f && f.properties && f.properties.catchment_id;
+          const name = f && f.properties && f.properties.name;
+          if (cid) addOpt(String(cid), name ? (cid + ' — ' + name) : String(cid));
+        });
+      }
+      addOpt('custom_basin_01', 'custom_basin_01 (Local Basin)');
+      if (!seen.has(currentVal)) addOpt(currentVal, currentVal);
+      if (inp && !inp.value.trim()) inp.value = sel.value;
+    }
+
+    function updateFtTrainableParamsBadge(modelInfo) {
+      const badge = document.getElementById('ftTrainableParamsBadge');
+      if (!badge || !modelInfo || !Array.isArray(modelInfo.tunable_components)) return;
+      let trainable = 0;
+      const total = modelInfo.total_parameters || 0;
+      modelInfo.tunable_components.forEach(comp => {
+        if (Array.isArray(comp.subcomponents) && comp.subcomponents.length > 0) {
+          if (ftSelectedModulesSet.has(comp.id)) {
+            trainable += comp.num_parameters || 0;
+          } else {
+            comp.subcomponents.forEach(sub => {
+              if (sub.required || ftSelectedModulesSet.has(sub.id)) {
+                trainable += sub.num_parameters || 0;
+              }
+            });
+          }
+        } else if (ftSelectedModulesSet.has(comp.id)) {
+          trainable += comp.num_parameters || 0;
+        }
+      });
+      const pct = total > 0 ? ((trainable / total) * 100).toFixed(1) : '0.0';
+      badge.textContent = trainable.toLocaleString() + ' / ' + total.toLocaleString() + ' params (' + pct + '%)';
+    }
+
+    function renderFineTuneComponents(modelInfo) {
+      const container = document.getElementById('ftTunableComponentsList');
+      if (!container || !modelInfo || !Array.isArray(modelInfo.tunable_components)) return;
+      while (container.firstChild) container.removeChild(container.firstChild);
+
+      modelInfo.tunable_components.forEach(comp => {
+        const hasSubs = Array.isArray(comp.subcomponents) && comp.subcomponents.length > 0;
+        const card = document.createElement('div');
+        card.className = 'bg-white border border-[#dadce0] rounded-lg p-2 space-y-1.5';
+
+        const headerRow = document.createElement('div');
+        headerRow.className = 'flex items-center justify-between gap-2';
+
+        const labelEl = document.createElement('label');
+        labelEl.className = 'flex items-center gap-2 cursor-pointer flex-1 min-w-0';
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'accent-[#7627bb] rounded';
+        cb.dataset.componentId = comp.id;
+
+        if (hasSubs) {
+          const allChecked = comp.subcomponents.every(s => s.required || ftSelectedModulesSet.has(s.id) || ftSelectedModulesSet.has(comp.id));
+          cb.checked = allChecked;
+          cb.addEventListener('change', () => {
+            if (cb.checked) {
+              comp.subcomponents.forEach(s => ftSelectedModulesSet.add(s.id));
+            } else {
+              ftSelectedModulesSet.delete(comp.id);
+              comp.subcomponents.forEach(s => {
+                if (!s.required) ftSelectedModulesSet.delete(s.id);
+              });
+            }
+            renderFineTuneComponents(modelInfo);
+            updateFtTrainableParamsBadge(modelInfo);
+          });
+        } else {
+          cb.checked = ftSelectedModulesSet.has(comp.id);
+          cb.addEventListener('change', () => {
+            if (cb.checked) ftSelectedModulesSet.add(comp.id);
+            else ftSelectedModulesSet.delete(comp.id);
+            updateFtTrainableParamsBadge(modelInfo);
+          });
+        }
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'text-[11px] font-mono font-semibold text-[#202124] truncate';
+        nameSpan.textContent = comp.name;
+
+        labelEl.appendChild(cb);
+        labelEl.appendChild(nameSpan);
+
+        const paramSpan = document.createElement('span');
+        paramSpan.className = 'text-[10px] font-mono text-[#5f6368] flex-shrink-0';
+        paramSpan.textContent = (comp.num_parameters || 0).toLocaleString() + ' p';
+
+        headerRow.appendChild(labelEl);
+        headerRow.appendChild(paramSpan);
+        card.appendChild(headerRow);
+
+        if (hasSubs) {
+          const subGrid = document.createElement('div');
+          subGrid.className = 'pl-4 pt-1 border-t border-[#f1f3f4] grid grid-cols-1 gap-1';
+          comp.subcomponents.forEach(sub => {
+            if (sub.required) ftSelectedModulesSet.add(sub.id);
+            const subLabel = document.createElement('label');
+            subLabel.className = 'flex items-center justify-between gap-1.5 text-[10.5px] cursor-pointer py-0.5';
+
+            const leftWrap = document.createElement('span');
+            leftWrap.className = 'flex items-center gap-1.5 min-w-0';
+
+            const subCb = document.createElement('input');
+            subCb.type = 'checkbox';
+            subCb.className = 'accent-[#7627bb] rounded';
+            subCb.dataset.componentId = sub.id;
+            subCb.checked = sub.required || ftSelectedModulesSet.has(sub.id) || ftSelectedModulesSet.has(comp.id);
+            subCb.disabled = Boolean(sub.required);
+            subCb.addEventListener('change', () => {
+              if (subCb.checked) ftSelectedModulesSet.add(sub.id);
+              else {
+                ftSelectedModulesSet.delete(sub.id);
+                ftSelectedModulesSet.delete(comp.id);
+              }
+              updateFtTrainableParamsBadge(modelInfo);
+            });
+
+            const subName = document.createElement('span');
+            subName.className = 'font-mono text-[#3c4043] truncate';
+            subName.textContent = sub.name;
+
+            leftWrap.appendChild(subCb);
+            leftWrap.appendChild(subName);
+
+            if (sub.newly_initialized) {
+              const newTag = document.createElement('span');
+              newTag.className = 'text-[9px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-1 rounded font-sans font-semibold';
+              newTag.textContent = 'NEW LOCAL (Required)';
+              leftWrap.appendChild(newTag);
+            }
+
+            const subParams = document.createElement('span');
+            subParams.className = 'text-[9.5px] font-mono text-[#80868b] flex-shrink-0';
+            subParams.textContent = (sub.num_parameters || 0).toLocaleString() + ' p';
+
+            subLabel.appendChild(leftWrap);
+            subLabel.appendChild(subParams);
+            subGrid.appendChild(subLabel);
+          });
+          card.appendChild(subGrid);
+        }
+
+        container.appendChild(card);
+      });
+
+      updateFtTrainableParamsBadge(modelInfo);
+    }
+
+    function recomputeClientPartition(dates, baseSeqLen, leadTime, splitRatio) {
+      const minSeq = Math.max(8, leadTime);
+      const minRequired = minSeq + leadTime + leadTime + 2;
+      if (!Array.isArray(dates) || dates.length < minRequired) return null;
+      const numDays = dates.length;
+      const maxAllowedSeq = Math.max(minSeq, Math.floor((numDays - leadTime - leadTime - 4) / 2));
+      const effSeq = Math.min(baseSeqLen, maxAllowedSeq);
+      const firstSampleIdx = effSeq;
+      const lastSampleIdx = numDays - leadTime;
+      const usableSampleDays = (lastSampleIdx - firstSampleIdx + 1) - (leadTime - 1);
+      if (usableSampleDays < 4) return null;
+      const clamped = Math.max(0.2, Math.min(0.9, splitRatio));
+      const trainCount = Math.max(2, Math.min(usableSampleDays - 2, Math.round(usableSampleDays * clamped)));
+      const splitIdx = firstSampleIdx + trainCount - 1;
+      const valStartIdx = splitIdx + leadTime;
+      const valCount = lastSampleIdx - valStartIdx + 1;
+      return {
+        effective_seq_length: effSeq,
+        lead_time: leadTime,
+        split_ratio: Number((trainCount / usableSampleDays).toFixed(3)),
+        train_start_date: dates[firstSampleIdx],
+        train_end_date: dates[splitIdx],
+        validation_start_date: dates[valStartIdx],
+        validation_end_date: dates[lastSampleIdx],
+        split_date: dates[splitIdx],
+        train_sample_days: trainCount,
+        validation_sample_days: valCount,
+        total_days: numDays,
+      };
+    }
+
+    function renderFtChartsAndKpis() {
+      if (!ftWorkspaceState) return;
+      const ts = ftWorkspaceState.timeseries;
+      const part = ftWorkspaceState.partition;
+      const history = (ftWorkspaceState.session && ftWorkspaceState.session.epoch_history) || [];
+
+      // Update partition date labels
+      const trainRangeEl = document.getElementById('ftTrainDateRangeText');
+      const valRangeEl = document.getElementById('ftValDateRangeText');
+      if (part) {
+        if (trainRangeEl) trainRangeEl.textContent = part.train_start_date + ' → ' + part.train_end_date + ' (' + part.train_sample_days + 'd)';
+        if (valRangeEl) valRangeEl.textContent = part.validation_start_date + ' → ' + part.validation_end_date + ' (' + part.validation_sample_days + 'd)';
+      } else {
+        if (trainRangeEl) trainRangeEl.textContent = 'Upload CSVs first';
+        if (valRangeEl) valRangeEl.textContent = 'Upload CSVs first';
+      }
+
+      // Clamp inspected epoch index
+      if (history.length > 0) {
+        ftInspectedEpochIndex = Math.max(0, Math.min(history.length - 1, ftInspectedEpochIndex));
+      } else {
+        ftInspectedEpochIndex = 0;
+      }
+      const inspectedEntry = history[ftInspectedEpochIndex] || null;
+      const baselineEntry = history[0] || null;
+
+      // Scrubber controls
+      const scrubber = document.getElementById('ftEpochScrubber');
+      const prevBtn = document.getElementById('ftPrevEpochBtn');
+      const nextBtn = document.getElementById('ftNextEpochBtn');
+      const inspBadge = document.getElementById('ftInspectedEpochBadge');
+      if (scrubber) {
+        scrubber.max = String(Math.max(0, history.length - 1));
+        scrubber.value = String(ftInspectedEpochIndex);
+        scrubber.disabled = history.length <= 1;
+      }
+      if (prevBtn) prevBtn.disabled = ftInspectedEpochIndex <= 0;
+      if (nextBtn) nextBtn.disabled = ftInspectedEpochIndex >= history.length - 1;
+      if (inspBadge) {
+        inspBadge.textContent = inspectedEntry ? ('Epoch ' + inspectedEntry.epoch) : 'Epoch 0';
+      }
+
+      // KPI Strip
+      const fmtVal = (v, digits = 4) => (v !== null && v !== undefined && Number.isFinite(Number(v))) ? Number(v).toFixed(digits) : '—';
+      const kpiTrLoss = document.getElementById('ftKpiTrainLoss');
+      const kpiValLoss = document.getElementById('ftKpiValLoss');
+      const kpiTrNse = document.getElementById('ftKpiTrainNse');
+      const kpiValNse = document.getElementById('ftKpiValNse');
+      const kpiValKge = document.getElementById('ftKpiValKge');
+      if (kpiTrLoss) kpiTrLoss.textContent = inspectedEntry ? fmtVal(inspectedEntry.train_loss, 4) : '—';
+      if (kpiValLoss) kpiValLoss.textContent = inspectedEntry ? fmtVal(inspectedEntry.val_loss, 4) : '—';
+      if (kpiTrNse) kpiTrNse.textContent = inspectedEntry ? fmtVal(inspectedEntry.train_nse, 3) : '—';
+      if (kpiValNse) kpiValNse.textContent = inspectedEntry ? fmtVal(inspectedEntry.val_nse, 3) : '—';
+      if (kpiValKge) kpiValKge.textContent = inspectedEntry ? fmtVal(inspectedEntry.val_kge, 3) : '—';
+
+      // 1. Render Hydrograph + Hanging Hyetograph Chart
+      const hydroCanvas = document.getElementById('ftHydrographCanvas');
+      if (hydroCanvas && typeof Chart !== 'undefined') {
+        const dates = ts ? ts.dates : [];
+        const precip = ts ? ts.precip : [];
+        const obsFlow = ts ? ts.streamflow_obs : [];
+        const baseSim = baselineEntry ? baselineEntry.streamflow_sim_lead1 : [];
+        const activeSim = inspectedEntry ? inspectedEntry.streamflow_sim_lead1 : [];
+
+        const maxPrecip = precip.reduce((m, v) => (v !== null && v > m ? v : m), 10);
+
+        if (!ftHydroChart) {
+          ftHydroChart = new Chart(hydroCanvas.getContext('2d'), {
+            type: 'line',
+            plugins: [ftPartitionOverlayPlugin],
+            data: {
+              labels: dates,
+              datasets: [
+                {
+                  type: 'bar',
+                  label: 'Local Precip (mm/day)',
+                  data: precip,
+                  yAxisID: 'yPrecip',
+                  backgroundColor: 'rgba(26, 115, 232, 0.38)',
+                  borderColor: 'rgba(26, 115, 232, 0.65)',
+                  borderWidth: 1,
+                  barPercentage: 1.0,
+                  categoryPercentage: 1.0,
+                  order: 4,
+                },
+                {
+                  type: 'line',
+                  label: 'Observed Streamflow (mm/day)',
+                  data: obsFlow,
+                  yAxisID: 'yFlow',
+                  borderColor: '#202124',
+                  backgroundColor: 'rgba(32, 33, 36, 0.08)',
+                  borderWidth: 2,
+                  pointRadius: 0,
+                  tension: 0.2,
+                  order: 2,
+                },
+                {
+                  type: 'line',
+                  label: 'Pretrained Baseline (Epoch 0)',
+                  data: baseSim,
+                  yAxisID: 'yFlow',
+                  borderColor: '#80868b',
+                  borderDash: [4, 4],
+                  borderWidth: 1.5,
+                  pointRadius: 0,
+                  tension: 0.2,
+                  order: 3,
+                },
+                {
+                  type: 'line',
+                  label: inspectedEntry ? ('Fine-Tuned (Epoch ' + inspectedEntry.epoch + ')') : 'Fine-Tuned Streamflow',
+                  data: activeSim,
+                  yAxisID: 'yFlow',
+                  borderColor: '#1e8e3e',
+                  backgroundColor: 'rgba(30, 142, 62, 0.1)',
+                  borderWidth: 2.4,
+                  pointRadius: 0,
+                  tension: 0.2,
+                  order: 1,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              interaction: { mode: 'index', intersect: false },
+              plugins: {
+                legend: {
+                  position: 'top',
+                  labels: { boxWidth: 12, font: { size: 11 } },
+                },
+              },
+              scales: {
+                x: {
+                  ticks: { maxTicksLimit: 10, font: { size: 10 } },
+                  grid: { color: 'rgba(0,0,0,0.04)' },
+                },
+                yFlow: {
+                  type: 'linear',
+                  position: 'left',
+                  title: { display: true, text: 'Streamflow (mm/day)', font: { size: 11, weight: 'bold' } },
+                  beginAtZero: true,
+                  suggestedMax: 15,
+                  grid: { color: 'rgba(0,0,0,0.06)' },
+                },
+                yPrecip: {
+                  type: 'linear',
+                  position: 'right',
+                  reverse: true,
+                  min: 0,
+                  suggestedMax: Math.max(25, maxPrecip * 3.0),
+                  title: { display: true, text: 'Hanging Hyetograph: Precip (mm/day)', font: { size: 10 } },
+                  grid: { drawOnChartArea: false },
+                },
+              },
+            },
+          });
+        } else {
+          ftHydroChart.data.labels = dates;
+          ftHydroChart.data.datasets[0].data = precip;
+          ftHydroChart.data.datasets[1].data = obsFlow;
+          ftHydroChart.data.datasets[2].data = baseSim;
+          ftHydroChart.data.datasets[3].data = activeSim;
+          ftHydroChart.data.datasets[3].label = inspectedEntry
+            ? ('Fine-Tuned (Epoch ' + inspectedEntry.epoch + ')')
+            : 'Fine-Tuned Streamflow';
+          ftHydroChart.options.scales.yPrecip.suggestedMax = Math.max(25, maxPrecip * 3.0);
+        }
+        ftHydroChart.$ftPartition = part;
+        ftHydroChart.update();
+      }
+
+      // 2. Render Epoch-by-Epoch Loss & NSE Curve
+      const lossCanvas = document.getElementById('ftLossCurveCanvas');
+      const lossBadge = document.getElementById('ftLossChartBadge');
+      if (lossBadge) {
+        const maxEp = history.length > 0 ? history[history.length - 1].epoch : 0;
+        lossBadge.textContent = maxEp + ' Epochs Run';
+      }
+      if (lossCanvas && typeof Chart !== 'undefined') {
+        const epLabels = history.map(h => 'Ep ' + h.epoch);
+        const trLosses = history.map(h => h.train_loss);
+        const valLosses = history.map(h => h.val_loss);
+        const valNses = history.map(h => h.val_nse);
+        const pointRadii = history.map((_, idx) => (idx === ftInspectedEpochIndex ? 6 : 3));
+
+        if (!ftLossChart) {
+          ftLossChart = new Chart(lossCanvas.getContext('2d'), {
+            type: 'line',
+            data: {
+              labels: epLabels,
+              datasets: [
+                {
+                  label: 'Train Loss',
+                  data: trLosses,
+                  yAxisID: 'yLoss',
+                  borderColor: '#1a73e8',
+                  backgroundColor: '#1a73e8',
+                  borderWidth: 2,
+                  pointRadius: pointRadii,
+                  tension: 0.15,
+                },
+                {
+                  label: 'Validation Loss',
+                  data: valLosses,
+                  yAxisID: 'yLoss',
+                  borderColor: '#f9ab00',
+                  backgroundColor: '#f9ab00',
+                  borderWidth: 2,
+                  pointRadius: pointRadii,
+                  tension: 0.15,
+                },
+                {
+                  label: 'Validation NSE',
+                  data: valNses,
+                  yAxisID: 'yNse',
+                  borderColor: '#1e8e3e',
+                  backgroundColor: '#1e8e3e',
+                  borderDash: [4, 3],
+                  borderWidth: 2,
+                  pointRadius: pointRadii,
+                  tension: 0.15,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              onClick(_evt, elements) {
+                if (elements && elements.length > 0) {
+                  ftInspectedEpochIndex = elements[0].index;
+                  renderFtChartsAndKpis();
+                }
+              },
+              plugins: {
+                legend: { position: 'top', labels: { boxWidth: 10, font: { size: 10 } } },
+              },
+              scales: {
+                yLoss: {
+                  type: 'linear',
+                  position: 'left',
+                  title: { display: true, text: 'Loss', font: { size: 10, weight: 'bold' } },
+                },
+                yNse: {
+                  type: 'linear',
+                  position: 'right',
+                  title: { display: true, text: 'Validation NSE', font: { size: 10, weight: 'bold' } },
+                  grid: { drawOnChartArea: false },
+                },
+              },
+            },
+          });
+        } else {
+          ftLossChart.data.labels = epLabels;
+          ftLossChart.data.datasets[0].data = trLosses;
+          ftLossChart.data.datasets[0].pointRadius = pointRadii;
+          ftLossChart.data.datasets[1].data = valLosses;
+          ftLossChart.data.datasets[1].pointRadius = pointRadii;
+          ftLossChart.data.datasets[2].data = valNses;
+          ftLossChart.data.datasets[2].pointRadius = pointRadii;
+          ftLossChart.update();
+        }
+      }
+
+      // 3. Render Epoch History Table
+      const tbody = document.getElementById('ftEpochHistoryTableBody');
+      if (tbody) {
+        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+        if (!history.length) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 7;
+          td.className = 'py-6 text-center text-[#5f6368] font-sans';
+          td.textContent = 'No epochs run yet. Upload local basin CSVs, then click "Run Epochs & Pause".';
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        } else {
+          history.slice().reverse().forEach(entry => {
+            const origIdx = history.findIndex(h => h.epoch === entry.epoch);
+            const tr = document.createElement('tr');
+            tr.className = 'cursor-pointer transition ' + (origIdx === ftInspectedEpochIndex ? 'bg-[#e8f0fe] font-semibold' : 'hover:bg-[#f8f9fa]');
+            tr.addEventListener('click', () => {
+              ftInspectedEpochIndex = origIdx;
+              renderFtChartsAndKpis();
+            });
+
+            const cells = [
+              entry.epoch === 0 ? '0 (Base)' : String(entry.epoch),
+              fmtVal(entry.train_loss, 4),
+              fmtVal(entry.val_loss, 4),
+              fmtVal(entry.val_nse, 3),
+              fmtVal(entry.val_kge, 3),
+              entry.learning_rate ? Number(entry.learning_rate).toExponential(1) : '—',
+              Array.isArray(entry.unfrozen_components) ? entry.unfrozen_components.map(c => c.replace('shared_embeddings_fc.', '')).join(', ') : '—',
+            ];
+            cells.forEach((txt, cIdx) => {
+              const td = document.createElement('td');
+              td.className = 'py-1.5 px-2 ' + (cIdx === 6 ? 'truncate max-w-[150px]' : '');
+              td.textContent = txt;
+              if (cIdx === 6) td.title = txt;
+              tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+          });
+        }
+      }
+    }
+
+    function applyFtWorkspacePayload(payload, { preserveComponentSelection = false } = {}) {
+      if (!payload) return;
+      ftWorkspaceState = payload;
+
+      // 1. Model Inventory Dropdown
+      const modelSel = document.getElementById('ftModelSelect');
+      if (modelSel && Array.isArray(payload.models) && payload.models.length > 0) {
+        while (modelSel.firstChild) modelSel.removeChild(modelSel.firstChild);
+        payload.models.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.model_id;
+          opt.textContent = m.label + ' (' + m.architecture_class + ')';
+          if (m.model_id === payload.model_id) opt.selected = true;
+          modelSel.appendChild(opt);
+        });
+      }
+
+      const selModel = payload.selected_model;
+      if (selModel) {
+        const archBadge = document.getElementById('ftModelArchBadge');
+        const headLossEl = document.getElementById('ftMetaHeadLoss');
+        const seqLeadEl = document.getElementById('ftMetaSeqLead');
+        const ckptEl = document.getElementById('ftMetaCkptEpoch');
+        if (archBadge) archBadge.textContent = selModel.architecture_class || selModel.architecture;
+        if (headLossEl) headLossEl.textContent = selModel.head + ' / ' + selModel.default_loss;
+        if (seqLeadEl) seqLeadEl.textContent = selModel.seq_length + 'd / ' + selModel.lead_time + 'd';
+        if (ckptEl) ckptEl.textContent = 'Epoch ' + selModel.checkpoint_epoch;
+
+        // Loss select options
+        const lossSel = document.getElementById('ftLossSelect');
+        if (lossSel && Array.isArray(selModel.allowed_losses)) {
+          const prevLoss = lossSel.value;
+          while (lossSel.firstChild) lossSel.removeChild(lossSel.firstChild);
+          selModel.allowed_losses.forEach(lName => {
+            const opt = document.createElement('option');
+            opt.value = lName;
+            opt.textContent = lName;
+            if (lName === prevLoss || lName === selModel.default_loss) opt.selected = true;
+            lossSel.appendChild(opt);
+          });
+        }
+
+        if (!preserveComponentSelection) {
+          const savedMods = payload.session && payload.session.last_hyperparameters && payload.session.last_hyperparameters.finetune_modules;
+          if (Array.isArray(savedMods) && savedMods.length > 0) {
+            ftSelectedModulesSet = new Set(savedMods);
+          } else {
+            ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'head']);
+          }
+        }
+        renderFineTuneComponents(selModel);
+      }
+
+      // 2. Upload Status Badges
+      const upMeta = payload.upload_meta || {};
+      const setUploadBadge = (elId, info) => {
+        const el = document.getElementById(elId);
+        if (!el) return;
+        if (info && info.num_days) {
+          el.textContent = info.num_days + 'd (' + info.num_lead_columns + ' lead cols)';
+          el.className = 'text-[10px] font-mono text-[#137333] font-semibold';
+        } else {
+          el.textContent = 'Not uploaded';
+          el.className = 'text-[10px] font-mono text-[#5f6368]';
+        }
+      };
+      setUploadBadge('ftPrecipStatusBadge', upMeta.precip);
+      setUploadBadge('ftTempStatusBadge', upMeta.temp);
+      setUploadBadge('ftStreamflowStatusBadge', upMeta.streamflow);
+
+      const readyBadge = document.getElementById('ftDataReadyBadge');
+      if (readyBadge) {
+        if (payload.data_ready) {
+          readyBadge.textContent = 'Zarr Ready (' + (payload.partition ? payload.partition.total_days : 0) + 'd)';
+          readyBadge.className = 'text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2 py-0.5 rounded font-mono font-semibold';
+        } else {
+          readyBadge.textContent = 'Awaiting CSVs';
+          readyBadge.className = 'text-[10px] bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2 py-0.5 rounded font-mono';
+        }
+      }
+
+      // 3. Session state & epoch badges
+      const sess = payload.session || {};
+      const curEpoch = sess.current_epoch || 0;
+      const curEpBadge = document.getElementById('ftCurrentEpochBadge');
+      const statePill = document.getElementById('ftSessionStatePill');
+      const runBtnText = document.getElementById('ftRunEpochsBtnText');
+      const epochsInput = document.getElementById('ftEpochsPerStepInput');
+      const nextN = (epochsInput && parseInt(epochsInput.value, 10)) || 3;
+
+      if (curEpBadge) curEpBadge.textContent = 'Epoch ' + curEpoch;
+      if (statePill) {
+        if (curEpoch > 0) {
+          statePill.textContent = 'Paused at Epoch ' + curEpoch + ' (Inspect & Continue)';
+          statePill.className = 'text-[10px] bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2.5 py-0.5 rounded-full font-mono font-semibold';
+        } else if (payload.data_ready) {
+          statePill.textContent = 'Ready to Fine-Tune (Epoch 0)';
+          statePill.className = 'text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2.5 py-0.5 rounded-full font-mono font-semibold';
+        } else {
+          statePill.textContent = 'Awaiting Local Basin Data';
+          statePill.className = 'text-[10px] bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0] px-2.5 py-0.5 rounded-full font-mono';
+        }
+      }
+      if (runBtnText) {
+        runBtnText.textContent = curEpoch > 0
+          ? ('Continue (+' + nextN + ' Epochs) & Pause')
+          : ('Run ' + nextN + ' Epochs & Pause');
+      }
+
+      // Set inspected epoch to latest
+      const hist = sess.epoch_history || [];
+      ftInspectedEpochIndex = Math.max(0, hist.length - 1);
+      renderFtChartsAndKpis();
+    }
+
+    async function refreshFineTuningTab() {
+      syncFtBasinDropdown();
+      const basinId = getActiveFtBasinId();
+      const modelSel = document.getElementById('ftModelSelect');
+      const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+      const slider = document.getElementById('ftSplitRatioSlider');
+      const splitRatio = slider ? (parseInt(slider.value, 10) / 100.0) : 0.7;
+
+      const resp = await fetch(
+        '/api/finetune/status?basin_id=' + encodeURIComponent(basinId) +
+        '&model_id=' + encodeURIComponent(modelId) +
+        '&split_ratio=' + encodeURIComponent(splitRatio)
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        applyFtWorkspacePayload(data);
+      }
+    }
+
+    async function handleFtCsvFileUpload(dataType, fileInput) {
+      if (!fileInput || !fileInput.files || !fileInput.files[0]) return;
+      const file = fileInput.files[0];
+      const text = await file.text();
+      const basinId = getActiveFtBasinId();
+      const modelSel = document.getElementById('ftModelSelect');
+      const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+      const unitsSel = document.getElementById('ftStreamflowUnitsSelect');
+      const areaInp = document.getElementById('ftBasinAreaInput');
+      const selectedUnits = dataType === 'streamflow'
+        ? (unitsSel ? unitsSel.value : 'mm/day')
+        : (dataType === 'temp' ? 'degC' : 'mm/day');
+      let areaVal = null;
+      if (dataType === 'streamflow' && selectedUnits === 'm3/s') {
+        const parsedArea = areaInp ? parseFloat(areaInp.value) : NaN;
+        if (!Number.isFinite(parsedArea) || parsedArea <= 0) {
+          setFtStatusBanner('Basin area (km² > 0) is required when uploading streamflow in m³/s.', 'error');
+          return;
+        }
+        areaVal = parsedArea;
+      }
+
+      setFtStatusBanner('Uploading ' + file.name + '...', 'info');
+      const resp = await fetch('/api/finetune/upload-csv', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          basin_id: basinId,
+          model_id: modelId,
+          data_type: dataType,
+          filename: file.name,
+          csv_content: text,
+          units: selectedUnits,
+          area_km2: areaVal,
+        }),
+      });
+      const payload = await resp.json();
+      if (!resp.ok) {
+        setFtStatusBanner(payload.error || 'CSV upload failed', 'error');
+        return;
+      }
+      setFtStatusBanner('Uploaded ' + file.name + ' (' + payload.upload.num_days + ' days).', 'success');
+      applyFtWorkspacePayload(payload.workspace, { preserveComponentSelection: true });
+    }
+
+    function initFineTuningInteractivity() {
+      const modelSel = document.getElementById('ftModelSelect');
+      const basinSel = document.getElementById('ftBasinSelect');
+      const basinInp = document.getElementById('ftBasinIdInput');
+      const splitSlider = document.getElementById('ftSplitRatioSlider');
+      const splitLabel = document.getElementById('ftSplitRatioLabel');
+      const epochsInput = document.getElementById('ftEpochsPerStepInput');
+
+      if (modelSel) {
+        modelSel.addEventListener('change', () => {
+          refreshFineTuningTab();
+        });
+      }
+      if (basinSel) {
+        basinSel.addEventListener('change', () => {
+          if (basinInp) basinInp.value = basinSel.value;
+          refreshFineTuningTab();
+        });
+      }
+      if (basinInp) {
+        basinInp.addEventListener('change', () => {
+          refreshFineTuningTab();
+        });
+      }
+
+      if (splitSlider) {
+        splitSlider.addEventListener('input', () => {
+          const pct = parseInt(splitSlider.value, 10) || 70;
+          if (splitLabel) splitLabel.textContent = pct + '% Train / ' + (100 - pct) + '% Val';
+          if (ftWorkspaceState && ftWorkspaceState.timeseries && ftWorkspaceState.selected_model) {
+            const newPart = recomputeClientPartition(
+              ftWorkspaceState.timeseries.dates,
+              ftWorkspaceState.selected_model.seq_length || 60,
+              ftWorkspaceState.selected_model.lead_time || 7,
+              pct / 100.0
+            );
+            if (newPart) {
+              ftWorkspaceState.partition = newPart;
+              renderFtChartsAndKpis();
+            }
+          }
+        });
+      }
+
+      if (epochsInput) {
+        epochsInput.addEventListener('input', () => {
+          const n = parseInt(epochsInput.value, 10) || 3;
+          const curEp = (ftWorkspaceState && ftWorkspaceState.session && ftWorkspaceState.session.current_epoch) || 0;
+          const btnTxt = document.getElementById('ftRunEpochsBtnText');
+          if (btnTxt) {
+            btnTxt.textContent = curEp > 0
+              ? ('Continue (+' + n + ' Epochs) & Pause')
+              : ('Run ' + n + ' Epochs & Pause');
+          }
+        });
+      }
+
+      // File upload buttons
+      const wireUpload = (btnId, inputId, dtype) => {
+        const btn = document.getElementById(btnId);
+        const inp = document.getElementById(inputId);
+        if (btn && inp) {
+          btn.addEventListener('click', () => inp.click());
+          inp.addEventListener('change', () => handleFtCsvFileUpload(dtype, inp));
+        }
+      };
+      wireUpload('ftUploadPrecipBtn', 'ftPrecipFileInput', 'precip');
+      wireUpload('ftUploadTempBtn', 'ftTempFileInput', 'temp');
+      wireUpload('ftUploadStreamflowBtn', 'ftStreamflowFileInput', 'streamflow');
+
+      // Download Template button
+      const tmplBtn = document.getElementById('ftDownloadTemplateBtn');
+      if (tmplBtn) {
+        tmplBtn.addEventListener('click', () => {
+          const lines = [
+            'date,lead_1,lead_2,lead_3,lead_4,lead_5,lead_6,lead_7',
+            '2023-01-01,2.4,1.8,0.0,0.0,5.2,3.1,0.4',
+            '2023-01-02,1.9,0.0,0.0,4.8,2.9,0.5,0.0',
+            '2023-01-03,0.0,0.0,4.5,3.0,0.6,0.0,1.2',
+          ];
+          const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/csv;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'basin_time_by_lead_template.csv';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        });
+      }
+
+      // Clear Data button
+      const clearBtn = document.getElementById('ftClearDataBtn');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', async () => {
+          const basinId = getActiveFtBasinId();
+          const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+          const resp = await fetch('/api/finetune/clear-data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ basin_id: basinId, model_id: modelId }),
+          });
+          if (resp.ok) {
+            const payload = await resp.json();
+            setFtStatusBanner('Cleared uploaded data and session for ' + basinId + '.', 'info');
+            applyFtWorkspacePayload(payload.workspace);
+          }
+        });
+      }
+
+      // Component Preset Buttons
+      const presetLocalHead = document.getElementById('ftPresetLocalHeadBtn');
+      const presetDecoder = document.getElementById('ftPresetDecoderBtn');
+      const presetAll = document.getElementById('ftPresetAllBtn');
+      if (presetLocalHead) {
+        presetLocalHead.addEventListener('click', () => {
+          ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'head']);
+          if (ftWorkspaceState && ftWorkspaceState.selected_model) {
+            renderFineTuneComponents(ftWorkspaceState.selected_model);
+          }
+        });
+      }
+      if (presetDecoder) {
+        presetDecoder.addEventListener('click', () => {
+          ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'static_embedding_fc', 'forecast_lstm', 'head']);
+          if (ftWorkspaceState && ftWorkspaceState.selected_model) {
+            renderFineTuneComponents(ftWorkspaceState.selected_model);
+          }
+        });
+      }
+      if (presetAll) {
+        presetAll.addEventListener('click', () => {
+          if (ftWorkspaceState && ftWorkspaceState.selected_model) {
+            const allIds = [];
+            ftWorkspaceState.selected_model.tunable_components.forEach(c => {
+              allIds.push(c.id);
+              if (Array.isArray(c.subcomponents)) {
+                c.subcomponents.forEach(s => allIds.push(s.id));
+              }
+            });
+            ftSelectedModulesSet = new Set(allIds);
+            renderFineTuneComponents(ftWorkspaceState.selected_model);
+          }
+        });
+      }
+
+      // Epoch Inspector Scrubber & Prev/Next buttons
+      const scrubber = document.getElementById('ftEpochScrubber');
+      const prevEpBtn = document.getElementById('ftPrevEpochBtn');
+      const nextEpBtn = document.getElementById('ftNextEpochBtn');
+      if (scrubber) {
+        scrubber.addEventListener('input', () => {
+          ftInspectedEpochIndex = parseInt(scrubber.value, 10) || 0;
+          renderFtChartsAndKpis();
+        });
+      }
+      if (prevEpBtn) {
+        prevEpBtn.addEventListener('click', () => {
+          if (ftInspectedEpochIndex > 0) {
+            ftInspectedEpochIndex -= 1;
+            renderFtChartsAndKpis();
+          }
+        });
+      }
+      if (nextEpBtn) {
+        nextEpBtn.addEventListener('click', () => {
+          const hist = (ftWorkspaceState && ftWorkspaceState.session && ftWorkspaceState.session.epoch_history) || [];
+          if (ftInspectedEpochIndex < hist.length - 1) {
+            ftInspectedEpochIndex += 1;
+            renderFtChartsAndKpis();
+          }
+        });
+      }
+
+      // Run / Continue Epochs Button
+      const runBtn = document.getElementById('ftRunEpochsBtn');
+      if (runBtn) {
+        runBtn.addEventListener('click', async () => {
+          if (ftIsRunning) return;
+          const basinId = getActiveFtBasinId();
+          const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+          const epochs = (epochsInput && parseInt(epochsInput.value, 10)) || 3;
+          const lrInp = document.getElementById('ftLearningRateInput');
+          const lr = (lrInp && parseFloat(lrInp.value)) || 0.001;
+          const lossSel = document.getElementById('ftLossSelect');
+          const lossVal = (lossSel && lossSel.value) || 'CMALLoss';
+          const stratSel = document.getElementById('ftLrStrategySelect');
+          const lrStrat = (stratSel && stratSel.value) || 'ConstantLR';
+          const bsInp = document.getElementById('ftBatchSizeInput');
+          const batchSize = (bsInp && parseInt(bsInp.value, 10)) || 16;
+          const splitRatio = splitSlider ? (parseInt(splitSlider.value, 10) / 100.0) : 0.7;
+
+          const prevHistoryLen = (ftWorkspaceState && ftWorkspaceState.session && ftWorkspaceState.session.epoch_history)
+            ? ftWorkspaceState.session.epoch_history.length
+            : 0;
+
+          ftIsRunning = true;
+          runBtn.disabled = true;
+          const statePill = document.getElementById('ftSessionStatePill');
+          if (statePill) {
+            statePill.textContent = 'Running ' + epochs + ' Epoch(s)...';
+            statePill.className = 'text-[10px] bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] px-2.5 py-0.5 rounded-full font-mono font-semibold animate-pulse';
+          }
+          setFtStatusBanner('Fine-tuning ' + modelId + ' on ' + basinId + ' for ' + epochs + ' epoch(s)...', 'info');
+
+          const resp = await fetch('/api/finetune/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              basin_id: basinId,
+              model_id: modelId,
+              epochs: epochs,
+              learning_rate: lr,
+              loss: lossVal,
+              learning_rate_strategy: lrStrat,
+              batch_size: batchSize,
+              finetune_modules: Array.from(ftSelectedModulesSet),
+              split_ratio: splitRatio,
+            }),
+          });
+          ftIsRunning = false;
+          runBtn.disabled = false;
+
+          const payload = await resp.json();
+          if (!resp.ok) {
+            setFtStatusBanner(payload.error || 'Fine-tuning failed', 'error');
+            return;
+          }
+
+          ftWorkspaceState = payload;
+          const newHistory = (payload.session && payload.session.epoch_history) || [];
+          // Animate epoch-by-epoch progression for visual feedback before pausing at the latest epoch
+          const startIdx = Math.max(0, prevHistoryLen);
+          for (let idx = startIdx; idx < newHistory.length; idx++) {
+            ftInspectedEpochIndex = idx;
+            renderFtChartsAndKpis();
+            if (idx < newHistory.length - 1) {
+              await new Promise(r => setTimeout(r, 220));
+            }
+          }
+          applyFtWorkspacePayload(payload, { preserveComponentSelection: true });
+          const curEp = payload.session ? payload.session.current_epoch : epochs;
+          setFtStatusBanner(
+            'Paused at Epoch ' + curEp + '. Inspect the hydrograph & loss curve, adjust any hyperparameters or tunable components, and click Continue!',
+            'success'
+          );
+        });
+      }
+
+      // Reset Session Button
+      const resetBtn = document.getElementById('ftResetSessionBtn');
+      if (resetBtn) {
+        resetBtn.addEventListener('click', async () => {
+          const basinId = getActiveFtBasinId();
+          const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+          const resp = await fetch('/api/finetune/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ basin_id: basinId, model_id: modelId }),
+          });
+          if (resp.ok) {
+            const payload = await resp.json();
+            applyFtWorkspacePayload(payload, { preserveComponentSelection: true });
+            setFtStatusBanner('Reset fine-tuning session to Epoch 0 (pretrained weights).', 'info');
+          }
+        });
+      }
+    }
+
     // Initialize interactive modules
     initUnifiedSidebar();
     initWeatherViewerInteractivity();
     initModelingInteractivity();
+    if (typeof initFineTuningInteractivity === 'function') initFineTuningInteractivity();
     updateActiveBasinHeader();
 
     // Start Map
