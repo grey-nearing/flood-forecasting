@@ -119,6 +119,38 @@ def fetch_byte_range(gcs: Any, path: str, start_b: int, end_b: int) -> bytes:
     return gcs.cat_file(path, start=start_b, end=end_b)
 
 
+_GRIB2_SURFACE_MEAN_SEA_LEVEL = 101
+_PDS_MIN_CATEGORY_NUMBERS = 2
+_PDS_FIRST_SURFACE_TYPE_INDEX = 13
+_SECTION4_MIN_LEN_CATEGORY = 11
+_SECTION4_MIN_LEN_SURFACE_TYPE = 23
+
+
+def _pds_to_param(
+    cat_num: tuple[int, int], surface_type: int | None = None
+) -> str | None:
+  """Map WMO GRIB2 (category, number) and fixed surface type to shortName."""
+  if cat_num == (3, 0):
+    return (
+        "msl"
+        if surface_type == _GRIB2_SURFACE_MEAN_SEA_LEVEL
+        else "sp"
+    )
+  return {
+      (0, 0): "2t",
+      (1, 193): "tp",
+      (1, 52): "tp",
+      (1, 8): "tp",
+      # Surface (10 m) wind components requested by weather_fetcher.
+      (2, 2): "10u",
+      (2, 3): "10v",
+      (4, 9): "ssr",
+      (180, 176): "ssr",
+      (5, 5): "str",
+      (180, 177): "str",
+  }.get(cat_num)
+
+
 def decode_grib2_message(
     raw_bytes: bytes,
     expected_shape: tuple[int, int],
@@ -166,27 +198,14 @@ def decode_grib2_message(
           grib_tags = dataset.tags(1)
           grib_unit = grib_tags.get("GRIB_UNIT", "")
           pds_nums = grib_tags.get("GRIB_PDS_TEMPLATE_NUMBERS", "").split()
-    if param and len(pds_nums) >= 2:
+    if param and len(pds_nums) >= _PDS_MIN_CATEGORY_NUMBERS:
       cat_num = (int(pds_nums[0]), int(pds_nums[1]))
-      is_msl_surface = (
-          grib_tags.get("GRIB_SHORT_NAME") == "0-MSL"
-          or (len(pds_nums) > 13 and int(pds_nums[13]) == 101)
+      surface_type = (
+          int(pds_nums[_PDS_FIRST_SURFACE_TYPE_INDEX])
+          if len(pds_nums) > _PDS_FIRST_SURFACE_TYPE_INDEX
+          else None
       )
-      pds_to_param = {
-          (0, 0): "2t",
-          (3, 0): "msl" if is_msl_surface else "sp",
-          (3, 1): "msl",
-          (1, 193): "tp",
-          (1, 52): "tp",
-          (1, 8): "tp",
-          (2, 2): "10u",
-          (2, 3): "10v",
-          (4, 9): "ssr",
-          (180, 176): "ssr",
-          (5, 5): "str",
-          (180, 177): "str",
-      }
-      detected_param = pds_to_param.get(cat_num)
+      detected_param = _pds_to_param(cat_num, surface_type)
       if detected_param is not None and detected_param != param:
         label = f" at {context}" if context else ""
         raise ValueError(
@@ -221,33 +240,20 @@ def decode_grib2_message(
       if sec_len < 5 or pos + sec_len > end:
         break
       sec = raw_bytes[pos : pos + sec_len]
-      if sec_num == 4 and sec_len >= 11:
+      if sec_num == 4 and sec_len >= _SECTION4_MIN_LEN_CATEGORY:
         cat_num_hdr = (sec[9], sec[10])
-        if sec_len >= 23:
+        if sec_len >= _SECTION4_MIN_LEN_SURFACE_TYPE:
           surface_type_hdr = sec[22]
       elif sec_num == 7:
         data_bytes = sec[5:]
       pos += sec_len
     if param and cat_num_hdr is not None:
-      pds_to_param = {
-          (0, 0): "2t",
-          (3, 0): "msl" if surface_type_hdr == 101 else "sp",
-          (3, 1): "msl",
-          (1, 193): "tp",
-          (1, 52): "tp",
-          (1, 8): "tp",
-          (2, 2): "10u",
-          (2, 3): "10v",
-          (4, 9): "ssr",
-          (180, 176): "ssr",
-          (5, 5): "str",
-          (180, 177): "str",
-      }
-      detected_param = pds_to_param.get(cat_num_hdr)
+      detected_param = _pds_to_param(cat_num_hdr, surface_type_hdr)
       if detected_param is not None and detected_param != param:
         label = f" at {context}" if context else ""
         raise ValueError(
-            f"GRIB2 parameter mismatch{label}: expected {param!r}, got {detected_param!r}"
+            f"GRIB2 parameter mismatch{label}: expected {param!r}, got"
+            f" {detected_param!r}"
         )
     if data_bytes is not None:
       arr = np.frombuffer(data_bytes, dtype=">f4").astype(np.float32, copy=True)
