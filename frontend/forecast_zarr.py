@@ -132,14 +132,37 @@ FORECAST_FEATURE_SPECS: dict[str, dict[str, str]] = {
     },
 }
 
+# dynamical.org publishes neither real-time ECMWF IFS HRES nor GraphCast
+# forecasts, so the operational stand-ins for the ``hres_*`` and
+# ``graphcast_*`` model inputs are the IFS ENS control member
+# (``ensemble_member=0``, selected in ``_resolve_init_time_and_slice``) and the
+# deterministic AIFS run. These are exact ``dynamical_catalog.list()``
+# identifiers; ``dynamical_catalog.open`` raises ``UnknownDatasetError`` for
+# any other string, which is what broke ``GET /api/weather/forecast/info``.
+DYNAMICAL_HRES_DATASET_ID = 'ecmwf-ifs-ens-forecast-15-day-0-25-degree'
+DYNAMICAL_GRAPHCAST_DATASET_ID = 'ecmwf-aifs-single-forecast'
+DYNAMICAL_DATASET_IDS: dict[str, str] = {
+    'hres': DYNAMICAL_HRES_DATASET_ID,
+    'graphcast': DYNAMICAL_GRAPHCAST_DATASET_ID,
+}
+
 # In-memory session cache for forecast datasets
 _DYNAMICAL_CACHE: dict[str, xr.Dataset] = {}
 _LAST_CACHE_TIME: float = 0.0
 _CACHE_TTL_SECONDS: float = 600.0
 
+ForecastSource = xr.Dataset | str | Path
+
+
+def _describe_forecast_source(source: ForecastSource) -> str:
+    """Return a human-readable label for an explicit forecast source."""
+    if isinstance(source, xr.Dataset):
+        return 'in-memory xarray.Dataset'
+    return str(source)
+
 
 def _open_zarr_or_dataset(
-    source: xr.Dataset | str | Path,
+    source: ForecastSource,
 ) -> xr.Dataset:
     """Open a Zarr path or return an already-opened ``xarray.Dataset``."""
     if isinstance(source, xr.Dataset):
@@ -180,11 +203,16 @@ def _open_zarr_or_dataset(
 
 
 def _get_dynamical_datasets() -> tuple[xr.Dataset, xr.Dataset]:
-    """Retrieve open xarray datasets for HRES and GraphCast forecasts.
+    """Retrieve open xarray datasets for the HRES and GraphCast stand-ins.
+
+    Opens ``DYNAMICAL_HRES_DATASET_ID`` and ``DYNAMICAL_GRAPHCAST_DATASET_ID``
+    from the dynamical.org catalog after verifying that both identifiers are
+    actually published, so a renamed or retired upstream dataset fails with
+    the list of available datasets instead of a bare ``UnknownDatasetError``.
 
     Raises:
-        RuntimeError: If ``dynamical_catalog`` is not installed or the forecast
-          catalog cannot be opened.
+        RuntimeError: If ``dynamical_catalog`` is not installed, or if a
+          configured dataset ID is not published in the dynamical.org catalog.
     """
     global _LAST_CACHE_TIME  # noqa: PLW0603
 
@@ -205,9 +233,22 @@ def _get_dynamical_datasets() -> tuple[xr.Dataset, xr.Dataset]:
         raise RuntimeError(msg)
 
     dynamical_catalog = importlib.import_module('dynamical_catalog')
-    ds_hres = dynamical_catalog.open('ecmwf-ifs-hres-forecast', chunks=None)
+    available_ids = set(dynamical_catalog.list())
+    missing_ids = [
+        dataset_id
+        for dataset_id in DYNAMICAL_DATASET_IDS.values()
+        if dataset_id not in available_ids
+    ]
+    if missing_ids:
+        msg = (
+            f'dynamical.org catalog does not publish {missing_ids};'
+            f' available datasets: {sorted(available_ids)}.'
+        )
+        raise RuntimeError(msg)
+
+    ds_hres = dynamical_catalog.open(DYNAMICAL_HRES_DATASET_ID, chunks=None)
     ds_graphcast = dynamical_catalog.open(
-        'google-graphcast-forecast', chunks=None
+        DYNAMICAL_GRAPHCAST_DATASET_ID, chunks=None
     )
     _DYNAMICAL_CACHE['hres'] = ds_hres
     _DYNAMICAL_CACHE['graphcast'] = ds_graphcast
@@ -602,27 +643,67 @@ class ForecastZarrExtractor:
         if graphcast_zarr_uri is not None:
             self._datasets['graphcast'] = graphcast_zarr_uri
 
-    def _resolve_datasets(self) -> tuple[xr.Dataset, xr.Dataset]:
-        """Return opened ``(ds_hres, ds_graphcast)`` datasets."""
+    def _explicit_sources(
+        self,
+    ) -> tuple[ForecastSource, ForecastSource] | None:
+        """Return explicit ``(hres, graphcast)`` sources, or ``None``.
+
+        Raises:
+            ValueError: If only one of the two sources was supplied; a single
+              explicit store is never silently paired with a catalog dataset.
+        """
         hres_src = self._datasets.get('hres', self._datasets.get('ifs'))
         gc_src = self._datasets.get('graphcast')
-        if hres_src is not None and gc_src is not None:
-            return (
-                _open_zarr_or_dataset(hres_src),
-                _open_zarr_or_dataset(gc_src),
+        if hres_src is None and gc_src is None:
+            return None
+        if hres_src is None or gc_src is None:
+            msg = (
+                'Provide both the hres and graphcast forecast sources, or'
+                ' neither to use the dynamical.org catalog; got hres='
+                f'{hres_src!r}, graphcast={gc_src!r}.'
             )
-        return _get_dynamical_datasets()
+            raise ValueError(msg)
+        return hres_src, gc_src
+
+    def _resolve_datasets(self) -> tuple[xr.Dataset, xr.Dataset]:
+        """Return opened ``(ds_hres, ds_graphcast)`` datasets."""
+        explicit = self._explicit_sources()
+        if explicit is None:
+            return _get_dynamical_datasets()
+        hres_src, gc_src = explicit
+        return (
+            _open_zarr_or_dataset(hres_src),
+            _open_zarr_or_dataset(gc_src),
+        )
 
     def get_latest_issue_info(self) -> dict[str, Any]:
-        """Query the forecast datasets for the latest initialization time."""
+        """Query the forecast datasets for the latest initialization time.
+
+        ``source_datasets`` names the upstream store behind each model-input
+        family (``hres_*`` / ``graphcast_*``) so API consumers can see which
+        dynamical.org catalog entries (or explicit Zarr stores) are in use.
+        """
+        explicit = self._explicit_sources()
+        if explicit is None:
+            source = 'dynamical.org'
+            provider = 'ECMWF (IFS ENS control member & AIFS) via dynamical.org'
+            source_datasets = dict(DYNAMICAL_DATASET_IDS)
+        else:
+            source = 'explicit'
+            provider = 'user-supplied forecast stores'
+            source_datasets = {
+                'hres': _describe_forecast_source(explicit[0]),
+                'graphcast': _describe_forecast_source(explicit[1]),
+            }
         ds_hres, ds_graphcast = self._resolve_datasets()
         _, latest_hres_time = _resolve_init_time_and_slice(ds_hres)
         _, latest_gc_time = _resolve_init_time_and_slice(ds_graphcast)
         latest_dt = min(latest_hres_time, latest_gc_time)
         return {
             'status': 'online',
-            'source': 'dynamical.org',
-            'provider': 'ECMWF & Google DeepMind',
+            'source': source,
+            'source_datasets': source_datasets,
+            'provider': provider,
             'hres_latest_init_time': latest_hres_time.isoformat(),
             'graphcast_latest_init_time': latest_gc_time.isoformat(),
             'latest_issue_date': latest_dt.strftime('%Y-%m-%d'),

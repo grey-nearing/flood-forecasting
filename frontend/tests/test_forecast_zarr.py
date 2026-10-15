@@ -15,9 +15,13 @@
 
 from __future__ import annotations
 
+import dataclasses
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -26,15 +30,185 @@ import xarray as xr
 from shapely.geometry import Polygon, mapping
 
 from frontend.forecast_zarr import (
+    DYNAMICAL_DATASET_IDS,
+    DYNAMICAL_GRAPHCAST_DATASET_ID,
+    DYNAMICAL_HRES_DATASET_ID,
     FORECAST_FEATURE_SPECS,
     ForecastZarrExtractor,
 )
 from frontend.profile_manager import ProfileManager
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 _EXPECTED_HORIZON_10 = 10
 _EXPECTED_HORIZON_15 = 15
 _EXPECTED_BATCH_BASINS = 2
 _EXPECTED_FEATURES_COUNT = 7
+_SECONDS_PER_DAY = 86400.0
+
+# Dataset IDs that PR #93 (af5250f2) introduced in place of the published
+# catalog entries; neither has ever existed on dynamical.org (Issue #121).
+_LEGACY_UNPUBLISHED_IDS = (
+    'ecmwf-ifs-hres-forecast',
+    'google-graphcast-forecast',
+)
+
+# ``dynamical_catalog.list()`` as published on 2026-10-15 (dynamical_catalog
+# 1.0.1; the 0.8.0 catalog is a strict subset that also contains both IDs
+# configured in ``frontend.forecast_zarr``).
+_DYNAMICAL_CATALOG_SNAPSHOT: tuple[str, ...] = (
+    'dwd-icon-eu-forecast-5-day',
+    'eccc-hrdps-forecast',
+    'ecmwf-aifs-ens-forecast',
+    'ecmwf-aifs-single-forecast',
+    'ecmwf-aifs-single-forecast-virtual',
+    'ecmwf-ifs-ens-forecast-15-day-0-25-degree',
+    'ecmwf-ifs-ens-forecast-46-day-6-hourly-1-5-degree',
+    'ecmwf-ifs-ens-forecast-46-day-daily-1-5-degree',
+    'nasa-imerg-analysis-early',
+    'nasa-imerg-analysis-late',
+    'noaa-gefs-analysis',
+    'noaa-gefs-analysis-0-25-degree-virtual',
+    'noaa-gefs-forecast-10-day-0-25-degree-virtual',
+    'noaa-gefs-forecast-16-day-0-5-degree-virtual',
+    'noaa-gefs-forecast-35-day',
+    'noaa-gefs-forecast-35-day-0-5-degree-virtual',
+    'noaa-gfs-analysis',
+    'noaa-gfs-analysis-virtual',
+    'noaa-gfs-forecast',
+    'noaa-gfs-forecast-virtual',
+    'noaa-hrrr-analysis',
+    'noaa-hrrr-analysis-virtual',
+    'noaa-hrrr-forecast-18-hour-virtual',
+    'noaa-hrrr-forecast-48-hour',
+    'noaa-hrrr-forecast-48-hour-virtual',
+    'noaa-mrms-conus-analysis-hourly',
+    'noaa-refs-forecast-3-hourly-virtual',
+    'noaa-refs-forecast-hourly-virtual',
+    'noaa-rrfs-ens-forecast-virtual',
+    'noaa-rrfs-forecast-18-hour-virtual',
+    'noaa-rrfs-forecast-84-hour-virtual',
+    'noaa-rrfs-forecast-sub-hourly-virtual',
+    'ucsb-chc-chirps-analysis-final',
+    'ucsb-chc-chirps-analysis-preliminary',
+)
+
+
+class _UnknownDatasetError(ValueError):
+    """Stand-in for ``dynamical_catalog.exceptions.UnknownDatasetError``."""
+
+
+@dataclasses.dataclass
+class _MockDynamicalCatalog:
+    """Hermetic stand-in for the ``dynamical_catalog`` module.
+
+    Mirrors the real network boundary: ``list()`` returns the published
+    dataset IDs and ``open()`` raises for anything that is not published.
+    """
+
+    datasets: tuple[str, ...]
+    opener: Callable[[str], xr.Dataset]
+    opened: list[str] = dataclasses.field(default_factory=list)
+
+    def list(self) -> list[str]:
+        return list(self.datasets)
+
+    def open(self, dataset_id: str, **_kwargs: object) -> xr.Dataset:
+        if dataset_id not in self.datasets:
+            msg = f'Unknown dataset {dataset_id!r}'
+            raise _UnknownDatasetError(msg)
+        self.opened.append(dataset_id)
+        return self.opener(dataset_id)
+
+
+def _build_dynamical_like_datasets(
+    *,
+    include_net_radiation: bool,
+    control_temperature_c: float = 12.0,
+    perturbed_temperature_c: float = 30.0,
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """Build IFS-ENS-like (HRES stand-in) and AIFS-like forecast datasets.
+
+    Dimension order, coordinate dtypes, variable names, and units follow the
+    dynamical.org ``ecmwf-ifs-ens-forecast-15-day-0-25-degree`` and
+    ``ecmwf-aifs-single-forecast`` stores on a 0.25-degree sub-grid. Ensemble
+    member 0 (the control run) carries ``control_temperature_c``; member 1
+    carries ``perturbed_temperature_c`` so control-member selection is
+    observable. Precipitation is a rate of exactly 1 mm/day.
+    """
+    init_times = pd.DatetimeIndex(
+        ['2026-10-13T00:00:00', '2026-10-14T00:00:00']
+    )
+    lead_hours = np.arange(6, 49, 6, dtype=np.int64)
+    lead_time = pd.to_timedelta(lead_hours, unit='h')
+    lats = np.arange(41.5, 38.9, -0.25, dtype=np.float64)
+    lons = np.arange(-88.0, -85.4, 0.25, dtype=np.float64)
+    n_members = 2
+    ens_dims = [
+        'init_time',
+        'lead_time',
+        'ensemble_member',
+        'latitude',
+        'longitude',
+    ]
+    ens_shape = (
+        len(init_times),
+        len(lead_hours),
+        n_members,
+        len(lats),
+        len(lons),
+    )
+
+    def _ens(value: float, units: str) -> tuple[list[str], np.ndarray, dict]:
+        return (
+            ens_dims,
+            np.full(ens_shape, value, dtype=np.float32),
+            {'units': units},
+        )
+
+    temperature = np.full(ens_shape, control_temperature_c, dtype=np.float32)
+    temperature[:, :, 1, :, :] = perturbed_temperature_c
+    precip_rate = np.float32(1.0 / _SECONDS_PER_DAY)
+    hres_vars: dict[str, Any] = {
+        'temperature_2m': (ens_dims, temperature, {'units': 'degree_Celsius'}),
+        'precipitation_surface': _ens(precip_rate, 'kg m-2 s-1'),
+        'pressure_surface': _ens(101325.0, 'Pa'),
+        'downward_short_wave_radiation_flux_surface': _ens(250.0, 'W m-2'),
+        'downward_long_wave_radiation_flux_surface': _ens(320.0, 'W m-2'),
+    }
+    if include_net_radiation:
+        hres_vars['hres_surface_net_solar_radiation'] = _ens(210.0, 'W/m^2')
+        hres_vars['hres_surface_net_thermal_radiation'] = _ens(-65.0, 'W/m^2')
+    coords = {
+        'init_time': init_times,
+        'lead_time': lead_time,
+        'latitude': lats,
+        'longitude': lons,
+    }
+    ds_hres = xr.Dataset(
+        data_vars=hres_vars,
+        coords={**coords, 'ensemble_member': np.arange(n_members)},
+    )
+
+    det_dims = ['init_time', 'lead_time', 'latitude', 'longitude']
+    det_shape = (len(init_times), len(lead_hours), len(lats), len(lons))
+    ds_aifs = xr.Dataset(
+        data_vars={
+            'temperature_2m': (
+                det_dims,
+                np.full(det_shape, 9.5, dtype=np.float32),
+                {'units': 'degree_Celsius'},
+            ),
+            'precipitation_surface': (
+                det_dims,
+                np.full(det_shape, precip_rate, dtype=np.float32),
+                {'units': 'kg m-2 s-1'},
+            ),
+        },
+        coords=coords,
+    )
+    return ds_hres, ds_aifs
 
 
 def _build_forecast_datasets(
@@ -301,6 +475,11 @@ class ForecastZarrTest(unittest.TestCase):
         assert info['status'] == 'online'
         assert info['latest_issue_date'] == '2026-05-10'
         assert len(info['features']) == _EXPECTED_FEATURES_COUNT
+        assert info['source'] == 'explicit'
+        assert info['source_datasets'] == {
+            'hres': str(self.hres_zarr),
+            'graphcast': str(self.gc_zarr),
+        }
 
     def test_missing_lead_steps_remain_nan(self) -> None:
         """Verify missing lead steps remain NaN instead of broadcasting."""
@@ -387,6 +566,145 @@ class ForecastZarrTest(unittest.TestCase):
         ds = xr.open_zarr(res['zarr_path'], decode_timedelta=False)
         tp = ds['hres_total_precipitation'].to_numpy()
         assert np.all(np.isnan(tp))
+
+    # ------------------------------------------------------------------
+    # Issue #121: dynamical.org catalog dataset identifiers
+    # ------------------------------------------------------------------
+
+    def _patch_dynamical_catalog(self, catalog: _MockDynamicalCatalog) -> None:
+        """Install ``catalog`` as the ``dynamical_catalog`` module."""
+        for patcher in (
+            mock.patch.dict(sys.modules, {'dynamical_catalog': catalog}),
+            mock.patch(
+                'frontend.forecast_zarr.HAS_DYNAMICAL_CATALOG', new=True
+            ),
+            mock.patch.dict(
+                'frontend.forecast_zarr._DYNAMICAL_CACHE', {}, clear=True
+            ),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_configured_dataset_ids_are_published_catalog_entries(
+        self,
+    ) -> None:
+        """Verify configured IDs are published and legacy IDs are not."""
+        for dataset_id in DYNAMICAL_DATASET_IDS.values():
+            assert dataset_id in _DYNAMICAL_CATALOG_SNAPSHOT
+        for legacy_id in _LEGACY_UNPUBLISHED_IDS:
+            assert legacy_id not in _DYNAMICAL_CATALOG_SNAPSHOT
+            assert legacy_id not in DYNAMICAL_DATASET_IDS.values()
+
+    def test_forecast_info_opens_published_dynamical_datasets(self) -> None:
+        """Verify forecast info resolves through published catalog IDs."""
+        ds_hres, ds_aifs = _build_dynamical_like_datasets(
+            include_net_radiation=False
+        )
+        by_id = {
+            DYNAMICAL_HRES_DATASET_ID: ds_hres,
+            DYNAMICAL_GRAPHCAST_DATASET_ID: ds_aifs,
+        }
+        catalog = _MockDynamicalCatalog(
+            datasets=_DYNAMICAL_CATALOG_SNAPSHOT,
+            opener=lambda dataset_id: by_id[dataset_id],
+        )
+        self._patch_dynamical_catalog(catalog)
+
+        extractor = ForecastZarrExtractor(output_dir=self.root_path / 'live')
+        info = extractor.get_latest_issue_info()
+
+        assert catalog.opened == [
+            DYNAMICAL_HRES_DATASET_ID,
+            DYNAMICAL_GRAPHCAST_DATASET_ID,
+        ]
+        assert info['status'] == 'online'
+        assert info['source'] == 'dynamical.org'
+        assert info['source_datasets'] == {
+            'hres': 'ecmwf-ifs-ens-forecast-15-day-0-25-degree',
+            'graphcast': 'ecmwf-aifs-single-forecast',
+        }
+        assert info['hres_latest_init_time'] == '2026-10-14T00:00:00'
+        assert info['graphcast_latest_init_time'] == '2026-10-14T00:00:00'
+        assert info['latest_issue_date'] == '2026-10-14'
+        assert len(info['features']) == _EXPECTED_FEATURES_COUNT
+
+        # A second call within the TTL is served from the session cache.
+        extractor.get_latest_issue_info()
+        assert len(catalog.opened) == len(DYNAMICAL_DATASET_IDS)
+
+    def test_unpublished_dataset_id_fails_before_open(self) -> None:
+        """Verify a retired catalog ID raises a descriptive error pre-open."""
+        _, ds_aifs = _build_dynamical_like_datasets(include_net_radiation=False)
+        catalog = _MockDynamicalCatalog(
+            datasets=tuple(
+                dataset_id
+                for dataset_id in _DYNAMICAL_CATALOG_SNAPSHOT
+                if dataset_id != DYNAMICAL_HRES_DATASET_ID
+            ),
+            opener=lambda _dataset_id: ds_aifs,
+        )
+        self._patch_dynamical_catalog(catalog)
+
+        extractor = ForecastZarrExtractor(output_dir=self.root_path / 'gone')
+        with pytest.raises(RuntimeError, match=DYNAMICAL_HRES_DATASET_ID):
+            extractor.get_latest_issue_info()
+        assert catalog.opened == []
+
+    def test_partial_explicit_sources_raise_value_error(self) -> None:
+        """Verify one explicit store is never paired with a catalog dataset."""
+        extractor = ForecastZarrExtractor(
+            output_dir=self.root_path / 'partial',
+            hres_zarr_uri=self.hres_zarr,
+        )
+        with pytest.raises(ValueError, match='both the hres and graphcast'):
+            extractor.get_latest_issue_info()
+
+    def test_ensemble_control_member_drives_hres_extraction(self) -> None:
+        """Verify IFS ENS member 0 and dynamical units drive extraction."""
+        ds_hres, ds_aifs = _build_dynamical_like_datasets(
+            include_net_radiation=True
+        )
+        extractor = ForecastZarrExtractor(
+            output_dir=self.root_path / 'ens_control',
+            datasets={'hres': ds_hres, 'graphcast': ds_aifs},
+        )
+        res = extractor.fetch_and_archive(
+            catchment_feature=self.feat1, horizon_days=2
+        )
+        assert res['status'] == 'success'
+
+        ds = xr.open_zarr(res['zarr_path'], decode_timedelta=False)
+        np.testing.assert_allclose(
+            ds['hres_temperature_2m'].to_numpy()[0, 0, :], [12.0, 12.0]
+        )
+        np.testing.assert_allclose(
+            ds['hres_total_precipitation'].to_numpy()[0, 0, :],
+            [1.0, 1.0],
+            rtol=1e-5,
+        )
+        np.testing.assert_allclose(
+            ds['hres_surface_pressure'].to_numpy()[0, 0, :],
+            [101.325, 101.325],
+            rtol=1e-5,
+        )
+        np.testing.assert_allclose(
+            ds['graphcast_temperature_2m'].to_numpy()[0, 0, :], [9.5, 9.5]
+        )
+        assert res['meteogram']['valid_times'][0] == '2026-10-14'
+
+    def test_downward_only_radiation_fails_loudly(self) -> None:
+        """Verify downward-only fluxes are never passed off as net radiation."""
+        ds_hres, ds_aifs = _build_dynamical_like_datasets(
+            include_net_radiation=False
+        )
+        extractor = ForecastZarrExtractor(
+            output_dir=self.root_path / 'no_net_radiation',
+            datasets={'hres': ds_hres, 'graphcast': ds_aifs},
+        )
+        with pytest.raises(KeyError, match='hres_surface_net_solar_radiation'):
+            extractor.fetch_and_archive(
+                catchment_feature=self.feat1, horizon_days=2
+            )
 
 
 if __name__ == '__main__':
