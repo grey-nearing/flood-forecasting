@@ -70,6 +70,8 @@ _VECTOR_DELINEATORS: dict[str, UnitCatchmentDelineator | None] = {}
 def reset_delineator_caches() -> None:
     """Clear process-level singleton caches for DEM and vector delineators."""
     with _REGISTRY_LOCK:
+        for delin in _DEM_DELINEATORS.values():
+            delin.close_tile_cache()
         _DEM_DELINEATORS.clear()
         _DEM_LOCKS.clear()
         _RIVER_NETWORKS.clear()
@@ -92,8 +94,10 @@ def get_dem_delineator(dem_id: str = DEFAULT_DEM_ID) -> DemDelineator:
         tiles_dir = resolve_dem_tiles_dir(dataset.id)
         resolved_tiles = tiles_dir.expanduser().resolve()
         cached = _DEM_DELINEATORS.get(dataset.id)
-        if cached is not None and cached.tiles_dir == resolved_tiles:
-            return cached
+        if cached is not None:
+            if cached.tiles_dir == resolved_tiles:
+                return cached
+            cached.close_tile_cache()
         tile_fetcher = None
         if dataset.id == 'merit_hydro_90m':
             ee_project = (
