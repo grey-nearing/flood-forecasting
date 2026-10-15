@@ -756,7 +756,8 @@ class Config(object):
         return self._cfg.get('seed', None)
 
     @property
-    def statics_data_dir(self) -> Path:
+    def statics_data_dir(self) -> Path | list[Path]:
+        """Return directory or list of directories for static attributes."""
         return self._get_value_verbose('statics_data_dir')
 
     @property
@@ -783,6 +784,14 @@ class Config(object):
     @property
     def static_attributes(self) -> list[str]:
         return self._as_default_list(self._cfg['static_attributes'])
+
+    @property
+    def local_static_attributes(self) -> list[str] | dict[str, list[str]]:
+        """Return optional local static catchment attributes or grouped attributes."""
+        val = self._cfg.get('local_static_attributes', [])
+        if isinstance(val, dict):
+            return val
+        return self._as_default_list(val)
 
     @property
     def statics_embedding(self) -> EmbeddingSpec | None:

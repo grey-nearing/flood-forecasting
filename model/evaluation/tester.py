@@ -861,7 +861,7 @@ class BaseTester:
     def _move_batch_to_device(self, batch: dict) -> None:
         """Move every tensor of `batch` to `self.device` in place."""
         for key, value in batch.items():
-            if key.startswith('x_d'):
+            if isinstance(value, dict):
                 batch[key] = {k: v.to(self.device) for k, v in value.items()}
             elif not key.startswith('date'):
                 batch[key] = value.to(self.device)

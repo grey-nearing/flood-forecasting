@@ -64,6 +64,7 @@ LOGGER = logging.getLogger(__name__)
 NUMPY_VARS = ['date']
 TENSOR_VARS = [
     'x_s',
+    'x_s_local',
     'x_d',
     'x_d_hindcast',
     'x_d_forecast',
@@ -198,6 +199,20 @@ class Multimet(Dataset):
 
         # Feature lists by type.
         self._static_features = cfg.static_attributes
+        self._local_static_inputs = cfg.local_static_attributes
+        self._local_static_features = (
+            flatten_feature_list(cfg.local_static_attributes)
+            if cfg.local_static_attributes
+            else []
+        )
+        self._all_static_features = list(
+            dict.fromkeys(
+                [
+                    *(self._static_features or []),
+                    *self._local_static_features,
+                ]
+            )
+        )
         self._target_features = cfg.target_variables
         if not cfg.hindcast_inputs:
             raise ValueError('hindcast_inputs must be supplied.')
@@ -424,7 +439,22 @@ class Multimet(Dataset):
             'Extending base scaler with new fine-tuning features: %s',
             new_vars,
         )
-        self.scaler.calculate(self._dataset[new_vars])
+        static_only_vars = [
+            v
+            for v in new_vars
+            if 'date' not in self._dataset[v].dims
+            and self._dataset.sizes.get('basin', 0) < 2  # noqa: PLR2004
+        ]
+        dyn_or_multi_vars = [v for v in new_vars if v not in static_only_vars]
+        if dyn_or_multi_vars:
+            self.scaler.calculate(self._dataset[dyn_or_multi_vars])
+        if static_only_vars:
+            full_static_ds = load_caravan_attributes(
+                data_dir=self._statics_data_path,
+                basins=None,
+                features=static_only_vars,
+            )
+            self.scaler.calculate(full_static_ds[static_only_vars])
         (self.scaler.scaler,) = dask.compute(self.scaler.scaler)
         invalid_vars: list[str] = []
         for var in new_vars:
@@ -528,6 +558,12 @@ class Multimet(Dataset):
                 axis=-1,
             )
         )
+        self._fast_local_statics: dict[str, np.ndarray] = {
+            feat: np.ascontiguousarray(
+                self._dataset[feat].transpose('basin').data
+            )
+            for feat in self._local_static_features
+        }
         target_arr = np.ascontiguousarray(
             np.stack(
                 [
@@ -694,6 +730,11 @@ class Multimet(Dataset):
             'x_d_forecast': batch_forecast,
             'y': torch.from_numpy(self._fast_target_win[b_idx, target_start]),
         }
+        if self._fast_local_statics:
+            batch['x_s_local'] = {
+                feat: torch.from_numpy(arr[b_idx]).unsqueeze(-1)
+                for feat, arr in self._fast_local_statics.items()
+            }
         if self._fast_stds is not None:
             batch['per_basin_target_stds'] = torch.from_numpy(
                 self._fast_stds[b_idx]
@@ -741,6 +782,8 @@ class Multimet(Dataset):
             'x_d_forecast': self._extract_forecasts(sample_index),
             'y': self._extract_targets(sample_index),
         }
+        if self._local_static_features:
+            sample['x_s_local'] = self._extract_local_statics(sample_index)
         if self._per_basin_target_stds is not None:
             sample['per_basin_target_stds'] = self._extract_per_basin_stds(
                 sample_index
@@ -788,6 +831,18 @@ class Multimet(Dataset):
             self._dataset, self._static_features, {'basin': basin}
         )
         return np.stack([features[e] for e in self._static_features], axis=-1)
+
+    def _extract_local_statics(
+        self, sample_index: dict[str, int]
+    ) -> dict[str, np.ndarray]:
+        basin = sample_index['basin']
+        features = self._extract_dataset(
+            self._dataset, self._local_static_features, {'basin': basin}
+        )
+        return {
+            name: np.expand_dims(np.asarray(val, dtype=np.float32), -1)
+            for name, val in features.items()
+        }
 
     def _extract_hindcasts(
         self, sample_index: dict[str, int]
@@ -946,7 +1001,11 @@ class Multimet(Dataset):
             predict_last_n=self._predict_last_n,
             forecast_overlap=self._forecast_overlap,
             min_lead_time=self._min_lead_time,
-            static_features=self._static_features,
+            static_features=(
+                self._static_features
+                if self._nan_handling_method == 'masked_mean'
+                else self._all_static_features
+            ),
             forecast_features=self._forecast_features,
             hindcast_features=self._hindcast_features,
             target_features=self._target_features,
@@ -1240,7 +1299,7 @@ class Multimet(Dataset):
         return load_caravan_attributes(
             data_dir=self._statics_data_path,
             basins=self._basins,
-            features=self._static_features,
+            features=self._all_static_features,
         )
 
     def _lead_time_slice(self) -> slice:
@@ -1269,9 +1328,9 @@ class Multimet(Dataset):
                 batch[feature] = np.stack(
                     [sample[feature] for sample in samples], axis=0
                 )
-            elif feature.startswith('x_d'):
-                # Dynamics are stored as dictionaries with feature names as
-                # keys.
+            elif feature.startswith('x_d') or feature == 'x_s_local':
+                # Dynamics and local static attribute groups are stored as
+                # dictionaries with feature names as keys.
                 batch[feature] = {
                     k: torch.stack(
                         [sample[feature][k] for sample in samples], dim=0

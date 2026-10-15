@@ -59,20 +59,86 @@ def _resolve_zarr_store(
     return None
 
 
+def _load_multi_store_attributes(
+    data_dirs: list[Path | str],
+    basins: list[str] | None = None,
+    features: list[str] | None = None,
+) -> xarray.Dataset:
+    """Load and merge static attributes across multiple Zarr stores."""
+    store_dss: list[xarray.Dataset] = []
+    seen_vars: dict[str, str] = {}
+    remaining = set(features) if features else None
+
+    for d in data_dirs:
+        zarr_store = _resolve_zarr_store(d, ATTRIBUTES_ZARR_NAME)
+        if zarr_store is None:
+            raise FileNotFoundError(
+                f'Attributes Zarr store not found in {d}'
+            )
+        ds = xarray.open_zarr(zarr_store, chunks={})
+        available = set(ds.data_vars) | set(ds.coords) - {'basin'}
+        selected = (
+            [f for f in (features or []) if f in available]
+            if features
+            else sorted(available)
+        )
+        keep: list[str] = []
+        for var in selected:
+            if var in seen_vars:
+                LOGGER.warning(
+                    "Static attribute '%s' found in multiple stores "
+                    '(%s and %s); using %s',
+                    var,
+                    seen_vars[var],
+                    zarr_store,
+                    seen_vars[var],
+                )
+            else:
+                seen_vars[var] = str(zarr_store)
+                keep.append(var)
+        if not keep:
+            continue
+        sub_ds = ds[keep]
+        if basins and 'basin' in sub_ds.coords:
+            missing = set(basins).difference(sub_ds.coords['basin'].data)
+            if missing:
+                raise ValueError(
+                    f'{len(missing)} basins are missing static attributes '
+                    f'in {zarr_store}: {", ".join(sorted(missing))}'
+                )
+            sub_ds = sub_ds.sel(basin=basins)
+        store_dss.append(sub_ds)
+        if remaining is not None:
+            remaining -= set(keep)
+
+    if remaining:
+        raise ValueError(
+            f'Requested static attributes {sorted(remaining)} not found in '
+            f'any configured statics_data_dir {data_dirs}.'
+        )
+    if not store_dss:
+        raise ValueError(
+            f'No static attributes loaded from statics_data_dir {data_dirs}.'
+        )
+    return xarray.merge(store_dss, compat='no_conflicts')
+
+
 def load_caravan_attributes(
-    data_dir: Path | str,
+    data_dir: Path | str | list[Path | str],
     basins: list[str] | None = None,
     subdataset: str | None = None,
     features: list[str] | None = None,
 ) -> xarray.Dataset:
     """Load the attributes of the Caravan dataset.
 
-    Supports Zarr stores (preferred) and legacy Caravan CSV directories.
+    Supports single or multiple Zarr stores (preferred) and legacy Caravan CSV
+    directories.
 
     Parameters
     ----------
-    data_dir : Path | str
-        Path to attributes Zarr store or root directory of Caravan attributes.
+    data_dir : Path | str | list[Path | str]
+        Path (or list of paths) to attributes Zarr store(s) or root directory
+        of Caravan attributes.
     basins : list[str], optional
         If passed, returns only attributes for the basins specified in this list. Otherwise, the attributes of all
         basins are returned.
@@ -87,6 +153,12 @@ def load_caravan_attributes(
         A basin indexed Dataset with all attributes as coordinates.
     """
     LOGGER.debug('load caravan attributes')
+    if isinstance(data_dir, list):
+        return _load_multi_store_attributes(
+            data_dirs=data_dir,
+            basins=basins,
+            features=features,
+        )
     zarr_store = _resolve_zarr_store(data_dir, ATTRIBUTES_ZARR_NAME)
     if zarr_store is not None:
         LOGGER.debug('Loading attributes from Zarr store: %s', zarr_store)

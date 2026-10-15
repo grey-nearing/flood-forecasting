@@ -68,8 +68,8 @@ run_dir: ./runs
 
 # --- Fine-Tuning Module Selection ---
 # Valid module_parts for mean_embedding_forecast_lstm:
-#   static_embedding_fc, hindcast_embeddings_fc, forecast_embeddings_fc,
-#   shared_embeddings_fc, hindcast_lstm, forecast_lstm, head
+#   static_embedding_fc, local_static_embeddings_fc, hindcast_embeddings_fc,
+#   forecast_embeddings_fc, shared_embeddings_fc, hindcast_lstm, forecast_lstm, head
 finetune_modules:
   - static_embedding_fc
   - head

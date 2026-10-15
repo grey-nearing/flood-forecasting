@@ -36,6 +36,7 @@ MODEL_REGISTRY: dict[str, type[BaseModel]] = {
 }
 
 _DEFAULT_DYNAMIC_EMBEDDING_MODULES: tuple[str, ...] = (
+    'local_static_embeddings_fc',
     'hindcast_embeddings_fc',
     'forecast_embeddings_fc',
     'shared_embeddings_fc',
