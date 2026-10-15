@@ -95,10 +95,11 @@ def _calc_types(
 class Scaler:
     """Scaler for a dataset that contains multiple features.
 
-    Note that training normalization statistics (both base pretraining and fine-tuning
-    new-variable extension) are computed over the loaded training slice, which extends
-    `seq_length` days before `train_start_date` and `lead_time` days after
-    `train_end_date` to cover full lookback/forecast windows.
+    Statistics are computed over every value in the dataset passed to
+    `calculate`. The `Multimet` dataset passes its loaded training slice, which
+    extends `seq_length` days before `train_start_date` and `lead_time` days
+    after `train_end_date`. The same window is used when fine-tuning adds new
+    variables to a pre-trained scaler.
 
     Parameters
     ----------
@@ -206,25 +207,32 @@ class Scaler:
         scaler_file = self.scaler_dir / SCALER_FILE_NAME
         self.scaler.to_zarr(scaler_file, mode='w')
 
-    def check_zero_scale(self):
+    def check_zero_scale(self) -> None:
+        """Check scaler parameters are finite and scales are non-zero.
+
+        Raises:
+            ValueError: If any feature has a zero `scale` or `std` parameter, or
+                if any feature has a `NaN` or `Inf` value in any of its
+                `center`, `scale`, `mean`, or `std` parameters.
+        """
         _assert_computed(self.scaler)
 
         scales_to_check = self.scaler.sel(parameter=['scale', 'std'])
         is_zero = (scales_to_check == 0).any('parameter').to_dataarray()
         zero_features = is_zero['variable'][is_zero]
-        if any(zero_features):
+        if zero_features.size > 0:
             raise ValueError(
-                f'Zero scale values found for features: '
-                f'{list(zero_features.values)}.'
+                'Zero scale values found for features: '
+                f'{zero_features.to_numpy().tolist()}.'
             )
 
-        # Check for NaN / Inf in all scaler parameters
+        # `NaN == 0` is False, so NaN and Inf parameters need a separate check.
         is_invalid = (~np.isfinite(self.scaler.to_dataarray())).any('parameter')
         invalid_features = is_invalid['variable'][is_invalid]
-        if any(invalid_features):
+        if invalid_features.size > 0:
             raise ValueError(
-                f'NaN or Inf values found in scaler parameters for features: '
-                f'{list(invalid_features.values)}.'
+                'NaN or Inf values found in scaler parameters for features: '
+                f'{invalid_features.to_numpy().tolist()}.'
             )
 
     def scale(

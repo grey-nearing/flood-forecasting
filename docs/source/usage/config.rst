@@ -153,7 +153,7 @@ Data settings
         hres_temperature_2m: era5land_temperature_2m
         hres_total_precipitation: era5land_total_precipitation
 
--  ``custom_normalization``: Optional dictionary mapping feature names to custom normalization settings. Each feature entry can specify ``centering`` and/or ``scaling`` statistics chosen from ``mean``, ``std``, ``median``, ``min``, ``max``, ``minmax``, or ``none`` (defaults are ``centering: mean`` and ``scaling: std``). Note that training normalization statistics (both base pretraining and fine-tuning new-variable extension) are computed over the loaded training slice, which extends ``seq_length`` days before ``train_start_date`` and ``lead_time`` days after ``train_end_date`` to cover full lookback/forecast windows:
+-  ``custom_normalization``: Optional dictionary mapping feature names to custom normalization settings. Each feature entry can specify ``centering`` and/or ``scaling`` statistics chosen from ``mean``, ``std``, ``median``, ``min``, ``max``, ``minmax``, or ``none`` (defaults are ``centering: mean`` and ``scaling: std``):
 
    .. code-block:: yaml
 
@@ -164,6 +164,8 @@ Data settings
         frac_snow:
           centering: none
           scaling: none
+
+   All normalization statistics are computed from the training data window. This window starts ``seq_length`` days before ``train_start_date`` and ends ``lead_time`` days after ``train_end_date``. The same window is used when fine-tuning adds new variables to a pre-trained scaler. The run stops with an error if any feature has a zero, ``NaN``, or ``Inf`` normalization statistic (for example, a feature with no valid values in the training data window).
 
 -  ``target_variables``: List of target variables to predict (e.g., ``[streamflow]``).
 -  ``static_attributes``: List of static catchment attributes to use.
@@ -223,7 +225,7 @@ Ignored if ``mode != finetune``
            static_embedding_fc: true
            head: true
 
-   -  **Adding new local weather products during fine-tuning:** You can add new local hindcast or forecast products to ``hindcast_inputs`` and ``forecast_inputs`` in your fine-tuning config. Setting ``hindcast_inputs`` or ``forecast_inputs`` in the fine-tuning config replaces the base run's lists, so all retained base products and their exact band lists must be included (and pretrained products cannot be migrated between hindcast-only, forecast-only, and shared embedding groups). Every newly added product key must be unfrozen in ``finetune_modules``. During fine-tuning, ``model`` keeps all pre-trained normalization statistics from ``base_run_dir/scaler.zarr`` unchanged, calculates finite non-zero ``center`` and ``scale`` statistics for any new variables over the loaded training slice, which extends ``seq_length`` days before ``train_start_date`` and ``lead_time`` days after ``train_end_date`` to cover full lookback/forecast windows, and always writes ``<run_dir>/scaler.zarr``.
+   -  **Adding new local weather products during fine-tuning:** You can add new local hindcast or forecast products to ``hindcast_inputs`` and ``forecast_inputs`` in your fine-tuning config. Setting ``hindcast_inputs`` or ``forecast_inputs`` in the fine-tuning config replaces the base run's lists, so all retained base products and their exact band lists must be included (and pretrained products cannot be migrated between hindcast-only, forecast-only, and shared embedding groups). Every newly added product key must be unfrozen in ``finetune_modules``. During fine-tuning, ``model`` keeps all pre-trained normalization statistics from ``base_run_dir/scaler.zarr`` unchanged, calculates finite non-zero ``center`` and ``scale`` statistics for any new variables over the training data window (``seq_length`` days before ``train_start_date`` through ``lead_time`` days after ``train_end_date``), and always writes ``<run_dir>/scaler.zarr``.
 
 Logger settings
 ---------------
