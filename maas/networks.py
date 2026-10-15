@@ -913,6 +913,186 @@ def extract_level_features(  # noqa: PLR0913
     ]
 
 
+def _deduplicate_floodhub_by_hybas(
+    net: Mapping[str, Any],
+    idx: np.ndarray,
+) -> np.ndarray:
+    """Keep the reach with maximum `reach_area` per unique `reach_hybas_l12`."""
+    if idx.size <= 1:
+        return idx
+    order = np.lexsort((net['reach_area'][idx], net['reach_hybas_l12'][idx]))
+    sorted_idx = idx[order]
+    sorted_hbs = net['reach_hybas_l12'][sorted_idx]
+    keep = np.concatenate([sorted_hbs[1:] != sorted_hbs[:-1], [True]])
+    return sorted_idx[keep]
+
+
+def _floodhub_prediction_points(  # noqa: PLR0913, PLR0917
+    net: Mapping[str, Any],
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+    min_area_km2: float,
+    max_points: int,
+) -> list[dict[str, Any]]:
+    """Extract deduplicated FloodHub forecast reach points in a bbox."""
+    if 'reach_lat' not in net or 'reach_hybas_l12' not in net:
+        return []
+    rlat = net['reach_lat']
+    i0 = int(np.searchsorted(rlat, min_lat, side='left'))
+    i1 = int(np.searchsorted(rlat, max_lat, side='right'))
+    if i0 >= i1:
+        return []
+    rlon = net['reach_lon'][i0:i1]
+    hbs = net['reach_hybas_l12'][i0:i1]
+    rarea = net['reach_area'][i0:i1]
+    hit = i0 + np.flatnonzero(
+        (rlon >= min_lon)
+        & (rlon <= max_lon)
+        & (hbs > 0)
+        & (rarea >= min_area_km2)
+    )
+    if not hit.size:
+        return []
+    hit = _deduplicate_floodhub_by_hybas(net, hit)
+    if len(hit) > max_points:
+        hit = hit[np.argsort(-net['reach_area'][hit])[:max_points]]
+    hrids = net.get('reach_hyriv_id')
+    return [
+        {
+            'lat': round(float(net['reach_lat'][i]), 4),
+            'lon': round(float(net['reach_lon'][i]), 4),
+            'gauge_id': f'hybas_{int(net["reach_hybas_l12"][i])}',
+            'river_id': (
+                f'HYRIV_{int(hrids[i])}'
+                if hrids is not None and int(hrids[i]) > 0
+                else None
+            ),
+            'upstream_area_km2': round(float(net['reach_area'][i]), 1),
+            'has_forecast': True,
+        }
+        for i in hit.tolist()
+    ]
+
+
+def _glofas_prediction_points(  # noqa: PLR0913, PLR0917
+    net: Mapping[str, Any],
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+    min_area_km2: float,
+    max_points: int,
+) -> list[dict[str, Any]]:
+    """Extract GloFAS 0.05-deg river cell centers in a bbox."""
+    if 'cell_lin' not in net or 'cell_area' not in net:
+        return []
+    r_min = max(0, math.floor((90.0 - max_lat) / GLOFAS_RES_DEG - 0.5))
+    r_max = min(
+        GLOFAS_NLAT - 1,
+        math.ceil((90.0 - min_lat) / GLOFAS_RES_DEG - 0.5),
+    )
+    cell_lin = net['cell_lin']
+    j0 = int(np.searchsorted(cell_lin, r_min * GLOFAS_NLON, side='left'))
+    j1 = int(np.searchsorted(cell_lin, (r_max + 1) * GLOFAS_NLON, side='left'))
+    if j0 >= j1:
+        return []
+    sub_lin = cell_lin[j0:j1]
+    sub_area = net['cell_area'][j0:j1]
+    rows = sub_lin // GLOFAS_NLON
+    cols = sub_lin % GLOFAS_NLON
+    lats = 90.0 - (rows + 0.5) * GLOFAS_RES_DEG
+    lons = -180.0 + (cols + 0.5) * GLOFAS_RES_DEG
+    hit = np.flatnonzero(
+        (lats >= min_lat)
+        & (lats <= max_lat)
+        & (lons >= min_lon)
+        & (lons <= max_lon)
+        & (sub_area >= min_area_km2)
+    )
+    if not hit.size:
+        return []
+    if len(hit) > max_points:
+        hit = hit[np.argsort(-sub_area[hit])[:max_points]]
+    return [
+        {
+            'lat': round(float(lats[k]), 3),
+            'lon': round(float(lons[k]), 3),
+            'river_id': f'{float(lats[k]):.3f},{float(lons[k]):.3f}',
+            'upstream_area_km2': round(float(sub_area[k]), 1),
+            'has_forecast': True,
+        }
+        for k in hit.tolist()
+    ]
+
+
+def _geoglows_prediction_points(  # noqa: PLR0913, PLR0917
+    net: Mapping[str, Any],
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+    min_area_km2: float,
+    max_points: int,
+) -> list[dict[str, Any]]:
+    """Extract GEOGLOWS TDX-Hydro reach prediction points in a bbox."""
+    if 'reach_lat' not in net or 'reach_linkno' not in net:
+        return []
+    rlat = net['reach_lat']
+    k0 = int(np.searchsorted(rlat, min_lat, side='left'))
+    k1 = int(np.searchsorted(rlat, max_lat, side='right'))
+    if k0 >= k1:
+        return []
+    rlon = net['reach_lon'][k0:k1]
+    rarea = net['reach_area'][k0:k1]
+    hit = k0 + np.flatnonzero(
+        (rlon >= min_lon) & (rlon <= max_lon) & (rarea >= min_area_km2)
+    )
+    if not hit.size:
+        return []
+    if len(hit) > max_points:
+        hit = hit[np.argsort(-net['reach_area'][hit])[:max_points]]
+    return [
+        {
+            'lat': round(float(net['reach_lat'][i]), 4),
+            'lon': round(float(net['reach_lon'][i]), 4),
+            'river_id': int(net['reach_linkno'][i]),
+            'upstream_area_km2': round(float(net['reach_area'][i]), 1),
+            'has_forecast': True,
+        }
+        for i in hit.tolist()
+    ]
+
+
+def extract_prediction_points(  # noqa: PLR0913, PLR0917
+    model: str,
+    net: Mapping[str, Any] | None,
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+    min_area_km2: float = 0.0,
+    max_points: int = 600,
+) -> list[dict[str, Any]]:
+    """Extract discrete model prediction points inside a bounding box."""
+    if net is None:
+        return []
+    if model == 'floodhub':
+        return _floodhub_prediction_points(
+            net, min_lon, min_lat, max_lon, max_lat, min_area_km2, max_points
+        )
+    if model == 'glofas':
+        return _glofas_prediction_points(
+            net, min_lon, min_lat, max_lon, max_lat, min_area_km2, max_points
+        )
+    if model == 'geoglows':
+        return _geoglows_prediction_points(
+            net, min_lon, min_lat, max_lon, max_lat, min_area_km2, max_points
+        )
+    return []
+
+
 def _choose(
     areas: np.ndarray,
     dist: np.ndarray,
@@ -1076,7 +1256,7 @@ def snap_floodhub_reach_from_network(  # noqa: PLR0913, PLR0917
         )
         if not in_box.size:
             continue
-        cand_idx = i0 + in_box
+        cand_idx = _deduplicate_floodhub_by_hybas(net, i0 + in_box)
         cand_dist = np.hypot(
             (net['reach_lon'][cand_idx].astype(np.float64) - lon) * kx,
             net['reach_lat'][cand_idx].astype(np.float64) - lat,
@@ -1104,9 +1284,11 @@ def snap_floodhub_reach_from_network(  # noqa: PLR0913, PLR0917
     hyriv_id = (
         int(net['reach_hyriv_id'][chosen]) if 'reach_hyriv_id' in net else 0
     )
+    reach_str = f'HYRIV_{hyriv_id}' if hyriv_id > 0 else None
     return {
         'gauge_id': f'hybas_{hb_id}' if hb_id > 0 else None,
-        'river_id': f'HYRIV_{hyriv_id}' if hyriv_id > 0 else None,
+        'reach_id': reach_str,
+        'river_id': reach_str,
         'hyriv_id': hyriv_id,
         'hybas_l12': hb_id,
         'lat': round(float(net['reach_lat'][chosen]), 4),
@@ -1456,6 +1638,7 @@ __all__ = [
     'build_geoglows_pyramid',
     'build_glofas_pyramid',
     'extract_level_features',
+    'extract_prediction_points',
     'glofas_cell_center',
     'glofas_cell_polygon',
     'is_geoglows_river_id',

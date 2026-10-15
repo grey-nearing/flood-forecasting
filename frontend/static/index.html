@@ -12159,6 +12159,8 @@
     const maasModelSubLayers = {}; // { floodhub: L.LayerGroup, glofas: L.LayerGroup, geoglows: L.LayerGroup }
     const maasRiversLoadedByModel = {}; // { [model]: view }
     const maasRiversAbortByModel = {}; // { [model]: AbortController }
+    const maasPredictionPointsByModel = {}; // { [model]: Array<{ lat, lon, gauge_id, river_id, reach_id, upstream_area_km2, area_min_km2, has_forecast }> }
+    const MAAS_PREDICTION_DOTS_MIN_ZOOM = 8; // Zoom threshold where discrete model prediction points are drawn as dots on the river map
     let maasRiversAbortController = null;
     let maasRiverRenderer = null;
     let maasActiveProbeMarker = null;
@@ -12338,7 +12340,7 @@
       const mutedCls = isDetSelected ? '' : 'opacity-60';
       return `<div id="maasGlofasForecastGroup" class="flex flex-col gap-1 px-2 py-1.5 rounded-lg border border-[#dadce0] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)] text-[10.5px] transition ${mutedCls}" role="group" aria-label="Copernicus GloFAS suboptions">
         <label class="flex items-center gap-1 text-[10.5px] text-[#5f6368]" title="Native GloFAS series used for the GloFAS hydrograph line, the consensus peak, and the return-period exceedance">
-          <select id="maasGlofasReferenceSelect" data-maas-glofas-reference="select" aria-label="GloFAS reference series" class="w-full text-[10.5px] bg-[#f8f9fa] border border-[#dadce0] rounded px-1.5 py-0.5 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
+          <select id="maasGlofasReferenceSelect" data-maas-glofas-reference="select" aria-label="GloFAS Reference:" class="w-full text-[10.5px] bg-[#f8f9fa] border border-[#dadce0] rounded px-1.5 py-0.5 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
             ${refOptions}
           </select>
         </label>
@@ -12627,8 +12629,6 @@
             const snapped = findNearestMaaSFeatureForModel(targetKey, e.latlng, 64);
             if (snapped) {
               overrideMaaSModelReach(targetKey, snapped.lat, snapped.lon, snapped.meta, true);
-            } else {
-              overrideMaaSModelReach(targetKey, e.latlng.lat, e.latlng.lng, { network: targetKey }, false);
             }
           }
         });
@@ -12705,45 +12705,131 @@
       }).addTo(map);
     }
 
-    // Finds the nearest rendered river segment for `modelKey` on the map within `maxDistPx` pixels,
-    // returning `{ lat, lon, distPx, meta }` snapped directly onto that segment's polyline.
-    function findNearestMaaSFeatureForModel(modelKey, latlng, maxDistPx = 48) {
-      if (!map || !latlng) return null;
+    // Extracts discrete valid prediction points for `modelKey` from rendered GeoJSON features
+    // as a fallback when `geojson.properties.prediction_points` is not populated (e.g. coarse zoom < 7).
+    function deriveMaaSPredictionPointsFromFeatures(modelKey, features) {
+      if (!Array.isArray(features) || !features.length) return [];
+      const seen = new Map();
+      for (const feat of features) {
+        if (!feat || !feat.geometry) continue;
+        const p = feat.properties || {};
+        if (modelKey === 'floodhub') {
+          if (p.has_forecast === false || !p.gauge_id) continue;
+        } else if (modelKey === 'geoglows') {
+          if (!(p.river_id || p.reach_id)) continue;
+        }
+        const g = feat.geometry;
+        const lines = g.type === 'MultiLineString' ? (g.coordinates || []) : g.type === 'LineString' ? [g.coordinates || []] : [];
+        if (!lines.length || !lines[0].length) continue;
+        if (modelKey === 'glofas') {
+          for (const coords of lines) {
+            for (const [lonVal, latVal] of coords) {
+              if (!isFinite(latVal) || !isFinite(lonVal)) continue;
+              const qLon = Number((Math.round((lonVal - 0.025) / 0.05) * 0.05 + 0.025).toFixed(4));
+              const qLat = Number((Math.round((latVal - 0.025) / 0.05) * 0.05 + 0.025).toFixed(4));
+              const key = `glofas:${qLon}:${qLat}`;
+              const area = Number(p.upstream_area_km2 || 0);
+              const prev = seen.get(key);
+              if (!prev || area > Number(prev.upstream_area_km2 || 0)) {
+                seen.set(key, {
+                  lat: qLat,
+                  lon: qLon,
+                  gauge_id: null,
+                  river_id: null,
+                  reach_id: null,
+                  upstream_area_km2: area,
+                  area_min_km2: p.area_min_km2 || area,
+                  has_forecast: true,
+                  exceedance_rank: p.exceedance_rank,
+                  flow_percentile: p.flow_percentile,
+                  current_flow_m3s: p.current_flow_m3s,
+                  return_period_2yr: p.return_period_2yr,
+                });
+              }
+            }
+          }
+        } else {
+          const allVerts = lines.reduce((acc, c) => acc.concat(c), []);
+          if (!allVerts.length) continue;
+          const mid = allVerts[Math.floor(allVerts.length / 2)];
+          const lonVal = Number(mid[0]);
+          const latVal = Number(mid[1]);
+          if (!isFinite(latVal) || !isFinite(lonVal)) continue;
+          const reachId = p.river_id || p.reach_id || p.HYRIV_ID || null;
+          const gaugeId = p.gauge_id || null;
+          const key = modelKey === 'floodhub' ? `fh:${gaugeId}` : `gg:${reachId}`;
+          const area = Number(p.upstream_area_km2 || 0);
+          const prev = seen.get(key);
+          if (!prev || area > Number(prev.upstream_area_km2 || 0)) {
+            seen.set(key, {
+              lat: Number(latVal.toFixed(5)),
+              lon: Number(lonVal.toFixed(5)),
+              gauge_id: gaugeId,
+              river_id: reachId,
+              reach_id: reachId,
+              upstream_area_km2: area,
+              area_min_km2: p.area_min_km2 || area,
+              has_forecast: true,
+              exceedance_rank: p.exceedance_rank,
+              flow_percentile: p.flow_percentile,
+              current_flow_m3s: p.current_flow_m3s,
+              return_period_2yr: p.return_period_2yr,
+            });
+          }
+        }
+      }
+      return Array.from(seen.values());
+    }
+
+    function getMaaSPredictionPointsForModel(modelKey) {
+      const explicit = maasPredictionPointsByModel[modelKey];
+      if (Array.isArray(explicit) && explicit.length) return explicit;
       const subGroup = maasModelSubLayers[modelKey];
-      if (!subGroup || typeof subGroup.eachLayer !== 'function') return null;
-      const targetPt = map.latLngToContainerPoint(latlng);
-      let best = null;
-      let bestScorePx = Infinity;
+      if (!subGroup || typeof subGroup.eachLayer !== 'function') return [];
+      const feats = [];
       subGroup.eachLayer((geoJsonLayer) => {
         if (!geoJsonLayer || typeof geoJsonLayer.eachLayer !== 'function') return;
         geoJsonLayer.eachLayer((featLayer) => {
-          const feat = featLayer && featLayer.feature;
-          if (!feat) return;
-          const p = feat.properties || {};
-          const snapped = maasSnapToFeature(feat, latlng);
-          if (!snapped || !isFinite(snapped.lat) || !isFinite(snapped.lon)) return;
-          const candPt = map.latLngToContainerPoint([snapped.lat, snapped.lon]);
-          const distPx = Math.hypot(candPt.x - targetPt.x, candPt.y - targetPt.y);
-          const penaltyPx = (modelKey === 'floodhub' && p.has_forecast === false) ? 18 : 0;
-          if (distPx <= maxDistPx && (distPx + penaltyPx) < bestScorePx) {
-            bestScorePx = distPx + penaltyPx;
-            const reachId = p.river_id || p.reach_id || p.HYRIV_ID || null;
-            const gaugeId = p.gauge_id || null;
-            best = {
-              lat: snapped.lat,
-              lon: snapped.lon,
-              distPx,
-              meta: {
-                network: modelKey,
-                gaugeId,
-                riverId: reachId,
-                upstreamAreaKm2: p.upstream_area_km2,
-                areaMinKm2: p.area_min_km2,
-              }
-            };
-          }
+          if (featLayer && featLayer.feature) feats.push(featLayer.feature);
         });
       });
+      return deriveMaaSPredictionPointsFromFeatures(modelKey, feats);
+    }
+
+    // Finds the nearest discrete valid prediction point for `modelKey` on the map within `maxDistPx` pixels,
+    // returning `{ lat, lon, distPx, meta }` strictly locked onto a point with an underlying prediction for `modelKey`.
+    function findNearestMaaSFeatureForModel(modelKey, latlng, maxDistPx = 56) {
+      if (!map || !latlng) return null;
+      const predPts = getMaaSPredictionPointsForModel(modelKey);
+      if (!predPts.length) return null;
+      const targetPt = map.latLngToContainerPoint(latlng);
+      let best = null;
+      let bestDistPx = Infinity;
+      for (const pt of predPts) {
+        if (!pt || pt.has_forecast === false) continue;
+        const lat = Number(pt.lat);
+        const lon = Number(pt.lon);
+        if (!isFinite(lat) || !isFinite(lon)) continue;
+        const candPt = map.latLngToContainerPoint([lat, lon]);
+        const distPx = Math.hypot(candPt.x - targetPt.x, candPt.y - targetPt.y);
+        if (distPx <= maxDistPx && distPx < bestDistPx) {
+          bestDistPx = distPx;
+          const reachId = pt.river_id || pt.reach_id || null;
+          const gaugeId = pt.gauge_id || null;
+          best = {
+            lat,
+            lon,
+            distPx,
+            meta: {
+              network: modelKey,
+              gaugeId,
+              riverId: reachId,
+              upstreamAreaKm2: pt.upstream_area_km2,
+              areaMinKm2: pt.area_min_km2 || pt.upstream_area_km2,
+            }
+          };
+        }
+      }
       return best;
     }
 
@@ -12880,9 +12966,39 @@
       }
     }
 
+    async function ensureMaaSPredictionPointsForModel(modelKey) {
+      if (!map || !MAAS_MODELS[modelKey]) return;
+      const existing = maasPredictionPointsByModel[modelKey];
+      if (Array.isArray(existing) && existing.length) return;
+      try {
+        const bounds = map.getBounds();
+        const bbox = [
+          Math.max(-180, bounds.getWest()),
+          Math.max(-85, bounds.getSouth()),
+          Math.min(180, bounds.getEast()),
+          Math.min(85, bounds.getNorth()),
+        ].map(v => v.toFixed(4)).join(',');
+        const queryZoom = Math.max(map.getZoom() || MAAS_PREDICTION_DOTS_MIN_ZOOM, MAAS_PREDICTION_DOTS_MIN_ZOOM);
+        const resp = await fetch(`/api/maas/network?model=${encodeURIComponent(modelKey)}&bbox=${bbox}&zoom=${queryZoom}`);
+        if (!resp.ok) return;
+        const geojson = await resp.json();
+        const gProps = (geojson && geojson.properties) || {};
+        if (Array.isArray(gProps.prediction_points) && gProps.prediction_points.length) {
+          maasPredictionPointsByModel[modelKey] = gProps.prediction_points.filter(
+            pt => pt && pt.has_forecast !== false && isFinite(Number(pt.lat)) && isFinite(Number(pt.lon))
+          );
+        } else if (geojson && Array.isArray(geojson.features)) {
+          maasPredictionPointsByModel[modelKey] = deriveMaaSPredictionPointsFromFeatures(modelKey, geojson.features);
+        }
+      } catch (_) {}
+    }
+
     function toggleMaaSMovingModel(modelKey) {
       if (!MAAS_MODELS[modelKey]) return;
       activeMaaSMovingModel = activeMaaSMovingModel === modelKey ? null : modelKey;
+      if (activeMaaSMovingModel) {
+        ensureMaaSPredictionPointsForModel(activeMaaSMovingModel);
+      }
       updateMaaSMapNetworkCaption();
       if (currentMaaSForecastData) {
         updateMaaSSnappedReachMarkers(currentMaaSForecastData);
@@ -13049,32 +13165,38 @@
           { direction: 'top', offset: [0, -8] }
         );
         if (canMoveModelDots) {
+          ensureMaaSPredictionPointsForModel(item.key);
           marker.on('click', (e) => {
             L.DomEvent.stopPropagation(e);
             toggleMaaSMovingModel(item.key);
           });
           marker.on('dragstart', () => {
             activeMaaSMovingModel = null;
+            ensureMaaSPredictionPointsForModel(item.key);
             updateMaaSMapNetworkCaption();
             marker.closeTooltip();
           });
           marker.on('drag', () => {
             const cur = marker.getLatLng();
             if (line && probe && isFinite(probe.lat) && isFinite(probe.lon)) {
-              const snapped = findNearestMaaSFeatureForModel(item.key, cur, 48);
-              const endPt = snapped ? [snapped.lat, snapped.lon] : [cur.lat, cur.lng];
+              const snapped = findNearestMaaSFeatureForModel(item.key, cur, 56);
+              const endPt = snapped ? [snapped.lat, snapped.lon] : [item.lat, item.lon];
               line.setLatLngs([[probe.lat, probe.lon], endPt]);
               line.setStyle({ opacity: 0.85 });
             }
           });
           marker.on('dragend', () => {
             const dropLatLng = marker.getLatLng();
-            const snapped = findNearestMaaSFeatureForModel(item.key, dropLatLng, 48);
+            const snapped = findNearestMaaSFeatureForModel(item.key, dropLatLng, 56);
             if (snapped) {
               marker.setLatLng([snapped.lat, snapped.lon]);
               overrideMaaSModelReach(item.key, snapped.lat, snapped.lon, snapped.meta, true);
             } else {
-              overrideMaaSModelReach(item.key, dropLatLng.lat, dropLatLng.lng, { network: item.key }, false);
+              // Strictly lock onto discrete prediction points only; revert if dropped outside any valid prediction point.
+              marker.setLatLng([item.lat, item.lon]);
+              if (line && probe && isFinite(probe.lat) && isFinite(probe.lon)) {
+                line.setLatLngs([[probe.lat, probe.lon], [item.lat, item.lon]]);
+              }
             }
           });
         }
@@ -13188,6 +13310,7 @@
             maasRiversLayerGroup.removeLayer(maasModelSubLayers[m]);
           }
           delete maasRiversLoadedByModel[m];
+          delete maasPredictionPointsByModel[m];
         }
       }
 
@@ -13248,6 +13371,35 @@
           const modelMeta = MAAS_MODELS[model] || MAAS_MODELS.glofas;
           const mapHighlightColor = modelMeta.mapColor || modelMeta.color;
           const paletteCfg = MAAS_PROVIDER_PALETTES[model] || MAAS_PROVIDER_PALETTES.glofas;
+
+          const derivedPts = deriveMaaSPredictionPointsFromFeatures(model, geojson.features);
+          if (Array.isArray(gProps.prediction_points) && gProps.prediction_points.length) {
+            const liveByKey = new Map();
+            for (const dp of derivedPts) {
+              const k = model === 'floodhub'
+                ? `fh:${dp.gauge_id}`
+                : (model === 'geoglows' ? `gg:${dp.river_id || dp.reach_id}` : `gl:${dp.lon}:${dp.lat}`);
+              liveByKey.set(k, dp);
+            }
+            maasPredictionPointsByModel[model] = gProps.prediction_points
+              .filter(pt => pt && pt.has_forecast !== false && isFinite(Number(pt.lat)) && isFinite(Number(pt.lon)))
+              .map(pt => {
+                const k = model === 'floodhub'
+                  ? `fh:${pt.gauge_id}`
+                  : (model === 'geoglows' ? `gg:${pt.river_id || pt.reach_id}` : `gl:${Number(pt.lon).toFixed(4)}:${Number(pt.lat).toFixed(4)}`);
+                const liveMatch = liveByKey.get(k);
+                return liveMatch
+                  ? Object.assign({}, liveMatch, pt, {
+                      exceedance_rank: pt.exceedance_rank !== undefined ? pt.exceedance_rank : liveMatch.exceedance_rank,
+                      flow_percentile: pt.flow_percentile !== undefined ? pt.flow_percentile : liveMatch.flow_percentile,
+                      current_flow_m3s: pt.current_flow_m3s !== undefined ? pt.current_flow_m3s : liveMatch.current_flow_m3s,
+                      return_period_2yr: pt.return_period_2yr !== undefined ? pt.return_period_2yr : liveMatch.return_period_2yr,
+                    })
+                  : pt;
+              });
+          } else {
+            maasPredictionPointsByModel[model] = derivedPts;
+          }
 
           // Draw non-forecast reaches first, then normal rivers, and active flood alerts LAST (on top) so they pop at every zoom level.
           const reachArea = (f) => Number((f.properties || {}).upstream_area_km2 || 0);
@@ -13321,24 +13473,9 @@
                 const pt = maasSnapToFeature(feat, e.latlng);
                 if (currentMaaSView === 'forecast' && activeMaaSMovingModel) {
                   const targetKey = activeMaaSMovingModel;
-                  if (model === targetKey) {
-                    overrideMaaSModelReach(targetKey, pt.lat, pt.lon, {
-                      network: model,
-                      gaugeId,
-                      riverId: reachId,
-                      upstreamAreaKm2: p.upstream_area_km2,
-                      areaMinKm2: p.area_min_km2,
-                    }, true);
-                  } else {
-                    const snapped = findNearestMaaSFeatureForModel(targetKey, e.latlng, 48);
-                    if (snapped) {
-                      overrideMaaSModelReach(targetKey, snapped.lat, snapped.lon, snapped.meta, true);
-                    } else {
-                      overrideMaaSModelReach(targetKey, pt.lat, pt.lon, {
-                        network: targetKey,
-                        upstreamAreaKm2: p.upstream_area_km2,
-                      }, false);
-                    }
+                  const snapped = findNearestMaaSFeatureForModel(targetKey, e.latlng, 64);
+                  if (snapped) {
+                    overrideMaaSModelReach(targetKey, snapped.lat, snapped.lon, snapped.meta, true);
                   }
                   return;
                 }
@@ -13349,6 +13486,69 @@
             }
           });
           subGroup.addLayer(riverLayer);
+
+          // When zoomed in enough (zoom >= MAAS_PREDICTION_DOTS_MIN_ZOOM), render each model's discrete valid
+          // prediction locations as dots along the river network so users can see and click/snap onto exact prediction points.
+          if (zoom >= MAAS_PREDICTION_DOTS_MIN_ZOOM) {
+            const predPts = maasPredictionPointsByModel[model] || [];
+            const dotRadius = zoom >= 10 ? 4.2 : (zoom >= 9 ? 3.5 : 2.9);
+            for (const pt of predPts) {
+              if (!pt || pt.has_forecast === false) continue;
+              const ptLat = Number(pt.lat);
+              const ptLon = Number(pt.lon);
+              if (!isFinite(ptLat) || !isFinite(ptLon)) continue;
+              const ptReachId = pt.river_id || pt.reach_id || null;
+              const ptGaugeId = pt.gauge_id || null;
+              const ptArea = Number(pt.upstream_area_km2 || 0);
+              const dotFillColor = maasFlowPercentileColor(pt, model, multiHydrofabricMode);
+              const predDot = L.circleMarker([ptLat, ptLon], {
+                renderer: maasRiverRenderer,
+                radius: dotRadius,
+                fillColor: dotFillColor,
+                color: '#ffffff',
+                weight: 1.3,
+                opacity: 0.95,
+                fillOpacity: 0.92,
+              });
+              const ptLabel = model === 'floodhub'
+                ? (ptGaugeId ? `FloodHub ${ptGaugeId}` : 'FloodHub prediction point')
+                : (model === 'geoglows'
+                  ? (ptReachId ? `TDX-Hydro #${ptReachId}` : 'GEOGLOWS prediction point')
+                  : `GloFAS 0.05° cell (${ptLat.toFixed(3)}°, ${ptLon.toFixed(3)}°)`);
+              const ptAreaStr = ptArea > 0 ? `${Math.round(ptArea).toLocaleString()} km² upstream` : '';
+              predDot.bindTooltip(
+                `<span style="color:${mapHighlightColor};font-weight:600">${maasEscapeHtml(modelMeta.shortName)} prediction point</span><br><b>${maasEscapeHtml(ptLabel)}</b>${ptAreaStr ? `<br>${maasEscapeHtml(ptAreaStr)}` : ''}`,
+                { direction: 'top', offset: [0, -4] }
+              );
+              predDot.on('click', (e) => {
+                L.DomEvent.stopPropagation(e);
+                if (currentMaaSView === 'forecast' && activeMaaSMovingModel) {
+                  const targetKey = activeMaaSMovingModel;
+                  if (targetKey === model) {
+                    overrideMaaSModelReach(targetKey, ptLat, ptLon, {
+                      network: model,
+                      gaugeId: ptGaugeId,
+                      riverId: ptReachId,
+                      upstreamAreaKm2: ptArea,
+                      areaMinKm2: pt.area_min_km2 || ptArea,
+                    }, true);
+                  } else {
+                    const snapped = findNearestMaaSFeatureForModel(targetKey, e.latlng, 64);
+                    if (snapped) {
+                      overrideMaaSModelReach(targetKey, snapped.lat, snapped.lon, snapped.meta, true);
+                    }
+                  }
+                  return;
+                }
+                probeMaaSPoint(ptLat, ptLon, ptGaugeId, ptReachId, ptAreaStr ? `${ptLabel} · ${ptAreaStr}` : ptLabel, {
+                  upstreamAreaKm2: ptArea,
+                  areaMinKm2: pt.area_min_km2 || ptArea,
+                  network: model,
+                });
+              });
+              subGroup.addLayer(predDot);
+            }
+          }
         } catch (err) {
           if (err.name !== 'AbortError') console.warn(`MaaS river fetch error (${model}):`, err);
         }

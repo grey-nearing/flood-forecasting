@@ -273,3 +273,19 @@ class TestMaaSReferenceUiHooks:
         assert 'maasGlofasReferenceTrace' in html_text
         assert "geoglows: '3-hourly instantaneous'" in html_text
         assert "glofas: 'daily mean'" in html_text
+
+    def test_index_html_has_prediction_dots_and_strict_dot_locking(
+        self,
+    ) -> None:
+        """Verify prediction dots on river map and strict dot locking hooks."""
+        html_text = (
+            Path(__file__).resolve().parents[1] / 'static' / 'index.html'
+        ).read_text(encoding='utf-8')
+        assert 'MAAS_PREDICTION_DOTS_MIN_ZOOM = 8' in html_text
+        assert 'maasPredictionPointsByModel' in html_text
+        assert 'deriveMaaSPredictionPointsFromFeatures' in html_text
+        assert 'getMaaSPredictionPointsForModel' in html_text
+        assert 'ensureMaaSPredictionPointsForModel' in html_text
+        assert 'zoom >= MAAS_PREDICTION_DOTS_MIN_ZOOM' in html_text
+        assert 'L.circleMarker([ptLat, ptLon]' in html_text
+        assert 'gProps.prediction_points' in html_text
