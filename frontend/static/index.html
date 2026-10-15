@@ -309,7 +309,7 @@
       <i data-lucide="panel-left" class="w-4 h-4"></i>
     </button>
     <span id="appBrandTitle" class="text-xs font-bold tracking-wide text-[#1a73e8] pr-3 mr-1 border-r border-[#dadce0] flex items-center gap-1.5 flex-shrink-0"><i data-lucide="waves" class="w-4 h-4 text-[#1a73e8]"></i><span>OpenHydroNet</span></span>
-    <button data-tab="tab-weather" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
+    <button data-tab="tab-weather" class="tab-btn active py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#1a73e8] flex-shrink-0">
       <i data-lucide="cloud-lightning" class="w-4 h-4"></i>
       <span>Weather Viewer</span>
     </button>
@@ -317,7 +317,7 @@
       <i data-lucide="git-compare" class="w-4 h-4"></i>
       <span>Models-as-a-Service</span>
     </button>
-    <button data-tab="tab-delineation" class="tab-btn active py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#1a73e8] flex-shrink-0">
+    <button data-tab="tab-delineation" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="map-pin" class="w-4 h-4"></i>
       <span>Basin Delineation</span>
     </button>
@@ -428,7 +428,7 @@
     </section>
 
     <!-- Basin Delineation -->
-    <section id="tab-delineation" class="tab-content flex-1 flex overflow-hidden w-full h-full">
+    <section id="tab-delineation" class="tab-content hidden flex-1 overflow-hidden w-full h-full">
       <div id="tab-environment" class="hidden" aria-hidden="true"></div>
 
     <!-- Left Controls & Data Panel (Sidebar) -->
@@ -623,7 +623,6 @@
       
       <!-- Interactive Leaflet Map Container -->
       <div class="flex-1 relative min-h-0 w-full h-full" id="envMapSlot">
-        <div id="map" class="w-full h-full"></div>
 
         <!-- Floating Delineation Mode Notification / Quick Exit Banner -->
         <div id="floatingDelineateBanner" class="absolute top-4 left-16 z-[1000] items-center gap-2.5 bg-white/95 backdrop-blur-md border border-[#1a73e8] text-[#174ea6] px-3.5 py-2 rounded-xl shadow-2xl text-xs transition-all duration-200" style="display: none;">
@@ -681,7 +680,7 @@
     </section> <!-- end #tab-environment -->
 
     <!-- Weather Viewer: controls in the left sidebar; time bar and point forecast below the map -->
-    <section id="tab-weather" class="tab-content hidden flex-1 overflow-hidden w-full h-full">
+    <section id="tab-weather" class="tab-content flex-1 flex overflow-hidden w-full h-full">
       <aside id="weatherSidebar" class="unified-left-sidebar bg-white border-r border-[#dadce0] flex flex-col h-full overflow-y-auto custom-scrollbar p-4 gap-4 text-xs">
         <div class="sidebar-header-bar">
           <span class="text-[11px] font-bold uppercase tracking-wider text-[#5f6368] flex items-center gap-1.5">
@@ -829,6 +828,7 @@
       <div class="flex-1 min-w-0 flex flex-col h-full">
         <!-- Leaflet map is reparented here when this tab is active -->
         <div id="weatherMapSlot" class="flex-1 min-h-0 relative overflow-hidden">
+          <div id="map" class="w-full h-full"></div>
           <canvas id="windStreamlineCanvas" class="windy-canvas" style="display: none;"></canvas>
         </div>
 
@@ -2481,7 +2481,7 @@
 
     let lastClickedLat = null;
     let lastClickedLon = null;
-    let currentActiveTabId = 'tab-delineation';
+    let currentActiveTabId = 'tab-weather';
     let map = null;
     let basemapLayers = {};
     let currentBasemap = null;
@@ -4171,6 +4171,7 @@
         }
       })();
       fetchAndRenderRivers();
+      switchTab(currentActiveTabId);
 
       setTimeout(() => {
         if (map) map.invalidateSize();
