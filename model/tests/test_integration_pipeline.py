@@ -14,6 +14,7 @@
 
 """Integration tests for OpenHydroNet training and evaluation pipeline."""
 
+from collections.abc import Iterator
 from pathlib import Path
 import gc
 import logging
@@ -32,10 +33,7 @@ from tensorboard.backend.event_processing.event_accumulator import (
 )
 
 from model import run
-from model.datasetzoo.caravan import (
-    load_caravan_attributes,
-    load_caravan_timeseries_together,
-)
+from model.datasetzoo.multimet import _open_zarr
 from model.evaluation.evaluate import start_evaluation
 from model.run import continue_run
 from model.run import eval_run
@@ -43,63 +41,127 @@ from model.run import start_run
 from model.training.train import start_training
 from model.utils.config import Config
 
+# Synthetic Caravan-MultiMet integration cohort: 5 training basins plus 3
+# held-out basins evaluated only in the 8-basin test set.
+INTEGRATION_BASINS = [f'basin_{i:02d}' for i in range(1, 9)]
+INTEGRATION_TRAIN_BASINS = INTEGRATION_BASINS[:5]
+INTEGRATION_DATES = pd.date_range('1999-01-01', '2002-12-31', freq='D')
+INTEGRATION_LEAD_TIMES = pd.to_timedelta(np.arange(8), unit='D')
+INTEGRATION_SEED = 42
+WET_DAY_PROBABILITY = 0.35
+
+
+def _synthetic_forcing_and_streamflow(
+    rng: np.random.Generator, n_basins: int, dates: pd.DatetimeIndex
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Generate seeded daily precipitation, temperature, and streamflow.
+
+    Precipitation (``mm/day``) is a wet-day Bernoulli draw times a Gamma
+    amount with dry days equal to ``0.0``; temperature (``deg C``) follows a
+    seasonal cycle with a per-basin offset; streamflow (``mm/day``) is the
+    outflow of a per-basin linear reservoir fed by precipitation with
+    temperature-driven losses, so the target is a learnable function of the
+    forcings. All arrays are ``float32`` with shape ``(n_basins, n_dates)``.
+    """
+    n_dates = len(dates)
+    shape = (n_basins, n_dates)
+    basin_idx = np.arange(n_basins, dtype=np.float64)[:, None]
+    day_of_year = dates.dayofyear.to_numpy(dtype=np.float64)[None, :]
+
+    wet_day = rng.random(shape) < WET_DAY_PROBABILITY
+    precip = np.where(
+        wet_day, rng.gamma(1.2, 4.0 + 0.5 * basin_idx, size=shape), 0.0
+    )
+    temperature = (
+        10.0
+        + 12.0 * np.sin(2.0 * np.pi * (day_of_year - 110.0) / 365.25)
+        - 1.5 * basin_idx
+        + rng.normal(0.0, 2.0, size=shape)
+    )
+
+    # Linear reservoir: the recursion is sequential in time by construction.
+    recession = 0.05 + 0.02 * np.arange(n_basins, dtype=np.float64)
+    storage = np.zeros(n_basins, dtype=np.float64)
+    streamflow = np.zeros(shape, dtype=np.float64)
+    for t in range(n_dates):
+        losses = np.clip(0.08 * temperature[:, t], 0.0, None)
+        storage = np.maximum(storage + precip[:, t] - losses, 0.0)
+        streamflow[:, t] = recession * storage
+        storage = storage - streamflow[:, t]
+    return (
+        precip.astype(np.float32),
+        temperature.astype(np.float32),
+        streamflow.astype(np.float32),
+    )
+
 
 @pytest.fixture(scope='module')
-def integration_data_env(tmp_path_factory: pytest.TempPathFactory):
-    """Builds a temporary dynamic dataset environment using tutorial NetCDFs."""
+def integration_data_env(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[dict[str, str]]:
+    """Write a synthetic Caravan-MultiMet dataset for the integration tests.
+
+    The layout mirrors a local MultiMet data directory: a 3D
+    ``ERA5_LAND/timeseries.zarr`` forecast store (``basin``, ``date``,
+    ``lead_time``) that also serves as the hindcast product, a 2D
+    ``streamflow.zarr`` target store, an ``attributes.zarr`` static store
+    (``area``, ``p_mean``), and basin list files.
+    """
     tmp_dir = tmp_path_factory.mktemp('hydrology_integration')
-    base_path = Path(__file__).parent.parent
-    nc_dir = base_path / 'tutorial' / 'Caravan-nc'
-    train_basin_file = (
-        base_path / 'tutorial' / 'basin-lists' / '5-basin-train.txt'
-    )
-    test_basin_file = (
-        base_path / 'tutorial' / 'basin-lists' / '8-basin-test.txt'
+    basins = INTEGRATION_BASINS
+    dates = INTEGRATION_DATES
+    rng = np.random.default_rng(INTEGRATION_SEED)
+    precip, temperature, streamflow = _synthetic_forcing_and_streamflow(
+        rng, len(basins), dates
     )
 
-    with open(test_basin_file) as f:
-        basins = [line.strip() for line in f if line.strip()]
-
-    raw_features = [
-        'total_precipitation_sum',
-        'temperature_2m_mean',
-        'streamflow',
-    ]
-    ds_all = (
-        load_caravan_timeseries_together(
-            nc_dir, basins=basins, target_features=raw_features, csv=False
-        )
-        .sel(date=slice('1999-01-01', '2002-12-31'))
-        .compute()
-    )
-    ds = ds_all[['total_precipitation_sum', 'temperature_2m_mean']].rename(
+    ds_nowcast = xr.Dataset(
         {
-            'total_precipitation_sum': 'era5land_total_precipitation',
-            'temperature_2m_mean': 'era5land_temperature_2m',
-        }
+            'era5land_total_precipitation': (('basin', 'date'), precip),
+            'era5land_temperature_2m': (('basin', 'date'), temperature),
+        },
+        coords={'basin': basins, 'date': dates},
     )
-    lead_times = pd.to_timedelta(np.arange(8), unit='D')
-    ds_forecast = ds.expand_dims(lead_time=lead_times).copy()
+    ds_forecast = (
+        ds_nowcast.expand_dims(lead_time=INTEGRATION_LEAD_TIMES)
+        .transpose('basin', 'date', 'lead_time')
+        .copy()
+    )
+    ds_targets = xr.Dataset(
+        {'streamflow': (('basin', 'date'), streamflow)},
+        coords={'basin': basins, 'date': dates},
+    )
+    ds_attr = xr.Dataset(
+        {
+            'area': (
+                ('basin',),
+                np.array(
+                    [120.0 * (i + 1) for i in range(len(basins))],
+                    dtype=np.float32,
+                ),
+            ),
+            'p_mean': (('basin',), precip.mean(axis=1).astype(np.float32)),
+        },
+        coords={'basin': basins},
+    )
 
     dynamics_dir = tmp_dir / 'dynamics'
     era5_zarr = dynamics_dir / 'ERA5_LAND' / 'timeseries.zarr'
     era5_zarr.parent.mkdir(parents=True, exist_ok=True)
     ds_forecast.to_zarr(era5_zarr, consolidated=True)
-    ds_all[['streamflow']].to_zarr(
-        dynamics_dir / 'streamflow.zarr', consolidated=True
-    )
-    ds_attr = load_caravan_attributes(
-        nc_dir, basins=basins, features=['area', 'p_mean']
-    ).compute()
+    ds_targets.to_zarr(dynamics_dir / 'streamflow.zarr', consolidated=True)
     ds_attr.to_zarr(dynamics_dir / 'attributes.zarr', consolidated=True)
-    ds_all.close()
-    ds.close()
-    ds_forecast.close()
-    ds_attr.close()
+
+    train_basin_file = tmp_dir / 'train_basins.txt'
+    test_basin_file = tmp_dir / 'test_basins.txt'
+    train_basin_file.write_text(
+        '\n'.join(INTEGRATION_TRAIN_BASINS) + '\n', encoding='utf-8'
+    )
+    test_basin_file.write_text('\n'.join(basins) + '\n', encoding='utf-8')
 
     env_info = {
         'tmp_dir': str(tmp_dir),
-        'nc_dir': str(dynamics_dir.resolve()),
+        'data_dir': str(dynamics_dir.resolve()),
         'dynamics_dir': str(dynamics_dir.resolve()),
         'train_basin_file': str(train_basin_file.resolve()),
         'test_basin_file': str(test_basin_file.resolve()),
@@ -107,12 +169,7 @@ def integration_data_env(tmp_path_factory: pytest.TempPathFactory):
 
     yield env_info
 
-    try:
-        from model.datasetzoo.multimet import _open_zarr
-
-        _open_zarr.cache_clear()
-    except Exception:
-        pass
+    _open_zarr.cache_clear()
     gc.collect()
     shutil.rmtree(tmp_dir)
 
@@ -128,8 +185,8 @@ def _get_base_config_dict(
         'train_basin_file': env_info['train_basin_file'],
         'validation_basin_file': env_info['train_basin_file'],
         'test_basin_file': env_info['test_basin_file'],
-        'targets_data_dir': env_info['nc_dir'],
-        'statics_data_dir': env_info['nc_dir'],
+        'targets_data_dir': env_info['data_dir'],
+        'statics_data_dir': env_info['data_dir'],
         'dynamics_data_dir': env_info['dynamics_dir'],
         'train_start_date': '01/01/2000',
         'train_end_date': '01/03/2000',

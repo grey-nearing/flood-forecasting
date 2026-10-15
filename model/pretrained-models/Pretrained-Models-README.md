@@ -51,7 +51,7 @@ The runtime directory `model/pretrained-models/google-floodhub-settings-110-epoc
 
 ## 4. How to Use for Fine-Tuning
 
-You can warm-start a fine-tuning run from `google-floodhub-settings-110-epochs` by setting `base_run_dir` in a fine-tuning YAML configuration file. A step-by-step walkthrough is also provided in [`model/tutorial/OpenHydroNet_Tutorial.ipynb`](../tutorial/OpenHydroNet_Tutorial.ipynb) and [`model/tutorial/configs/finetune-config.yml`](../tutorial/configs/finetune-config.yml).
+You can warm-start a fine-tuning run from `google-floodhub-settings-110-epochs` by setting `base_run_dir` in a fine-tuning YAML configuration file.
 
 ### Example Fine-Tuning Configuration
 

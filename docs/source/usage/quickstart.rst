@@ -8,7 +8,7 @@ This guide shows how to install and run the **OpenHydroNet Flood Forecasting** p
 Obtain the Code
 ---------------
 
-Clone or download the repository to access the Conda environment files, example configurations (`model/example-configs/`), pre-trained checkpoints (`model/pretrained-models/`), and tutorial (`model/tutorial/`).
+Clone or download the repository to access the Conda environment files, example configurations (`model/example-configs/`), and pre-trained checkpoints (`model/pretrained-models/`).
 
 Option A: Via GitHub Cloning (Recommended)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -69,12 +69,10 @@ Data Setup
 
 OpenHydroNet uses the `Caravan <https://www.nature.com/articles/s41597-023-01975-w>`_ dataset for streamflow observations and static catchment attributes.
 
-Download or Use Sample Caravan Data
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Download Caravan Data
+^^^^^^^^^^^^^^^^^^^^^
 
-A 5-basin sample dataset is included in ``model/tutorial/Caravan-zarr`` (converted from ``model/tutorial/Caravan-nc``). This sample is ready to use with ``model/tutorial/configs/train-config.yml`` and ``model/tutorial/OpenHydroNet_Tutorial.ipynb``.
-
-To run experiments on the full global Caravan dataset:
+To run experiments on the Caravan dataset:
 
 1. Visit the `Caravan Zenodo repository <https://doi.org/10.5281/zenodo.6522634>`_.
 2. Download the **NetCDF version** of the dataset (``Caravan-nc.tar.gz``).
@@ -112,39 +110,32 @@ Training Configuration
 
 Experiments are configured via YAML files:
 
-- **Tutorial Configs:** ``model/tutorial/configs/train-config.yml`` and ``model/tutorial/configs/finetune-config.yml``
 - **Production & Benchmark Example Configs:** ``model/example-configs/`` (including ``floodhub-settings-config.yml``, ``camels-multimet-mean-embedding-forecast-lstm-config.yml``, ``camels-multimet-mean-embedding-forecast-lstm-assimilation-config.yml``, and ``camels-multimet-handoff-forecast-lstm-config.yml``)
 - **Pre-Trained Global Checkpoints:** ``model/pretrained-models/google-floodhub-settings-110-epochs/``
 
-Understanding the Tutorial Dataset Splits
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Understanding Basin Lists and Time Periods
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-- **Training Set (5-basin set):** ``model/tutorial/basin-lists/5-basin-train.txt`` — used to optimize model weights.
-- **Test Set (8-basin set):** ``model/tutorial/basin-lists/8-basin-test.txt`` — includes the 5 training basins plus 3 held-out basins to test spatial generalization.
+- **Basin lists:** ``train_basin_file``, ``validation_basin_file``, and ``test_basin_file`` point to plain-text files with one basin ID per line (for example, ``model/example-configs/multimet-basins-list-without-chirps.txt``). Basins listed only in the test file are evaluated as held-out (ungauged) basins.
+- **Time periods:** ``train_start_date`` / ``train_end_date``, ``validation_start_date`` / ``validation_end_date``, and ``test_start_date`` / ``test_end_date`` use the ``DD/MM/YYYY`` format.
 
-Understanding Time Periods
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-- **Training Period:** ``01/01/2000`` to ``31/12/2020``
-- **Validation/Test Period:** ``01/01/2022`` to ``31/12/2024``
-
-In full research and production experiments, keep the validation and test periods separate to avoid data leakage.
+In research and production experiments, keep the validation and test periods separate to avoid data leakage.
 
 Local Path Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-Update these arguments in ``model/tutorial/configs/train-config.yml`` to match your system paths:
+Copy an example configuration (for example, ``model/example-configs/floodhub-settings-config.yml``) and update these arguments to match your system paths:
 
 =====================  ============================================================================================================
 Argument               Description
 =====================  ============================================================================================================
-**run_dir**            Directory where weights, logs, and config copies are saved (e.g., ``model/tutorial/model-runs/``).
+**run_dir**            Directory where weights, logs, and config copies are saved (e.g., ``./runs/``).
 
-**train_basin_file**   Path to a plain-text file listing basin IDs (e.g., ``model/tutorial/basin-lists/5-basin-train.txt``).
+**train_basin_file**   Path to a plain-text file listing basin IDs (e.g., ``model/example-configs/multimet-basins-list-without-chirps.txt``).
 
-**targets_data_dir**   Path to the tutorial sample (``model/tutorial/Caravan-zarr``) or your converted Caravan Zarr directory.
+**targets_data_dir**   Path to your converted Caravan Zarr directory (``streamflow.zarr``).
 
-**statics_data_dir**   Path to the tutorial sample (``model/tutorial/Caravan-zarr``) or your converted Caravan Zarr directory.
+**statics_data_dir**   Path to your converted Caravan Zarr directory (``attributes.zarr``).
 
 **dynamics_data_dir**  Path to the MultiMet forcing dataset (``gs://caravan-multimet/v1.1`` or a local directory).
 =====================  ============================================================================================================
@@ -158,14 +149,16 @@ Training a Model
 
 .. code-block:: bash
 
-   run train --config-file model/tutorial/configs/train-config.yml
+   run train --config-file model/example-configs/floodhub-settings-config.yml
 
 Fine-Tuning a Pre-Trained Model
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Set ``base_run_dir`` in your fine-tuning configuration to a trained run directory such as ``model/pretrained-models/google-floodhub-settings-110-epochs`` (an example configuration is given in ``model/pretrained-models/Pretrained-Models-README.md``):
+
 .. code-block:: bash
 
-   run finetune --config-file model/tutorial/configs/finetune-config.yml
+   run finetune --config-file /path/to/your/finetune-config.yml
 
 Evaluation
 ^^^^^^^^^^

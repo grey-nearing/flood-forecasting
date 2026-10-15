@@ -2,7 +2,7 @@ Configuration Arguments
 =======================
 
 This page lists all supported YAML configuration arguments in OpenHydroNet.
-See ``model/tutorial/configs/train-config.yml`` and ``model/example-configs/floodhub-settings-config.yml`` for complete working examples.
+See ``model/example-configs/floodhub-settings-config.yml`` and the other files in ``model/example-configs/`` for complete working examples.
 
 General experiment configurations
 ---------------------------------

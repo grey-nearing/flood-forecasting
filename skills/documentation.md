@@ -33,7 +33,7 @@ We maintain a three-tier documentation structure so both everyday users (who wan
 - Keep the root `README.md` short, scannable, and focused on:
   - Brief overview of what is in the repository and how to run the models (`Mean-Embedding-Forecast-LSTM`, `Handoff-Forecast-LSTM`).
   - Conda environment installation (`environments/conda.yml` and `pip install -e .`).
-  - Interactive Colab tutorial link and ReadTheDocs link (`https://openhydronet.readthedocs.io/`).
+  - ReadTheDocs link (`https://openhydronet.readthedocs.io/`) and a link to the interactive web UI guide (`frontend/README.md`).
   - Quick links to pre-built datasets (`gs://caravan-multimet/v1.1`) and direct links to each package/subpackage `README.md`.
 - Do not crowd the root `README.md` with long tables of subpackage CLI flags—put those in Tier 2 and Tier 3.
 
