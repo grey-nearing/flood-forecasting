@@ -64,7 +64,12 @@ from multimet.static_extractor.config import (
     POUR_POINT_PROPERTIES,
     UPSTREAM_PROPERTIES,
 )
-from multimet.utils.gcs import download_hydroatlas_from_gcs, is_gcs_path
+from multimet.utils.gcs import (
+    download_hydroatlas_from_gcs,
+    is_gcs_path,
+    normalize_gcs_path,
+    strip_gcs_prefix,
+)
 
 shape = shapely.geometry.shape
 Point = shapely.geometry.Point
@@ -388,7 +393,7 @@ class StaticAttributesExtractor:
 
     has_era5_hybas_config = (
         self.era5_cache_dir is not None
-        or (self.no_download and self.gcs_era5_climate_uri is not None)
+        or self.gcs_era5_climate_uri is not None
     )
     self.era5_loader = (
         ERA5ClimateLoader(
@@ -544,7 +549,8 @@ class StaticAttributesExtractor:
       import pyarrow.parquet as pq
 
       fs = gcsfs.GCSFileSystem()
-      clean_src = active_source.replace("gs://", "").replace("gcs://", "").rstrip("/")
+      normalized_src = normalize_gcs_path(active_source)
+      clean_src = strip_gcs_prefix(normalized_src).rstrip("/")
       if clean_src.endswith((".parquet", ".geoparquet")):
         if not fs.exists(clean_src):
           raise FileNotFoundError(
