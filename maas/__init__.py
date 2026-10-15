@@ -12,14 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Models-as-a-Service (`maas`) multi-model flood data-fetching package.
+"""Models-as-a-Service (`maas`): multi-model operational flood data fetching.
 
 Provides unified clients, spatial river-network indexing, upstream-area reach
 snapping, return-period threshold calculators, and multi-model forecast
 data fetching across:
-  1. Google FloodHub (`FloodHubClient`)
-  2. Copernicus GloFAS v4 (`GloFASClient`)
-  3. GEOGLOWS ECMWF v2 (`GeoGLOWSClient`)
+
+1. Google FloodHub (`FloodHubClient`)
+2. Copernicus GloFAS v4 (`GloFASClient`)
+3. GEOGLOWS ECMWF v2 (`GeoGLOWSClient`)
 """
 
 from maas.config import (
@@ -76,9 +77,15 @@ from maas.geoglows import (
     parse_geoglows_return_periods_payload,
 )
 from maas.glofas import (
+    DEFAULT_GLOFAS_REFERENCE,
+    GLOFAS_REFERENCE_FIELDS,
+    GLOFAS_REFERENCE_LABELS,
     GloFASClient,
     compute_glofas_reanalysis_return_periods,
+    describe_glofas_reference,
     extract_glofas_zarr_series,
+    glofas_reference_field,
+    normalize_glofas_reference,
     parse_glofas_forecast_response,
 )
 from maas.networks import (
@@ -128,6 +135,7 @@ from maas.thresholds import (
 
 __all__ = [
     'CANONICAL_RETURN_PERIODS',
+    'DEFAULT_GLOFAS_REFERENCE',
     'DEFAULT_MAAS_MODELS',
     'EXCEEDANCE_CLASSES',
     'FLOODHUB_BASE_URL',
@@ -138,6 +146,8 @@ __all__ = [
     'GLOFAS_LOD',
     'GLOFAS_NLAT',
     'GLOFAS_NLON',
+    'GLOFAS_REFERENCE_FIELDS',
+    'GLOFAS_REFERENCE_LABELS',
     'GLOFAS_RES_DEG',
     'MAAS_MODEL_NAMES',
     'MODELS',
@@ -168,6 +178,7 @@ __all__ = [
     'convert_discharge_units',
     'daily_series',
     'derive_floodhub_severity_from_forecast',
+    'describe_glofas_reference',
     'estimate_return_period_years',
     'ev1_fit_line',
     'extract_annual_maxima',
@@ -180,6 +191,7 @@ __all__ = [
     'fetch_return_periods',
     'glofas_cell_center',
     'glofas_cell_polygon',
+    'glofas_reference_field',
     'gumbel_frequency_factor',
     'gumbel_quantile_from_return_periods',
     'haversine_km',
@@ -191,6 +203,7 @@ __all__ = [
     'lod_for_zoom',
     'normalize_floodhub_severity',
     'normalize_floodhub_trend',
+    'normalize_glofas_reference',
     'normalize_requested_models',
     'parse_finite_float',
     'parse_float_or_default',

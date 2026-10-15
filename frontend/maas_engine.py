@@ -38,6 +38,7 @@ from maas.config import (
     parse_int,
 )
 from maas.fetcher import MaaSDataFetcher
+from maas.glofas import DEFAULT_GLOFAS_REFERENCE
 from maas.networks import is_geoglows_river_id
 from utils.file_paths import FLOODHUB_API_KEY_FILE
 
@@ -191,8 +192,14 @@ def get_unified_maas_forecast(  # noqa: PLR0913, PLR0917
     upstream_area_km2: float | str | None = None,
     area_min_km2: float | str | None = None,
     network: str | None = None,
+    glofas_reference: str = DEFAULT_GLOFAS_REFERENCE,
 ) -> dict[str, Any]:
-    """Render unified 3-provider MaaS forecast view via `MaaSViewer`."""
+    """Render unified 3-provider MaaS forecast view via `MaaSViewer`.
+
+    `glofas_reference` (`'control'`, `'median'`, or `'mean'`) selects the
+    native GloFAS series used for the hydrograph reference line, the GloFAS
+    consensus row, and the return-period exceedance.
+    """
     return get_maas_viewer().render_forecast_view(
         float(lat),
         float(lon),
@@ -205,6 +212,7 @@ def get_unified_maas_forecast(  # noqa: PLR0913, PLR0917
         upstream_area_km2=upstream_area_km2,
         area_min_km2=area_min_km2,
         network=network,
+        glofas_reference=glofas_reference,
     )
 
 

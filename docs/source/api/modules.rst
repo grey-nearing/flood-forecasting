@@ -10,5 +10,6 @@ Modules
    gridded_archive_builders
    timeseries_extractors
    weather_fetcher
+   maas
    return_periods
    benchmarks

@@ -40,6 +40,7 @@ from maas.floodhub import (
     FH_SEVERITY_RANK,
     FH_SEVERITY_TO_RISK,
 )
+from maas.glofas import DEFAULT_GLOFAS_REFERENCE, describe_glofas_reference
 from maas.networks import glofas_cell_polygon
 from maas.thresholds import thresholds_from_return_periods
 
@@ -154,10 +155,21 @@ class MaaSViewer:
         upstream_area_km2: float | str | None = None,
         area_min_km2: float | str | None = None,
         network: str | None = None,
+        glofas_reference: str = DEFAULT_GLOFAS_REFERENCE,
     ) -> dict[str, Any]:
-        """Fetch multi-model forecasts and enrich with timeline/consensus."""
+        """Fetch multi-model forecasts and enrich with timeline/consensus.
+
+        `glofas_reference` selects which native GloFAS series (`'control'`,
+        `'median'`, or `'mean'`) is used consistently for the GloFAS
+        hydrograph `central` line, the GloFAS consensus row, and the
+        reach return-period exceedance. The payload echoes the choice under
+        `glofas_reference` and always serializes all three series in
+        `timeline['series']['glofas']`.
+        """
         lat, lon = float(lat), float(lon)
         models = normalize_requested_models(requested_models)
+        gl_reference = describe_glofas_reference(glofas_reference)
+        gl_field = gl_reference['field']
         raw_bundle = self.fetcher.fetch_forecasts(
             lat=lat,
             lon=lon,
@@ -196,9 +208,7 @@ class MaaSViewer:
 
         if 'glofas' in models:
             if gl_fc and gl_fc.get('available'):
-                gl_daily = daily_series(
-                    gl_fc.get('data'), 'discharge_median', 'discharge_mean'
-                )
+                gl_daily = daily_series(gl_fc.get('data'), gl_field)
                 peak, when = window_peak(gl_daily)
                 p25 = daily_series(gl_fc.get('data'), 'discharge_p25').get(
                     when or ''
@@ -216,6 +226,9 @@ class MaaSViewer:
                         (gl_rp or {}).get('source'),
                         spread_confidence(peak, p25, p75),
                         available=True,
+                        reference=gl_reference['key'],
+                        reference_field=gl_field,
+                        reference_label=gl_reference['label'],
                     )
                 )
             else:
@@ -229,14 +242,15 @@ class MaaSViewer:
                         None,
                         'N/A',
                         available=False,
+                        reference=gl_reference['key'],
+                        reference_field=gl_field,
+                        reference_label=gl_reference['label'],
                     )
                 )
 
         if 'geoglows' in models:
             if gg_fc and gg_fc.get('available'):
-                gg_daily = daily_series(
-                    gg_fc.get('data'), 'flow_med', 'flow_avg'
-                )
+                gg_daily = daily_series(gg_fc.get('data'), 'flow_med')
                 peak, when = window_peak(gg_daily)
                 p25 = daily_series(gg_fc.get('data'), 'flow_25p').get(
                     when or ''
@@ -271,9 +285,22 @@ class MaaSViewer:
                     )
                 )
 
-        timeline = build_aligned_timeline(models, fh_fc, fh_is_q, gl_fc, gg_fc)
+        timeline = build_aligned_timeline(
+            models,
+            fh_fc,
+            fh_is_q,
+            gl_fc,
+            gg_fc,
+            glofas_reference=gl_reference['key'],
+        )
         flood_summary = build_flood_summary(consensus, fh_fc, fh_fc)
-        exceedance = reach_exceedance_summary(gl_fc, gl_rp, gg_fc, gg_rp)
+        exceedance = reach_exceedance_summary(
+            gl_fc,
+            gl_rp,
+            gg_fc,
+            gg_rp,
+            glofas_reference=gl_reference['key'],
+        )
         vs = dict(raw_bundle['virtual_station'])
 
         thresholds_by_model = {
@@ -302,6 +329,7 @@ class MaaSViewer:
             **raw_bundle,
             'models': models_out,
             'virtual_station': vs,
+            'glofas_reference': gl_reference,
             'thresholds_by_model': thresholds_by_model,
             'timeline': timeline,
             'consensus': consensus,

@@ -28,6 +28,7 @@ maas/
 └── tests/
     ├── test_networks.py     # Unit tests for spatial grid math, reach snapping, and cross-network matching
     ├── test_providers.py    # Offline unit tests for all 3 provider parsers and clients
+    ├── test_glofas.py       # GloFAS reference-series helpers and local Zarr `step`/`number` extraction
     ├── test_fetcher.py      # Offline unit tests for MaaSDataFetcher and top-level fetch_* functions
     ├── test_thresholds.py   # Unit tests for return-period fitting (Bulletin 17C EMA, Weibull, Gumbel) & exceedance
     └── test_canary_live.py  # Opt-in live network canary tests (MAAS_LIVE_CANARY=1)
@@ -81,12 +82,29 @@ forecasts = fetch_forecasts(
     38.6270,
     -90.1994,
     models=['floodhub', 'glofas', 'geoglows'],
+    glofas_reference='control',  # 'control' | 'median' | 'mean'
 )
 
 # 3. Fetch historical reanalysis & return-period thresholds
 historical = fetch_historical(config, 'geoglows', reach_id=reaches['geoglows']['river_id'])
 return_periods = fetch_return_periods(config, 'geoglows', reach_id=reaches['geoglows']['river_id'])
 ```
+
+### GloFAS reference series (`glofas_reference`)
+
+GloFAS publishes three summary series per grid cell and day. Every GloFAS record carries all three, and `glofas_reference` selects which one drives the GloFAS daily series, peak flow, and return-period exceedance (default `'control'`; unknown keys raise `ValueError`):
+
+| Key | Record field | Meaning |
+|---|---|---|
+| `control` | `discharge_deterministic` | Control (unperturbed) run |
+| `median` | `discharge_median` | Median of the 50 perturbed ensemble members |
+| `mean` | `discharge_mean` | Mean of the 50 perturbed ensemble members |
+
+The same parameter is accepted by `MaaSViewer.render_forecast_view(...)` and the `GET /api/maas/forecast?glofas_reference=...` endpoint, and is exposed in the web UI as the **GloFAS Reference** drop-down.
+
+### Local GloFAS archives with `step` / `number` dimensions
+
+`extract_glofas_zarr_series(zarr_path, lat, lon, step_index=..., member_index=...)` reads a point series from a local Zarr/NetCDF archive. If the archive has a forecast lead-time dimension (`step`) or an ensemble member dimension (`number`), the matching index is required; any other extra dimension raises `ValueError`. Missing timesteps are returned as `NaN`.
 
 ---
 
@@ -112,5 +130,6 @@ python -m maas.cli \
 pytest maas/tests -v
 
 # Opt-in live network canary tests against external provider APIs
-MAAS_LIVE_CANARY=1 pytest maas/tests/test_canary_live.py -v
+# (checks all 50 GloFAS ensemble members and the min/max envelope)
+MAAS_LIVE_CANARY=1 pytest maas/tests/test_canary_live.py -m canary -v
 ```

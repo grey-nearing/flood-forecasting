@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Configuration, schemas, constants, and unit helpers for the `maas` package."""
+"""Configuration, schemas, constants, and unit helpers for `maas`."""
 
 import math
 import re
@@ -21,17 +21,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Explicit re-exports of the canonical provider URLs (`import X as X`).
 from utils.file_paths import (
-    FLOODHUB_BASE_URL as FLOODHUB_BASE_URL,
+    FLOODHUB_BASE_URL as FLOODHUB_BASE_URL,  # noqa: PLC0414
 )
 from utils.file_paths import (
-    GEOGLOWS_BASE_URL as GEOGLOWS_BASE_URL,
+    GEOGLOWS_BASE_URL as GEOGLOWS_BASE_URL,  # noqa: PLC0414
 )
 from utils.file_paths import (
-    GLOFAS_BASE_URL as GLOFAS_BASE_URL,
+    GLOFAS_BASE_URL as GLOFAS_BASE_URL,  # noqa: PLC0414
 )
 from utils.file_paths import (
-    OPEN_METEO_ELEVATION_URL as OPEN_METEO_ELEVATION_URL,
+    OPEN_METEO_ELEVATION_URL as OPEN_METEO_ELEVATION_URL,  # noqa: PLC0414
 )
 
 PROVIDERS: tuple[str, ...] = (
@@ -92,7 +93,12 @@ PROVIDER_SCHEMAS: dict[str, Mapping[str, Any]] = {
         'name': 'Copernicus GloFAS v4',
         'network': 'LISFLOOD 0.05° grid',
         'horizon_days': 15,
-        'central_field': 'discharge_median',
+        'central_field': 'discharge_deterministic',
+        'reference_fields': (
+            'discharge_deterministic',
+            'discharge_median',
+            'discharge_mean',
+        ),
         'quantiles': (
             'discharge_min',
             'discharge_p25',
@@ -150,6 +156,7 @@ class MaaSConfig:
     http_timeout_s: float = 12.0
 
     def __post_init__(self) -> None:
+        """Validate required directories and coerce them to `Path`."""
         if self.cache_dir is None or str(self.cache_dir).strip() == '':
             raise ValueError('MaaSConfig requires a non-empty `cache_dir`.')
         if (
@@ -169,7 +176,7 @@ class MaaSConfig:
             raise ValueError('`http_timeout_s` must be positive.')
 
 
-def parse_finite_float(val: Any) -> float | None:
+def parse_finite_float(val: object) -> float | None:
     """Parse a finite float without exception masking, or return `None`."""
     if val is None or isinstance(val, bool):
         return None
@@ -190,19 +197,19 @@ def parse_finite_float(val: Any) -> float | None:
     return None
 
 
-def parse_float_or_default(val: Any, default: float = 0.0) -> float:
+def parse_float_or_default(val: object, default: float = 0.0) -> float:
     """Parse a finite float, returning `default` if `val` is not finite."""
     parsed = parse_finite_float(val)
     return parsed if parsed is not None else default
 
 
-def parse_float_or_nan(val: Any) -> float:
-    """Parse a finite float, returning `float('nan')` for missing/invalid data."""
+def parse_float_or_nan(val: object) -> float:
+    """Parse a finite float, returning `NaN` for missing or invalid data."""
     parsed = parse_finite_float(val)
     return parsed if parsed is not None else float('nan')
 
 
-def parse_int(val: Any) -> int | None:
+def parse_int(val: object) -> int | None:  # noqa: PLR0911
     """Parse an integer value without exception masking, or return `None`."""
     if val is None or isinstance(val, bool):
         return None
@@ -228,19 +235,20 @@ def convert_discharge_units(
     from_unit: str,
     to_unit: str = 'm3/s',
 ) -> float:
-    """Convert volumetric river discharge between cubic meters and cubic feet per second.
+    """Convert river discharge between cubic meters and cubic feet per second.
 
     Args:
         value: Discharge value (may be `NaN`).
-        from_unit: Source unit identifier (`'m3/s'`, `'cms'`, `'CUBIC_METERS_PER_SECOND'`,
-            `'ft3/s'`, `'cfs'`, `'CUBIC_FEET_PER_SECOND'`).
+        from_unit: Source unit identifier (`'m3/s'`, `'cms'`,
+            `'CUBIC_METERS_PER_SECOND'`, `'ft3/s'`, `'cfs'`,
+            `'CUBIC_FEET_PER_SECOND'`).
         to_unit: Target unit identifier.
 
     Returns:
         Converted discharge value (`NaN` input yields `NaN` output).
 
     Raises:
-        ValueError: If `from_unit` or `to_unit` is not a recognized discharge unit.
+        ValueError: If `from_unit` or `to_unit` is not a recognized unit.
     """
     cms_tokens = {'m3/s', 'm³/s', 'cms', 'cubic_meters_per_second'}
     cfs_tokens = {'ft3/s', 'ft³/s', 'cfs', 'cubic_feet_per_second'}
