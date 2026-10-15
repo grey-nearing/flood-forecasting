@@ -12,13 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Caravan-MultiMet forecast dataset, data loader, and sample indexer."""
+
 import functools
 import itertools
 import logging
-import math
-import pickle
-import subprocess
-import sys
 from collections.abc import Hashable, Iterable, Iterator, Sequence
 from pathlib import Path
 
@@ -34,10 +32,11 @@ from torch.utils.data import Dataset
 from model.datasetzoo.caravan import (
     load_caravan_attributes,
     load_caravan_timeseries,
-    load_caravan_timeseries_together,
 )
 from model.datautils.scaler import (
     Scaler,
+)
+from model.datautils.scaler import (
     resolve_scaler_dir as _resolve_scaler_dir,
 )
 from model.datautils.union_features import union_features
@@ -46,15 +45,17 @@ from model.datautils.validate_samples import validate_samples
 from model.utils import memory
 from model.utils.config import Config
 from model.utils.configutils import (
-    PRODUCT_ALIASES,
     canonical_product_name as _canonical_product_name,
+)
+from model.utils.configutils import (
     flatten_feature_list,
     group_features_list,
-    normalize_product_key as _normalize_product_key,
+)
+from model.utils.configutils import (
     product_name_from_feature as _product_name_from_feature,
 )
 from model.utils.errors import NoEvaluationDataError, NoTrainDataError
-from model.utils.tqdm import AutoRefreshTqdm as tqdm
+from model.utils.tqdm import AutoRefreshTqdm
 from utils.file_paths import SCALER_ZARR_NAME, TIMESERIES_ZARR_NAME
 
 LOGGER = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ TENSOR_VARS = [
     'basin_index',
 ]
 MULTIMET_MINIMUM_LEAD_TIME = 1
+
 
 def _needs_per_basin_target_stds(cfg: Config) -> bool:
     """Whether the training loss or the data assimilation loss is NSE."""
@@ -89,38 +91,41 @@ class MultimetDataLoader(torch.utils.data.DataLoader):
     Ignores num_workers to avoid issues with dask/xarray in subprocesses.
     Triggers compute() every batch using dask IFF `lazy_load` is True.
 
-    Parameters
-    ----------
-    *args
-        Positional arguments passed to the parent class.
-    lazy_load : bool
-        Iff True, the data is computed using dask before collating.
-    logging_level : int
-        The value of the logging level e.g. DEBUG INFO etc.
-    **kwargs
-        Keyword arguments passed to the parent class.
+    Args:
+        *args: Positional arguments passed to the parent class.
+        lazy_load: Iff True, the data is computed using dask before collating.
+        logging_level: The value of the logging level e.g. DEBUG INFO etc.
+        **kwargs: Keyword arguments passed to the parent class.
     """
 
-    def __init__(self, *args, lazy_load: bool, logging_level: int, **kwargs):
+    def __init__(
+        self,
+        *args: object,
+        lazy_load: bool,
+        logging_level: int,
+        **kwargs: object,
+    ):
+        """Initialize the parent DataLoader with `num_workers` forced to 0."""
         kwargs['num_workers'] = 0
         super().__init__(*args, **kwargs)
         self._lazy_load = lazy_load
         self._debug = logging_level <= logging.DEBUG
 
     def __iter__(self):
+        """Yield collated batches, one per index list of the batch sampler."""
         if not self._lazy_load and isinstance(self.dataset, Multimet):
             for indices in self.batch_sampler:
                 yield self.dataset.get_batch(indices)
             return
 
         for indices in self.batch_sampler:
-            # TODO(future): Implement getitems (batched getitem) to save memory
-            # and runtime due to many independent dask graphs, especially in
-            # lazy mode.
-            # TODO(future): Consider using dask.Bag to stream results instead.
-            # TODO(future): Consider saving mem in non lazy mode by streaming
-            # batch samples to tensor conversion below etc.
-            batch = tqdm(
+            # Known limitations: samples are fetched one at a time (there is
+            # no batched `__getitems__`), which costs memory and runtime due to
+            # many independent dask graphs, especially in lazy mode. Streaming
+            # results with dask.Bag, or in non-lazy mode streaming the batch
+            # samples straight into the tensor conversion below, would save
+            # memory.
+            batch = AutoRefreshTqdm(
                 (self.dataset[i] for i in indices),
                 desc='Prepare batch',
                 unit='sample',
@@ -130,7 +135,8 @@ class MultimetDataLoader(torch.utils.data.DataLoader):
 
             batch = dask.compute(*batch) if self._lazy_load else tuple(batch)
 
-            # TODO(future): Assess first collating to save memory.
+            # Samples are converted to tensors before collating; collating
+            # first might save memory.
             batch = [
                 {k: _convert_to_tensor(k, v) for k, v in sample.items()}
                 for sample in batch
@@ -141,45 +147,49 @@ class MultimetDataLoader(torch.utils.data.DataLoader):
             yield batch
 
     def __len__(self):
+        """Return the number of batches produced by the batch sampler."""
         return len(self.batch_sampler)
 
 
 class Multimet(Dataset):
     """Base data set class for forecast models.
 
-    Use subclasses of this class for training/evaluating a model with forecast capabilities.
-    Currently, the only supported forecast dataset is Caravan-Multimet.
+    Use subclasses of this class for training/evaluating a model with forecast
+    capabilities. Currently, the only supported forecast dataset is
+    Caravan-Multimet.
 
-    Parameters
-    ----------
-    cfg : Config
-        The run configuration.
-    is_train : bool
-        Defines if the dataset is used for training or evaluating. If True (training), means/stds for each feature
-        are computed and stored to the run directory. If one-hot encoding is used, the mapping for the one-hot encoding
-        is created and also stored to disk. If False, the scaler must be calculated (`compute_scaler` must be True).
-    period : {'train', 'validation', 'test'}
-        Defines the period for which the data will be loaded
-    basins : list[str], optional
-        If passed, the data for only these basins will be loaded. Otherwise, the basin(s) is(are) read from the
-        appropriate basin file, corresponding to the `period`.
-    compute_scaler : bool
-        Forces the dataset to calculate a new scaler instead of loading a precalculated scaler. Used during training, but
-        not finetuning.
+    Args:
+        cfg: The run configuration.
+        is_train: Defines if the dataset is used for training or evaluating.
+            If True (training), means/stds for each feature are computed and
+            stored to the run directory. If one-hot encoding is used, the
+            mapping for the one-hot encoding is created and also stored to
+            disk. If False, the scaler must be calculated (`compute_scaler`
+            must be True).
+        period: One of {'train', 'validation', 'test'}. Defines the period for
+            which the data will be loaded.
+        basins: Optional. If passed, the data for only these basins will be
+            loaded. Otherwise, the basin(s) is(are) read from the appropriate
+            basin file, corresponding to the `period`.
+        compute_scaler: Forces the dataset to calculate a new scaler instead of
+            loading a precalculated scaler. Used during training, but not
+            finetuning.
     """
 
-    def __init__(
+    def __init__(  # noqa: C901, PLR0915
         self,
         cfg: Config,
-        is_train: bool,
+        is_train: bool,  # noqa: FBT001
         period: str,
         basins: list[str] | None = None,
-        compute_scaler: bool = True,
+        compute_scaler: bool = True,  # noqa: FBT001, FBT002
     ):
+        """Load, validate, normalize, and index the dataset for `period`."""
         self._cfg = cfg
 
         # Sequence length parameters.
-        # TODO (future) :: Remove all old forecast functionality from basedataset.
+        # These are inherited from the old forecast functionality of
+        # basedataset.
         self.lead_time = cfg.lead_time
         self._seq_length = cfg.seq_length
         self._predict_last_n = cfg.predict_last_n
@@ -197,12 +207,14 @@ class Multimet(Dataset):
         self._forecast_inputs = cfg.forecast_inputs
         self._union_mapping = cfg.union_mapping
 
-        # Feature data paths by type. This allows the option to load some data from cloud and some locally.
+        # Feature data paths by type. This allows the option to load some data
+        # from cloud and some locally.
         self._statics_data_path = cfg.statics_data_dir
         self._dynamics_data_path = cfg.dynamics_data_dir
         self._targets_data_path = cfg.targets_data_dir
 
-        # NaN-handling options are required to apply the correct sample validation algorithms.
+        # NaN-handling options are required to apply the correct sample
+        # validation algorithms.
         self._configure_feature_groups(cfg)
 
         # Validating samples depends on whether we are training or testing.
@@ -214,13 +226,16 @@ class Multimet(Dataset):
                 "'period' must be one of 'train', 'validation' or 'test' "
             )
 
-        if period in ['validation', 'test'] or cfg.is_finetuning:
-            if compute_scaler:
-                raise ValueError(
-                    'Scaler must be loaded (not computed) for validation, test, and finetuning.'
-                )
+        if (
+            period in ['validation', 'test'] or cfg.is_finetuning
+        ) and compute_scaler:
+            raise ValueError(
+                'Scaler must be loaded (not computed) for validation, test, '
+                'and finetuning.'
+            )
 
-        # TODO (future) :: Consolidate the basin list loading somewhere instead of in two different places.
+        # Basin list loading is not consolidated: it also happens in the
+        # trainer and tester.
         self._basins = basins or load_basin_file(
             getattr(cfg, f'{period}_basin_file')
         )
@@ -233,8 +248,7 @@ class Multimet(Dataset):
         _assert_floats_are_float32(self._dataset)
 
         # Extract date ranges.
-        # TODO (future) :: Make this work for non-continuous date ranges.
-        # TODO (future) :: This only works for daily data.
+        # Assumes continuous date ranges and daily data.
         self._min_lead_time = 0
         self._lead_times = []
         if self._forecast_features:
@@ -254,8 +268,9 @@ class Multimet(Dataset):
                 range(self._min_lead_time, self.lead_time + 1)
             )
 
-        # Split hindcast features to groups with/without lead_time in the dataset.
-        # These lists will be used for efficient data selection during sampling.
+        # Split hindcast features to groups with/without lead_time in the
+        # dataset. These lists will be used for efficient data selection during
+        # sampling.
         self._hindcast_features_with_lead_time = [
             feature
             for feature in self._hindcast_features
@@ -270,10 +285,11 @@ class Multimet(Dataset):
         start_dates, end_dates = self._get_period_dates(cfg)
         self._sample_dates = self._union_ranges(start_dates, end_dates)
         # The convention in NH is that the period dates define the SAMPLE dates.
-        # All hindcast (and forecast) seqences are extra. Therefore, when cropping
-        # the dataset for sampling, we keep all the hindcast and forecast sequence
-        # data on both sides of the period dates. This would be more memory efficient
-        # in `_load_data()` but that approach adds complexity to the child classes.
+        # All hindcast (and forecast) seqences are extra. Therefore, when
+        # cropping the dataset for sampling, we keep all the hindcast and
+        # forecast sequence data on both sides of the period dates. This would
+        # be more memory efficient in `_load_data()` but that approach adds
+        # complexity to the child classes.
         extended_start_dates = [
             start_date - pd.Timedelta(days=self._seq_length)
             for start_date in start_dates
@@ -307,8 +323,9 @@ class Multimet(Dataset):
                 )
 
         # Union features to extend certain data records.
-        # Martin suggests doing this step prior to training models and then saving the unioned dataset locally.
-        # If you do that, then remove this line.
+        # Martin suggests doing this step prior to training models and then
+        # saving the unioned dataset locally. If you do that, then remove this
+        # line.
         if self._union_mapping:
             LOGGER.debug('union features')
             self._dataset = union_features(self._dataset, self._union_mapping)
@@ -326,10 +343,12 @@ class Multimet(Dataset):
         LOGGER.debug('create valid sample mask and indices plan')
         valid_sample_mask, indices = self._create_valid_sample_mask()
 
-        # Compute stats for NSE-based loss functions alongside sample indices so
-        # lazy_load batches do not re-evaluate target .std(dim='date') per batch.
-        # TODO (future) :: Find a better way to decide whether to calculate these. At least keep a list of
-        # losses that require them somewhere like `training.__init__.py`. Perhaps simply always calculate.
+        # Compute stats for NSE-based loss functions alongside sample indices
+        # so lazy_load batches do not re-evaluate target .std(dim='date') per
+        # batch. Whether to calculate these is decided by
+        # `_needs_per_basin_target_stds`. Alternatives are keeping a list of
+        # the losses that require them somewhere like `training/__init__.py`,
+        # or simply always calculating them.
         self._per_basin_target_stds = None
         if _needs_per_basin_target_stds(cfg):
             LOGGER.debug('create per_basin_target_stds')
@@ -350,9 +369,9 @@ class Multimet(Dataset):
         )
         memory.release()
 
-        LOGGER.debug(f'Dataset size: {sizeof(self._dataset) / 1024**2} MB')
-        LOGGER.debug(f'Dataset on disk: {self._dataset.nbytes / 1024**2} MB')
-        LOGGER.debug(f'Sample index size: {sizeof(indices) / 1024**2} MB')
+        LOGGER.debug('Dataset size: %s MB', sizeof(self._dataset) / 1024**2)
+        LOGGER.debug('Dataset on disk: %s MB', self._dataset.nbytes / 1024**2)
+        LOGGER.debug('Sample index size: %s MB', sizeof(indices) / 1024**2)
 
         # Create sample index lookup table for `__getitem__`.
         LOGGER.debug('create sample index')
@@ -686,6 +705,7 @@ class Multimet(Dataset):
         return batch
 
     def __len__(self) -> int:
+        """Return the number of valid samples."""
         return self._num_samples
 
     @property
@@ -696,21 +716,23 @@ class Multimet(Dataset):
     def __getitem__(
         self, item: int
     ) -> dict[str, torch.Tensor | np.ndarray | dict[str, torch.Tensor]]:
-        """Retrieves a sample by integer index."""
-
+        """Retrieve a sample by integer index."""
         # Stop iteration.
         if item >= self._num_samples:
             raise IndexError(
-                f'Requested index {item} > the total number of samples {self._num_samples}.'
+                f'Requested index {item} > the total number of samples '
+                f'{self._num_samples}.'
             )
 
-        # Negative and non-integer indexes raise an error instead of stop iterating.
+        # Negative and non-integer indexes raise an error instead of stop
+        # iterating.
         if item < 0:
             raise ValueError(f'Requested index {item} < 0.')
         if item % 1 != 0:
             raise ValueError(f'Requested index {item} is not an integer.')
 
-        # TODO (future) :: Suggest remove outer keys and use only feature names. Major change required.
+        # The sample keeps the outer keys ('x_s', 'x_d_hindcast', ...) instead
+        # of using only feature names; removing them would be a major change.
         sample_index = self._sample_index[item]
         sample = {
             'date': self._extract_dates(sample_index),
@@ -802,13 +824,13 @@ class Multimet(Dataset):
             dim_indexes_with_lead_time,
         )
 
+        # This adds a dimension to many features, as required by some models.
+        # There is no need for this except that it is how basedataset works,
+        # and everything else expects the trailing dim.
         return {
             name: np.expand_dims(feature, -1)
             for name, feature in features.items()
         }
-        # TODO (future) :: This adds a dimension to many features, as required by some models.
-        # There is no need for this except that it is how basedataset works, and everything else expects
-        # the trailing dim. Remove this dependency in the future.
 
     def _extract_forecasts(
         self, sample_index: dict[str, int]
@@ -833,13 +855,13 @@ class Multimet(Dataset):
                 name: np.concatenate([overlaps[name], feature])
                 for name, feature in features.items()
             }
+        # This adds a dimension to many features, as required by some models.
+        # There is no need for this except that it is how basedataset works,
+        # and everything else expects the trailing dim.
         return {
             name: np.expand_dims(feature, -1)
             for name, feature in features.items()
         }
-        # TODO (future) :: This adds a dimension to many features, as required by some models.
-        # There is no need for this except that it is how basedataset works, and everything else expects
-        # the trailing dim. Remove this dependency in the future.
 
     def _extract_targets(self, sample_index: dict[str, int]) -> np.ndarray:
         dim_indexes = sample_index.copy()
@@ -858,13 +880,13 @@ class Multimet(Dataset):
             self._target_features,
             {'basin': sample_index['basin']},
         )
+        # This adds a dimension to many features, as required by some models.
+        # There is no need for this except that it is how basedataset works,
+        # and everything else expects the trailing dim.
         return np.expand_dims(
             np.stack([features[e] for e in self._target_features], axis=-1),
             axis=0,
         )
-        # TODO (future) :: This adds a dimension to many features, as required by some models.
-        # There is no need for this except that it is how basedataset works, and everything else expects
-        # the trailing dim. Remove this dependency in the future.
 
     def _get_period_dates(
         self, cfg: Config
@@ -882,11 +904,16 @@ class Multimet(Dataset):
             raise ValueError(f'Unknown period {self._period}')
         if len(start_dates) != len(end_dates):
             raise ValueError(
-                f'Start and end date lists for period {self._period} must have the same length.'
+                f'Start and end date lists for period {self._period} must '
+                'have the same length.'
             )
-        if any(start >= end for start, end in zip(start_dates, end_dates)):
+        if any(
+            start >= end
+            for start, end in zip(start_dates, end_dates, strict=True)
+        ):
             raise ValueError(
-                f'Start dates {start_dates} are before matched end dates {end_dates}.'
+                f'Start dates {start_dates} are before matched end dates '
+                f'{end_dates}.'
             )
         return start_dates, end_dates
 
@@ -895,17 +922,20 @@ class Multimet(Dataset):
     ) -> pd.DatetimeIndex:
         ranges = [
             pd.date_range(start, end)
-            for start, end in zip(start_dates, end_dates)
+            for start, end in zip(start_dates, end_dates, strict=True)
         ]
         return functools.reduce(pd.Index.union, ranges)
 
-    def _create_valid_sample_mask(self):
+    def _create_valid_sample_mask(
+        self,
+    ) -> tuple[xr.DataArray, tuple[dask.array.Array, ...]]:
         """Map int sample indexes to the int positions into the xr.Dataset.
 
         Allows index-based sample retrieval, faster than coordinate-based sample
         retrieval.
         """
-        # Create a boolean mask for the original dataset noting valid (True) vs. invalid (False) samples.
+        # Create a boolean mask for the original dataset noting valid (True)
+        # vs. invalid (False) samples.
         valid_sample_mask = validate_samples(
             is_train=self.is_train,
             dataset=self._dataset,
@@ -924,28 +954,29 @@ class Multimet(Dataset):
             allzero_samples_are_invalid=self._allzero_samples_are_invalid,
         )[0]
 
-        # Convert boolean valid sample mask into indexes of all samples. This retains
-        # only the portion of the valid sample mask with True values.
+        # Convert boolean valid sample mask into indexes of all samples. This
+        # retains only the portion of the valid sample mask with True values.
         # Each element is a list of valid integer positions (indexers) for which
         # values are True for a dimension.
         indices = dask.array.nonzero(valid_sample_mask.data)
         # Compact memory widths. Values are indexes within each mask's shape.
         min_dtypes = map(np.min_scalar_type, valid_sample_mask.shape)
-        indices = tuple(idx.astype(dt) for idx, dt in zip(indices, min_dtypes))
+        indices = tuple(
+            idx.astype(dt) for idx, dt in zip(indices, min_dtypes, strict=True)
+        )
 
         return valid_sample_mask, indices
 
     def _create_sample_index(
         self, valid_sample_mask: xr.DataArray, indices: np.ndarray
-    ):
+    ) -> None:
         """Create the sample index structure to access the mapping."""
         # Count the number of valid samples.
         num_samples = len(indices[0]) if indices else 0
         if num_samples == 0:
             if self._period == 'train':
                 raise NoTrainDataError
-            else:
-                raise NoEvaluationDataError
+            raise NoEvaluationDataError
 
         # Align dim name with its respective list of int indices (index arrays),
         # i.e. columns of all basins, all dates, etc.
@@ -964,7 +995,7 @@ class Multimet(Dataset):
         features: list[str],
         indexers: dict[Hashable, int | range | slice],
     ) -> dict[str, np.ndarray | np.float32]:
-        def extract(feature_name: str):
+        def extract(feature_name: str) -> np.ndarray | np.float32:
             key = f'{id(data)}{feature_name}'
             feature = self._data_cache.get(key)
             if feature is None:
@@ -976,15 +1007,15 @@ class Multimet(Dataset):
         }
 
     def _load_data(self) -> xr.Dataset:
-        """Main loading function for Caravan-Multimet.
+        """Load and merge all Caravan-Multimet features into one dataset.
 
-        Returns an xr dataset of features with the following dimensions: (basin, date, lead_time).
-        This loading function aggregates hindcast, forecast, statics, and target data.
+        Returns an xr dataset of features with the following dimensions:
+        (basin, date, lead_time). This loading function aggregates hindcast,
+        forecast, statics, and target data.
 
-        Returns
-        -------
-        xr.Dataset
-            Dataset containing the loaded features with various dimensions.
+        Returns:
+            xr.Dataset: Dataset containing the loaded features with various
+                dimensions.
         """
         datasets = []
         if self._static_features is not None:
@@ -1006,34 +1037,33 @@ class Multimet(Dataset):
         ds = xr.merge(datasets, join='outer', compat='no_conflicts')
 
         LOGGER.debug('rechunk')
-        ds = rechunk(ds)
-
-        return ds
+        return rechunk(ds)
 
     def _load_hindcast_features(self) -> list[xr.Dataset]:
         """Load Caravan-Multimet data for hindcast features.
 
-        Returns
-        -------
-        xr.Dataset
-            Dataset containing the loaded features with dimensions (date, basin).
+        Returns:
+            list[xr.Dataset]: Datasets containing the loaded features with
+                dimensions (date, basin).
         """
         return self._load_hindcast_as_zarr()
 
-    def _load_hindcast_as_zarr(self) -> list[xr.Dataset]:
+    def _load_hindcast_as_zarr(self) -> list[xr.Dataset]:  # noqa: C901
         """Load Caravan-Multimet data for hindcast features.
 
-        Returns
-        -------
-        list[xr.Dataset]
-            Datasets containing the loaded hindcast features.
+        Returns:
+            list[xr.Dataset]: Datasets containing the loaded hindcast features.
         """
-        # Prepare hindcast features to load, including the masks of union_mapping.
-        # dict.fromkeys (rather than a set) dedups while preserving insertion
-        # order, so the resulting `data_vars` order is stable across processes.
+        # Prepare hindcast features to load, including the masks of
+        # union_mapping. dict.fromkeys (rather than a set) dedups while
+        # preserving insertion order, so the resulting `data_vars` order is
+        # stable across processes.
         features = list(
             dict.fromkeys(
-                [*self._hindcast_features, *(self._union_mapping or {}).values()]
+                [
+                    *self._hindcast_features,
+                    *(self._union_mapping or {}).values(),
+                ]
             )
         )
 
@@ -1113,31 +1143,27 @@ class Multimet(Dataset):
     def _load_forecast_features(self) -> list[xr.Dataset]:
         """Load Caravan-Multimet data for forecast features.
 
-        Returns
-        -------
-        xr.Dataset
-            Dataset containing the loaded features with dimensions (date, lead_time, basin).
+        Returns:
+            list[xr.Dataset]: Datasets containing the loaded features with
+                dimensions (date, lead_time, basin).
         """
         return self._load_forecast_as_zarr()
 
     def _load_forecast_as_zarr(self) -> list[xr.Dataset]:
         """Load Caravan-Multimet data for forecast features.
 
-        Returns
-        -------
-        xr.Dataset
-            Dataset containing loaded features with dimensions
-            (date, lead_time, basin).
+        Returns:
+            list[xr.Dataset]: Datasets containing loaded features with
+                dimensions (date, lead_time, basin).
         """
-        # Check if single unified dynamics zarr store contains the forecast features
+        # Check if single unified dynamics zarr store contains the forecast
+        # features.
         single_store_path = _find_single_dynamics_zarr_path(
             self._dynamics_data_path
         )
         if single_store_path is not None:
             ds = _open_zarr(single_store_path)
-            missing = sorted(
-                set(self._forecast_features) - set(ds.data_vars)
-            )
+            missing = sorted(set(self._forecast_features) - set(ds.data_vars))
             if missing:
                 raise ValueError(
                     f'Requested forecast features {missing} not found in '
@@ -1148,9 +1174,7 @@ class Multimet(Dataset):
                     f'Lead times do not exist in forecast dataset at '
                     f'{single_store_path}.'
                 )
-            ds = ds.sel(
-                basin=self._basins, lead_time=self._lead_time_slice()
-            )
+            ds = ds.sel(basin=self._basins, lead_time=self._lead_time_slice())
             return [ds[self._forecast_features]]
 
         # Separate products and bands for each product from configured inputs.
@@ -1195,10 +1219,9 @@ class Multimet(Dataset):
     def _load_target_features(self) -> xr.Dataset:
         """Load Caravan streamflow data.
 
-        Returns
-        -------
-        xr.Dataset
-            Dataset containing the loaded features with dimensions (date, basin).
+        Returns:
+            xr.Dataset: Dataset containing the loaded features with dimensions
+                (date, basin).
         """
         return load_caravan_timeseries(
             data_dir=self._targets_data_path,
@@ -1210,10 +1233,9 @@ class Multimet(Dataset):
     def _load_static_features(self) -> xr.Dataset:
         """Load Caravan static attributes.
 
-        Returns
-        -------
-        xr.Dataset
-            Dataset containing the loaded features with dimensions (basin).
+        Returns:
+            xr.Dataset: Dataset containing the loaded features with dimensions
+                (basin).
         """
         return load_caravan_attributes(
             data_dir=self._statics_data_path,
@@ -1235,18 +1257,21 @@ class Multimet(Dataset):
             dict[str, torch.Tensor | np.ndarray, dict[str, torch.Tensor]]
         ],
     ) -> dict[str, torch.Tensor | np.ndarray, dict[str, torch.Tensor]]:
+        """Stack a list of tensor samples into a single batch dictionary."""
         batch = {}
         if not samples:
             return batch
         features = list(samples[0].keys())
         for feature in features:
             if feature.startswith('date'):
-                # Dates are stored as a numpy array of datetime64, which we maintain as numpy array.
+                # Dates are stored as a numpy array of datetime64, which we
+                # maintain as numpy array.
                 batch[feature] = np.stack(
                     [sample[feature] for sample in samples], axis=0
                 )
             elif feature.startswith('x_d'):
-                # Dynamics are stored as dictionaries with feature names as keys.
+                # Dynamics are stored as dictionaries with feature names as
+                # keys.
                 batch[feature] = {
                     k: torch.stack(
                         [sample[feature][k] for sample in samples], dim=0
@@ -1276,7 +1301,7 @@ def _extract_dataarray(
     return data.data[tuple(locs)]
 
 
-def _assert_floats_are_float32(dataset: xr.Dataset):
+def _assert_floats_are_float32(dataset: xr.Dataset) -> None:
     items = itertools.chain(dataset.data_vars.items(), dataset.coords.items())
     for name, data_array_or_coord in items:
         if np.issubdtype(data_array_or_coord.dtype, np.floating):
@@ -1310,7 +1335,7 @@ def _find_single_dynamics_zarr_path(
         if isinstance(dynamics_path, Path)
         else str(dynamics_path)
     )
-    if path_str.startswith('gs://') or path_str.startswith('gs:/'):
+    if path_str.startswith(('gs://', 'gs:/')):
         if path_str.rstrip('/').endswith('.zarr'):
             return Path(path_str.rstrip('/'))
         return None
@@ -1377,7 +1402,7 @@ def _find_product_zarr_path(
 @functools.cache
 def _open_zarr(path: Path) -> xr.Dataset:
     str_path = str(path)
-    if str_path.startswith('gs:') or str_path.startswith('gs/'):
+    if str_path.startswith(('gs:', 'gs/')):
         store = path.as_posix().replace('gs:/', 'gs://')
     else:
         store = str_path
@@ -1389,25 +1414,21 @@ def _open_zarr(path: Path) -> xr.Dataset:
         store=store,
         chunks={},
         decode_timedelta=True,
-        consolidated=True if is_cloud else False,
+        consolidated=is_cloud,
     )
 
 
 def _get_products_and_bands_from_feature_strings(
     features: Iterable[str],
 ) -> dict[str, list[str]]:
-    """Processes feature strings to create a dictionary of product to band(s).
+    """Process feature strings to create a dictionary of product to band(s).
 
-    Parameters
-    ----------
-    features : Iterable[str]
-        Feature names in the format '<product>_<band>'.
+    Args:
+        features: Feature names in the format '<product>_<band>'.
 
-    Returns
-    -------
-    dict[str, list[str]]
-        Keys are canonical product names and values are lists of features.
-        Feature names are preserved.
+    Returns:
+        dict[str, list[str]]: Keys are canonical product names and values are
+            lists of features. Feature names are preserved.
     """
     product_bands: dict[str, list[str]] = {}
     for feature in features:
@@ -1421,22 +1442,18 @@ def _get_products_and_bands_from_feature_strings(
 def _get_products_and_bands_from_features(
     features: dict[str, list[str]] | list[list[str]] | Iterable[str],
 ) -> dict[str, list[str]]:
-    """Creates a mapping of canonical product names to feature bands.
+    """Create a mapping of canonical product names to feature bands.
 
-    Parameters
-    ----------
-    features : dict[str, list[str]] | list[list[str]] | Iterable[str]
-        Either:
-        - A dictionary where keys are product names from the config and
-          values are lists of features belonging to that product, or
-        - A flat or nested iterable of feature names in the format
-          '<product>_<band>'.
+    Args:
+        features: Either:
+            - A dictionary where keys are product names from the config and
+              values are lists of features belonging to that product, or
+            - A flat or nested iterable of feature names in the format
+              '<product>_<band>'.
 
-    Returns
-    -------
-    dict[str, list[str]]
-        Dictionary mapping canonical product names to their associated
-        feature bands.
+    Returns:
+        dict[str, list[str]]: Dictionary mapping canonical product names to
+            their associated feature bands.
     """
     if isinstance(features, dict):
         product_bands: dict[str, list[str]] = {}
@@ -1450,6 +1467,7 @@ def _get_products_and_bands_from_features(
 
     flat_features = flatten_feature_list(features)
     return _get_products_and_bands_from_feature_strings(flat_features)
+
 
 class SampleIndexer:
     """Reorg columns to rows.
@@ -1465,25 +1483,32 @@ class SampleIndexer:
     """
 
     def __init__(self, aligned_indices: tuple[tuple[str, np.ndarray]]) -> None:
+        """Store the `(dim, index array)` pairs that make up the columns."""
         self._aligned_indices = aligned_indices
 
     def __getitem__(self, item: int) -> dict[str, int]:
+        """Return the per-dimension int positions of sample `item`."""
         return {dim: indexes[item] for dim, indexes in self._aligned_indices}
 
     def keys(self) -> Iterator[int]:
+        """Return the sample indexes `range(len(self))`."""
         return range(len(self))
 
     def values(self) -> Iterator[dict[str, int]]:
+        """Iterate over the per-dimension positions of every sample."""
         return (self[i] for i in self.keys())
 
     def items(self) -> Iterator[tuple[int, dict[str, int]]]:
-        return zip(self.keys(), self.values())
+        """Iterate over `(sample index, per-dimension positions)` pairs."""
+        return zip(self.keys(), self.values(), strict=True)
 
     def __len__(self) -> int:
+        """Return the number of samples."""
         _, indexes = self._aligned_indices[0]
         return len(indexes)
 
-    def get_column(self, dim: str):
+    def get_column(self, dim: str) -> np.ndarray:
+        """Return the index array of all samples for dimension `dim`."""
         return next(v for (k, v) in self._aligned_indices if k == dim)
 
 

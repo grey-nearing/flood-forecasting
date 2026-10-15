@@ -28,7 +28,31 @@ from model.utils.config import Config
 
 EXPECTED_BASINS = ['basin_01', 'basin_02', 'basin_03', 'basin_04', 'basin_05']
 
+# Un-suffixed metrics pool both predicted steps (`time_step` 1 and 2).
 EXPECTED_NSE = np.array(
+    [
+        -6.702047348022461,
+        -0.1357424259185791,
+        -0.5499886274337769,
+        0.0705993771553039,
+        -0.234846830368042,
+    ],
+    dtype=np.float64,
+)
+
+EXPECTED_KGE = np.array(
+    [
+        -0.6549792903284366,
+        -0.2786171075374277,
+        -0.0298794395294601,
+        0.0352776484085718,
+        -0.4124736817195189,
+    ],
+    dtype=np.float64,
+)
+
+# Per-step metrics of the first predicted step (`time_step == 1`).
+EXPECTED_NSE_LEAD1 = np.array(
     [
         -7.262215614318848,
         -0.2223786115646362,
@@ -39,7 +63,7 @@ EXPECTED_NSE = np.array(
     dtype=np.float64,
 )
 
-EXPECTED_KGE = np.array(
+EXPECTED_KGE_LEAD1 = np.array(
     [
         -0.6679253673048586,
         -0.209148931936286,
@@ -154,6 +178,18 @@ def test_five_basin_golden_numerical_regression(five_basin_dataset, tmp_path):
     np.testing.assert_allclose(
         metrics_df['KGE'].to_numpy(dtype=np.float64),
         EXPECTED_KGE,
+        atol=1e-4,
+        rtol=1e-4,
+    )
+    np.testing.assert_allclose(
+        metrics_df['NSE_lead1'].to_numpy(dtype=np.float64),
+        EXPECTED_NSE_LEAD1,
+        atol=1e-4,
+        rtol=1e-4,
+    )
+    np.testing.assert_allclose(
+        metrics_df['KGE_lead1'].to_numpy(dtype=np.float64),
+        EXPECTED_KGE_LEAD1,
         atol=1e-4,
         rtol=1e-4,
     )

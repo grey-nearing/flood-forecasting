@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Tester classes that run a trained model and score its predictions."""
+
 import contextlib
 import itertools
 import logging
@@ -19,8 +21,8 @@ import random
 import re
 import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 import pandas as pd
@@ -50,28 +52,25 @@ from model.modelzoo.basemodel import BaseModel
 from model.training import get_loss_obj, get_regularization_obj
 from model.training.logger import Logger, do_log_figures
 from model.utils.config import Config, TesterSamplesReduction
-from model.utils.errors import AllNaNError
-from model.utils.tqdm import AutoRefreshTqdm as tqdm
+from model.utils.tqdm import AutoRefreshTqdm
 
 LOGGER = logging.getLogger(__name__)
 
 
-class BaseTester(object):
+class BaseTester:
     """Base class to run inference on a model.
 
-    Use subclasses of this class to evaluate a trained model on its train, test, or validation period.
-    For regression settings, `RegressionTester` is used; for uncertainty prediction, `UncertaintyTester`.
+    Use subclasses of this class to evaluate a trained model on its train,
+    test, or validation period. For regression settings, `RegressionTester`
+    is used; for uncertainty prediction, `UncertaintyTester`.
 
-    Parameters
-    ----------
-    cfg : Config
-        The run configuration.
-    run_dir : Path
-        Path to the run directory.
-    period : {'train', 'validation', 'test'}, optional
-        The period to evaluate, by default 'test'.
-    init_model : bool, optional
-        If True, the model weights will be initialized with the checkpoint from the last available epoch in `run_dir`.
+    Args:
+        cfg: The run configuration.
+        run_dir: Path to the run directory.
+        period: The period to evaluate, one of `'train'`, `'validation'`, or
+            `'test'`. Defaults to `'test'`.
+        init_model: If True, the model weights are initialized with the
+            checkpoint from the last available epoch in `run_dir`.
     """
 
     def __init__(
@@ -79,8 +78,9 @@ class BaseTester(object):
         cfg: Config,
         run_dir: Path,
         period: str = 'test',
-        init_model: bool = True,
+        init_model: bool = True,  # noqa: FBT001, FBT002
     ):
+        """Resolve the device, build the dataset, and drop all-NaN basins."""
         self.cfg = cfg
         self.run_dir = run_dir
         self.init_model = init_model
@@ -88,15 +88,18 @@ class BaseTester(object):
             self.period = period
         else:
             raise ValueError(
-                f'Invalid period {period}. Must be one of ["train", "validation", "test"]'
+                f'Invalid period {period}. '
+                'Must be one of ["train", "validation", "test"]'
             )
 
-        if getattr(self.cfg, 'hot_start_path', None) is not None:
-            if self.cfg.batch_size != 1:
-                raise ValueError(
-                    f'Hot-start inference requires batch_size=1 per basin. '
-                    f'Got batch_size={self.cfg.batch_size}.'
-                )
+        if (
+            getattr(self.cfg, 'hot_start_path', None) is not None
+            and self.cfg.batch_size != 1
+        ):
+            raise ValueError(
+                f'Hot-start inference requires batch_size=1 per basin. '
+                f'Got batch_size={self.cfg.batch_size}.'
+            )
 
         # determine device
         self._set_device()
@@ -129,7 +132,7 @@ class BaseTester(object):
         exclude_basins = set(self._calc_exclude_basins())  # Needs self.dataset
         self.basins = [e for e in self.basins if e not in exclude_basins]
 
-    def _set_device(self):
+    def _set_device(self) -> None:
         if self.cfg.device is not None:
             if self.cfg.device.startswith('cuda'):
                 gpu_id = int(self.cfg.device.split(':')[-1])
@@ -137,8 +140,7 @@ class BaseTester(object):
                     raise RuntimeError(
                         f'This machine does not have GPU #{gpu_id} '
                     )
-                else:
-                    self.device = torch.device(self.cfg.device)
+                self.device = torch.device(self.cfg.device)
             elif self.cfg.device == 'mps':
                 if torch.backends.mps.is_available():
                     self.device = torch.device('mps')
@@ -146,32 +148,30 @@ class BaseTester(object):
                     raise RuntimeError('MPS device is not available.')
             else:
                 self.device = torch.device('cpu')
+        elif torch.cuda.is_available():
+            self.device = torch.device('cuda:0')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
         else:
-            if torch.cuda.is_available():
-                self.device = torch.device('cuda:0')
-            elif torch.backends.mps.is_available():
-                self.device = torch.device('mps')
-            else:
-                self.device = torch.device('cpu')
+            self.device = torch.device('cpu')
 
-    def _load_run_data(self):
-        """Load run specific data from run directory"""
-
+    def _load_run_data(self) -> None:
+        """Load run specific data from run directory."""
         # get list of basins
         self.basins = load_basin_file(
             getattr(self.cfg, f'{self.period}_basin_file')
         )
 
-    def _get_weight_file(self, epoch: int | None):
-        """Get file path to weight file"""
+    def _get_weight_file(self, epoch: int | None) -> Path:
+        """Get file path to weight file."""
         if epoch is None:
-            weight_file = sorted(list(self.run_dir.glob('model_epoch*.pt')))[-1]
+            weight_file = max(self.run_dir.glob('model_epoch*.pt'))
         else:
             weight_file = self.run_dir / f'model_epoch{str(epoch).zfill(3)}.pt'
 
         return weight_file
 
-    def _load_weights(self, epoch: int = None):
+    def _load_weights(self, epoch: int | None = None) -> None:
         """Load weights of a certain (or the last) epoch into the model."""
         weight_file = self._get_weight_file(epoch)
 
@@ -193,39 +193,54 @@ class BaseTester(object):
         raw_seed = getattr(self.cfg, 'seed', None)
         seed = raw_seed if isinstance(raw_seed, int) else 42
         random.seed(seed)
-        np.random.seed(seed)
+        # The global legacy NumPy RNG is what downstream sampling code uses.
+        np.random.seed(seed)  # noqa: NPY002
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
-    def evaluate(
+    def evaluate(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR0917
         self,
-        epoch: int = None,
-        save_results: bool = True,
+        epoch: int | None = None,
+        save_results: bool = True,  # noqa: FBT001, FBT002
         metrics: list | dict | None = None,
-        model: torch.nn.Module = None,
-        experiment_logger: Logger = None,
-        data_assimilation: bool | None = None,
-    ) -> dict:
+        model: torch.nn.Module | None = None,
+        experiment_logger: Logger | None = None,
+        data_assimilation: bool | None = None,  # noqa: FBT001
+    ) -> None:
         """Evaluate the model.
 
-        Parameters
-        ----------
-        epoch : int, optional
-            Define a specific epoch to evaluate. By default, the weights of the last epoch are used.
-        save_results : bool, optional
-            If True, stores the evaluation results in the run directory. By default, True.
-        metrics : list | dict, optional
-            List of metrics to compute during evaluation. Can also be a dict that specifies per-target metrics
-        model : torch.nn.Module, optional
-            If a model is passed, this is used for validation.
-        experiment_logger : Logger, optional
-            Logger can be passed during training to log metrics
-        data_assimilation : bool, optional
-            If True, the model outputs are corrected by data assimilation
-            before they are evaluated, and the output files get the suffix
-            `_data_assimilation`. By default, the `assimilate` config value
-            is used.
+        Every metric in `metrics` is reported per basin and target variable as
+        an un-suffixed aggregate and, when more than one step is predicted,
+        once more per predicted step. The un-suffixed value (e.g. `NSE`) pools
+        the observation and simulation pairs of all `predict_last_n` predicted
+        steps, including the nowcast step (`time_step == 0`), into one series
+        before scoring. The per-step values carry a step suffix: `NSE_lead{k}`
+        for forecast lead `time_step == k >= 1`, `NSE_hindcast` for the
+        nowcast step `time_step == 0`, and `NSE_hindcast{n}` for
+        `time_step == -n`. Both kinds are written to the metrics csv and,
+        during validation, logged to `experiment_logger` so that validation
+        curves track every lead time individually.
+
+        Args:
+            epoch: Define a specific epoch to evaluate. By default, the
+                weights of the last epoch are used.
+            save_results: If True, stores the evaluation results in the run
+                directory. By default, True.
+            metrics: List of metrics to compute during evaluation. Can also be
+                a dict that specifies per-target metrics.
+            model: If a model is passed, this is used for validation.
+            experiment_logger: Logger can be passed during training to log
+                metrics.
+            data_assimilation: If True, the model outputs are corrected by
+                data assimilation before they are evaluated, and the output
+                files get the suffix `_data_assimilation`. By default, the
+                `assimilate` config value is used.
+
+        Raises:
+            ValueError: If data assimilation is requested without an
+                `assimilation_config` in the run config.
+            RuntimeError: If no model was passed and none was initialized.
         """
         if metrics is None:
             metrics = []
@@ -250,7 +265,8 @@ class BaseTester(object):
 
         self._set_random_seeds()
 
-        # during validation, depending on settings, only evaluate on a random subset of basins
+        # during validation, depending on settings, only evaluate on a random
+        # subset of basins
         basins = self.basins
         if (
             self.period == 'validation'
@@ -264,10 +280,11 @@ class BaseTester(object):
         # full basin list, not in `self.basins`, which `_calc_exclude_basins`
         # may have shortened.
         batch_sampler = BasinBatchSampler(
-            sample_index=self.dataset._sample_index,
+            sample_index=self.dataset._sample_index,  # noqa: SLF001
             batch_size=self.cfg.batch_size,
             basins_indexes=get_samples_indexes(
-                self.dataset._basins, samples=list(basins)
+                self.dataset._basins,  # noqa: SLF001
+                samples=list(basins),
             ),
         )
         loader = MultimetDataLoader(
@@ -294,7 +311,7 @@ class BaseTester(object):
             data_assimilation=data_assimilation,
             suffix=suffix,
         )
-        pbar = tqdm(
+        pbar = AutoRefreshTqdm(
             eval_data_it,
             file=sys.stdout,
             disable=self._disable_pbar,
@@ -318,33 +335,33 @@ class BaseTester(object):
             dates = basin_data['dates']
             all_losses = basin_data['mean_losses']
 
-            # log loss of this basin plus number of samples in the logger to compute epoch aggregates later
+            # log loss of this basin plus number of samples in the logger to
+            # compute epoch aggregates later
             if experiment_logger is not None:
                 experiment_logger.log_step(
                     **{k: (v, len(loader)) for k, v in all_losses.items()}
                 )
 
-            predict_last_n = self.cfg.predict_last_n
-
             # Create data_vars dictionary for the xarray.Dataset
             data_vars = self._create_xarray_data_vars(y_hat, y)
 
-            # Create coords dictionary for the xarray.Dataset. 'date' can be directly inferred from the dates
-            # array. We index the sample by the date of the last timestep of the sequence. The 'time_step'
-            # index that specifies the position in the output sequence (relative to the end) can be inferred by
-            # computing the timedelta of the dates. If this is a forecast model, `date` should refer to the
-            # issue dates and the `time_step` coordinates should be positive for positive lead times (negative
-            # for any lookback into the hindcast).
+            # Create coords dictionary for the xarray.Dataset. 'date' can be
+            # directly inferred from the dates array. We index the sample by
+            # the date of the last timestep of the sequence. The 'time_step'
+            # index that specifies the position in the output sequence
+            # (relative to the end) can be inferred by computing the timedelta
+            # of the dates. If this is a forecast model, `date` should refer
+            # to the issue dates and the `time_step` coordinates should be
+            # positive for positive lead times (negative for any lookback into
+            # the hindcast).
             time_step_coords = (
                 (dates[0, :] - dates[0, -1]) / pd.Timedelta('1D')
             ).astype(np.int64)
             date_coords = dates[:, -1]
-            # TODO (future) : As in all of the forecast models (but not `Multimet`), this assumes
-            # that all lead times are present from 1 to `self.dataset.lead_time`.
-            if (
-                hasattr(self.dataset, 'lead_time')
-                and self.dataset.lead_time
-            ):
+            # As in all of the forecast models (but not `Multimet`), this
+            # assumes that all lead times are present from 1 to
+            # `self.dataset.lead_time`.
+            if hasattr(self.dataset, 'lead_time') and self.dataset.lead_time:
                 time_step_coords += self.dataset.lead_time
                 # The last target date is the issue date plus the number of
                 # forecast steps beyond the (1-indexed) first lead time.
@@ -360,8 +377,8 @@ class BaseTester(object):
                 {
                     'date': pd.DatetimeIndex(
                         pd.date_range(
-                            xr['date'].values[0],
-                            xr['date'].values[-1],
+                            xr['date'].to_numpy()[0],
+                            xr['date'].to_numpy()[-1],
                             freq='1D',
                         ),
                         name='date',
@@ -377,13 +394,6 @@ class BaseTester(object):
                 freq='1D',
             )
 
-            # only warn once
-            if 1 < predict_last_n and basin == next(iter(basins)):
-                tqdm.write(
-                    'Metrics are calculated over last 1 elements only. '
-                    f'Ignoring {predict_last_n - 1} predictions per sequence.'
-                )
-
             if metrics:
                 for target_variable in self.cfg.target_variables:
                     var_metrics = (
@@ -393,56 +403,16 @@ class BaseTester(object):
                     )
                     if 'all' in var_metrics:
                         var_metrics = get_available_metrics()
-
-                    obs, sim = self._select_time_step_series(
-                        xr,
-                        target_variable,
-                        -predict_last_n,
-                        date_range,
+                    target_results = self._evaluate_target_metrics(
+                        xr=xr,
+                        basin=basin,
+                        target_variable=target_variable,
+                        var_metrics=list(var_metrics),
+                        date_range=date_range,
                     )
-                    # check if there are observations for this period
-                    if obs.notnull().any():
-                        try:
-                            values = calculate_metrics(
-                                obs,
-                                sim,
-                                metrics=var_metrics,
-                                resolution='1D',
-                            )
-                        except AllNaNError as err:
-                            msg = (
-                                f'Basin {basin} '
-                                + (
-                                    f'{target_variable} '
-                                    if len(self.cfg.target_variables) > 1
-                                    else ''
-                                )
-                                + str(err)
-                            )
-                            LOGGER.warning(msg)
-                            values = {
-                                metric: np.nan for metric in var_metrics
-                            }
-
-                        # add variable identifier to metrics if needed
-                        if len(self.cfg.target_variables) > 1:
-                            values = {
-                                f'{target_variable}_{key}': val
-                                for key, val in values.items()
-                            }
-                        if experiment_logger is not None:
-                            experiment_logger.log_step(**values)
-                        results.update(values)
-
-                    if self.period == 'test' and predict_last_n > 1:
-                        results.update(
-                            self._evaluate_per_step_metrics(
-                                xr=xr,
-                                target_variable=target_variable,
-                                var_metrics=list(var_metrics),
-                                date_range=date_range,
-                            )
-                        )
+                    if experiment_logger is not None:
+                        experiment_logger.log_step(**target_results)
+                    results.update(target_results)
 
             if basin in basins_for_figures:
                 self._create_and_log_figures(
@@ -484,81 +454,194 @@ class BaseTester(object):
                 zarr.consolidate_metadata(str(result_file))
                 LOGGER.debug('Consolidated metadata for %s', result_file)
 
-    def _select_time_step_series(
+    def _prepare_target_series(
         self,
         xr: xarray.Dataset,
         target_variable: str,
-        step_idx: int,
         date_range: pd.DatetimeIndex,
     ) -> tuple[xarray.DataArray, xarray.DataArray]:
-        """Extract 1D observed and reduced simulated series for `step_idx`."""
-        obs_series = (
+        """Return `(time_step, datetime)` observed and reduced simulated arrays.
+
+        Negative simulations are clipped to zero for targets listed in
+        `clip_targets_to_zero`, and the `samples` dimension of uncertainty
+        models is reduced according to `tester_sample_reduction`.
+
+        Args:
+            xr: Unscaled per-basin results with `(date, time_step)` dims.
+            target_variable: Name of the target variable to extract.
+            date_range: Daily datetime index matching the `date` dimension.
+
+        Returns:
+            Observed and simulated arrays with dims `(time_step, datetime)`.
+
+        Raises:
+            KeyError: If `tester_sample_reduction` is not supported.
+        """
+        obs_steps = (
             xr[f'{target_variable}_obs']
-            .isel(time_step=step_idx, drop=True)
             .rename({'date': 'datetime'})
             .assign_coords(datetime=date_range)
-            .transpose(..., 'datetime')
         )
-        sim_series = (
+        sim_steps = (
             xr[f'{target_variable}_sim']
-            .isel(time_step=step_idx, drop=True)
             .rename({'date': 'datetime'})
             .assign_coords(datetime=date_range)
-            .transpose(..., 'datetime')
         )
         if target_variable in self.cfg.clip_targets_to_zero:
-            sim_series = xarray.where(sim_series < 0, 0, sim_series)
-        if 'samples' in sim_series.dims:
+            sim_steps = xarray.where(sim_steps < 0, 0, sim_steps)
+        if 'samples' in sim_steps.dims:
             is_cmal_det = self.cfg.head.lower() == 'cmal_deterministic'
             match self.cfg.tester_sample_reduction:
                 case TesterSamplesReduction.MEAN:
-                    sim_series = (
-                        sim_series.isel(samples=0)
+                    sim_steps = (
+                        sim_steps.isel(samples=0)
                         if is_cmal_det
-                        else sim_series.mean(dim='samples')
+                        else sim_steps.mean(dim='samples')
                     )
                 case TesterSamplesReduction.MEDIAN:
-                    sim_series = (
-                        sim_series.isel(samples=5)
+                    sim_steps = (
+                        sim_steps.isel(samples=5)
                         if is_cmal_det
-                        else sim_series.median(dim='samples')
+                        else sim_steps.median(dim='samples')
                     )
                 case _:
                     msg = f'Supported {self.cfg.tester_sample_reduction=}'
                     raise KeyError(msg)
-        return obs_series, sim_series
+        return (
+            obs_steps.transpose('time_step', 'datetime'),
+            sim_steps.transpose('time_step', 'datetime'),
+        )
 
-    def _evaluate_per_step_metrics(
+    @staticmethod
+    def _has_valid_values(obs: xarray.DataArray, sim: xarray.DataArray) -> bool:
+        """Return True if neither `obs` nor `sim` is entirely NaN."""
+        has_valid_obs = not bool(np.isnan(obs.to_numpy()).all())
+        has_valid_sim = not bool(np.isnan(sim.to_numpy()).all())
+        return has_valid_obs and has_valid_sim
+
+    @staticmethod
+    def _time_step_suffix(time_step: int) -> str:
+        """Return the metric-name suffix of a `time_step` coordinate."""
+        if time_step >= 1:
+            return f'lead{time_step}'
+        if time_step == 0:
+            return 'hindcast'
+        return f'hindcast{abs(time_step)}'
+
+    def _evaluate_target_metrics(
         self,
         xr: xarray.Dataset,
+        basin: str,
         target_variable: str,
         var_metrics: list[str],
         date_range: pd.DatetimeIndex,
     ) -> dict[str, float]:
-        """Compute per-step metrics keyed by the `time_step` coordinate."""
-        step_results: dict[str, float] = {}
-        if not var_metrics:
-            return step_results
+        """Compute aggregate and per-step metrics for one target variable.
+
+        The un-suffixed aggregate pools the observation and simulation pairs
+        of every predicted step (all `time_step` coordinates, including the
+        nowcast step `0`) into one 1D series before calling
+        `calculate_metrics`. When more than one step is predicted, every step
+        is additionally scored on its own (see `_evaluate_per_step_metrics`).
+        If the basin has no valid observation or no valid simulation at all,
+        every metric is set to NaN.
+
+        Args:
+            xr: Unscaled per-basin results with `(date, time_step)` dims.
+            basin: Basin identifier, used in log messages only.
+            target_variable: Name of the target variable to score.
+            var_metrics: Metric names to compute.
+            date_range: Daily datetime index matching the `date` dimension.
+
+        Returns:
+            Metric values keyed by `<metric>` (aggregate) and
+            `<metric>_<step suffix>` (per step), prefixed by
+            `<target_variable>_` when several targets are configured.
+        """
+        obs_steps, sim_steps = self._prepare_target_series(
+            xr, target_variable, date_range
+        )
         metric_prefix = (
             f'{target_variable}_' if len(self.cfg.target_variables) > 1 else ''
         )
-        time_steps = [int(ts) for ts in xr['time_step'].to_numpy()]
-        for step_idx, time_step_val in enumerate(time_steps):
-            if time_step_val >= 1:
-                step_suffix = f'lead{time_step_val}'
-            elif time_step_val == 0:
-                step_suffix = 'hindcast'
-            else:
-                step_suffix = f'hindcast{abs(time_step_val)}'
-            obs_step, sim_step = self._select_time_step_series(
-                xr,
+        time_steps = [int(ts) for ts in obs_steps['time_step'].to_numpy()]
+        step_suffixes = (
+            [self._time_step_suffix(ts) for ts in time_steps]
+            if len(time_steps) > 1
+            else []
+        )
+
+        if not self._has_valid_values(obs_steps, sim_steps):
+            LOGGER.warning(
+                'Basin %s target %s has all-NaN obs or sim; setting metrics '
+                'to NaN.',
+                basin,
                 target_variable,
-                step_idx,
-                date_range,
             )
-            has_valid_obs = not bool(np.isnan(obs_step.values).all())
-            has_valid_sim = not bool(np.isnan(sim_step.values).all())
-            if has_valid_obs and has_valid_sim:
+            nan_keys = [f'{metric_prefix}{name}' for name in var_metrics] + [
+                f'{metric_prefix}{name}_{step_suffix}'
+                for step_suffix in step_suffixes
+                for name in var_metrics
+            ]
+            return dict.fromkeys(nan_keys, np.nan)
+
+        # Flatten `(time_step, datetime)` into one series, one contiguous
+        # block per step, so pointwise and peak metrics pool all steps.
+        # (`stack` is the xarray reshape; pandas' `melt` does not apply.)
+        obs_all = obs_steps.stack(sample=('time_step', 'datetime'))  # noqa: PD013
+        sim_all = sim_steps.stack(sample=('time_step', 'datetime'))  # noqa: PD013
+        aggregate_values = calculate_metrics(
+            obs_all,
+            sim_all,
+            metrics=var_metrics,
+            resolution='1D',
+        )
+        target_results = {
+            f'{metric_prefix}{name}': value
+            for name, value in aggregate_values.items()
+        }
+        if step_suffixes:
+            target_results.update(
+                self._evaluate_per_step_metrics(
+                    obs_steps=obs_steps,
+                    sim_steps=sim_steps,
+                    step_suffixes=step_suffixes,
+                    target_variable=target_variable,
+                    var_metrics=var_metrics,
+                )
+            )
+        return target_results
+
+    def _evaluate_per_step_metrics(
+        self,
+        obs_steps: xarray.DataArray,
+        sim_steps: xarray.DataArray,
+        step_suffixes: list[str],
+        target_variable: str,
+        var_metrics: list[str],
+    ) -> dict[str, float]:
+        """Compute per-step metrics keyed by the `time_step` suffix.
+
+        Args:
+            obs_steps: Observed values with dims `(time_step, datetime)`.
+            sim_steps: Simulated values with dims `(time_step, datetime)`.
+            step_suffixes: Metric-name suffix of every `time_step`, in order.
+            target_variable: Name of the scored target variable.
+            var_metrics: Metric names to compute.
+
+        Returns:
+            Metric values keyed by `<metric>_<step suffix>`, prefixed by
+            `<target_variable>_` when several targets are configured. Steps
+            whose observations or simulations are entirely NaN score NaN.
+        """
+        metric_prefix = (
+            f'{target_variable}_' if len(self.cfg.target_variables) > 1 else ''
+        )
+        step_results: dict[str, float] = {}
+        for step_idx, step_suffix in enumerate(step_suffixes):
+            obs_step = obs_steps.isel(time_step=step_idx, drop=True)
+            sim_step = sim_steps.isel(time_step=step_idx, drop=True)
+            if self._has_valid_values(obs_step, sim_step):
                 step_values = calculate_metrics(
                     obs_step,
                     sim_step,
@@ -578,25 +661,20 @@ class BaseTester(object):
                 step_results[key] = metric_val
         return step_results
 
+    def _period_dates(self) -> tuple[list, list]:
+        """Return the start and end dates of the evaluated period."""
+        if self.period == 'validation':
+            return self.cfg.validation_start_date, self.cfg.validation_end_date
+        if self.period == 'train':
+            return self.cfg.train_start_date, self.cfg.train_end_date
+        return self.cfg.test_start_date, self.cfg.test_end_date
+
     def _calc_exclude_basins(self) -> Iterator[str]:
+        """Yield basins whose targets are all-NaN over the evaluated period."""
         if not self.cfg.tester_skip_obs_all_nan:
             return
 
-        if self.period == 'validation':
-            period_start, period_end = (
-                self.cfg.validation_start_date,
-                self.cfg.validation_end_date,
-            )
-        elif self.period == 'train':
-            period_start, period_end = (
-                self.cfg.train_start_date,
-                self.cfg.train_end_date,
-            )
-        else:
-            period_start, period_end = (
-                self.cfg.test_start_date,
-                self.cfg.test_end_date,
-            )
+        period_start, period_end = self._period_dates()
 
         if self.cfg.lazy_load:
             LOGGER.warning(
@@ -608,11 +686,11 @@ class BaseTester(object):
             return
 
         observations = (
-            self.dataset._dataset[self.cfg.target_variables]
+            self.dataset._dataset[self.cfg.target_variables]  # noqa: SLF001
             .sel(basin=self.basins)
             .to_array(dim='__target__')
         )
-        record_dates = observations.date.values
+        record_dates = observations.date.to_numpy()
         if len(record_dates) == 0:
             return
 
@@ -626,7 +704,12 @@ class BaseTester(object):
 
         window_obs = observations.isel(date=in_period)
         non_basin_dims = [dim for dim in window_obs.dims if dim != 'basin']
-        excluded_mask = window_obs.isnull().all(dim=non_basin_dims).values
+        # xarray has no `isna`; `isnull` is the DataArray spelling.
+        excluded_mask = (
+            window_obs.isnull()  # noqa: PD003
+            .all(dim=non_basin_dims)
+            .to_numpy()
+        )
 
         for basin, excluded in zip(self.basins, excluded_mask, strict=True):
             if excluded:
@@ -639,13 +722,14 @@ class BaseTester(object):
         experiment_logger: Logger | None,
         epoch: int,
         suffix: str = '',
-    ):
+    ) -> None:
         """Plot obs vs. sim; `suffix` keeps DA figures apart from others."""
         xr = results['xr']
         for target_var in self.cfg.target_variables:
-            obs = xr[f'{target_var}_obs'].values
-            sim = xr[f'{target_var}_sim'].values
-            # clip negative predictions to zero, if variable is listed in config 'clip_target_to_zero'
+            obs = xr[f'{target_var}_obs'].to_numpy()
+            sim = xr[f'{target_var}_sim'].to_numpy()
+            # clip negative predictions to zero, if variable is listed in
+            # config 'clip_target_to_zero'
             if target_var in self.cfg.clip_targets_to_zero:
                 sim = xarray.where(sim < 0, 0, sim)
             figures = [
@@ -676,7 +760,7 @@ class BaseTester(object):
 
     def _ensure_no_previous_results_saved(
         self, epoch: int | None = None, suffix: str = ''
-    ):
+    ) -> None:
         parent_directory = self._parent_directory_for_results(epoch)
 
         zarr_stores_to_remove = [
@@ -691,17 +775,17 @@ class BaseTester(object):
         if metrics_csv_path.exists():
             metrics_csv_path.unlink()
 
-    def _save_incremental_results(
+    def _save_incremental_results(  # noqa: PLR0913
         self,
         basin: str,
         *,
         results: dict,
-        states: dict,
+        states: dict,  # noqa: ARG002
         save_results: bool,
         epoch: int | None,
         suffix: str = '',
         data_assimilation: bool = False,
-    ):
+    ) -> None:
         """Store results in various formats to disk.
 
         `suffix` is appended to the file stems (e.g. `_data_assimilation`).
@@ -710,9 +794,12 @@ class BaseTester(object):
         updated forecasts, so its results are always persisted. The metrics
         csv is unaffected.
 
-        Developer note: We cannot store the time series data (the xarray objects) as netCDF file but have to use
-        pickle as a wrapper. The reason is that netCDF files have special constraints on the characters/symbols that can
-        be used as variable names. However, for convenience we will store metrics, if calculated, in a separate csv-file.
+        Developer note: We cannot store the time series data (the xarray
+        objects) as netCDF file but have to use pickle as a wrapper. The
+        reason is that netCDF files have special constraints on the
+        characters/symbols that can be used as variable names. However, for
+        convenience we will store metrics, if calculated, in a separate
+        csv-file.
         """
         parent_directory = self._parent_directory_for_results(epoch)
 
@@ -750,21 +837,61 @@ class BaseTester(object):
             else:
                 ds.to_zarr(result_file, mode='w', consolidated=False)
 
-    def _parent_directory_for_results(self, epoch: int | None = None):
+    def _parent_directory_for_results(self, epoch: int | None = None) -> Path:
         # determine parent directory name and create if needed
         weight_file = self._get_weight_file(epoch=epoch)
         parent_directory = self.run_dir / self.period / weight_file.stem
         parent_directory.mkdir(parents=True, exist_ok=True)
         return parent_directory
 
+    def _load_hot_start_state(self, model: BaseModel, basin: str) -> None:
+        """Pre-load the hot-start state of `basin` if one is configured."""
+        if getattr(self.cfg, 'hot_start_path', None) is None:
+            return
+        state_path = self.cfg.hot_start_path
+        if state_path.is_dir():
+            basin_state = state_path / f'state_{basin}.npz'
+            if not basin_state.exists():
+                basin_state = state_path / f'{basin}.npz'
+        else:
+            basin_state = state_path
+        if basin_state.exists():
+            model.load_state_from_disk(basin_state)
+
+    def _move_batch_to_device(self, batch: dict) -> None:
+        """Move every tensor of `batch` to `self.device` in place."""
+        for key, value in batch.items():
+            if key.startswith('x_d'):
+                batch[key] = {k: v.to(self.device) for k, v in value.items()}
+            elif not key.startswith('date'):
+                batch[key] = value.to(self.device)
+
+    @staticmethod
+    def _mean_losses(losses: list[dict[str, float]]) -> dict[str, float]:
+        """Average every loss term over the batches of one basin."""
+        # set to NaN explicitly if all losses are NaN to avoid RuntimeWarning
+        if len(losses) == 0:
+            return {'loss': np.nan}
+        mean_losses = {}
+        for loss_name in losses[0]:
+            loss_values = [loss[loss_name] for loss in losses]
+            mean_losses[loss_name] = (
+                np.nanmean(loss_values)
+                if not np.all(np.isnan(loss_values))
+                else np.nan
+            )
+        return mean_losses
+
     def _evaluate(
         self,
         model: BaseModel,
         loader: MultimetDataLoader,
         basins: set[str] | None = None,
+        *,
         data_assimilation: bool = False,
         suffix: str = '',
-    ):
+    ) -> Iterator[dict]:
+        """Yield predictions, observations, dates, and losses per basin."""
         if basins is None:
             basins = set()
         predict_last_n = self.cfg.predict_last_n
@@ -780,45 +907,27 @@ class BaseTester(object):
                 loader, lambda data: data['basin_index'][0].item()
             )
             for basin_index, samples in basin_samples:
-                basin = loader.dataset._basins[basin_index]
+                basin = loader.dataset._basins[basin_index]  # noqa: SLF001
                 if basin not in basins:
                     continue
 
                 model.reset_state()
-                # Pre-load hot-start state for this basin if configured
-                if getattr(self.cfg, 'hot_start_path', None) is not None:
-                    state_path = self.cfg.hot_start_path
-                    if state_path.is_dir():
-                        basin_state = state_path / f'state_{basin}.npz'
-                        if not basin_state.exists():
-                            basin_state = state_path / f'{basin}.npz'
-                    else:
-                        basin_state = state_path
-                    if basin_state.exists():
-                        model.load_state_from_disk(basin_state)
+                self._load_hot_start_state(model, basin)
 
                 preds = None
                 obs = None
                 dates = None
                 losses = []
-                mean_losses = {}
                 last_data = None
 
-                for data in samples:
-                    last_data = data
-                    for key in data:
-                        if key.startswith('x_d'):
-                            data[key] = {
-                                k: v.to(self.device)
-                                for k, v in data[key].items()
-                            }
-                        elif not key.startswith('date'):
-                            data[key] = data[key].to(self.device)
+                for batch in samples:
+                    last_data = batch
+                    self._move_batch_to_device(batch)
 
                     with autocast(
                         self.device.type, enabled=(self.device.type == 'cuda')
                     ):
-                        data = model.pre_model_hook(data, is_train=False)
+                        data = model.pre_model_hook(batch, is_train=False)
                         predictions, loss = self._get_predictions_and_loss(
                             model, data, data_assimilation=data_assimilation
                         )
@@ -829,7 +938,8 @@ class BaseTester(object):
                         predictions,
                         predict_last_n,
                     )
-                    # Date subsetting is universal across all models and thus happens here.
+                    # Date subsetting is universal across all models and thus
+                    # happens here.
                     date_sub = data['date'][:, -predict_last_n:]
 
                     if preds is None:
@@ -856,25 +966,13 @@ class BaseTester(object):
                     state_save_path = save_dir / f'state_{basin}{suffix}.npz'
                     model.save_state(last_data, state_save_path)
 
-                # set to NaN explicitly if all losses are NaN to avoid RuntimeWarning
-                if len(losses) == 0:
-                    mean_losses['loss'] = np.nan
-                else:
-                    for loss_name in losses[0].keys():
-                        loss_values = [loss[loss_name] for loss in losses]
-                        mean_losses[loss_name] = (
-                            np.nanmean(loss_values)
-                            if not np.all(np.isnan(loss_values))
-                            else np.nan
-                        )
-
                 res = {
                     'basin': basin,
                     'preds': preds.to('cpu', non_blocking=True),
                     'obs': obs.to('cpu', non_blocking=True),
                     'dates': dates,
                     'losses': losses,
-                    'mean_losses': mean_losses,
+                    'mean_losses': self._mean_losses(losses),
                 }
                 # Await the non-blocking GPU -> CPU copies above. Without an
                 # explicit device, `synchronize` only waits on the *current*
@@ -888,8 +986,9 @@ class BaseTester(object):
         self,
         model: BaseModel,
         data: dict[str, torch.Tensor],
+        *,
         data_assimilation: bool = False,
-    ) -> tuple[torch.Tensor, float]:
+    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         predictions = (
             self.assimilation.assimilate(model, data)
             if data_assimilation
@@ -904,33 +1003,35 @@ class BaseTester(object):
         self,
         model: BaseModel,
         data: dict[str, torch.Tensor],
-        predictions: np.ndarray,
+        predictions: dict[str, torch.Tensor],
         predict_last_n: int,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
-    def _create_xarray_data_vars(self, y_hat: np.ndarray, y: np.ndarray):
+    def _create_xarray_data_vars(
+        self, y_hat: np.ndarray, y: np.ndarray
+    ) -> dict[str, tuple]:
         raise NotImplementedError
 
-    def _get_plots(self, qobs: np.ndarray, qsim: np.ndarray, title: str):
+    def _get_plots(
+        self, qobs: np.ndarray, qsim: np.ndarray, title: str
+    ) -> tuple:
         raise NotImplementedError
 
 
 class RegressionTester(BaseTester):
     """Tester class to run inference on a regression model.
 
-    Use the `evaluate` method of this class to evaluate a trained model on its train, test, or validation period.
+    Use the `evaluate` method of this class to evaluate a trained model on
+    its train, test, or validation period.
 
-    Parameters
-    ----------
-    cfg : Config
-        The run configuration.
-    run_dir : Path
-        Path to the run directory.
-    period : {'train', 'validation', 'test'}
-        The period to evaluate.
-    init_model : bool, optional
-        If True, the model weights will be initialized with the checkpoint from the last available epoch in `run_dir`.
+    Args:
+        cfg: The run configuration.
+        run_dir: Path to the run directory.
+        period: The period to evaluate, one of `'train'`, `'validation'`, or
+            `'test'`.
+        init_model: If True, the model weights are initialized with the
+            checkpoint from the last available epoch in `run_dir`.
     """
 
     def __init__(
@@ -938,47 +1039,50 @@ class RegressionTester(BaseTester):
         cfg: Config,
         run_dir: Path,
         period: str = 'test',
-        init_model: bool = True,
+        init_model: bool = True,  # noqa: FBT001, FBT002
     ):
-        super(RegressionTester, self).__init__(cfg, run_dir, period, init_model)
+        """Build the regression tester."""
+        super().__init__(cfg, run_dir, period, init_model)
 
     def _subset_targets(
         self,
-        model: BaseModel,
+        model: BaseModel,  # noqa: ARG002
         data: dict[str, torch.Tensor],
-        predictions: np.ndarray,
+        predictions: dict[str, torch.Tensor],
         predict_last_n: int,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         y_hat_sub = predictions['y_hat'][:, -predict_last_n:, :]
         y_sub = data['y'][:, -predict_last_n:, :]
         return y_hat_sub, y_sub
 
-    def _create_xarray_data_vars(self, y_hat: np.ndarray, y: np.ndarray):
+    def _create_xarray_data_vars(
+        self, y_hat: np.ndarray, y: np.ndarray
+    ) -> dict[str, tuple]:
         data = {}
         for i, var in enumerate(self.cfg.target_variables):
             data[f'{var}_obs'] = (('date', 'time_step'), y[:, :, i])
             data[f'{var}_sim'] = (('date', 'time_step'), y_hat[:, :, i])
         return data
 
-    def _get_plots(self, qobs: np.ndarray, qsim: np.ndarray, title: str):
+    def _get_plots(
+        self, qobs: np.ndarray, qsim: np.ndarray, title: str
+    ) -> tuple:
         return plots.regression_plot(qobs, qsim, title)
 
 
 class UncertaintyTester(BaseTester):
     """Tester class to run inference on an uncertainty model.
 
-    Use the `evaluate` method of this class to evaluate a trained model on its train, test, or validation period.
+    Use the `evaluate` method of this class to evaluate a trained model on
+    its train, test, or validation period.
 
-    Parameters
-    ----------
-    cfg : Config
-        The run configuration.
-    run_dir : Path
-        Path to the run directory.
-    period : {'train', 'validation', 'test'}
-        The period to evaluate.
-    init_model : bool, optional
-        If True, the model weights will be initialized with the checkpoint from the last available epoch in `run_dir`.
+    Args:
+        cfg: The run configuration.
+        run_dir: Path to the run directory.
+        period: The period to evaluate, one of `'train'`, `'validation'`, or
+            `'test'`.
+        init_model: If True, the model weights are initialized with the
+            checkpoint from the last available epoch in `run_dir`.
     """
 
     def __init__(
@@ -986,18 +1090,18 @@ class UncertaintyTester(BaseTester):
         cfg: Config,
         run_dir: Path,
         period: str = 'test',
-        init_model: bool = True,
+        init_model: bool = True,  # noqa: FBT001, FBT002
     ):
-        super(UncertaintyTester, self).__init__(
-            cfg, run_dir, period, init_model
-        )
+        """Build the uncertainty tester."""
+        super().__init__(cfg, run_dir, period, init_model)
 
     def _get_predictions_and_loss(
         self,
         model: BaseModel,
         data: dict[str, torch.Tensor],
+        *,
         data_assimilation: bool = False,
-    ) -> tuple[torch.Tensor, float]:
+    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         # With DA, the samples are drawn from the assimilated head outputs.
         outputs, losses = super()._get_predictions_and_loss(
             model, data, data_assimilation=data_assimilation
@@ -1012,16 +1116,18 @@ class UncertaintyTester(BaseTester):
 
     def _subset_targets(
         self,
-        model: BaseModel,
+        model: BaseModel,  # noqa: ARG002
         data: dict[str, torch.Tensor],
-        predictions: np.ndarray,
+        predictions: dict[str, torch.Tensor],
         predict_last_n: int,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         y_hat_sub = predictions['y_hat'][:, -predict_last_n:, :]
         y_sub = data['y'][:, -predict_last_n:, :]
         return y_hat_sub, y_sub
 
-    def _create_xarray_data_vars(self, y_hat: np.ndarray, y: np.ndarray):
+    def _create_xarray_data_vars(
+        self, y_hat: np.ndarray, y: np.ndarray
+    ) -> dict[str, tuple]:
         data = {}
         for i, var in enumerate(self.cfg.target_variables):
             data[f'{var}_obs'] = (('date', 'time_step'), y[:, :, i])
@@ -1031,11 +1137,13 @@ class UncertaintyTester(BaseTester):
             )
         return data
 
-    def _get_plots(self, qobs: np.ndarray, qsim: np.ndarray, title: str):
+    def _get_plots(
+        self, qobs: np.ndarray, qsim: np.ndarray, title: str
+    ) -> tuple:
         return plots.uncertainty_plot(qobs, qsim, title)
 
 
-def _ensure_unicode_or_bytes_are_strings(ds: xarray.Dataset):
+def _ensure_unicode_or_bytes_are_strings(ds: xarray.Dataset) -> xarray.Dataset:
     updates = {
         name: coord.astype('O')
         for name, coord in ds.coords.items()
