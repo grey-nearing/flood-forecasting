@@ -24,7 +24,7 @@ help:
 # -T: Do not generate a table of contents file (managed manually).
 apidoc:
 	@echo "Generating API documentation..."
-	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR)" "$(PACKAGEDIR)/tests" "$(PACKAGEDIR)/tutorial"
+	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR)" "$(PACKAGEDIR)/tests"
 	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR2)" "$(PACKAGEDIR2)/tests" "$(PACKAGEDIR2)/tools"
 	@printf "Modules\n=======\n\n.. toctree::\n   :maxdepth: 4\n\n   model\n   catchment_delineation\n   static_extractor\n   gridded_archive_builders\n   timeseries_extractors\n   return_periods\n   benchmarks\n" > "$(SOURCEDIR)/api/modules.rst"
 

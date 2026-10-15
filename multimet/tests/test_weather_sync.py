@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import base64
 import datetime
 import importlib.util
 import json
@@ -31,6 +32,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from multimet.timeseries_extractors.hres import decode_grib2_message
 from multimet.weather_fetcher import cli
 from multimet.weather_fetcher.config import (
   MAX_LEAD_HOURS,
@@ -275,11 +277,23 @@ class _CpcUpstream:
     return dest_path
 
 
-def _grib2_message(values: np.ndarray, category: int, number: int) -> bytes:
-  """Minimal GRIB2 message (sections 0, 1, 4, 7) with big-endian float32."""
+def _grib2_message(
+    values: np.ndarray,
+    category: int,
+    number: int,
+    surface_type: int = 1,
+) -> bytes:
+  """Build minimal GRIB2 message (sections 0, 1, 4, 7) with Template 4.0."""
   data = np.asarray(values, dtype=">f4").tobytes()
   sec1 = struct.pack(">IB", 21, 1) + bytes(16)
-  sec4 = struct.pack(">IB", 11, 4) + bytes(4) + bytes([category, number])
+  sec4 = (
+      struct.pack(">IB", 34, 4)
+      + bytes(4)
+      + bytes([category, number])
+      + bytes(11)
+      + bytes([surface_type])
+      + bytes(11)
+  )
   sec7 = struct.pack(">IB", 5 + len(data), 7) + data
   body = sec1 + sec4 + sec7
   total_len = 16 + len(body) + 4
@@ -291,11 +305,11 @@ class _FakeOpenDataGcs:
   """gcsfs stand-in serving one synthetic HRES run from byte ranges."""
 
   _PARAM_CODES = {
-      "tp": (1, 52),
-      "2t": (0, 0),
-      "msl": (3, 1),
-      "10u": (2, 2),
-      "10v": (2, 3),
+      "tp": (1, 52, 1),
+      "2t": (0, 0, 103),
+      "msl": (3, 0, 101),
+      "10u": (2, 2, 103),
+      "10v": (2, 3, 103),
   }
 
   def __init__(self, date_str: str, cycle: str, max_lead: int):
@@ -327,8 +341,8 @@ class _FakeOpenDataGcs:
       return
     blob = b""
     lines = []
-    for param, (cat, num) in self._PARAM_CODES.items():
-      msg = _grib2_message(self.field(param, lead_h), cat, num)
+    for param, (cat, num, sfc_type) in self._PARAM_CODES.items():
+      msg = _grib2_message(self.field(param, lead_h), cat, num, sfc_type)
       lines.append(
           json.dumps({
               "param": param,
@@ -1121,6 +1135,76 @@ def test_hres_open_data_extraction_with_synthetic_grib2(
       now=now,
   )
   assert entry_none is None and isinstance(err_none, IncompleteRunError)
+
+
+_GRIB2_SP_IEEE_HEADER = base64.b64decode(
+    "R1JJQv//AAIAAAAAAD9fKgAAABUBAGIAAAQAAQfXAxcMAAAAAgAAAEgDAAAP16"
+    "AAAAAABv///////////////////wAABaAAAALRAAAAAP////8Dk4cAAAAAADAA"
+    "AAAAAcnDgAAehIAAHoSAAAAAACIEAAAAAAMAAP+AAAAAAQAAAAAB//////////"
+    "////8AAAAMBQAP16AABAEAAAAGBv8AP16FBw=="
+)
+_SEC4_SURFACE_TYPE_BYTE_OFFSET = 109 + 22
+_MSL_SURFACE_CODE = 101
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    importlib.util.find_spec("eccodes") is not None,
+    reason="tests rasterio and raw GRIB2 decode paths without eccodes",
+)
+def test_decode_grib2_message_distinguishes_msl_sp_and_wind() -> None:
+  """Verify (3, 0) + surface 101 -> msl vs surface 1 -> sp on raw/GDAL paths."""
+  shape = (N_LAT, N_LON)
+  expected_msl = np.full(shape, 101325.0, dtype=np.float32)
+  expected_sp = np.full(shape, 98500.0, dtype=np.float32)
+  expected_u10 = np.full(shape, 4.5, dtype=np.float32)
+  expected_v10 = np.full(shape, -2.5, dtype=np.float32)
+
+  # 1. Raw fallback path (no Section 3): (3, 0) with surface_type=101 vs 1.
+  raw_msl = _grib2_message(expected_msl, 3, 0, surface_type=_MSL_SURFACE_CODE)
+  np.testing.assert_array_equal(
+      decode_grib2_message(raw_msl, shape, param="msl"), expected_msl
+  )
+  with pytest.raises(ValueError, match="expected 'sp', got 'msl'"):
+    decode_grib2_message(raw_msl, shape, param="sp")
+
+  raw_sp = _grib2_message(expected_sp, 3, 0, surface_type=1)
+  np.testing.assert_array_equal(
+      decode_grib2_message(raw_sp, shape, param="sp"), expected_sp
+  )
+  with pytest.raises(ValueError, match="expected 'msl', got 'sp'"):
+    decode_grib2_message(raw_sp, shape, param="msl")
+
+  # Wind components (2, 2) -> 10u and (2, 3) -> 10v.
+  raw_u10 = _grib2_message(expected_u10, 2, 2, 103)
+  raw_v10 = _grib2_message(expected_v10, 2, 3, 103)
+  np.testing.assert_array_equal(
+      decode_grib2_message(raw_u10, shape, param="10u"), expected_u10
+  )
+  np.testing.assert_array_equal(
+      decode_grib2_message(raw_v10, shape, param="10v"), expected_v10
+  )
+  with pytest.raises(ValueError, match="expected '10v', got '10u'"):
+    decode_grib2_message(raw_u10, shape, param="10v")
+
+  # 2. GDAL / rasterio path (full GRIB2 message with Section 3).
+  if importlib.util.find_spec("rasterio") is not None:
+    payload = np.full(shape, 101325.0, dtype=">f4").tobytes() + b"7777"
+    gdal_sp = _GRIB2_SP_IEEE_HEADER + payload
+    np.testing.assert_array_equal(
+        decode_grib2_message(gdal_sp, shape, param="sp"), expected_msl
+    )
+    with pytest.raises(ValueError, match="expected 'msl', got 'sp'"):
+      decode_grib2_message(gdal_sp, shape, param="msl")
+
+    hdr_msl = bytearray(_GRIB2_SP_IEEE_HEADER)
+    hdr_msl[_SEC4_SURFACE_TYPE_BYTE_OFFSET] = _MSL_SURFACE_CODE
+    gdal_msl = bytes(hdr_msl) + payload
+    np.testing.assert_array_equal(
+        decode_grib2_message(gdal_msl, shape, param="msl"), expected_msl
+    )
+    with pytest.raises(ValueError, match="expected 'sp', got 'msl'"):
+      decode_grib2_message(gdal_msl, shape, param="sp")
 
 
 # ---------------------------------------------------------------------------

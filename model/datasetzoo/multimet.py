@@ -19,7 +19,7 @@ import math
 import pickle
 import subprocess
 import sys
-from collections.abc import Hashable, Iterable, Iterator
+from collections.abc import Hashable, Iterable, Iterator, Sequence
 from pathlib import Path
 
 import dask
@@ -108,6 +108,11 @@ class MultimetDataLoader(torch.utils.data.DataLoader):
         self._debug = logging_level <= logging.DEBUG
 
     def __iter__(self):
+        if not self._lazy_load and isinstance(self.dataset, Multimet):
+            for indices in self.batch_sampler:
+                yield self.dataset.get_batch(indices)
+            return
+
         for indices in self.batch_sampler:
             # TODO(future): Implement getitems (batched getitem) to save memory
             # and runtime due to many independent dask graphs, especially in
@@ -290,7 +295,9 @@ class Multimet(Dataset):
         self._forecast_counter = None
         if cfg.timestep_counter:
             self._hindcast_counter = np.full((self._seq_length,), 0)
-            self._forecast_counter = self._lead_times
+            self._forecast_counter = np.asarray(
+                self._lead_times, dtype=np.int64
+            )
             if self._forecast_overlap:
                 overlap_counter = np.full(
                     (self._forecast_overlap,), self._min_lead_time
@@ -352,6 +359,9 @@ class Multimet(Dataset):
         self._create_sample_index(valid_sample_mask, indices)
 
         self._data_cache: dict[str, xr.DataArray] = {}
+        self._fast_ready = False
+        if not cfg.lazy_load:
+            self._init_fast_batch_extractor()
 
         LOGGER.debug('forecast dataset init complete (%s)', self._period)
 
@@ -471,6 +481,209 @@ class Multimet(Dataset):
 
         LOGGER.debug('scale data')
         self._dataset = self.scaler.scale(self._dataset)
+
+    def _init_fast_batch_extractor(self) -> None:
+        """Precompute contiguous arrays and sliding window views for batching.
+
+        Builds zero-copy `sliding_window_view` arrays over the eager in-memory
+        `(basin, date)` and `(basin, date, lead_time)` dataset arrays so that
+        `get_batch` can slice a full batch of samples in a single vectorized
+        NumPy indexing step.
+        """
+        swv = np.lib.stride_tricks.sliding_window_view
+        self._fast_basin_col = self._sample_index.get_column('basin').astype(
+            np.intp
+        )
+        self._fast_date_col = self._sample_index.get_column('date').astype(
+            np.intp
+        )
+        self._fast_date_win = swv(
+            self._dataset['date'].data, self._seq_length, axis=0
+        )
+        self._fast_statics = np.ascontiguousarray(
+            np.stack(
+                [
+                    self._dataset[feat].transpose('basin').data
+                    for feat in self._static_features
+                ],
+                axis=-1,
+            )
+        )
+        target_arr = np.ascontiguousarray(
+            np.stack(
+                [
+                    self._dataset[feat].transpose('basin', 'date').data
+                    for feat in self._target_features
+                ],
+                axis=-1,
+            )
+        )
+        self._fast_target_win = np.moveaxis(
+            swv(target_arr, self._seq_length, axis=1), -1, 2
+        )
+        if self._per_basin_target_stds is not None:
+            self._fast_stds = np.ascontiguousarray(
+                np.expand_dims(
+                    np.stack(
+                        [
+                            self._per_basin_target_stds[feat]
+                            .transpose('basin')
+                            .data
+                            for feat in self._target_features
+                        ],
+                        axis=-1,
+                    ),
+                    axis=1,
+                )
+            )
+        else:
+            self._fast_stds = None
+
+        self._fast_hindcast_wins: dict[str, np.ndarray] = {}
+        for feature in self._hindcast_features_without_lead_time:
+            arr = np.ascontiguousarray(
+                self._dataset[feature].transpose('basin', 'date').data
+            )
+            self._fast_hindcast_wins[feature] = swv(
+                arr, self._seq_length, axis=1
+            )
+        for feature in self._hindcast_features_with_lead_time:
+            arr = np.ascontiguousarray(
+                self._dataset[feature]
+                .isel(lead_time=0)
+                .transpose('basin', 'date')
+                .data
+            )
+            self._fast_hindcast_wins[feature] = swv(
+                arr, self._seq_length, axis=1
+            )
+
+        self._fast_forecast_3d: dict[str, np.ndarray] = {}
+        self._fast_forecast_overlap_wins: dict[str, np.ndarray] = {}
+        for feature in self._forecast_features:
+            arr_3d = np.ascontiguousarray(
+                self._dataset[feature]
+                .transpose('basin', 'date', 'lead_time')
+                .data
+            )
+            self._fast_forecast_3d[feature] = arr_3d
+            if (
+                self._forecast_overlap is not None
+                and self._forecast_overlap > 0
+            ):
+                arr_l0 = np.ascontiguousarray(arr_3d[:, :, 0])
+                self._fast_forecast_overlap_wins[feature] = swv(
+                    arr_l0, self._forecast_overlap, axis=1
+                )
+        self._fast_ready = True
+
+    def _build_batch_forecast(
+        self,
+        b_idx: np.ndarray,
+        d_idx: np.ndarray,
+        h_end: np.ndarray,
+    ) -> dict[str, torch.Tensor]:
+        """Build the `x_d_forecast` tensor dictionary for a batch of indices."""
+        if not self._forecast_features:
+            return {}
+        if self._forecast_overlap is not None and self._forecast_overlap > 0:
+            ov_start = h_end - self._forecast_overlap
+            batch_forecast: dict[str, torch.Tensor] = {
+                feature: torch.from_numpy(
+                    np.concatenate(
+                        [
+                            self._fast_forecast_overlap_wins[feature][
+                                b_idx, ov_start
+                            ],
+                            self._fast_forecast_3d[feature][b_idx, d_idx, :],
+                        ],
+                        axis=1,
+                    )
+                ).unsqueeze(-1)
+                for feature in self._forecast_features
+            }
+        else:
+            batch_forecast = {
+                feature: torch.from_numpy(
+                    self._fast_forecast_3d[feature][b_idx, d_idx, :]
+                ).unsqueeze(-1)
+                for feature in self._forecast_features
+            }
+        if self._forecast_counter is not None:
+            forecast_cnt = np.broadcast_to(
+                self._forecast_counter[None, :, None],
+                (len(b_idx), len(self._forecast_counter), 1),
+            ).copy()
+            batch_forecast['forecast_counter'] = torch.from_numpy(forecast_cnt)
+        return batch_forecast
+
+    def get_batch(
+        self, indices: Sequence[int] | np.ndarray
+    ) -> dict[str, torch.Tensor | np.ndarray | dict[str, torch.Tensor]]:
+        """Extract a collated batch of samples via vectorized indexing.
+
+        Args:
+            indices: 1D sequence or NumPy array of integer sample indices.
+
+        Returns:
+            Dictionary of collated batch tensors and date arrays matching
+            `self.collate_fn([_convert_to_tensor(self[i]) for i in indices])`.
+
+        Raises:
+            RuntimeError: If the dataset was initialized with `lazy_load=True`
+                and fast batch views are not available.
+        """
+        if not self._fast_ready:
+            raise RuntimeError(
+                'Fast batch extractor is not initialized because the dataset '
+                'was constructed with lazy_load=True.'
+            )
+        if len(indices) == 0:
+            return {}
+        idx = np.asarray(indices, dtype=np.intp)
+        b_idx = self._fast_basin_col[idx]
+        d_idx = self._fast_date_col[idx]
+        bsz = len(idx)
+
+        target_end = d_idx + self.lead_time - self._min_lead_time
+        target_start = target_end - (self._seq_length - 1)
+        date_end = d_idx if not self._lead_times else target_end
+        date_start = date_end - (self._seq_length - 1)
+
+        h_end = d_idx + 1 - self._min_lead_time
+        h_start = h_end - self._seq_length
+
+        batch_hindcast: dict[str, torch.Tensor] = {
+            feature: torch.from_numpy(win[b_idx, h_start]).unsqueeze(-1)
+            for feature, win in self._fast_hindcast_wins.items()
+        }
+        if self._hindcast_counter is not None:
+            hindcast_cnt = np.broadcast_to(
+                self._hindcast_counter[None, :, None],
+                (bsz, len(self._hindcast_counter), 1),
+            ).copy()
+            batch_hindcast['hindcast_counter'] = torch.from_numpy(hindcast_cnt)
+
+        batch_forecast = self._build_batch_forecast(b_idx, d_idx, h_end)
+
+        batch: dict[
+            str, torch.Tensor | np.ndarray | dict[str, torch.Tensor]
+        ] = {
+            'date': self._fast_date_win[date_start],
+            'x_s': torch.from_numpy(self._fast_statics[b_idx]),
+            'x_d_hindcast': batch_hindcast,
+            'x_d_forecast': batch_forecast,
+            'y': torch.from_numpy(self._fast_target_win[b_idx, target_start]),
+        }
+        if self._fast_stds is not None:
+            batch['per_basin_target_stds'] = torch.from_numpy(
+                self._fast_stds[b_idx]
+            )
+        if not self._forecast_features:
+            batch['x_d'] = batch.pop('x_d_hindcast')
+            _ = batch.pop('x_d_forecast')
+        batch['basin_index'] = torch.from_numpy(b_idx.astype(np.int64))
+        return batch
 
     def __len__(self) -> int:
         return self._num_samples
@@ -790,7 +1003,7 @@ class Multimet(Dataset):
             raise ValueError('At least one type of data must be loaded.')
 
         LOGGER.debug('merge')
-        ds = xr.merge(datasets, join='outer')
+        ds = xr.merge(datasets, join='outer', compat='no_conflicts')
 
         LOGGER.debug('rechunk')
         ds = rechunk(ds)

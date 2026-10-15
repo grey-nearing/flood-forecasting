@@ -17,12 +17,13 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import ClassVar
 
-import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 
 from model.datautils.scaler import (
     Scaler,
+)
+from model.datautils.scaler import (
     resolve_scaler_dir as _resolve_scaler_dir,
 )
 from model.utils.config import Config
@@ -43,7 +44,7 @@ class BaseModel(nn.Module):
     """
 
     # specify submodules of the model that can later be used for finetuning. Names must match class attributes
-    module_parts = []
+    module_parts: ClassVar[list[str]] = []
 
     # Per-product ModuleDict attribute names that may gain new product keys
     # during fine-tuning.
@@ -55,8 +56,64 @@ class BaseModel(nn.Module):
     # Models that do not support DA leave this empty.
     supported_assimilation_components: ClassVar[tuple[str, ...]] = ()
 
+    @classmethod
+    def get_tunable_component_names(cls) -> list[str]:
+        """Return top-level tunable component names on this model class."""
+        return list(cls.module_parts)
+
+    def describe_tunable_components(self) -> list[dict[str, object]]:
+        """Inspect tunable components and dynamic embeddings dynamically.
+
+        Returns
+        -------
+        list[dict[str, object]]
+            Structured descriptors for each tunable component (and each product
+            key inside ``nn.ModuleDict`` dynamic embedding groups), including
+            parameter counts and whether a dynamic embedding was newly
+            initialized during fine-tuning.
+        """
+        newly_init = self._newly_initialized_embeddings
+        dynamic_groups = set(self.dynamic_embedding_modules)
+        components: list[dict[str, object]] = []
+        for part_name in self.module_parts:
+            module = getattr(self, part_name)
+            total_params = sum(p.numel() for p in module.parameters())
+            is_module_dict = isinstance(module, nn.ModuleDict)
+            subcomponents: list[dict[str, object]] = []
+            if is_module_dict:
+                for sub_key, sub_mod in module.items():
+                    sub_params = sum(p.numel() for p in sub_mod.parameters())
+                    is_new = (part_name, sub_key) in newly_init
+                    subcomponents.append(
+                        {
+                            'id': f'{part_name}.{sub_key}',
+                            'name': sub_key,
+                            'group': part_name,
+                            'is_subkey': True,
+                            'num_parameters': int(sub_params),
+                            'newly_initialized': bool(is_new),
+                            'required': bool(is_new),
+                        }
+                    )
+            components.append(
+                {
+                    'id': part_name,
+                    'name': part_name,
+                    'group': part_name,
+                    'is_subkey': False,
+                    'is_dynamic_embedding_group': (
+                        part_name in dynamic_groups or is_module_dict
+                    ),
+                    'num_parameters': int(total_params),
+                    'newly_initialized': False,
+                    'required': False,
+                    'subcomponents': subcomponents,
+                }
+            )
+        return components
+
     def __init__(self, cfg: Config):
-        super(BaseModel, self).__init__()
+        super().__init__()
         self.cfg = cfg
         self.output_size = len(cfg.target_variables)
         if cfg.head.lower() in ['cmal', 'cmal_deterministic']:
@@ -67,6 +124,17 @@ class BaseModel(nn.Module):
             calculate_scaler=False,
         )
         self._preloaded_state = None
+        self._newly_initialized_embeddings: set[tuple[str, str]] = set()
+
+    def set_newly_initialized_embeddings(
+        self, pairs: set[tuple[str, str]]
+    ) -> None:
+        """Record ``(module_group, product_key)`` pairs initialized at load."""
+        self._newly_initialized_embeddings = set(pairs)
+
+    def get_newly_initialized_embeddings(self) -> set[tuple[str, str]]:
+        """Return ``(module_group, product_key)`` pairs initialized at load."""
+        return set(self._newly_initialized_embeddings)
 
     def sample(
         self,
@@ -189,7 +257,6 @@ class BaseModel(nn.Module):
         path : str | Path
             The file path where the state should be saved (npz recommended).
         """
-        pass
 
     def load_state_from_disk(self, path: str | Path) -> None:
         """Pre-load a hot start state archive from disk into memory.
@@ -201,7 +268,6 @@ class BaseModel(nn.Module):
         path : str | Path
             Path to the state file to load.
         """
-        pass
 
     def reset_state(self) -> None:
         """Reset in-memory hot-start state between basins."""

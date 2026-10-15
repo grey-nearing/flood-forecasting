@@ -15,6 +15,7 @@
 """Unit tests for Scaler."""
 
 import os
+from pathlib import Path
 
 import dask
 import numpy as np
@@ -22,10 +23,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from model.datautils import scaler
 from model.datautils.scaler import (
-    Scaler,
     SCALER_FILE_NAME,
+    Scaler,
     _calc_stats,
     _calc_types,
 )
@@ -92,7 +92,7 @@ def _calc_types_wrapper(
 ) -> float:
     dataset = da.rename('da').to_dataset()
     stats = _calc_stats(dataset, {a_type})
-    types = {feature: a_type for feature in dataset.data_vars}
+    types = dict.fromkeys(dataset.data_vars, a_type)
     calc = xr.merge(_calc_types(dataset, types, none_value, stats))
     return calc.da.item()
 
@@ -576,3 +576,119 @@ def test_scaler_load_missing_zarr_raises_file_not_found(
     sample_dataset_basic.to_netcdf(tmp_scaler_dir / 'scaler.nc')
     with pytest.raises(FileNotFoundError, match='Scaler file not found at'):
         Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
+
+
+# --- NaN / Inf scaler parameters (issue #99) ---
+
+_NON_FINITE_MESSAGE = (
+    'NaN or Inf values found in scaler parameters for features:'
+)
+_PARAMETER_NAMES = ['center', 'scale', 'mean', 'std']
+_NON_FINITE_CASES = [
+    pytest.param('scale', np.nan, id='nan-scale'),
+    pytest.param('center', np.inf, id='inf-center'),
+    pytest.param('mean', np.nan, id='nan-mean'),
+    pytest.param('std', -np.inf, id='neg-inf-std'),
+]
+
+
+def _scaler_with_bad_parameter(parameter: str, value: float) -> xr.Dataset:
+    """Return a two-feature scaler where `feature_a` has one bad parameter."""
+    bad_values = [0.0, 2.0, 1.0, 2.0]
+    bad_values[_PARAMETER_NAMES.index(parameter)] = value
+    return xr.Dataset(
+        {
+            'feature_a': (('parameter',), np.array(bad_values)),
+            'feature_b': (('parameter',), np.array([0.0, 5.0, 1.0, 5.0])),
+        },
+        coords={'parameter': _PARAMETER_NAMES},
+    )
+
+
+@pytest.mark.parametrize(('parameter', 'value'), _NON_FINITE_CASES)
+def test_check_zero_scale_raises_for_non_finite_parameter(
+    tmp_scaler_dir: Path, parameter: str, value: float
+) -> None:
+    """A NaN or Inf in any parameter names only the offending feature."""
+    scaler = Scaler(
+        scaler_dir=tmp_scaler_dir, calculate_scaler=True, dataset=None
+    )
+    scaler.scaler = _scaler_with_bad_parameter(parameter, value)
+    with pytest.raises(ValueError, match=_NON_FINITE_MESSAGE) as exc_info:
+        scaler.check_zero_scale()
+    assert str(exc_info.value).endswith("['feature_a'].")
+
+
+@pytest.mark.parametrize(('parameter', 'value'), _NON_FINITE_CASES)
+def test_scaler_load_raises_for_non_finite_parameter(
+    tmp_scaler_dir: Path, parameter: str, value: float
+) -> None:
+    """Loading a saved scaler with a NaN or Inf parameter fails loudly."""
+    tmp_scaler_dir.mkdir(parents=True, exist_ok=True)
+    _scaler_with_bad_parameter(parameter, value).to_zarr(
+        tmp_scaler_dir / SCALER_FILE_NAME, mode='w'
+    )
+    with pytest.raises(ValueError, match=_NON_FINITE_MESSAGE) as exc_info:
+        Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
+    assert str(exc_info.value).endswith("['feature_a'].")
+
+
+def _dataset_with_probe_feature(values: np.ndarray) -> xr.Dataset:
+    """Return a dataset with a finite `good` feature and a `probe` feature."""
+    return xr.Dataset(
+        {
+            'good': (('date', 'basin'), np.arange(8.0).reshape(4, 2)),
+            'probe': (('date', 'basin'), values),
+        },
+        coords={
+            'date': pd.date_range('2023-01-01', periods=4),
+            'basin': ['BASIN_1', 'BASIN_2'],
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    'probe_values',
+    [
+        pytest.param(np.full((4, 2), np.nan), id='all-nan'),
+        pytest.param(
+            np.array([[1.0, 2.0], [np.inf, 4.0], [5.0, 6.0], [7.0, 8.0]]),
+            id='inf-value',
+        ),
+    ],
+)
+def test_scaler_calculate_rejects_non_finite_statistics(
+    tmp_scaler_dir: Path, probe_values: np.ndarray
+) -> None:
+    """An all-NaN or Inf-containing feature is rejected after calculation."""
+    scaler = Scaler(
+        scaler_dir=tmp_scaler_dir,
+        calculate_scaler=True,
+        dataset=_dataset_with_probe_feature(probe_values),
+    )
+    [scaler.scaler] = dask.compute(scaler.scaler)
+    with pytest.raises(ValueError, match=_NON_FINITE_MESSAGE) as exc_info:
+        scaler.check_zero_scale()
+    assert str(exc_info.value).endswith("['probe', 'probe_obs', 'probe_sim'].")
+
+
+def test_scaler_calculate_accepts_partially_missing_feature(
+    tmp_scaler_dir: Path,
+) -> None:
+    """NaN gaps are skipped and the remaining values give finite statistics."""
+    partial = np.array([[1.0, np.nan], [3.0, 4.0], [np.nan, 6.0], [7.0, 8.0]])
+    scaler = Scaler(
+        scaler_dir=tmp_scaler_dir,
+        calculate_scaler=True,
+        dataset=_dataset_with_probe_feature(partial),
+    )
+    [scaler.scaler] = dask.compute(scaler.scaler)
+    scaler.check_zero_scale()
+    np.testing.assert_allclose(
+        scaler.scaler['probe'].sel(parameter='center').item(),
+        np.nanmean(partial),
+    )
+    np.testing.assert_allclose(
+        scaler.scaler['probe'].sel(parameter='scale').item(),
+        np.nanstd(partial),
+    )

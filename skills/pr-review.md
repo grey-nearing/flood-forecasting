@@ -89,7 +89,7 @@ Do not merely skim mathematical or domain code—verify formulas from first prin
 Whenever a PR modifies model math, feature ordering, temporal alignment, scalers, or input/output data formats:
 
 1. **Backwards Compatibility & Numerical Equivalence:**
-   - Check whether existing `model/pretrained-models/`, `model/tutorial/model-runs/5-basin-example`, and saved scalers (`scaler.nc` / `scaler.zarr`) still load and evaluate cleanly, or whether the PR fixes a training/alignment bug that requires retraining the shipped weights.
+   - Check whether existing `model/pretrained-models/` checkpoints (the default checkpoint of the `frontend/` Forecasting tab) and saved scalers (`scaler.nc` / `scaler.zarr`) still load and evaluate cleanly, or whether the PR fixes a training/alignment bug that requires retraining the shipped weights.
    - For format or dataloader refactors, verify claimed numerical equivalence empirically (checking `float32` vs. `float64` promotion, chunking order, and coordinate decoding).
 2. **Pretrained Weight & Checkpoint Hygiene:**
    - When updating pretrained model weights in the repository:

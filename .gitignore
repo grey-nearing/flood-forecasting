@@ -21,4 +21,3 @@ openhydronet.egg-info/*
 .ipynb_checkpoints/
 docs/build/*
 frontend/data/*
-docs/source/tutorial/OpenHydroNet_Tutorial.ipynb

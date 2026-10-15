@@ -414,55 +414,63 @@ class HydroDelineatorTest(unittest.TestCase):
             )
             saved_hb_cache = _frontend_config.OPENHYDRONET_HYDROBASINS_CACHE_DIR
 
-            _frontend_config.DEM_TILE_LOCATIONS['hydrosheds_90m'] = (
-                empty_dem,
-                populated_dem,
-            )
-            _frontend_config.RIVER_NETWORKS_DIR = late_root / 'river_networks'
-            _frontend_config.HYDRO_BASINS_DIR = late_root / 'hydro_basins'
-            # Empty local dir must not shadow populated cache
-            (_frontend_config.HYDRO_BASINS_DIR / 'hydrobasins_units').mkdir(
-                parents=True, exist_ok=True
-            )
-            _frontend_config.OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH = (
-                late_root / 'missing_cache' / 'HydroRIVERS_v10.shp'
-            )
-            _frontend_config.OPENHYDRONET_HYDROBASINS_CACHE_DIR = (
-                late_root / 'missing_cache' / 'hydrobasins'
-            )
-            reset_delineator_caches()
+            try:
+                _frontend_config.DEM_TILE_LOCATIONS['hydrosheds_90m'] = (
+                    empty_dem,
+                    populated_dem,
+                )
+                _frontend_config.RIVER_NETWORKS_DIR = (
+                    late_root / 'river_networks'
+                )
+                _frontend_config.HYDRO_BASINS_DIR = late_root / 'hydro_basins'
+                # Empty local dir must not shadow populated cache
+                (_frontend_config.HYDRO_BASINS_DIR / 'hydrobasins_units').mkdir(
+                    parents=True, exist_ok=True
+                )
+                _frontend_config.OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH = (
+                    late_root / 'missing_cache' / 'HydroRIVERS_v10.shp'
+                )
+                _frontend_config.OPENHYDRONET_HYDROBASINS_CACHE_DIR = (
+                    late_root / 'missing_cache' / 'hydrobasins'
+                )
+                reset_delineator_caches()
 
-            # 1. Before files exist on disk, river/vector lookups return None
-            assert get_river_network('hydroatlas') is None
-            assert get_vector_delineator('hydroatlas') is None
-            initial_dem = get_dem_delineator('hydrosheds_90m')
-            assert initial_dem.tiles_dir == empty_dem.resolve()
+                # 1. Before files exist on disk, river/vector return None
+                assert get_river_network('hydroatlas') is None
+                assert get_vector_delineator('hydroatlas') is None
+                initial_dem = get_dem_delineator('hydrosheds_90m')
+                assert initial_dem.tiles_dir == empty_dem.resolve()
 
-            # 2. Populate files on disk without calling reset_delineator_caches
-            _build_hermetic_hydro_fixtures(late_root)
-            paths = resolve_hydrography_paths()
-            assert paths['hydrorivers_shp'].is_file()
-            assert any(paths['hydrobasins_dir'].glob('*.shp'))
+                # 2. Populate files without calling reset_delineator_caches
+                _build_hermetic_hydro_fixtures(late_root)
+                paths = resolve_hydrography_paths()
+                assert paths['hydrorivers_shp'].is_file()
+                assert any(paths['hydrobasins_dir'].glob('*.shp'))
 
-            assert get_river_network('hydroatlas') is not None
-            assert get_vector_delineator('hydroatlas') is not None
-            updated_dem = get_dem_delineator('hydrosheds_90m')
-            assert updated_dem.tiles_dir == populated_dem.resolve()
+                assert get_river_network('hydroatlas') is not None
+                assert get_vector_delineator('hydroatlas') is not None
+                updated_dem = get_dem_delineator('hydrosheds_90m')
+                assert updated_dem.tiles_dir == populated_dem.resolve()
 
-            res = HydroDelineator('hydroatlas').delineate_catchment(
-                lat=39.6828, lon=-88.7729, mode='dem_flow_direction'
-            )
-            assert res['properties']['outlet']['reach_id'] == 'HYRIV_70000001'
-
-            _frontend_config.DEM_TILE_LOCATIONS.clear()
-            _frontend_config.DEM_TILE_LOCATIONS.update(saved_dem_locs)
-            _frontend_config.RIVER_NETWORKS_DIR = saved_river_dir
-            _frontend_config.HYDRO_BASINS_DIR = saved_hb_dir
-            _frontend_config.OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH = (
-                saved_hr_cache
-            )
-            _frontend_config.OPENHYDRONET_HYDROBASINS_CACHE_DIR = saved_hb_cache
-            reset_delineator_caches()
+                res = HydroDelineator('hydroatlas').delineate_catchment(
+                    lat=39.6828, lon=-88.7729, mode='dem_flow_direction'
+                )
+                assert (
+                    res['properties']['outlet']['reach_id'] == 'HYRIV_70000001'
+                )
+            finally:
+                _frontend_config.DEM_TILE_LOCATIONS.clear()
+                _frontend_config.DEM_TILE_LOCATIONS.update(saved_dem_locs)
+                _frontend_config.RIVER_NETWORKS_DIR = saved_river_dir
+                _frontend_config.HYDRO_BASINS_DIR = saved_hb_dir
+                _frontend_config.OPENHYDRONET_HYDRORIVERS_SHP_CACHE_PATH = (
+                    saved_hr_cache
+                )
+                _frontend_config.OPENHYDRONET_HYDROBASINS_CACHE_DIR = (
+                    saved_hb_cache
+                )
+                reset_delineator_caches()
+            assert not updated_dem._tile_cache  # noqa: SLF001
 
 
 if __name__ == '__main__':

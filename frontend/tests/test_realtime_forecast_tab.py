@@ -19,6 +19,7 @@ from __future__ import annotations
 import http.client
 import json
 import shutil
+import tempfile
 import threading
 import time
 import unittest
@@ -29,6 +30,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 import xarray as xr
 
 from frontend import (
@@ -38,7 +40,11 @@ from frontend import (
 from frontend import (
     tests as _isolated_profiles,  # noqa: F401
 )
+from frontend.config import FLOOD_FORECASTING_REPO_DIR
 from frontend.server import EarthkitHydroHandler
+from model.datautils.scaler import Scaler
+from model.modelzoo import get_model
+from model.utils.config import Config
 from multimet.utils import cpc as cpc_utils
 
 TEST_USER = 'test_fc_realtime_user'
@@ -49,6 +55,37 @@ HTTP_BAD_REQUEST = 400
 EXPECTED_NOWCAST_LEN = 14
 EXPECTED_FORECAST_LEN = 10
 SPINUP_DAYS = 365
+PRETRAINED_MODEL_ID = 'google-floodhub-settings-110-epochs'
+PRETRAINED_CHECKPOINT_NAME = 'model_epoch110.pt'
+PRETRAINED_LEAD_TIME_DAYS = 7
+
+SYNTHETIC_MODEL_ID = 'synthetic-mean-embedding-forecast-lstm'
+SYNTHETIC_LEAD_TIME_DAYS = 7
+SYNTHETIC_HIDDEN_SIZE = 8
+SYNTHETIC_SEED = 42
+SYNTHETIC_SCALER_BASINS = 16
+SYNTHETIC_SCALER_DAYS = 120
+SYNTHETIC_HINDCAST_INPUTS: dict[str, list[str]] = {
+    'hres': ['hres_temperature_2m', 'hres_total_precipitation'],
+    'imerg': ['imerg_precipitation'],
+    'cpc': ['cpc_precipitation'],
+}
+SYNTHETIC_FORECAST_INPUTS: dict[str, list[str]] = {
+    'hres': ['hres_temperature_2m', 'hres_total_precipitation'],
+    'graphcast': ['graphcast_temperature_2m', 'graphcast_total_precipitation'],
+}
+# Static attribute name -> (min, max) of the synthetic scaler training sample.
+SYNTHETIC_STATIC_ATTRIBUTE_RANGES: dict[str, tuple[float, float]] = {
+    'area': (50.0, 5000.0),
+    'aridity_ERA5_LAND': (0.3, 2.0),
+    'aridity_FAO_PM': (0.3, 2.0),
+    'frac_snow': (0.0, 0.6),
+    'moisture_index_ERA5_LAND': (-0.8, 0.8),
+    'moisture_index_FAO_PM': (-0.8, 0.8),
+    'p_mean': (1.0, 6.0),
+    'pet_mean_ERA5_LAND': (1.0, 5.0),
+    'pet_mean_FAO_PM': (1.0, 5.0),
+}
 
 TEST_WATERSHED_FEATURE = {
     'type': 'Feature',
@@ -133,6 +170,119 @@ def _populate_synthetic_static_attributes(
         ]
     )
     df.to_csv(attr_dir / 'caravan_hydroatlas_attributes.csv', index=False)
+
+
+def _populate_pretrained_static_attributes(
+    pm: profile_manager.ProfileManager,
+    username: str,
+) -> None:
+    """Write every static attribute required by the shipped FloodHub run.
+
+    Each attribute takes the training-period ``mean`` stored in the run's
+    ``scaler.zarr`` (an average training basin), so ``TEST_BASIN`` has a
+    complete, finite attribute row without copying a real Caravan table.
+    """
+    run_dir = realtime_forecast_service.DEFAULT_MODEL_RUN_DIR
+    attr_features = list(Config(run_dir / 'config.yml').static_attributes)
+    scaler_ds = xr.open_zarr(run_dir / 'scaler.zarr').load()
+    row: dict[str, object] = {'gauge_id': TEST_BASIN, 'area': 573.6}
+    for attr in attr_features:
+        row[attr] = float(scaler_ds[attr].sel(parameter='mean'))
+    attr_dir = pm.get_caravan_attributes_dir(username)
+    attr_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([row]).to_csv(
+        attr_dir / 'caravan_hydroatlas_attributes.csv', index=False
+    )
+
+
+def _write_synthetic_model_run_dir(run_dir: Path) -> Path:
+    """Write a hermetic ``MeanEmbeddingForecastLSTM`` run directory.
+
+    The directory holds what ``run train`` writes: ``scaler.zarr`` computed by
+    the real ``Scaler`` from a seeded synthetic training sample, a seeded
+    randomly initialised ``model_epoch001.pt`` checkpoint, and ``config.yml``.
+    No training is performed because these tests exercise forecast-service
+    mechanics (state gating, Cold/Hot-Start parity, ``NaN`` propagation,
+    What-If overrides) rather than forecast skill.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(SYNTHETIC_SEED)
+    basins = [f'basin_{i:02d}' for i in range(SYNTHETIC_SCALER_BASINS)]
+    dates = pd.date_range('2020-01-01', periods=SYNTHETIC_SCALER_DAYS, freq='D')
+    dyn_shape = (len(basins), len(dates))
+    dyn_dims = ('basin', 'date')
+
+    dynamic_features = sorted(
+        {
+            *(f for feats in SYNTHETIC_HINDCAST_INPUTS.values() for f in feats),
+            *(f for feats in SYNTHETIC_FORECAST_INPUTS.values() for f in feats),
+        }
+    )
+    sample: dict[str, tuple[tuple[str, ...], np.ndarray]] = {}
+    for feat in dynamic_features:
+        if 'temperature' in feat:
+            values = rng.normal(10.0, 9.0, size=dyn_shape)  # deg C
+        else:
+            values = rng.gamma(0.8, 5.0, size=dyn_shape)  # mm/day
+        sample[feat] = (dyn_dims, values.astype(np.float32))
+    sample['streamflow'] = (
+        dyn_dims,
+        rng.gamma(4.0, 0.5, size=dyn_shape).astype(np.float32),  # mm/day
+    )
+    for attr, (low, high) in SYNTHETIC_STATIC_ATTRIBUTE_RANGES.items():
+        sample[attr] = (
+            ('basin',),
+            rng.uniform(low, high, size=len(basins)).astype(np.float32),
+        )
+    sample_ds = xr.Dataset(sample, coords={'basin': basins, 'date': dates})
+
+    scaler = Scaler(
+        scaler_dir=run_dir, calculate_scaler=True, dataset=sample_ds
+    )
+    scaler.scaler = scaler.scaler.compute()
+    scaler.check_zero_scale()
+    scaler.save()
+
+    embedding = {
+        'type': 'fc',
+        'hiddens': [SYNTHETIC_HIDDEN_SIZE],
+        'activation': ['tanh'],
+        'dropout': 0.0,
+    }
+    cfg = Config(
+        {
+            'experiment_name': SYNTHETIC_MODEL_ID,
+            'run_dir': run_dir,
+            'dataset': 'multimet',
+            'model': 'mean_embedding_forecast_lstm',
+            'head': 'regression',
+            'output_activation': 'linear',
+            'output_dropout': 0.0,
+            'hidden_size': SYNTHETIC_HIDDEN_SIZE,
+            'seq_length': SPINUP_DAYS,
+            'lead_time': SYNTHETIC_LEAD_TIME_DAYS,
+            'forecast_overlap': SPINUP_DAYS,
+            'predict_last_n': SYNTHETIC_LEAD_TIME_DAYS + 1,
+            'timestep_counter': True,
+            'static_attributes': list(SYNTHETIC_STATIC_ATTRIBUTE_RANGES),
+            'hindcast_inputs': SYNTHETIC_HINDCAST_INPUTS,
+            'forecast_inputs': SYNTHETIC_FORECAST_INPUTS,
+            'target_variables': ['streamflow'],
+            'statics_embedding': dict(embedding),
+            'hindcast_embedding': dict(embedding),
+            'forecast_embedding': dict(embedding),
+            'device': 'cpu',
+            'seed': SYNTHETIC_SEED,
+            'compile': False,
+        }
+    )
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(SYNTHETIC_SEED)
+        model = get_model(cfg)
+    model.eval()
+    torch.save(model.state_dict(), run_dir / 'model_epoch001.pt')
+    cfg.dump_config(run_dir)
+    return run_dir
 
 
 def _write_nowcast_zarr_stores(
@@ -341,7 +491,11 @@ class RealtimeForecastTabTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        """Start an isolated HTTP server instance for testing."""
+        """Start an isolated HTTP server and write the synthetic model run."""
+        cls.model_run_tmp = tempfile.mkdtemp(prefix='openhydronet_test_model_')
+        cls.model_run_dir = _write_synthetic_model_run_dir(
+            Path(cls.model_run_tmp) / SYNTHETIC_MODEL_ID
+        )
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), EarthkitHydroHandler)
         cls.port = cls.server.server_port
         cls.thread = threading.Thread(
@@ -352,9 +506,10 @@ class RealtimeForecastTabTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        """Shut down the isolated HTTP server."""
+        """Shut down the isolated HTTP server and remove the model run."""
         cls.server.shutdown()
         cls.server.server_close()
+        shutil.rmtree(cls.model_run_tmp)
 
     def setUp(self) -> None:
         """Initialize an isolated user profile with watersheds and statics."""
@@ -391,6 +546,14 @@ class RealtimeForecastTabTest(unittest.TestCase):
         status = resp.status
         conn.close()
         return status, json.loads(raw)
+
+    def _post_run_model(self, body: dict) -> tuple[int, dict]:
+        """POST ``/api/forecast/run-model`` against the synthetic model run."""
+        return self._request(
+            'POST',
+            '/api/forecast/run-model',
+            {**body, 'model_run_dir': str(self.model_run_dir)},
+        )
 
     def test_ui_html_contains_simplified_forecast_controls_and_legacy_ids(
         self,
@@ -452,6 +615,59 @@ class RealtimeForecastTabTest(unittest.TestCase):
         )
         basin_select_pos = html.index('id="fcBasinSelect"')
         assert basin_select_pos > sidebar_end
+
+        default_model_id = realtime_forecast_service.DEFAULT_MODEL_RUN_DIR.name
+        assert (
+            f'<option value="{default_model_id}" selected>{default_model_id}'
+            '</option>' in html
+        )
+        assert '5-basin-example' not in html
+
+    def test_default_model_is_shipped_pretrained_floodhub_checkpoint(
+        self,
+    ) -> None:
+        """Verify the default run dir is the pretrained FloodHub checkpoint."""
+        run_dir = realtime_forecast_service.DEFAULT_MODEL_RUN_DIR
+        assert run_dir == (
+            FLOOD_FORECASTING_REPO_DIR
+            / 'model'
+            / 'pretrained-models'
+            / PRETRAINED_MODEL_ID
+        )
+        assert (run_dir / 'config.yml').is_file()
+        assert (run_dir / 'scaler.zarr').is_dir()
+        assert [p.name for p in sorted(run_dir.glob('model_epoch*.pt'))] == [
+            PRETRAINED_CHECKPOINT_NAME
+        ]
+
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir,
+            basin_id=TEST_BASIN,
+            issue_date_str='2026-03-30',
+        )
+        _populate_pretrained_static_attributes(self.pm, username=self.test_user)
+
+        # No model_run_dir in the request: the service must load the shipped
+        # checkpoint, its scaler, and its 84 static attributes end-to-end.
+        code, res = self._request(
+            'POST',
+            '/api/forecast/run-model',
+            {'catchment_id': TEST_BASIN, 'mode': 'coldstart'},
+        )
+        assert code == HTTP_OK, f'Default-model cold-start failed: {res}'
+        assert res['status'] == 'success'
+        assert res['model_id'] == PRETRAINED_MODEL_ID
+        assert res['checkpoint_path'] == str(
+            run_dir / PRETRAINED_CHECKPOINT_NAME
+        )
+        assert res['lead_time_days'] == PRETRAINED_LEAD_TIME_DAYS
+        assert len(res['forecast']) == PRETRAINED_LEAD_TIME_DAYS
+        assert res['saved_state']['state_date'] == '2026-03-29'
+        discharge = np.array(
+            [pt['discharge_cms'] for pt in res['forecast']], dtype=np.float64
+        )
+        assert np.all(np.isfinite(discharge))
+        assert np.all(discharge >= 0.0)
 
     def test_multi_stream_discovery_and_strict_no_fake_data_nan_preservation(
         self,
@@ -549,9 +765,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert status_payload['can_run_hotstart'] is False
         assert status_payload['can_run_coldstart'] is True
 
-        code, blocked_res = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, blocked_res = self._post_run_model(
             {'catchment_id': TEST_BASIN, 'mode': 'hotstart'},
         )
         assert code == HTTP_BAD_REQUEST
@@ -580,9 +794,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert stale_status['is_state_from_previous_day'] is False
         assert stale_status['can_run_hotstart'] is False
 
-        code, stale_run_res = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, stale_run_res = self._post_run_model(
             {'catchment_id': TEST_BASIN, 'mode': 'hotstart'},
         )
         assert code == HTTP_BAD_REQUEST
@@ -590,9 +802,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert '2026-03-29' in stale_run_res['message']
 
         # 3. Run Cold-Start model: saves state stamped 2026-03-29
-        code, cold_res = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, cold_res = self._post_run_model(
             {'catchment_id': TEST_BASIN, 'mode': 'coldstart'},
         )
         assert code == HTTP_OK, f'Cold-start failed: {cold_res}'
@@ -613,9 +823,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
             assert pt['q95_cms'] is None
 
         # 4. Run Hot-Start model: should succeed and match Cold-Start forecast
-        code, hot_res = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, hot_res = self._post_run_model(
             {'catchment_id': TEST_BASIN, 'mode': 'hotstart'},
         )
         assert code == HTTP_OK, f'Hot-start failed: {hot_res}'
@@ -638,9 +846,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         )
 
         # First run Cold-Start to obtain a valid state array structure
-        code, _ = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, _ = self._post_run_model(
             {'catchment_id': TEST_BASIN, 'mode': 'coldstart'},
         )
         assert code == HTTP_OK
@@ -664,9 +870,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert status_res['can_run_hotstart'] is True
 
         # Running Hot-Start should advance state through 2026-03-29 and save it
-        code, hot_res = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, hot_res = self._post_run_model(
             {'catchment_id': TEST_BASIN, 'mode': 'hotstart'},
         )
         assert code == HTTP_OK, f'Incremental Hot-Start failed: {hot_res}'
@@ -712,6 +916,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
             catchment_id=TEST_BASIN,
             mode='coldstart',
             requested_issue_date='2026-03-30',
+            model_run_dir=self.model_run_dir,
         )
         assert res['status'] == 'success'
         assert res['peak_discharge_cms'] is None
@@ -737,6 +942,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
                 catchment_id=TEST_BASIN,
                 mode='coldstart',
                 requested_issue_date='2026-03-30',
+                model_run_dir=self.model_run_dir,
             )
 
     def test_multi_catchment_selection_and_strict_yesterday_state_gating(
@@ -803,9 +1009,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert TEST_BASIN_2 in blocked_fetch['message']
         assert '2024-01-01' in blocked_fetch['message']
 
-        code, blocked_run = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, blocked_run = self._post_run_model(
             {
                 'catchment_id': TEST_BASIN,
                 'catchment_ids': [TEST_BASIN, TEST_BASIN_2],
@@ -817,9 +1021,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert '2024-01-01' in blocked_run['message']
 
         # Run Cold-Start across both catchments simultaneously
-        code, batch_cold = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, batch_cold = self._post_run_model(
             {
                 'catchment_id': TEST_BASIN,
                 'catchment_ids': [TEST_BASIN, TEST_BASIN_2],
@@ -838,9 +1040,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         )
 
         # Now Hot-Start across both catchments must succeed
-        code, batch_hot = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, batch_hot = self._post_run_model(
             {
                 'catchment_id': TEST_BASIN,
                 'catchment_ids': [TEST_BASIN, TEST_BASIN_2],
@@ -989,9 +1189,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         )
 
         # 1. Run baseline unmodified Cold-Start forecast
-        code, base_res = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, base_res = self._post_run_model(
             {'catchment_id': TEST_BASIN, 'mode': 'coldstart'},
         )
         assert code == HTTP_OK, f'Baseline run failed: {base_res}'
@@ -1003,9 +1201,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         mtime_before = state_path.stat().st_mtime_ns
 
         # 2. Run What-If Scenario #1 with increased precip and temp
-        code, whatif_1 = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, whatif_1 = self._post_run_model(
             {
                 'catchment_id': TEST_BASIN,
                 'mode': 'coldstart',
@@ -1031,9 +1227,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert state_path.stat().st_mtime_ns == mtime_before
 
         # 3. Run What-If Scenario #2 with per-product overrides
-        code, whatif_2 = self._request(
-            'POST',
-            '/api/forecast/run-model',
+        code, whatif_2 = self._post_run_model(
             {
                 'catchment_id': TEST_BASIN,
                 'mode': 'coldstart',
@@ -1086,8 +1280,252 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'id="fcWhatIfScenariosList"',
             'fc-whatif-toggle-cb',
             'fc-whatif-delete-btn',
+            'hindcast_precip: 1',
+            'forecast_precip: 2',
+            'hindcast_temp: 3',
+            'forecast_temp: 4',
         ):
             assert token in html
+
+    def test_upload_realtime_streamflow_csv_and_return_periods(self) -> None:
+        """Verify uploading a streamflow CSV, preserving NaNs, and plotting."""
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir,
+            basin_id=TEST_BASIN,
+            issue_date_str='2026-03-30',
+        )
+
+        # 1. Upload 2-column CSV with valid values, missing, and sentinel -999
+        csv_text = (
+            'date,discharge_cms\n'
+            '2026-03-27,14.2\n'
+            '2026-03-28,\n'
+            '2026-03-29,-999\n'
+            '2026-03-30,28.5\n'
+        )
+        code, upload_res = self._request(
+            'POST',
+            '/api/forecast/upload-streamflow',
+            {
+                'catchment_id': TEST_BASIN,
+                'filename': 'gauge_obs.csv',
+                'csv_content': csv_text,
+            },
+        )
+        assert code == HTTP_OK, f'CSV upload failed: {upload_res}'
+        assert upload_res['status'] == 'success'
+        obs_series = upload_res['observed_streamflow']
+        assert len(obs_series) == 4  # noqa: PLR2004
+        by_date = {pt['date']: pt['discharge_cms'] for pt in obs_series}
+        assert by_date['2026-03-27'] == pytest.approx(14.2)
+        assert by_date['2026-03-28'] is None
+        assert by_date['2026-03-29'] is None
+        assert by_date['2026-03-30'] == pytest.approx(28.5)
+
+        # Verify assimilation/streamflow_realtime.zarr preserves NaNs
+        zarr_path = (
+            self.profile_dir / 'assimilation' / 'streamflow_realtime.zarr'
+        )
+        assert zarr_path.exists()
+        ds_obs = xr.open_zarr(zarr_path, consolidated=False)
+        assert TEST_BASIN in ds_obs['basin'].to_numpy()
+        q_vals = ds_obs['streamflow'].sel(basin=TEST_BASIN).to_numpy()
+        assert np.isnan(q_vals[1])
+        assert np.isnan(q_vals[2])
+        assert np.isclose(q_vals[0], 14.2)
+        assert np.isclose(q_vals[3], 28.5)
+
+        # 2. Verify /api/forecast/status returns observed_streamflow
+        code, status_res = self._request(
+            'GET', f'/api/forecast/status?catchment_id={TEST_BASIN}'
+        )
+        assert code == HTTP_OK
+        assert status_res['has_observed_streamflow'] is True
+        assert len(status_res['observed_streamflow']) == 4  # noqa: PLR2004
+        assert 'return_periods' in status_res
+
+        # 3. Verify running model includes observed_streamflow without nudging
+        code, run_res = self._post_run_model(
+            {'catchment_id': TEST_BASIN, 'mode': 'coldstart'}
+        )
+        assert code == HTTP_OK
+        assert run_res['has_observed_streamflow'] is True
+        assert len(run_res['observed_streamflow']) == 4  # noqa: PLR2004
+        assert 'return_periods' in run_res
+
+        # 4. Clear uploaded CSV and confirm status resets
+        code, clear_res = self._request(
+            'POST',
+            '/api/forecast/clear-streamflow',
+            {'catchment_id': TEST_BASIN},
+        )
+        assert code == HTTP_OK
+        assert clear_res['status'] == 'success'
+        assert clear_res['observed_streamflow'] == []
+
+        code, status_after = self._request(
+            'GET', f'/api/forecast/status?catchment_id={TEST_BASIN}'
+        )
+        assert code == HTTP_OK
+        assert status_after['has_observed_streamflow'] is False
+        assert status_after['observed_streamflow'] == []
+
+        # 5. Verify frontend HTML/JS tokens for CSV upload & return periods
+        html_path = (
+            Path(__file__).resolve().parent.parent / 'static' / 'index.html'
+        )
+        html = html_path.read_text(encoding='utf-8')
+        for token in (
+            'id="fcUploadStreamflowCsvBtn"',
+            'id="fcStreamflowCsvInput"',
+            'id="fcClearStreamflowCsvBtn"',
+            'id="fcStreamflowCsvStatus"',
+            'OBSERVED STREAMFLOW (CSV)',
+            '/api/forecast/upload-streamflow',
+            '/api/forecast/clear-streamflow',
+            'fcReturnPeriodLinesPlugin',
+            'if (t.value > yMax || t.value < yMin) return;',
+        ):
+            assert token in html
+
+    def test_csv_validation_collision_and_issue_date_regressions(self) -> None:
+        """Verify CSV validation, collision-free IDs, and tail fallback."""
+        # 1. Invalid CSV payloads must return HTTP 400 with clear errors
+        bad_payloads = [
+            'col_a,col_b\n2026-03-27,10.0\n',
+            'date,discharge_cms\nnot-a-date,10.0\n',
+            'date,discharge_cms\n2026-03-27,"12,5"\n',
+            'date,discharge_cms\n2026-03-27,10.0\n2026-03-27,15.0\n',
+        ]
+        for bad_csv in bad_payloads:
+            code, err_res = self._request(
+                'POST',
+                '/api/forecast/upload-streamflow',
+                {
+                    'catchment_id': TEST_BASIN,
+                    'csv_content': bad_csv,
+                },
+            )
+            assert code == HTTP_BAD_REQUEST, f'Expected 400 for {bad_csv!r}'
+            assert err_res['status'] == 'error'
+
+        # 2. Multi-basin CSV upload returns observed_by_id for every basin
+        multi_csv = (
+            'basin,date,streamflow\n'
+            f'{TEST_BASIN},2026-03-28,11.0\n'
+            f'{TEST_BASIN_2},2026-03-28,22.5\n'
+        )
+        code, multi_res = self._request(
+            'POST',
+            '/api/forecast/upload-streamflow',
+            {
+                'catchment_id': TEST_BASIN,
+                'csv_content': multi_csv,
+            },
+        )
+        assert code == HTTP_OK
+        assert TEST_BASIN in multi_res['observed_by_id']
+        assert TEST_BASIN_2 in multi_res['observed_by_id']
+        assert multi_res['observed_by_id'][TEST_BASIN_2][0][
+            'discharge_cms'
+        ] == pytest.approx(22.5)
+
+        # 3. Disjoint date window on load_realtime_streamflow_series returns []
+        disjoint = realtime_forecast_service.load_realtime_streamflow_series(
+            TEST_USER,
+            TEST_BASIN,
+            start_date='2025-01-01',
+            end_date='2025-01-10',
+        )
+        assert disjoint == []
+
+        # 4. Basin IDs that sanitize to similar ASCII stems never collide
+        realtime_forecast_service.upload_realtime_streamflow_csv(
+            TEST_USER,
+            catchment_id='a.b',
+            csv_content='date,q\n2026-03-28,5.0\n',
+        )
+        realtime_forecast_service.upload_realtime_streamflow_csv(
+            TEST_USER,
+            catchment_id='ab',
+            csv_content='date,q\n2026-03-28,99.0\n',
+        )
+        s_dot = realtime_forecast_service.load_realtime_streamflow_series(
+            TEST_USER, 'a.b'
+        )
+        s_plain = realtime_forecast_service.load_realtime_streamflow_series(
+            TEST_USER, 'ab'
+        )
+        assert s_dot[0]['discharge_cms'] == pytest.approx(5.0)
+        assert s_plain[0]['discharge_cms'] == pytest.approx(99.0)
+
+        # 5. Invalid requested_issue_date returns HTTP 400 / raises ValueError
+        code, bad_status = self._request(
+            'GET',
+            f'/api/forecast/status?catchment_id={TEST_BASIN}&issue_date=bad-date',
+        )
+        assert code == HTTP_BAD_REQUEST
+        assert bad_status['status'] == 'error'
+        with pytest.raises(ValueError, match='Invalid issue_date'):
+            realtime_forecast_service.get_realtime_status(
+                TEST_USER,
+                TEST_BASIN,
+                requested_issue_date='bad-date',
+            )
+
+        # 6. 40-date HRES store where the last 14 dates are all-NaN resolves
+        # the last valid date (2026-01-20) instead of the final store date
+        dates_40 = pd.date_range('2026-01-01', periods=40, freq='D')
+        leads = pd.timedelta_range('1D', periods=10, freq='D')
+        arr = np.full((1, 40, 10), np.nan, dtype=np.float32)
+        arr[:, :20, :] = 3.0
+        hres_40_path = self.profile_dir / 'test_hres_40.zarr'
+        ds_40 = xr.Dataset(
+            data_vars={
+                'hres_total_precipitation': (
+                    ['basin', 'date', 'lead_time'],
+                    arr,
+                ),
+            },
+            coords={
+                'basin': [TEST_BASIN],
+                'date': dates_40,
+                'lead_time': leads,
+            },
+        )
+        ds_40.to_zarr(hres_40_path, mode='w', consolidated=True)
+        latest_valid = (
+            realtime_forecast_service._extract_latest_issue_from_store(  # noqa: SLF001
+                hres_40_path,
+                TEST_BASIN,
+            )
+        )
+        assert latest_valid is not None
+        assert latest_valid.strftime('%Y-%m-%d') == '2026-01-20'
+
+        # 7. Return period normalization handles rp_2, 25yr, nested dicts,
+        # and ignores bare integer keys and booleans
+        pm = profile_manager.get_profile_manager()
+        ws = [
+            {
+                **TEST_WATERSHED_FEATURE,
+                'properties': {
+                    **TEST_WATERSHED_FEATURE['properties'],
+                    'rp_2': 45.0,
+                    '2': 9999.0,
+                    'return_period_5': True,
+                    'return_periods_cms': {'25yr': 180.5, '10': 95.0},
+                },
+            }
+        ]
+        pm.save_watersheds(ws, username=TEST_USER)
+        rps = realtime_forecast_service.load_basin_return_periods(
+            TEST_USER, TEST_BASIN
+        )
+        assert rps['return_period_2'] == pytest.approx(45.0)
+        assert rps['return_period_10'] == pytest.approx(95.0)
+        assert rps['return_period_25'] == pytest.approx(180.5)
+        assert 'return_period_5' not in rps
 
 
 if __name__ == '__main__':
