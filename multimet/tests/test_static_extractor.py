@@ -1896,7 +1896,9 @@ def test_regenerate_era5_climate_tables_vectorized_parity(tmp_path):
 def test_gs_uri_preservation():
     """Test that gs:// URIs are preserved in StaticAttributesExtractor.__init__"""
     from unittest import mock
-    with mock.patch("multimet.static_extractor.extractor.StaticAttributesExtractor._init_hydroatlas_source"):
+    def fake_init(self, src):
+        self.all_gdb_fields = []
+    with mock.patch("multimet.static_extractor.extractor.StaticAttributesExtractor._init_hydroatlas_source", autospec=True, side_effect=fake_init):
         ext = StaticAttributesExtractor(
             gdb_path="gs://my-bucket/hydroatlas.gdb",
             era5_cache_dir="gs://my-bucket/era5",
