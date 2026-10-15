@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import shapely.geometry
 
+import frontend.config as _frontend_config
 from multimet.static_extractor import (
     ATTRIBUTE_REGISTRY,
     CARAVAN_CLIMATE_ALIASES,
@@ -40,6 +41,8 @@ from multimet.static_extractor.config import (
     DEFAULT_GCS_HYDROATLAS_URI,
 )
 from utils.file_paths import (
+    BASIN_ATLAS_GDB_NAME,
+    HYDRO_ATLAS_LEV12_PARQUET_NAME,
     OPENHYDRONET_DATA_CACHE_DIR,
     OPENHYDRONET_ERA5_CLIMATE_CACHE_DIR,
     OPENHYDRONET_HYDROATLAS_CACHE_DIR,
@@ -104,35 +107,22 @@ def resolve_app_static_extractor_paths() -> dict[str, Any]:
         Dictionary of resolved paths and GCS URIs for
         `StaticAttributesExtractor`.
     """
-    repo_root = Path(__file__).resolve().parents[1]
-
     resolved_gdb: Path | None = None
     env_gdb = os.environ.get('HYDROATLAS_GDB_PATH', '').strip()
     if env_gdb:
         resolved_gdb = Path(env_gdb)
     else:
         gdb_candidates = (
-            OPENHYDRONET_HYDROATLAS_CACHE_DIR / 'BasinATLAS_v10.gdb',
+            OPENHYDRONET_HYDROATLAS_CACHE_DIR / BASIN_ATLAS_GDB_NAME,
             OPENHYDRONET_HYDROATLAS_CACHE_DIR,
-            OPENHYDRONET_DATA_CACHE_DIR / 'basin_atlas' / 'BasinATLAS_v10.gdb',
+            OPENHYDRONET_DATA_CACHE_DIR / 'basin_atlas' / BASIN_ATLAS_GDB_NAME,
             OPENHYDRONET_DATA_CACHE_DIR / 'basin_atlas',
+            _frontend_config.SHARED_HYDROATLAS_DIR / BASIN_ATLAS_GDB_NAME,
+            _frontend_config.SHARED_HYDROATLAS_DIR,
             (
-                repo_root
-                / 'frontend'
-                / 'data'
-                / 'shared'
-                / 'hydroatlas'
-                / 'BasinATLAS_v10.gdb'
-            ),
-            repo_root / 'frontend' / 'data' / 'shared' / 'hydroatlas',
-            (
-                repo_root
-                / 'frontend'
-                / 'data'
-                / 'base_layers'
-                / 'hydro_basins'
+                _frontend_config.HYDRO_BASINS_DIR
                 / 'basin_atlas'
-                / 'BasinATLAS_v10.gdb'
+                / BASIN_ATLAS_GDB_NAME
             ),
         )
         for cand in gdb_candidates:
@@ -141,7 +131,7 @@ def resolve_app_static_extractor_paths() -> dict[str, Any]:
             if cand.name.endswith('.gdb') and any(cand.glob('*.gdbtable')):
                 resolved_gdb = cand
                 break
-            if (cand / 'hydro_atlas_lev12.parquet').is_file() and (
+            if (cand / HYDRO_ATLAS_LEV12_PARQUET_NAME).is_file() and (
                 cand / 'subpolygons'
             ).is_dir():
                 resolved_gdb = cand
@@ -154,14 +144,7 @@ def resolve_app_static_extractor_paths() -> dict[str, Any]:
     else:
         era5_candidates = (
             OPENHYDRONET_ERA5_CLIMATE_CACHE_DIR,
-            (
-                repo_root
-                / 'frontend'
-                / 'data'
-                / 'shared'
-                / 'hydroatlas'
-                / 'era5_climate'
-            ),
+            _frontend_config.SHARED_HYDROATLAS_DIR / 'era5_climate',
         )
         for cand in era5_candidates:
             if cand.is_dir() and any(cand.glob('*_climate_indices.txt')):
@@ -199,6 +182,7 @@ def get_attributes_extractor() -> StaticAttributesExtractor:
             gridded_era5_uri=paths['gridded_era5_uri'],
             gcs_gdb_uri=paths['gcs_gdb_uri'],
             gcs_era5_climate_uri=paths['gcs_era5_climate_uri'],
+            no_download=paths['gdb_path'] is None,
         )
     return _extractor_instance
 

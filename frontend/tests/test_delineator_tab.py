@@ -570,6 +570,104 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
             expected_sidebars
         ), 'Every unified left sidebar header must include a collapse button'
 
+    def test_dataset_switch_preserves_watersheds_and_mutations_bind_profile(
+        self,
+    ) -> None:
+        """Verify dataset switch keeps basins and mutations bind profile."""
+        ds_listener_marker = (
+            "document.getElementById('datasetSelect').addEventListener('change'"
+        )
+        assert ds_listener_marker in self.html_text
+        ds_block = self.html_text.split(ds_listener_marker, 1)[1].split(
+            '});', 1
+        )[0]
+        assert 'clearAllWatersheds' not in ds_block, (
+            'Switching datasetSelect must not wipe active watersheds'
+        )
+        assert 'fetchAndRenderRivers(true)' in ds_block
+
+        for endpoint in (
+            '/api/profile/save_watersheds',
+            '/api/watersheds/delete',
+            '/api/watersheds/clear',
+            '/api/delineate',
+        ):
+            call_block = self.html_text.split(f"fetch('{endpoint}'", 1)[
+                1
+            ].split('});', 1)[0]
+            assert "'X-User-Profile': targetUser" in call_block, (
+                f'{endpoint} fetch must include X-User-Profile header'
+            )
+            assert 'username: targetUser' in call_block, (
+                f'{endpoint} fetch must include username in request body'
+            )
+
+        user_a = 'profile_isolation_a'
+        user_b = 'profile_isolation_b'
+        self.addCleanup(lambda: self._post('/api/profile/logout', {}))
+        self._post('/api/profile/login', {'username': user_a})
+        st_a, delin_a = self._post(
+            '/api/delineate',
+            {
+                'username': user_a,
+                'dataset': 'hydroatlas',
+                'dem_id': 'hydrosheds_90m',
+                'latitude': 39.66,
+                'longitude': -88.7729,
+                'mode': 'dem_flow_direction',
+                'snap_radius_km': 2.0,
+            },
+        )
+        assert st_a == _HTTP_OK
+        cid_a = delin_a['properties']['catchment_id']
+
+        # Switch active singleton profile to user_b and delineate for user_b
+        self._post('/api/profile/login', {'username': user_b})
+        st_b, delin_b = self._post(
+            '/api/delineate',
+            {
+                'username': user_b,
+                'dataset': 'merit-hydro',
+                'dem_id': 'merit_hydro_90m',
+                'latitude': 39.66,
+                'longitude': -88.7729,
+                'mode': 'dem_flow_direction',
+                'snap_radius_km': 2.0,
+            },
+        )
+        assert st_b == _HTTP_OK
+        cid_b = delin_b['properties']['catchment_id']
+
+        # Clearing user_a while user_b is active must not wipe user_b
+        st_clr, clr_res = self._post(
+            '/api/watersheds/clear',
+            {'username': user_a},
+        )
+        assert st_clr == _HTTP_OK
+        assert clr_res['status'] == 'cleared'
+
+        pm = get_profile_manager()
+        ws_a = json.loads(
+            (pm.get_catchments_dir(user_a) / 'watersheds.geojson').read_text(
+                encoding='utf-8'
+            )
+        )
+        ws_b = json.loads(
+            (pm.get_catchments_dir(user_b) / 'watersheds.geojson').read_text(
+                encoding='utf-8'
+            )
+        )
+        assert ws_a['features'] == []
+        assert [f['properties']['catchment_id'] for f in ws_b['features']] == [
+            cid_b
+        ]
+        assert not (
+            pm.get_catchment_shapes_dir(user_a) / f'{cid_a}.geojson'
+        ).exists()
+        assert (
+            pm.get_catchment_shapes_dir(user_b) / f'{cid_b}.geojson'
+        ).exists()
+
 
 if __name__ == '__main__':
     unittest.main()

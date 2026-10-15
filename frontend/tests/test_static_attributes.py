@@ -29,13 +29,18 @@ import pandas as pd
 import pytest
 from shapely.geometry import box
 
+import frontend.config as _frontend_config
+import frontend.static_attributes as _static_attributes
 from frontend.static_attributes import (
+    DEFAULT_GCS_ERA5_CLIMATE_URI,
+    DEFAULT_GCS_HYDROATLAS_URI,
     build_attribute_card_payload,
     build_map_layer_geojson,
     build_schema_payload,
     card_payload_from_cache_entry,
     get_attributes_extractor,
     reset_attributes_extractor,
+    resolve_app_static_extractor_paths,
     sanitize_for_json,
     zoom_to_hydroatlas_level,
 )
@@ -302,6 +307,92 @@ class StaticAttributesAdapterTest(unittest.TestCase):
                     )
                 finally:
                     reset_attributes_extractor()
+
+    def test_get_attributes_extractor_streams_from_gcs_when_no_local_gdb(
+        self,
+    ) -> None:
+        """Verify extractor streams from GCS when no local gdb exists."""
+        self.addCleanup(reset_attributes_extractor)
+        reset_attributes_extractor()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            hydroatlas_dir, _ = build_synthetic_hydroatlas_fixtures(root)
+            empty_dir = root / 'empty_local_cache'
+
+            class _FakeGCSFileSystem:
+                def exists(self, path: str) -> bool:
+                    rel = path.split('ancillary-data/hydroatlas/', 1)[-1]
+                    if rel.endswith('ancillary-data/hydroatlas'):
+                        return True
+                    return (hydroatlas_dir / rel).exists()
+
+                def ls(self, path: str) -> list[str]:
+                    rel = path.split('ancillary-data/hydroatlas/', 1)[-1]
+                    return [
+                        f'{path}/{p.name}'
+                        for p in sorted((hydroatlas_dir / rel).iterdir())
+                    ]
+
+                def open(self, path: str, mode: str = 'rb'):  # noqa: ANN202
+                    rel = path.split('ancillary-data/hydroatlas/', 1)[-1]
+                    return (hydroatlas_dir / rel).open(mode)
+
+            env_without_overrides = {
+                k: v
+                for k, v in os.environ.items()
+                if k
+                not in {
+                    'HYDROATLAS_GDB_PATH',
+                    'ERA5_CLIMATE_CACHE_DIR',
+                    'ERA5_GRIDDED_ZARR_URI',
+                }
+            }
+            with (
+                mock.patch.dict(os.environ, env_without_overrides, clear=True),
+                mock.patch.object(
+                    _static_attributes,
+                    'OPENHYDRONET_HYDROATLAS_CACHE_DIR',
+                    empty_dir / 'hydroatlas',
+                ),
+                mock.patch.object(
+                    _static_attributes,
+                    'OPENHYDRONET_DATA_CACHE_DIR',
+                    empty_dir / 'data',
+                ),
+                mock.patch.object(
+                    _static_attributes,
+                    'OPENHYDRONET_ERA5_CLIMATE_CACHE_DIR',
+                    empty_dir / 'era5_climate',
+                ),
+                mock.patch.object(
+                    _frontend_config,
+                    'SHARED_HYDROATLAS_DIR',
+                    empty_dir / 'shared_hydroatlas',
+                ),
+                mock.patch.object(
+                    _frontend_config,
+                    'HYDRO_BASINS_DIR',
+                    empty_dir / 'hydro_basins',
+                ),
+                mock.patch('gcsfs.GCSFileSystem', _FakeGCSFileSystem),
+            ):
+                paths = resolve_app_static_extractor_paths()
+                assert paths == {
+                    'gdb_path': None,
+                    'era5_cache_dir': None,
+                    'gridded_era5_uri': None,
+                    'gcs_gdb_uri': DEFAULT_GCS_HYDROATLAS_URI,
+                    'gcs_era5_climate_uri': DEFAULT_GCS_ERA5_CLIMATE_URI,
+                }
+                extractor = get_attributes_extractor()
+                assert extractor.no_download is True
+                assert extractor.gdb_path is None
+                assert extractor.gcs_gdb_uri == DEFAULT_GCS_HYDROATLAS_URI
+                assert (
+                    extractor.gcs_era5_climate_uri
+                    == DEFAULT_GCS_ERA5_CLIMATE_URI
+                )
+                assert 'ele_mt_sav' in extractor.all_gdb_fields
 
 
 if __name__ == '__main__':
