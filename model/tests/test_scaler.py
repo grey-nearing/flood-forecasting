@@ -106,30 +106,35 @@ def _get_scale(da: xr.DataArray, a_type: str) -> float:
     return _calc_types_wrapper(da, a_type, 1.0)
 
 
+@pytest.mark.unit
 def test_get_center_none() -> None:
     """Get center none."""
     da = xr.DataArray(np.array([1, 2, 3]))
     assert _get_center(da, 'none') == 0.0
 
 
+@pytest.mark.unit
 def test_get_center_mean() -> None:
     """Get center mean."""
     da = xr.DataArray(np.array([1, 2, 3]))
     np.testing.assert_allclose(_get_center(da, 'mean'), 2.0)
 
 
+@pytest.mark.unit
 def test_get_center_median() -> None:
     """Get center median."""
     da = xr.DataArray(np.array([1, 5, 2]))
     np.testing.assert_allclose(_get_center(da, 'median'), 2.0)
 
 
+@pytest.mark.unit
 def test_get_center_min() -> None:
     """Get center min."""
     da = xr.DataArray(np.array([1, 5, 2]))
     np.testing.assert_allclose(_get_center(da, 'min'), 1.0)
 
 
+@pytest.mark.unit
 def test_get_center_unknown_type() -> None:
     """Get center unknown type."""
     da = xr.DataArray(np.array([1, 2, 3]))
@@ -137,24 +142,28 @@ def test_get_center_unknown_type() -> None:
         _get_center(da, 'invalid_type')
 
 
+@pytest.mark.unit
 def test_get_scale_none() -> None:
     """Get scale none."""
     da = xr.DataArray(np.array([1, 2, 3]))
     assert _get_scale(da, 'none') == 1.0
 
 
+@pytest.mark.unit
 def test_get_scale_std() -> None:
     """Get scale std."""
     da = xr.DataArray(np.array([1, 2, 3]))
     np.testing.assert_allclose(_get_scale(da, 'std'), np.std([1, 2, 3]))
 
 
+@pytest.mark.unit
 def test_get_scale_minmax() -> None:
     """Get scale minmax."""
     da = xr.DataArray(np.array([1, 5, 2]))
     np.testing.assert_allclose(_get_scale(da, 'minmax'), 4.0)
 
 
+@pytest.mark.unit
 def test_get_scale_unknown_type() -> None:
     """Get scale unknown type."""
     da = xr.DataArray(np.array([1, 2, 3]))
@@ -165,6 +174,7 @@ def test_get_scale_unknown_type() -> None:
 # --- Test Scaler.__init__ ---
 
 
+@pytest.mark.unit
 def test_scaler_init_calculate_with_dataset(
     tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
 ) -> None:
@@ -188,6 +198,7 @@ def test_scaler_init_calculate_with_dataset(
     }
 
 
+@pytest.mark.unit
 def test_scaler_init_calculate_no_dataset(tmp_scaler_dir: Path) -> None:
     """Scaler init calculate no dataset."""
     scaler = Scaler(
@@ -196,6 +207,7 @@ def test_scaler_init_calculate_no_dataset(tmp_scaler_dir: Path) -> None:
     assert scaler.scaler is None
 
 
+@pytest.mark.unit
 def test_scaler_init_load_with_dataset_raises_error(
     tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
 ) -> None:
@@ -215,6 +227,7 @@ def test_scaler_init_load_with_dataset_raises_error(
 # --- Test Scaler.calculate ---
 
 
+@pytest.mark.unit
 def test_scaler_calculate_parameters_correctness(
     tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
 ) -> None:
@@ -275,6 +288,7 @@ def test_scaler_calculate_parameters_correctness(
     )
 
 
+@pytest.mark.unit
 def test_scaler_calculate_custom_normalization(
     tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
 ) -> None:
@@ -335,6 +349,7 @@ def test_scaler_calculate_custom_normalization(
 
 
 # --- Test check_zero_scale during calculate ---
+@pytest.mark.unit
 def test_scaler_scale_raises_error_for_zero_scale(
     tmp_scaler_dir: Path, sample_dataset_with_constant_var: xr.Dataset
 ) -> None:
@@ -353,6 +368,7 @@ def test_scaler_scale_raises_error_for_zero_scale(
 
 
 # --- Test check_zero_scale ---
+@pytest.mark.unit
 def test_check_zero_scale_method_raises_error(tmp_scaler_dir: Path) -> None:
     """Check zero scale method raises error."""
     scaler = Scaler(
@@ -375,6 +391,7 @@ def test_check_zero_scale_method_raises_error(tmp_scaler_dir: Path) -> None:
         scaler.check_zero_scale()
 
 
+@pytest.mark.unit
 def test_check_zero_scale_method_no_error_for_nonzero(
     tmp_scaler_dir: Path
 ) -> None:
@@ -397,6 +414,7 @@ def test_check_zero_scale_method_no_error_for_nonzero(
 # --- Test Scaler.scale ---
 
 
+@pytest.mark.unit
 def test_scaler_scale_basic_functionality(
     scaler_instance_calculated: Scaler, sample_dataset_basic: xr.Dataset
 ) -> None:
@@ -424,6 +442,7 @@ def test_scaler_scale_basic_functionality(
     )
 
 
+@pytest.mark.unit
 def test_scaler_scale_new_dataset(
     scaler_instance_calculated: Scaler, sample_dataset_basic: xr.Dataset
 ) -> None:
@@ -448,6 +467,7 @@ def test_scaler_scale_new_dataset(
     )
 
 
+@pytest.mark.unit
 def test_scaler_scale_raises_error_for_missing_features(
     scaler_instance_calculated: Scaler,
 ) -> None:
@@ -463,6 +483,7 @@ def test_scaler_scale_raises_error_for_missing_features(
 # --- Test Scaler.unscale ---
 
 
+@pytest.mark.unit
 def test_scaler_unscale_basic_functionality(
     scaler_instance_calculated: Scaler, sample_dataset_basic: xr.Dataset
 ) -> None:
@@ -491,6 +512,7 @@ def test_scaler_unscale_basic_functionality(
     )
 
 
+@pytest.mark.unit
 def test_scaler_unscale_new_dataset(
     scaler_instance_calculated: Scaler, sample_dataset_basic: xr.Dataset
 ) -> None:
@@ -508,6 +530,7 @@ def test_scaler_unscale_new_dataset(
     )
 
 
+@pytest.mark.unit
 def test_scaler_unscale_raises_error_for_missing_features(
     scaler_instance_calculated: Scaler,
 ) -> None:
@@ -524,6 +547,7 @@ def test_scaler_unscale_raises_error_for_missing_features(
 # --- Test Scaler.save and Scaler.load ---
 
 
+@pytest.mark.unit
 def test_scaler_save_and_load(
     tmp_scaler_dir: Path,
     scaler_instance_calculated: Scaler,
@@ -560,6 +584,7 @@ def test_scaler_save_and_load(
     )
 
 
+@pytest.mark.unit
 def test_scaler_save_raises_error_if_not_calculated(
     tmp_scaler_dir: Path
 ) -> None:
@@ -577,6 +602,7 @@ def test_scaler_save_raises_error_if_not_calculated(
 # --- Test check_zero_scale during load ---
 
 
+@pytest.mark.unit
 def test_scaler_load_from_file_raises_error_for_zero_scale(
     tmp_scaler_dir: Path
 ) -> None:
@@ -600,6 +626,7 @@ def test_scaler_load_from_file_raises_error_for_zero_scale(
         Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
 
 
+@pytest.mark.unit
 def test_scaler_load_missing_zarr_raises_file_not_found(
     tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
 ) -> None:
@@ -639,6 +666,7 @@ def _scaler_with_bad_parameter(parameter: str, value: float) -> xr.Dataset:
 
 
 @pytest.mark.parametrize(('parameter', 'value'), _NON_FINITE_CASES)
+@pytest.mark.unit
 def test_check_zero_scale_raises_for_non_finite_parameter(
     tmp_scaler_dir: Path, parameter: str, value: float
 ) -> None:
@@ -653,6 +681,7 @@ def test_check_zero_scale_raises_for_non_finite_parameter(
 
 
 @pytest.mark.parametrize(('parameter', 'value'), _NON_FINITE_CASES)
+@pytest.mark.unit
 def test_scaler_load_raises_for_non_finite_parameter(
     tmp_scaler_dir: Path, parameter: str, value: float
 ) -> None:
@@ -690,6 +719,7 @@ def _dataset_with_probe_feature(values: np.ndarray) -> xr.Dataset:
         ),
     ],
 )
+@pytest.mark.unit
 def test_scaler_calculate_rejects_non_finite_statistics(
     tmp_scaler_dir: Path, probe_values: np.ndarray
 ) -> None:
@@ -705,6 +735,7 @@ def test_scaler_calculate_rejects_non_finite_statistics(
     assert str(exc_info.value).endswith("['probe', 'probe_obs', 'probe_sim'].")
 
 
+@pytest.mark.unit
 def test_scaler_calculate_accepts_partially_missing_feature(
     tmp_scaler_dir: Path,
 ) -> None:
