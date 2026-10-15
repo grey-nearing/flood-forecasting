@@ -42,6 +42,7 @@ from maas.floodhub import (
     parse_floodhub_gauges_response,
 )
 from maas.geoglows import (
+    _build_zarr_forecast_records,
     _resolve_geoglows_cache_file,
     extract_geoglows_zarr_series,
     lookup_cached_geoglows_return_periods,
@@ -322,6 +323,8 @@ class TestGloFASAndGeoGLOWSProviders:
             'flow_min': [850.0, '', 1100.0],
             'flow_max': [1800.0, '', 2600.0],
             'high_res': [1220.0, 1400.0, 1680.0],
+            'ensemble_01': [900.0, '', 1200.0],
+            'ensemble_02': [1750.0, '', 2500.0],
         }
         fc = parse_geoglows_forecast_response(raw_fc, _RIVER_ID)
         assert fc['status'] == 'live'
@@ -329,6 +332,22 @@ class TestGloFASAndGeoGLOWSProviders:
             len(fc['data']) == _TWO_POINTS
         )  # skips intermediate blank-median/avg row
         assert fc['river_id'] == _RIVER_ID
+        assert set(fc['ensemble_members']) == {'member01', 'member02'}
+        assert fc['ensemble_members']['member01'] == [900.0, 1200.0]
+        assert fc['ensemble_members']['member02'] == [1750.0, 2500.0]
+
+        zarr_rq = np.zeros((52, 2), dtype=np.float32)
+        for m_idx in range(51):
+            zarr_rq[m_idx, :] = [100.0 + m_idx, 200.0 + m_idx]
+        zarr_rq[51, :] = [125.0, 225.0]
+        zarr_records, zarr_members = _build_zarr_forecast_records(
+            zarr_rq,
+            ['2026-04-01T00:00:00Z', '2026-04-01T03:00:00Z'],
+        )
+        assert len(zarr_records) == _TWO_POINTS
+        assert len(zarr_members) == 51  # noqa: PLR2004
+        assert zarr_members['member01'] == [100.0, 200.0]
+        assert zarr_members['member51'] == [150.0, 250.0]
 
         raw_rp = {
             'return_periods': {

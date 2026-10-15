@@ -82,6 +82,7 @@ def parse_geoglows_forecast_response(
     blank strings so blank values are never turned into spurious `0.0` flows.
     """
     records: list[dict[str, Any]] = []
+    ensemble_members: dict[str, list[float | None]] = {}
     if isinstance(payload, Mapping) and 'datetime' in payload:
         times = payload.get('datetime') or []
         meds = payload.get('flow_med') or []
@@ -91,12 +92,14 @@ def parse_geoglows_forecast_response(
         p25s = payload.get('flow_25p') or []
         p75s = payload.get('flow_75p') or []
         high_res = payload.get('high_res') or []
+        kept_indices: list[int] = []
 
         for i, raw_t in enumerate(times):
             med_val = _opt_rounded(meds, i)
             avg_val = _opt_rounded(avgs, i)
             if med_val is None and avg_val is None:
                 continue
+            kept_indices.append(i)
             records.append(
                 {
                     'time': str(raw_t),
@@ -109,6 +112,24 @@ def parse_geoglows_forecast_response(
                     'high_res': _opt_rounded(high_res, i),
                 }
             )
+        member_keys = sorted(
+            k
+            for k in payload
+            if str(k).startswith(('ensemble_', 'member'))
+            and isinstance(payload[k], Sequence)
+            and not isinstance(payload[k], (str, bytes))
+        )
+        for mk in member_keys:
+            seq = payload[mk]
+            suffix = (
+                str(mk).replace('ensemble_', '').replace('member', '').strip()
+            )
+            short_key = (
+                f'member{int(suffix):02d}' if suffix.isdigit() else str(mk)
+            )
+            ensemble_members[short_key] = [
+                _opt_rounded(seq, i) for i in kept_indices
+            ]
 
     has_live = len(records) > 0
     return {
@@ -118,6 +139,7 @@ def parse_geoglows_forecast_response(
         'river_id': river_id,
         'unit': 'CUBIC_METERS_PER_SECOND',
         'data': records,
+        'ensemble_members': ensemble_members,
     }
 
 
@@ -408,10 +430,29 @@ def _get_cloudfront_zarr_meta(
     return None
 
 
+def _extract_zarr_ensemble_members(
+    ens_all: np.ndarray,
+    kept_indices: list[int],
+) -> dict[str, list[float | None]]:
+    """Extract 51 GEOGLOWS ensemble trajectories at `kept_indices`."""
+    return {
+        f'member{m_idx + 1:02d}': [
+            round(float(ens_all[m_idx, t_idx]), 2)
+            if (
+                np.isfinite(ens_all[m_idx, t_idx])
+                and ens_all[m_idx, t_idx] >= 0.0
+            )
+            else None
+            for t_idx in kept_indices
+        ]
+        for m_idx in range(ens_all.shape[0])
+    }
+
+
 def _build_zarr_forecast_records(
     rq: np.ndarray,
     iso_times: list[str],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, list[float | None]]]:
     """Summarize ensemble trajectories `rq` across `iso_times`."""
     ens_all = rq[:_ENSEMBLE_MEMBER_COUNT, :]
     hres_all = (
@@ -420,6 +461,7 @@ def _build_zarr_forecast_records(
         else None
     )
     records: list[dict[str, Any]] = []
+    kept_indices: list[int] = []
     for t_idx, t_str in enumerate(iso_times):
         if t_idx >= ens_all.shape[1]:
             break
@@ -427,6 +469,7 @@ def _build_zarr_forecast_records(
         valid = col[np.isfinite(col) & (col >= 0.0)]
         if valid.size == 0:
             continue
+        kept_indices.append(t_idx)
         pcts = np.percentile(valid, [0, 25, 50, 75, 100])
         hval: float | None = None
         if (
@@ -447,7 +490,7 @@ def _build_zarr_forecast_records(
                 'high_res': hval,
             }
         )
-    return records
+    return records, _extract_zarr_ensemble_members(ens_all, kept_indices)
 
 
 def _fetch_forecast_from_cloudfront_zarr(
@@ -487,7 +530,9 @@ def _fetch_forecast_from_cloudfront_zarr(
     ).reshape(chunks)
 
     rq = q_arr[:, :, offset].astype(np.float64)
-    records = _build_zarr_forecast_records(rq, meta['iso_times'])
+    records, ensemble_members = _build_zarr_forecast_records(
+        rq, meta['iso_times']
+    )
     if not records:
         return None
     return {
@@ -497,6 +542,7 @@ def _fetch_forecast_from_cloudfront_zarr(
         'river_id': rid,
         'unit': 'CUBIC_METERS_PER_SECOND',
         'data': records,
+        'ensemble_members': ensemble_members,
     }
 
 

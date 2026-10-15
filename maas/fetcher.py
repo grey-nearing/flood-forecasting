@@ -1251,7 +1251,7 @@ class MaaSDataFetcher:
                     None,
                 )
             rp_key = f'geoglows_rp_{rid}'
-            fc_key = f'geoglows_fc_{rid}'
+            fc_key = f'geoglows_fc_v2_{rid}'
             is_live_gg = not hasattr(self.geoglows.fetch_forecast, '_mock_name')
             gg_r = self.flood_cache.get(rp_key, max_age_s=180 * 86400)
             gg_f_cached = (
