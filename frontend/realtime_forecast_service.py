@@ -27,8 +27,10 @@ Connects the Forecasting and Data Assimilation UI tab directly to:
 from __future__ import annotations
 
 import calendar
+import copy
 import dataclasses
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -44,7 +46,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 import torch
+import tqdm as tqdm_mod
 import xarray as xr
+from dask.callbacks import Callback as DaskCallback
 
 from frontend import profile_manager
 from frontend.config import (
@@ -54,7 +58,9 @@ from frontend.config import (
 )
 from model.datasetzoo.caravan import load_caravan_attributes
 from model.datautils.scaler import Scaler
+from model.evaluation.assimilation import Assimilation
 from model.modelzoo import get_model, load_model_weights
+from model.utils.assimilationconfig import AssimilationConfig
 from model.utils.config import Config
 from model.utils.configutils import (
     flatten_feature_list,
@@ -65,7 +71,7 @@ from multimet.timeseries_extractors import realtime as mm_realtime
 from multimet.timeseries_extractors.hres import find_latest_hres_open_data_date
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +249,25 @@ _MAX_ZARR_CACHE_ENTRIES = 64
 _ASSIMILATION_SYNC_LOCK = threading.Lock()
 _OBSERVED_STREAMFLOW_FORECAST_PAD_DAYS = 7
 
+_ALL_REALTIME_PRODUCTS: tuple[str, ...] = (
+    'HRES',
+    'IMERG',
+    'CPC',
+    'AIFS',
+    'GFS',
+    'GEFS',
+    'IFS_ENS',
+    'DYNAMICAL_IMERG',
+)
+_FETCH_PROGRESS_LOCK = threading.Lock()
+_FETCH_PROGRESS_BY_USER: dict[str, dict[str, Any]] = {}
+_RUN_PROGRESS_LOCK = threading.Lock()
+_RUN_PROGRESS_BY_USER: dict[str, dict[str, Any]] = {}
+_FETCH_THREAD_LOCAL = threading.local()
+_TQDM_PATCH_LOCK = threading.Lock()
+_TQDM_PATCH_INSTALLED = False
+_ORIG_TQDM_CLASS: Any = tqdm_mod.std.tqdm
+
 
 @dataclasses.dataclass(frozen=True)
 class OverrideConfig:
@@ -363,6 +388,105 @@ def inspect_saved_state(
         'state_date': state_date,
         'hidden_shape': h_shape,
     }
+
+
+_DAILY_FORECAST_TTL_SECONDS: float = 4 * 3600.0
+
+
+def get_daily_forecast_cache_path(
+    username: str | None,
+    catchment_id: str,
+    model_id: str = _DEFAULT_MODEL_ID,
+) -> Path:
+    """Return the per-basin cached daily forecast JSON path."""
+    pm = profile_manager.get_profile_manager()
+    safe_cid = _sanitize_catchment_filename_token(catchment_id)
+    safe_mid = _sanitize_catchment_filename_token(model_id)
+    cache_dir = pm.get_profile_dir(username) / 'forecasts' / 'daily_cache'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f'{safe_cid}_{safe_mid}_forecast.json'
+
+
+def load_cached_daily_forecast(
+    username: str | None,
+    catchment_id: str,
+    model_id: str = _DEFAULT_MODEL_ID,
+    *,
+    ttl_seconds: float = _DAILY_FORECAST_TTL_SECONDS,
+) -> dict[str, Any] | None:
+    """Load cached daily forecast for ``catchment_id``, clearing if expired."""
+    if not catchment_id:
+        return None
+    cache_path = get_daily_forecast_cache_path(
+        username=username, catchment_id=catchment_id, model_id=model_id
+    )
+    if not cache_path.is_file() or cache_path.stat().st_size == 0:
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    now = time.time()
+    cached_at = _clean_float(payload.get('cached_at_unix'))
+    if cached_at is None:
+        try:
+            cached_at = float(cache_path.stat().st_mtime)
+        except OSError:
+            return None
+    if ttl_seconds <= 0.0 or (now - cached_at) > float(ttl_seconds):
+        try:
+            cache_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+    payload['cached_at_unix'] = round(cached_at, 3)
+    payload['expires_at_unix'] = round(cached_at + float(ttl_seconds), 3)
+    payload['ttl_seconds'] = round(float(ttl_seconds), 1)
+    return payload
+
+
+def save_cached_daily_forecast(
+    username: str | None,
+    catchment_id: str,
+    result_payload: dict[str, Any],
+    model_id: str = _DEFAULT_MODEL_ID,
+    *,
+    ttl_seconds: float = _DAILY_FORECAST_TTL_SECONDS,
+) -> dict[str, Any]:
+    """Persist daily forecast result with TTL so browser refreshes restore it."""
+    now = time.time()
+    existing = load_cached_daily_forecast(
+        username=username,
+        catchment_id=catchment_id,
+        model_id=model_id,
+        ttl_seconds=ttl_seconds,
+    )
+    if (
+        existing is not None
+        and not result_payload.get('hindcast_tail')
+        and isinstance(existing.get('hindcast_tail'), list)
+        and len(existing['hindcast_tail']) > 0
+    ):
+        result_payload['hindcast_tail'] = existing['hindcast_tail']
+
+    result_payload['cached_at_unix'] = round(now, 3)
+    result_payload['expires_at_unix'] = round(now + float(ttl_seconds), 3)
+    result_payload['ttl_seconds'] = round(float(ttl_seconds), 1)
+
+    cache_path = get_daily_forecast_cache_path(
+        username=username, catchment_id=catchment_id, model_id=model_id
+    )
+    tmp_path = (
+        cache_path.parent
+        / f'.{cache_path.name}.tmp.{os.getpid()}.{time.time_ns()}'
+    )
+    tmp_path.write_text(json.dumps(result_payload), encoding='utf-8')
+    tmp_path.replace(cache_path)
+    return result_payload
 
 
 _MAX_SHORT_UPLOAD_POINTS = 90
@@ -2196,6 +2320,24 @@ def get_realtime_status(  # noqa: PLR0913
     return_periods = load_basin_return_periods(
         username=username, catchment_id=primary_id
     )
+    fetch_progress = get_realtime_fetch_progress(
+        username=username,
+        catchment_id=primary_id,
+        catchment_ids=eval_ids,
+    )
+    run_progress = get_realtime_run_progress(
+        username=username,
+        catchment_id=primary_id,
+        catchment_ids=eval_ids,
+    )
+    cached_forecasts_by_id: dict[str, dict[str, Any]] = {}
+    for cid in catchments_status:
+        cf = load_cached_daily_forecast(
+            username=username, catchment_id=cid, model_id=model_id
+        )
+        if cf is not None:
+            cached_forecasts_by_id[cid] = cf
+    cached_forecast = cached_forecasts_by_id.get(primary_id)
 
     return {
         'status': 'success',
@@ -2228,6 +2370,12 @@ def get_realtime_status(  # noqa: PLR0913
         'nowcast_products': streams['nowcast_products'],
         'forecast_products': streams['forecast_products'],
         'input_products': streams['input_products'],
+        'fetch_progress': fetch_progress,
+        'run_progress': run_progress,
+        'products_disk_status': fetch_progress.get('products_disk_status', {}),
+        'cached_forecast': cached_forecast,
+        'cached_forecasts_by_id': cached_forecasts_by_id,
+        'forecast_cache_ttl_seconds': _DAILY_FORECAST_TTL_SECONDS,
     }
 
 
@@ -2296,6 +2444,611 @@ def _resolve_product_enums(
             )
         selected_enums.append(product_members[key])
     return selected_enums
+
+
+def _invalidate_zarr_caches() -> None:
+    """Clear in-memory Zarr metadata and window caches after store writes."""
+    with _ZARR_CACHE_LOCK:
+        _ZARR_META_CACHE.clear()
+        _ZARR_WINDOW_CACHE.clear()
+
+
+def _normalize_user_key(username: str | None) -> str:
+    """Return canonical lowercase profile username key."""
+    pm = profile_manager.get_profile_manager()
+    raw = (username or pm.active_username or 'guest').strip().lower()
+    return raw or 'guest'
+
+
+def _inspect_products_disk_readiness(
+    username: str | None,
+    catchment_id: str | None = None,
+    catchment_ids: Sequence[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Inspect per-product Zarr store existence and basin coverage on disk."""
+    stores = _discover_zarr_stores(username)
+    eval_ids = _normalize_catchment_id_list(catchment_id, catchment_ids)
+    all_prods = list(_ALL_REALTIME_PRODUCTS)
+    for k in stores:
+        if k not in all_prods:
+            all_prods.append(k)
+
+    readiness: dict[str, dict[str, Any]] = {}
+    for prod_name in all_prods:
+        store_path = stores.get(prod_name)
+        valid_store = (
+            store_path is not None and _is_valid_zarr_store(store_path)
+        )
+        ready_for_basin = False
+        basins_count = 0
+        if valid_store and store_path is not None:
+            meta = _get_cached_store_meta(store_path)
+            basins_count = len(meta['basins'])
+            if eval_ids:
+                ready_for_basin = all(
+                    cid in meta['basins'] or cid.lower() in meta['lower_map']
+                    for cid in eval_ids
+                )
+            else:
+                ready_for_basin = basins_count > 0
+        readiness[prod_name] = {
+            'product': prod_name,
+            'store_exists': bool(valid_store),
+            'ready_on_disk': bool(ready_for_basin),
+            'basins_count': basins_count,
+            'zarr_path': str(store_path) if valid_store else None,
+        }
+    return readiness
+
+
+class _TrackedTqdm(_ORIG_TQDM_CLASS):  # type: ignore[misc]
+    """Thread-local progress-reporting subclass of ``tqdm.std.tqdm``."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self._oh_handler = getattr(
+            _FETCH_THREAD_LOCAL, 'progress_handler', None
+        )
+        self._oh_closed = False
+        super().__init__(*args, **kwargs)
+        if self._oh_handler is not None:
+            self._oh_emit(int(self.n or 0), event='bar_init')
+
+    def _oh_emit(self, current_val: int, *, event: str = 'bar_step') -> None:
+        handler = getattr(self, '_oh_handler', None)
+        if handler is None:
+            return
+        total_val = int(self.total) if getattr(self, 'total', None) else 0
+        start_t = float(getattr(self, 'start_t', time.time()))
+        elapsed = max(0.0, time.time() - start_t)
+        rate = (
+            current_val / elapsed
+            if elapsed > 0.05 and current_val > 0  # noqa: PLR2004
+            else None
+        )
+        if rate and rate > 0 and total_val > current_val:
+            eta: float | None = max(0.0, (total_val - current_val) / rate)
+        elif total_val > 0 and current_val >= total_val:
+            eta = 0.0
+        else:
+            eta = None
+        handler(
+            {
+                'event': event,
+                'source': 'tqdm',
+                'current': int(current_val),
+                'total': total_val,
+                'unit': str(getattr(self, 'unit', 'day') or 'day'),
+                'desc': str(getattr(self, 'desc', '') or ''),
+                'elapsed_seconds': round(elapsed, 2),
+                'rate': round(rate, 3) if rate is not None else None,
+                'eta_seconds': round(eta, 1) if eta is not None else None,
+                'bar_id': id(self),
+            }
+        )
+
+    def __iter__(self) -> Iterator[Any]:
+        for idx, obj in enumerate(super().__iter__(), 1):
+            yield obj
+            self._oh_emit(max(int(self.n or 0), idx), event='bar_step')
+
+    def update(self, n: float = 1) -> bool | None:
+        res = super().update(n)
+        self._oh_emit(int(self.n or 0), event='bar_step')
+        return res
+
+    def close(self) -> None:
+        if (
+            getattr(self, '_oh_handler', None) is not None
+            and not getattr(self, '_oh_closed', False)
+        ):
+            self._oh_closed = True
+            self._oh_emit(int(self.n or 0), event='bar_close')
+        super().close()
+
+
+def _ensure_tqdm_progress_hook() -> None:
+    """Install ``_TrackedTqdm`` on ``tqdm.tqdm`` once in a thread-safe way."""
+    global _TQDM_PATCH_INSTALLED  # noqa: PLW0603
+    with _TQDM_PATCH_LOCK:
+        if not _TQDM_PATCH_INSTALLED:
+            tqdm_mod.tqdm = _TrackedTqdm
+            tqdm_mod.std.tqdm = _TrackedTqdm
+            _TQDM_PATCH_INSTALLED = True
+
+
+class _DaskFetchProgressCallback(DaskCallback):
+    """Dask task callback that forwards chunk completion to ``handler``."""
+
+    def __init__(self, handler: Callable[[dict[str, Any]], None]) -> None:
+        super().__init__()
+        self._handler = handler
+        self._start_t = time.time()
+
+    def _start_state(
+        self,
+        dsk: dict[Any, Any],
+        state: dict[str, Any],
+    ) -> None:
+        del dsk
+        self._start_t = time.time()
+        total = (
+            len(state.get('ready', ()))
+            + len(state.get('waiting', ()))
+            + len(state.get('running', ()))
+            + len(state.get('finished', ()))
+        )
+        if total > 0:
+            self._handler(
+                {
+                    'event': 'dask_start',
+                    'source': 'dask',
+                    'current': 0,
+                    'total': total,
+                    'unit': 'chunks',
+                }
+            )
+
+    def _posttask(
+        self,
+        key: object,
+        result: object,
+        dsk: dict[Any, Any],
+        state: dict[str, Any],
+        worker_id: object,
+    ) -> None:
+        del key, result, dsk, worker_id
+        done = len(state.get('finished', ()))
+        total = (
+            done
+            + len(state.get('ready', ()))
+            + len(state.get('waiting', ()))
+            + len(state.get('running', ()))
+        )
+        elapsed = max(0.0, time.time() - self._start_t)
+        rate = (
+            done / elapsed
+            if elapsed > 0.05 and done > 0  # noqa: PLR2004
+            else None
+        )
+        eta = (
+            max(0.0, (total - done) / rate)
+            if rate and rate > 0 and total > done
+            else None
+        )
+        if total > 0:
+            self._handler(
+                {
+                    'event': 'dask_step',
+                    'source': 'dask',
+                    'current': done,
+                    'total': total,
+                    'unit': 'chunks',
+                    'elapsed_seconds': round(elapsed, 2),
+                    'rate': round(rate, 3) if rate is not None else None,
+                    'eta_seconds': round(eta, 1) if eta is not None else None,
+                }
+            )
+
+
+def _init_user_fetch_progress(
+    user_key: str,
+    target_ids: list[str],
+    norm_mode: str,
+    requested_products: list[str],
+    spinup_days: int,
+) -> dict[str, Any]:
+    """Initialize and register the in-memory fetch progress state for a user."""
+    now = time.time()
+    est_days = int(spinup_days) + 1 if norm_mode == 'coldstart' else 7
+    products_map: dict[str, dict[str, Any]] = {}
+    for idx, prod_name in enumerate(requested_products):
+        products_map[prod_name] = {
+            'product': prod_name,
+            'index': idx,
+            'status': 'queued',
+            'stage': 'queued',
+            'percent': 0.0,
+            'current': 0,
+            'total': est_days,
+            'unit': 'day',
+            'desc': 'Queued',
+            'window': None,
+            'started_at': None,
+            'elapsed_seconds': 0.0,
+            'rate': None,
+            'eta_seconds': None,
+            'ready_on_disk': False,
+            '_window_days': est_days,
+            '_cum_offset': 0,
+            '_bar_id': None,
+            '_bar_last': 0,
+            '_has_tqdm': False,
+        }
+    state: dict[str, Any] = {
+        'active': True,
+        'status': 'running',
+        'username': user_key,
+        'mode': norm_mode,
+        'catchment_id': target_ids[0] if target_ids else None,
+        'catchment_ids': list(target_ids),
+        'reference_date': None,
+        'started_at': now,
+        'updated_at': now,
+        'elapsed_seconds': 0.0,
+        'current_product': (
+            requested_products[0] if requested_products else None
+        ),
+        'completed_products_count': 0,
+        'completed_products': [],
+        'total_products_count': len(requested_products),
+        'overall_percent': 0.0,
+        'message': (
+            f"Preparing to fetch {', '.join(requested_products)}..."
+            if requested_products
+            else 'Preparing real-time fetch...'
+        ),
+        'error': None,
+        'products_order': list(requested_products),
+        'products': products_map,
+    }
+    with _FETCH_PROGRESS_LOCK:
+        _FETCH_PROGRESS_BY_USER[user_key] = state
+    return state
+
+
+def _recompute_overall_fetch_progress(state: dict[str, Any]) -> None:
+    """Recompute aggregate progress fields on ``state`` in-place."""
+    now = time.time()
+    state['updated_at'] = now
+    state['elapsed_seconds'] = round(
+        max(0.0, now - float(state.get('started_at') or now)), 1
+    )
+    order: list[str] = state.get('products_order', [])
+    prods: dict[str, dict[str, Any]] = state.get('products', {})
+    completed = [
+        p for p in order if prods.get(p, {}).get('status') == 'completed'
+    ]
+    state['completed_products'] = completed
+    state['completed_products_count'] = len(completed)
+    state['total_products_count'] = len(order)
+    if order:
+        total_pct = sum(
+            float(prods.get(p, {}).get('percent') or 0.0) for p in order
+        )
+        state['overall_percent'] = round(
+            min(100.0, max(0.0, total_pct / len(order))), 1
+        )
+    else:
+        state['overall_percent'] = 0.0
+
+
+def _apply_product_lifecycle_event(
+    state: dict[str, Any],
+    ev: dict[str, Any],
+    event_type: str,
+) -> None:
+    """Update ``state`` for ``init`` and ``product_*`` lifecycle events."""
+    prods = state['products']
+    if event_type == 'init':
+        state['reference_date'] = ev.get('reference_date')
+        return
+    prod_name = str(ev.get('product') or state.get('current_product') or '')
+    p_entry = prods.get(prod_name)
+    if p_entry is None:
+        return
+    if event_type == 'product_start':
+        state['current_product'] = prod_name
+        win_days = max(1, int(ev.get('window_days') or p_entry['total'] or 1))
+        p_entry.update(
+            {
+                'status': 'downloading',
+                'stage': 'downloading',
+                'percent': 0.0,
+                'current': 0,
+                'total': win_days,
+                'window': [ev.get('start_date'), ev.get('end_date')],
+                'started_at': time.time(),
+                'desc': (
+                    f"{prod_name} [{ev.get('start_date')} .. "
+                    f"{ev.get('end_date')}]"
+                ),
+                '_window_days': win_days,
+                '_cum_offset': 0,
+                '_bar_id': None,
+                '_bar_last': 0,
+                '_has_tqdm': False,
+            }
+        )
+        state['message'] = (
+            f'Downloading {prod_name} (0 / {win_days} days · 0%)'
+        )
+    elif event_type == 'product_writing':
+        p_entry['status'] = 'writing_zarr'
+        p_entry['stage'] = 'writing_zarr'
+        p_entry['percent'] = max(float(p_entry.get('percent') or 0.0), 99.0)
+        p_entry['current'] = int(p_entry.get('total') or p_entry['current'])
+        p_entry['eta_seconds'] = 0.0
+        state['message'] = f'Writing {prod_name} Zarr store to disk...'
+    elif event_type == 'product_complete':
+        started = float(p_entry.get('started_at') or time.time())
+        p_entry.update(
+            {
+                'status': 'completed',
+                'stage': 'completed',
+                'percent': 100.0,
+                'current': int(p_entry.get('total') or 1),
+                'eta_seconds': 0.0,
+                'elapsed_seconds': round(max(0.0, time.time() - started), 1),
+                'ready_on_disk': True,
+            }
+        )
+        _invalidate_zarr_caches()
+        state['message'] = f'Completed {prod_name} Zarr store.'
+
+
+def _apply_step_progress_event(
+    state: dict[str, Any],
+    ev: dict[str, Any],
+    event_type: str,
+) -> None:
+    """Update active product progress for ``bar_*`` and ``dask_*`` events."""
+    active_prod = str(state.get('current_product') or '')
+    p_entry = state['products'].get(active_prod)
+    if p_entry is None:
+        return
+    started = float(p_entry.get('started_at') or time.time())
+    p_entry['elapsed_seconds'] = round(max(0.0, time.time() - started), 1)
+
+    if event_type in ('bar_init', 'bar_step', 'bar_close'):
+        p_entry['_has_tqdm'] = True
+        bar_id = ev.get('bar_id')
+        bar_cur = max(0, int(ev.get('current') or 0))
+        bar_tot = max(0, int(ev.get('total') or 0))
+        win_days = max(1, int(p_entry.get('_window_days') or bar_tot or 1))
+        if p_entry['_bar_id'] is not None and bar_id != p_entry['_bar_id']:
+            p_entry['_cum_offset'] += int(p_entry.get('_bar_last') or 0)
+            p_entry['_bar_last'] = 0
+        p_entry['_bar_id'] = bar_id
+        p_entry['_bar_last'] = max(int(p_entry.get('_bar_last') or 0), bar_cur)
+        eff_cur = int(p_entry['_cum_offset']) + bar_cur
+        eff_tot = max(win_days, int(p_entry['_cum_offset']) + bar_tot, eff_cur)
+        pct = round(min(99.5, (100.0 * eff_cur) / max(1, eff_tot)), 1)
+        unit = str(ev.get('unit') or 'day')
+        p_entry.update(
+            {
+                'status': 'downloading',
+                'stage': 'downloading',
+                'current': eff_cur,
+                'total': eff_tot,
+                'unit': unit,
+                'percent': max(float(p_entry.get('percent') or 0.0), pct),
+                'desc': str(ev.get('desc') or p_entry.get('desc') or ''),
+                'rate': ev.get('rate'),
+                'eta_seconds': ev.get('eta_seconds'),
+            }
+        )
+        state['message'] = (
+            f'Downloading {active_prod}: {eff_cur} / {eff_tot} {unit}s '
+            f"({p_entry['percent']:.1f}%)"
+        )
+    elif event_type in ('dask_start', 'dask_step') and not p_entry.get(
+        '_has_tqdm'
+    ):
+        d_cur = max(0, int(ev.get('current') or 0))
+        d_tot = max(1, int(ev.get('total') or 1))
+        pct = round(min(99.5, (100.0 * d_cur) / d_tot), 1)
+        p_entry.update(
+            {
+                'status': 'downloading',
+                'stage': 'downloading',
+                'current': d_cur,
+                'total': d_tot,
+                'unit': 'chunks',
+                'percent': max(float(p_entry.get('percent') or 0.0), pct),
+                'rate': ev.get('rate'),
+                'eta_seconds': ev.get('eta_seconds'),
+            }
+        )
+        state['message'] = (
+            f'Downloading {active_prod}: {d_cur} / {d_tot} chunks '
+            f"({p_entry['percent']:.1f}%)"
+        )
+
+
+def _handle_fetch_progress_event(user_key: str, ev: dict[str, Any]) -> None:
+    """Process a single progress event from ``RealtimeForcingFetcher``."""
+    event_type = str(ev.get('event') or '')
+    with _FETCH_PROGRESS_LOCK:
+        state = _FETCH_PROGRESS_BY_USER.get(user_key)
+        if state is None:
+            return
+        if event_type in (
+            'init',
+            'product_start',
+            'product_writing',
+            'product_complete',
+        ):
+            _apply_product_lifecycle_event(state, ev, event_type)
+        elif event_type in (
+            'bar_init',
+            'bar_step',
+            'bar_close',
+            'dask_start',
+            'dask_step',
+        ):
+            _apply_step_progress_event(state, ev, event_type)
+        elif event_type == 'complete':
+            state['active'] = False
+            state['status'] = 'completed'
+            state['current_product'] = None
+            for p_entry in state['products'].values():
+                if p_entry.get('status') != 'error':
+                    p_entry['status'] = 'completed'
+                    p_entry['stage'] = 'completed'
+                    p_entry['percent'] = 100.0
+                    p_entry['ready_on_disk'] = True
+            _invalidate_zarr_caches()
+            state['message'] = (
+                f"Completed fetching {len(state.get('products_order', []))} "
+                'product(s).'
+            )
+        _recompute_overall_fetch_progress(state)
+
+
+def get_realtime_fetch_progress(
+    username: str | None,
+    catchment_id: str | None = None,
+    catchment_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Return live per-product download progress and disk readiness."""
+    user_key = _normalize_user_key(username)
+    disk_status = _inspect_products_disk_readiness(
+        username=user_key,
+        catchment_id=catchment_id,
+        catchment_ids=catchment_ids,
+    )
+    with _FETCH_PROGRESS_LOCK:
+        raw_state = _FETCH_PROGRESS_BY_USER.get(user_key)
+        snapshot = copy.deepcopy(raw_state) if raw_state is not None else None
+
+    if snapshot is None:
+        ready_prods = [
+            p for p, info in disk_status.items() if info.get('ready_on_disk')
+        ]
+        return {
+            'status': 'idle',
+            'active': False,
+            'username': user_key,
+            'mode': None,
+            'catchment_id': catchment_id,
+            'catchment_ids': _normalize_catchment_id_list(
+                catchment_id, catchment_ids
+            ),
+            'reference_date': None,
+            'started_at': None,
+            'updated_at': None,
+            'elapsed_seconds': 0.0,
+            'current_product': None,
+            'completed_products_count': len(ready_prods),
+            'completed_products': ready_prods,
+            'total_products_count': 0,
+            'overall_percent': 0.0,
+            'message': None,
+            'error': None,
+            'products_order': [],
+            'products': {},
+            'products_disk_status': disk_status,
+        }
+
+    if snapshot.get('active') and snapshot.get('started_at'):
+        snapshot['elapsed_seconds'] = round(
+            max(0.0, time.time() - float(snapshot['started_at'])), 1
+        )
+    cleaned_products: dict[str, dict[str, Any]] = {}
+    for prod_name, p_info in snapshot.get('products', {}).items():
+        pub = {k: v for k, v in p_info.items() if not str(k).startswith('_')}
+        disk_ready = bool(
+            disk_status.get(prod_name, {}).get('ready_on_disk', False)
+        )
+        pub['ready_on_disk'] = bool(pub.get('ready_on_disk') or disk_ready)
+        cleaned_products[prod_name] = pub
+    snapshot['products'] = cleaned_products
+    snapshot['products_disk_status'] = disk_status
+    return snapshot
+
+
+def _execute_tracked_multimet_fetch(  # noqa: PLR0913
+    user_key: str,
+    target_ids: list[str],
+    catchment_geojson_path: Path,
+    output_dir: Path,
+    *,
+    norm_mode: str,
+    eff_lookback: int,
+    norm_ref_date: str | None,
+    products: list[str] | None,
+    overwrite: bool,
+) -> mm_realtime.RealtimeFetchResult:
+    """Run ``fetch_realtime_multimet`` with live per-product progress hooks."""
+    resolved_enums = _resolve_product_enums(products)
+    requested_prod_names = (
+        [p.value for p in resolved_enums]
+        if resolved_enums
+        else list(mm_realtime.DEFAULT_REALTIME_PRODUCTS)
+    )
+    _init_user_fetch_progress(
+        user_key=user_key,
+        target_ids=target_ids,
+        norm_mode=norm_mode,
+        requested_products=requested_prod_names,
+        spinup_days=eff_lookback,
+    )
+    _ensure_tqdm_progress_hook()
+
+    def _on_progress(ev: dict[str, Any]) -> None:
+        _handle_fetch_progress_event(user_key, ev)
+
+    fetch_kwargs: dict[str, Any] = {
+        'basins': catchment_geojson_path,
+        'output_dir': output_dir,
+        'mode': norm_mode,
+        'lookback_days': eff_lookback,
+        'reference_date': norm_ref_date,
+        'id_column': 'catchment_id',
+        'products': resolved_enums,
+        'overwrite': bool(overwrite),
+    }
+    sig_params = inspect.signature(
+        mm_realtime.fetch_realtime_multimet
+    ).parameters
+    if 'progress_callback' in sig_params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig_params.values()
+    ):
+        fetch_kwargs['progress_callback'] = _on_progress
+
+    _FETCH_THREAD_LOCAL.progress_handler = _on_progress
+    try:
+        with _DaskFetchProgressCallback(_on_progress):
+            summary = mm_realtime.fetch_realtime_multimet(**fetch_kwargs)
+        _on_progress({'event': 'complete'})
+    except Exception as exc:
+        with _FETCH_PROGRESS_LOCK:
+            err_state = _FETCH_PROGRESS_BY_USER.get(user_key)
+            if err_state is not None:
+                err_state['active'] = False
+                err_state['status'] = 'error'
+                err_state['error'] = str(exc)
+                err_state['message'] = f'Fetch failed: {exc}'
+                cur_p = err_state.get('current_product')
+                if cur_p and cur_p in err_state.get('products', {}):
+                    err_state['products'][cur_p]['status'] = 'error'
+                    err_state['products'][cur_p]['stage'] = 'error'
+        raise
+    else:
+        return summary
+    finally:
+        _FETCH_THREAD_LOCAL.progress_handler = None
+        _invalidate_zarr_caches()
 
 
 def fetch_realtime_forcing_for_catchment(  # noqa: PLR0913
@@ -2391,16 +3144,19 @@ def fetch_realtime_forcing_for_catchment(  # noqa: PLR0913
     output_dir = pm.get_realtime_dynamics_dir(username)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    summary = mm_realtime.fetch_realtime_multimet(
-        basins=catchment_geojson_path,
+    user_key = _normalize_user_key(username)
+    eff_lookback = (
+        int(spinup_days) if norm_mode == 'coldstart' else hotstart_lookback
+    )
+    summary = _execute_tracked_multimet_fetch(
+        user_key=user_key,
+        target_ids=target_ids,
+        catchment_geojson_path=catchment_geojson_path,
         output_dir=output_dir,
-        mode=norm_mode,
-        lookback_days=(
-            int(spinup_days) if norm_mode == 'coldstart' else hotstart_lookback
-        ),
-        reference_date=norm_ref_date,
-        id_column='catchment_id',
-        products=_resolve_product_enums(products),
+        norm_mode=norm_mode,
+        eff_lookback=eff_lookback,
+        norm_ref_date=norm_ref_date,
+        products=products,
         overwrite=bool(overwrite),
     )
 
@@ -3297,7 +4053,7 @@ def _run_forecast_model_single(
         username=username, catchment_id=catchment_id
     )
 
-    return {
+    result_payload = {
         'status': 'success',
         'mode': norm_mode,
         'is_what_if': overrides.is_what_if,
@@ -3320,6 +4076,220 @@ def _run_forecast_model_single(
         'return_periods': return_periods,
         'saved_state': saved_state,
     }
+    if not overrides.is_what_if:
+        result_payload = save_cached_daily_forecast(
+            username=username,
+            catchment_id=catchment_id,
+            result_payload=result_payload,
+            model_id=model_id,
+        )
+    return result_payload
+
+
+def _init_user_run_progress(  # noqa: PLR0913
+    user_key: str,
+    target_ids: list[str],
+    norm_mode: str,
+    model_id: str,
+    issue_date_str: str,
+    *,
+    is_what_if: bool = False,
+) -> dict[str, Any]:
+    """Initialize per-basin model inference progress for a user."""
+    now = time.time()
+    basins_map: dict[str, dict[str, Any]] = {}
+    for idx, cid in enumerate(target_ids):
+        basins_map[cid] = {
+            'catchment_id': cid,
+            'index': idx,
+            'status': 'queued',
+            'percent': 0.0,
+            'started_at': None,
+            'elapsed_seconds': 0.0,
+            'peak_discharge_cms': None,
+            'peak_date': None,
+        }
+    mode_label = 'Hot Start' if norm_mode == 'hotstart' else 'Cold Start'
+    first_basin = target_ids[0] if target_ids else None
+    state: dict[str, Any] = {
+        'active': True,
+        'status': 'running',
+        'username': user_key,
+        'mode': norm_mode,
+        'is_what_if': bool(is_what_if),
+        'model_id': model_id,
+        'issue_date': issue_date_str,
+        'catchment_id': first_basin,
+        'catchment_ids': list(target_ids),
+        'basins_order': list(target_ids),
+        'started_at': now,
+        'updated_at': now,
+        'elapsed_seconds': 0.0,
+        'current_basin': first_basin,
+        'current_basin_index': 0,
+        'completed_basins_count': 0,
+        'completed_basins': [],
+        'total_basins_count': len(target_ids),
+        'overall_percent': 0.0,
+        'message': (
+            f'Running {mode_label} inference (1/{len(target_ids)}): '
+            f'{first_basin}...'
+            if first_basin
+            else f'Preparing {mode_label} inference...'
+        ),
+        'error': None,
+        'basins': basins_map,
+    }
+    with _RUN_PROGRESS_LOCK:
+        _RUN_PROGRESS_BY_USER[user_key] = state
+    return state
+
+
+def _update_user_run_progress_step(  # noqa: PLR0913
+    user_key: str,
+    *,
+    event: str,
+    basin_id: str | None = None,
+    basin_index: int = 0,
+    basin_elapsed: float = 0.0,
+    peak_discharge_cms: float | None = None,
+    peak_date: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Update per-basin model inference progress state in a thread-safe way."""
+    now = time.time()
+    with _RUN_PROGRESS_LOCK:
+        state = _RUN_PROGRESS_BY_USER.get(user_key)
+        if state is None:
+            return
+        state['updated_at'] = now
+        state['elapsed_seconds'] = round(
+            max(0.0, now - float(state.get('started_at') or now)), 2
+        )
+        total = max(1, int(state.get('total_basins_count') or 1))
+        mode_label = (
+            'Hot Start' if state.get('mode') == 'hotstart' else 'Cold Start'
+        )
+        basins_map: dict[str, dict[str, Any]] = state.get('basins', {})
+        order: list[str] = state.get('basins_order', [])
+
+        if event == 'basin_start' and basin_id:
+            state['current_basin'] = basin_id
+            state['current_basin_index'] = basin_index
+            b_entry = basins_map.get(basin_id)
+            if b_entry is not None:
+                b_entry['status'] = 'running'
+                b_entry['percent'] = 50.0
+                b_entry['started_at'] = now
+            done_cnt = int(state.get('completed_basins_count') or 0)
+            state['overall_percent'] = round(
+                min(99.0, 100.0 * (done_cnt + 0.25) / total), 1
+            )
+            state['message'] = (
+                f'Running {mode_label} ({basin_index + 1}/{total}): '
+                f'{basin_id}...'
+            )
+        elif event == 'basin_complete' and basin_id:
+            b_entry = basins_map.get(basin_id)
+            if b_entry is not None:
+                b_entry['status'] = 'completed'
+                b_entry['percent'] = 100.0
+                b_entry['elapsed_seconds'] = round(basin_elapsed, 2)
+                b_entry['peak_discharge_cms'] = peak_discharge_cms
+                b_entry['peak_date'] = peak_date
+            completed = [
+                cid
+                for cid in order
+                if basins_map.get(cid, {}).get('status') == 'completed'
+            ]
+            state['completed_basins'] = completed
+            state['completed_basins_count'] = len(completed)
+            state['overall_percent'] = round(
+                min(100.0, 100.0 * len(completed) / total), 1
+            )
+            state['message'] = (
+                f'Completed {len(completed)}/{total} basin(s) '
+                f'({basin_id} in {basin_elapsed:.2f}s)'
+            )
+        elif event == 'complete':
+            for cid in order:
+                b_entry = basins_map.get(cid)
+                if b_entry is not None and b_entry.get('status') != 'completed':
+                    b_entry['status'] = 'completed'
+                    b_entry['percent'] = 100.0
+            state['active'] = False
+            state['status'] = 'completed'
+            state['current_basin'] = None
+            state['completed_basins'] = list(order)
+            state['completed_basins_count'] = len(order)
+            state['overall_percent'] = 100.0
+            state['message'] = (
+                f'{mode_label} inference complete for {len(order)} '
+                f"basin{'s' if len(order) != 1 else ''} "
+                f"({state['elapsed_seconds']:.2f}s)"
+            )
+        elif event == 'error':
+            state['active'] = False
+            state['status'] = 'error'
+            state['error'] = error or 'Model execution failed'
+            state['message'] = f"Model run failed: {state['error']}"
+            cur_b = state.get('current_basin')
+            if cur_b and cur_b in basins_map:
+                basins_map[cur_b]['status'] = 'error'
+
+
+def get_realtime_run_progress(
+    username: str | None,
+    catchment_id: str | None = None,
+    catchment_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Return live per-basin model inference progress for a user."""
+    user_key = _normalize_user_key(username)
+    with _RUN_PROGRESS_LOCK:
+        raw_state = _RUN_PROGRESS_BY_USER.get(user_key)
+        snapshot = copy.deepcopy(raw_state) if raw_state is not None else None
+
+    if snapshot is None:
+        eval_ids = _normalize_catchment_id_list(catchment_id, catchment_ids)
+        return {
+            'status': 'idle',
+            'active': False,
+            'username': user_key,
+            'mode': None,
+            'is_what_if': False,
+            'model_id': _DEFAULT_MODEL_ID,
+            'issue_date': None,
+            'catchment_id': catchment_id,
+            'catchment_ids': eval_ids,
+            'basins_order': eval_ids,
+            'started_at': None,
+            'updated_at': None,
+            'elapsed_seconds': 0.0,
+            'current_basin': None,
+            'current_basin_index': 0,
+            'completed_basins_count': 0,
+            'completed_basins': [],
+            'total_basins_count': len(eval_ids),
+            'overall_percent': 0.0,
+            'message': None,
+            'error': None,
+            'basins': {},
+        }
+
+    if snapshot.get('active') and snapshot.get('started_at'):
+        now = time.time()
+        snapshot['elapsed_seconds'] = round(
+            max(0.0, now - float(snapshot['started_at'])), 2
+        )
+        cur_b = snapshot.get('current_basin')
+        basins_map = snapshot.get('basins', {})
+        if cur_b and cur_b in basins_map:
+            b_start = basins_map[cur_b].get('started_at')
+            if b_start:
+                basins_map[cur_b]['elapsed_seconds'] = round(
+                    max(0.0, now - float(b_start)), 2
+                )
+    return snapshot
 
 
 def run_forecast_model(  # noqa: PLR0913
@@ -3399,15 +4369,51 @@ def run_forecast_model(  # noqa: PLR0913
         is_what_if=is_what_if,
     )
 
+    user_key = _normalize_user_key(username)
+    _init_user_run_progress(
+        user_key=user_key,
+        target_ids=target_ids,
+        norm_mode=norm_mode,
+        model_id=model_id,
+        issue_date_str=issue_date_str,
+        is_what_if=overrides.is_what_if,
+    )
+
     results_by_id: dict[str, dict[str, Any]] = {}
-    for cid in target_ids:
-        results_by_id[cid] = _run_forecast_model_single(
-            username=username,
-            catchment_id=cid,
-            t0=t0,
-            bundle=bundle,
-            overrides=overrides,
+    try:
+        for idx, cid in enumerate(target_ids):
+            _update_user_run_progress_step(
+                user_key,
+                event='basin_start',
+                basin_id=cid,
+                basin_index=idx,
+            )
+            t_basin_start = time.time()
+            single_res = _run_forecast_model_single(
+                username=username,
+                catchment_id=cid,
+                t0=t0,
+                bundle=bundle,
+                overrides=overrides,
+            )
+            basin_elapsed = max(0.0, time.time() - t_basin_start)
+            single_res['elapsed_seconds'] = round(basin_elapsed, 2)
+            results_by_id[cid] = single_res
+            _update_user_run_progress_step(
+                user_key,
+                event='basin_complete',
+                basin_id=cid,
+                basin_index=idx,
+                basin_elapsed=basin_elapsed,
+                peak_discharge_cms=single_res.get('peak_discharge_cms'),
+                peak_date=single_res.get('peak_date'),
+            )
+        _update_user_run_progress_step(user_key, event='complete')
+    except Exception as exc:
+        _update_user_run_progress_step(
+            user_key, event='error', error=str(exc)
         )
+        raise
 
     primary_res = results_by_id[primary_id]
     updated_status = get_realtime_status(
@@ -3415,6 +4421,11 @@ def run_forecast_model(  # noqa: PLR0913
         catchment_id=primary_id,
         requested_issue_date=issue_date_str,
         model_id=model_id,
+        catchment_ids=target_ids,
+    )
+    run_progress = get_realtime_run_progress(
+        username=username,
+        catchment_id=primary_id,
         catchment_ids=target_ids,
     )
 
@@ -3426,6 +4437,7 @@ def run_forecast_model(  # noqa: PLR0913
         'results_by_id': results_by_id,
         'saved_state': updated_status['saved_state'],
         'post_run_status': updated_status,
+        'run_progress': run_progress,
     }
 
 
@@ -3501,3 +4513,722 @@ def run_hydrological_model_for_basin(  # noqa: PLR0913
         product_overrides=product_overrides,
         is_what_if=is_what_if,
     )
+
+
+_DEFAULT_NUDGING_RHO = 0.65
+_DEFAULT_NUDGING_ALPHA = 1.0
+_DEFAULT_NUDGING_WINDOW_DAYS = 1
+_MAX_NUDGING_WINDOW_DAYS = 14
+
+
+def compute_nudging_postprocessing(  # noqa: PLR0913
+    forecast_series: Sequence[dict[str, Any]],
+    hindcast_series: Sequence[dict[str, Any]] | None = None,
+    observed_series: Sequence[dict[str, Any]] | None = None,
+    *,
+    issue_date: str | None = None,
+    rho: float = _DEFAULT_NUDGING_RHO,
+    alpha: float = _DEFAULT_NUDGING_ALPHA,
+    window_days: int = _DEFAULT_NUDGING_WINDOW_DAYS,
+) -> dict[str, Any]:
+    """Apply autoregressive residual-persistence nudging (Karan DA paper Eq. 6).
+
+    Computes the residual error ``e = Q_obs - Q_base`` at the latest valid
+    observation date ``t_anchor <= issue_date`` (optionally averaged over a
+    ``window_days`` lookback window ending at ``t_anchor``) and updates
+    subsequent discharge steps ``k = (d - t_anchor).days >= 0`` via::
+
+        Q_pp(d) = max(0.0, Q_base(d) + alpha * (rho ** k) * e)
+
+    When ``alpha == 1.0`` and ``window_days == 1``, this matches Equation 6 of
+    Karan Ruparell's Data Assimilation paper (``ar1_postprocess``).
+    """
+    rho_clamped = float(np.clip(float(rho), 0.0, 1.0))
+    alpha_clamped = float(np.clip(float(alpha), 0.0, 1.0))
+    win_clamped = int(
+        np.clip(int(window_days or 1), 1, _MAX_NUDGING_WINDOW_DAYS)
+    )
+
+    hc_list = list(hindcast_series or [])
+    fc_list = list(forecast_series or [])
+    obs_list = list(observed_series or [])
+
+    base_by_date: dict[str, float] = {}
+    for pt in hc_list:
+        d_str = str(pt.get('date') or '').strip()
+        q_val = _clean_float(pt.get('discharge_cms'))
+        if d_str and q_val is not None:
+            base_by_date[d_str] = q_val
+    for pt in fc_list:
+        d_str = str(pt.get('date') or '').strip()
+        q_val = _clean_float(pt.get('discharge_cms'))
+        if d_str and q_val is not None:
+            base_by_date[d_str] = q_val
+
+    obs_by_date: dict[str, float] = {}
+    for pt in obs_list:
+        d_str = str(pt.get('date') or '').strip()
+        q_val = _clean_float(pt.get('discharge_cms'))
+        if d_str and q_val is not None and q_val >= 0.0:
+            obs_by_date[d_str] = q_val
+
+    overlap_dates = sorted(
+        d for d in obs_by_date if d in base_by_date
+    )
+    if issue_date:
+        pre_issue = [d for d in overlap_dates if d <= str(issue_date).strip()]
+        if pre_issue:
+            overlap_dates = pre_issue
+
+    if not overlap_dates:
+        return {
+            'status': 'success',
+            'method': 'nudging',
+            'applied': False,
+            'rho': round(rho_clamped, 4),
+            'alpha': round(alpha_clamped, 4),
+            'window_days': win_clamped,
+            'anchor_date': None,
+            'residual_cms': 0.0,
+            'obs_at_anchor_cms': None,
+            'base_at_anchor_cms': None,
+            'half_life_days': None,
+            'nudged_series': [],
+            'forecast': [dict(pt) for pt in fc_list],
+            'peak_discharge_cms': None,
+            'peak_date': None,
+        }
+
+    anchor_date = overlap_dates[-1]
+    anchor_ts = pd.Timestamp(anchor_date)
+    win_start_str = _format_date_str(
+        anchor_ts - pd.Timedelta(days=win_clamped - 1)
+    )
+    window_dates = [
+        d for d in overlap_dates if win_start_str <= d <= anchor_date
+    ] or [anchor_date]
+
+    residuals = [obs_by_date[d] - base_by_date[d] for d in window_dates]
+    residual_cms = float(np.mean(residuals))
+    obs_at_anchor = obs_by_date[anchor_date]
+    base_at_anchor = base_by_date[anchor_date]
+
+    if 0.0 < rho_clamped < 1.0:
+        half_life: float | None = round(
+            float(-np.log(2.0) / np.log(rho_clamped)), 2
+        )
+    else:
+        half_life = None
+
+    all_ordered_dates = sorted(base_by_date.keys())
+    nudged_series: list[dict[str, Any]] = []
+    nudged_by_date: dict[str, float] = {}
+    delta_by_date: dict[str, float] = {}
+
+    for d_str in all_ordered_dates:
+        if d_str < anchor_date:
+            continue
+        step_k = max(0, int((pd.Timestamp(d_str) - anchor_ts).days))
+        weight_k = alpha_clamped * (rho_clamped**step_k)
+        delta_q = weight_k * residual_cms
+        base_q = base_by_date[d_str]
+        nudged_q = max(0.0, base_q + delta_q)
+        nudged_by_date[d_str] = round(nudged_q, 3)
+        delta_by_date[d_str] = round(delta_q, 3)
+        nudged_series.append(
+            {
+                'date': d_str,
+                'step_from_anchor': step_k,
+                'discharge_cms': round(nudged_q, 3),
+                'baseline_cms': round(base_q, 3),
+                'delta_cms': round(delta_q, 3),
+                'weight': round(weight_k, 4),
+            }
+        )
+
+    nudged_forecast: list[dict[str, Any]] = []
+    peak_q: float | None = None
+    peak_date: str | None = None
+    for pt in fc_list:
+        item = dict(pt)
+        d_str = str(item.get('date') or '').strip()
+        base_q = _clean_float(item.get('discharge_cms'))
+        if d_str in nudged_by_date and base_q is not None:
+            new_q = nudged_by_date[d_str]
+            delta_q = delta_by_date[d_str]
+            item['discharge_cms'] = new_q
+            base_mm = _clean_float(item.get('discharge_mm_day'))
+            if base_mm is not None and base_q > 1e-6:
+                item['discharge_mm_day'] = round(
+                    max(0.0, base_mm * (new_q / base_q)), 4
+                )
+            for q_key in ('q05_cms', 'q25_cms', 'q75_cms', 'q95_cms'):
+                q_orig = _clean_float(item.get(q_key))
+                if q_orig is not None:
+                    item[q_key] = round(max(0.0, q_orig + delta_q), 3)
+        q_cur = _clean_float(item.get('discharge_cms'))
+        if q_cur is not None and (peak_q is None or q_cur >= peak_q):
+            peak_q = q_cur
+            peak_date = d_str
+        nudged_forecast.append(item)
+
+    return {
+        'status': 'success',
+        'method': 'nudging',
+        'applied': True,
+        'rho': round(rho_clamped, 4),
+        'alpha': round(alpha_clamped, 4),
+        'window_days': win_clamped,
+        'anchor_date': anchor_date,
+        'window_dates': window_dates,
+        'residual_cms': round(residual_cms, 3),
+        'obs_at_anchor_cms': round(obs_at_anchor, 3),
+        'base_at_anchor_cms': round(base_at_anchor, 3),
+        'half_life_days': half_life,
+        'nudged_series': nudged_series,
+        'forecast': nudged_forecast,
+        'peak_discharge_cms': round(peak_q, 3) if peak_q is not None else None,
+        'peak_date': peak_date,
+    }
+
+
+_DEFAULT_VARIATIONAL_WINDOW_DAYS = 14
+_MAX_VARIATIONAL_WINDOW_DAYS = 180
+_DEFAULT_VARIATIONAL_REG_WEIGHT = 0.5
+_DEFAULT_VARIATIONAL_LR = 0.01
+_DEFAULT_VARIATIONAL_EPOCHS = 30
+_MAX_VARIATIONAL_EPOCHS = 200
+_DEFAULT_VARIATIONAL_LOSS = 'MSE'
+_DEFAULT_VARIATIONAL_CLIP_NORM = 1.0
+_DEFAULT_VARIATIONAL_TOLERANCE = 0.05
+_ALL_ASSIMILATION_COMPONENTS = (
+    'static_embedding',
+    'hindcast_embedding',
+    'forecast_embedding',
+)
+
+
+def _normalize_assimilation_components(
+    raw_components: Any,
+) -> list[str] | dict[str, dict[str, float]]:
+    """Normalize user-specified latent embedding component selection."""
+    if raw_components is None:
+        return list(_ALL_ASSIMILATION_COMPONENTS)
+    if isinstance(raw_components, str):
+        key = raw_components.strip().lower().replace('-', '_')
+        alias_map: dict[str, list[str]] = {
+            'all': list(_ALL_ASSIMILATION_COMPONENTS),
+            'embedded_all': list(_ALL_ASSIMILATION_COMPONENTS),
+            'dynamic': ['hindcast_embedding', 'forecast_embedding'],
+            'embedded_both_dynamic': [
+                'hindcast_embedding',
+                'forecast_embedding',
+            ],
+            'static': ['static_embedding'],
+            'static_only': ['static_embedding'],
+            'static_embedding': ['static_embedding'],
+            'hindcast_embedding': ['hindcast_embedding'],
+            'forecast_embedding': ['forecast_embedding'],
+            'static_hindcast': ['static_embedding', 'hindcast_embedding'],
+            'embedded_both': ['static_embedding', 'hindcast_embedding'],
+        }
+        if key in alias_map:
+            return alias_map[key]
+        raw_components = [
+            c.strip() for c in raw_components.split(',') if c.strip()
+        ]
+
+    if isinstance(raw_components, dict):
+        cleaned_dict: dict[str, dict[str, float]] = {}
+        for name, spec in raw_components.items():
+            c_name = str(name).strip()
+            if c_name not in _ALL_ASSIMILATION_COMPONENTS:
+                raise ValueError(
+                    f'Unsupported assimilation component {c_name!r}; '
+                    f'supported: {list(_ALL_ASSIMILATION_COMPONENTS)}.'
+                )
+            sub: dict[str, float] = {}
+            if isinstance(spec, dict):
+                rw = _clean_float(spec.get('regularization_weight'))
+                lr = _clean_float(spec.get('initial_learning_rate'))
+                if rw is not None and rw >= 0.0:
+                    sub['regularization_weight'] = float(rw)
+                if lr is not None and lr > 0.0:
+                    sub['initial_learning_rate'] = float(lr)
+            cleaned_dict[c_name] = sub
+        return cleaned_dict or list(_ALL_ASSIMILATION_COMPONENTS)
+
+    if isinstance(raw_components, (list, tuple, set)):
+        names: list[str] = []
+        for item in raw_components:
+            c_name = str(item).strip()
+            if not c_name:
+                continue
+            if c_name not in _ALL_ASSIMILATION_COMPONENTS:
+                raise ValueError(
+                    f'Unsupported assimilation component {c_name!r}; '
+                    f'supported: {list(_ALL_ASSIMILATION_COMPONENTS)}.'
+                )
+            if c_name not in names:
+                names.append(c_name)
+        return names or list(_ALL_ASSIMILATION_COMPONENTS)
+
+    return list(_ALL_ASSIMILATION_COMPONENTS)
+
+
+def run_variational_assimilation_for_basin(  # noqa: PLR0913, PLR0915
+    username: str | None,
+    catchment_id: str,
+    *,
+    issue_date: str | None = None,
+    window_days: int = _DEFAULT_VARIATIONAL_WINDOW_DAYS,
+    regularization_weight: float = _DEFAULT_VARIATIONAL_REG_WEIGHT,
+    initial_learning_rate: float = _DEFAULT_VARIATIONAL_LR,
+    epochs: int = _DEFAULT_VARIATIONAL_EPOCHS,
+    loss: str = _DEFAULT_VARIATIONAL_LOSS,
+    assimilation_components: Any = None,
+    clip_gradient_norm: float | None = _DEFAULT_VARIATIONAL_CLIP_NORM,
+    early_stopping_tolerance: float | None = _DEFAULT_VARIATIONAL_TOLERANCE,
+    observed_series: Sequence[dict[str, Any]] | None = None,
+    model_id: str = _DEFAULT_MODEL_ID,
+    model_run_dir: Path | None = None,
+    precip_overrides: dict[str, Any] | None = None,
+    temp_overrides: dict[str, float] | None = None,
+    product_overrides: dict[str, dict[str, dict[str, float]]] | None = None,
+) -> dict[str, Any]:
+    """Run variational latent-embedding DA via ``model.evaluation.assimilation.Assimilation``.
+
+    Optimizes the selected latent embeddings of ``MeanEmbeddingForecastLSTM``
+    (``static_embedding``, ``hindcast_embedding``, ``forecast_embedding``)
+    over an observation window preceding ``issue_date`` using Karan Ruparell's
+    ``Assimilation`` and ``AssimilationConfig`` engine while keeping all neural
+    network weights frozen.
+    """
+    cid_str = str(catchment_id or '').strip()
+    if not cid_str:
+        raise ValueError('catchment_id is required for data assimilation.')
+
+    t0 = resolve_issue_date(
+        username=username,
+        catchment_id=cid_str,
+        requested_issue_date=issue_date,
+        probe_ecmwf=False,
+    )
+    issue_date_str = _format_date_str(t0)
+
+    bundle = {
+        **_load_forecast_model_bundle(run_dir=model_run_dir),
+        'active_mode': 'coldstart',
+        'active_model_id': model_id,
+    }
+    cfg: Config = bundle['cfg']
+    model = bundle['model']
+    scaler: Scaler = bundle['scaler']
+    seq_len = int(cfg.seq_length or _DEFAULT_SPINUP_DAYS)
+    lead_time = int(cfg.lead_time or _DEFAULT_LEAD_TIME_DAYS)
+
+    win_clamped = int(
+        np.clip(
+            int(window_days or _DEFAULT_VARIATIONAL_WINDOW_DAYS),
+            1,
+            min(_MAX_VARIATIONAL_WINDOW_DAYS, seq_len),
+        )
+    )
+    reg_clamped = float(np.clip(float(regularization_weight), 0.0, 100.0))
+    lr_clamped = float(np.clip(float(initial_learning_rate), 1e-5, 1.0))
+    epochs_clamped = int(np.clip(int(epochs), 0, _MAX_VARIATIONAL_EPOCHS))
+    comp_spec = _normalize_assimilation_components(assimilation_components)
+    comp_names = (
+        list(comp_spec.keys())
+        if isinstance(comp_spec, dict)
+        else list(comp_spec)
+    )
+
+    overrides = _unpack_override_payloads(
+        precip_overrides,
+        temp_overrides,
+        product_overrides,
+        is_what_if=False,
+    )
+    model_input, hindcast_dates, forecast_dates, area_km2 = (
+        _assemble_inference_tensors(
+            username=username,
+            catchment_id=cid_str,
+            issue_date=t0,
+            bundle=bundle,
+            overrides=overrides,
+        )
+    )
+
+    obs_list = (
+        list(observed_series)
+        if observed_series is not None
+        else load_realtime_streamflow_series(username, cid_str)
+    )
+    obs_by_date: dict[str, float] = {}
+    for pt in obs_list:
+        d_str = str(pt.get('date') or '').strip()
+        q_val = _clean_float(pt.get('discharge_cms'))
+        if d_str and q_val is not None and q_val >= 0.0:
+            obs_by_date[d_str] = q_val
+
+    y_cms_arr = np.full(seq_len + lead_time, np.nan, dtype=np.float32)
+    for idx, d_ts in enumerate(hindcast_dates):
+        d_str = _format_date_str(d_ts)
+        if d_str in obs_by_date:
+            y_cms_arr[idx] = obs_by_date[d_str]
+
+    # Fallback when user uploaded a single anchor observation on t0 itself
+    if np.isnan(y_cms_arr[:seq_len]).all() and issue_date_str in obs_by_date:
+        y_cms_arr[seq_len - 1] = obs_by_date[issue_date_str]
+
+    model.seq_length = seq_len
+    model.__dict__.pop('_preloaded_state', None)
+    with torch.no_grad():
+        prior_dict = model(model_input, return_embeddings=True)
+        prior_mm, prior_q_cms, prior_quantiles = _unscale_predictions(
+            pred_dict=prior_dict,
+            bundle=bundle,
+            area_km2=area_km2,
+            lead_time=lead_time,
+        )
+
+    prior_fc_series, prior_hc_series, prior_peak_q, prior_peak_date = (
+        _format_forecast_and_hindcast_series(
+            mm_per_day=prior_mm,
+            q_cms=prior_q_cms,
+            prob_quantiles_cms=prior_quantiles,
+            hindcast_dates=hindcast_dates,
+            forecast_dates=forecast_dates,
+        )
+    )
+
+    finite_hc_idx = np.where(np.isfinite(y_cms_arr[:seq_len]))[0]
+    if len(finite_hc_idx) == 0:
+        return {
+            'status': 'success',
+            'method': 'variational',
+            'applied': False,
+            'catchment_id': cid_str,
+            'basin_id': cid_str,
+            'model_id': model_id,
+            'issue_date': issue_date_str,
+            'window_days': win_clamped,
+            'effective_window_days': win_clamped,
+            'window_start_date': None,
+            'window_end_date': _format_date_str(hindcast_dates[-1]),
+            'anchor_date': None,
+            'regularization_weight': round(reg_clamped, 4),
+            'initial_learning_rate': round(lr_clamped, 5),
+            'epochs': epochs_clamped,
+            'loss': str(loss or _DEFAULT_VARIATIONAL_LOSS).upper(),
+            'assimilation_components': comp_names,
+            'component_shifts': dict.fromkeys(comp_names, 0.0),
+            'n_valid_obs': 0,
+            'prior_window_rmse_cms': None,
+            'assimilated_window_rmse_cms': None,
+            'hindcast_tail': prior_hc_series,
+            'forecast': prior_fc_series,
+            'baseline_hindcast_tail': prior_hc_series,
+            'baseline_forecast': prior_fc_series,
+            'nudged_series': [],
+            'assimilated_series': [],
+            'peak_discharge_cms': (
+                round(prior_peak_q, 3) if prior_peak_q is not None else None
+            ),
+            'peak_date': prior_peak_date,
+            'baseline_peak_discharge_cms': (
+                round(prior_peak_q, 3) if prior_peak_q is not None else None
+            ),
+            'elapsed_sec': 0.0,
+        }
+
+    last_obs_idx = int(finite_hc_idx[-1])
+    lag_steps = max(0, (seq_len - 1) - last_obs_idx)
+    effective_window = int(
+        np.clip(win_clamped + lag_steps, 1, max(1, seq_len))
+    )
+    win_start_idx = seq_len - effective_window
+    win_end_idx = seq_len
+
+    # Check if any finite observation falls inside [win_start_idx, win_end_idx);
+    # if all observations are older than win_start_idx, expand window to reach last_obs_idx.
+    if not np.isfinite(y_cms_arr[win_start_idx:win_end_idx]).any():
+        effective_window = int(
+            np.clip((seq_len - last_obs_idx) + win_clamped - 1, 1, seq_len)
+        )
+        win_start_idx = seq_len - effective_window
+
+    target_var = cfg.target_variables[0]
+    scaler_ds = scaler.scaler
+    y_center = float(scaler_ds[target_var].sel(parameter='center').to_numpy())
+    y_scale = float(scaler_ds[target_var].sel(parameter='scale').to_numpy())
+    cms_factor = float(area_km2) * _CMS_PER_MM_DAY_KM2
+    y_mm_arr = y_cms_arr / cms_factor
+    y_scaled_arr = ((y_mm_arr - y_center) / y_scale).astype(np.float32)
+
+    batch_for_da = {
+        'x_d_hindcast': model_input['x_d_hindcast'],
+        'x_d_forecast': model_input['x_d_forecast'],
+        'x_s': model_input['x_s'],
+        'y': torch.from_numpy(
+            y_scaled_arr.reshape(1, seq_len + lead_time, 1)
+        ).to(torch.float32),
+    }
+
+    req_loss = str(loss or _DEFAULT_VARIATIONAL_LOSS).strip().upper()
+    if req_loss not in ('MSE', 'NSE', 'CMAL'):
+        req_loss = 'MSE'
+    head_name = str(cfg.head or '').strip().lower()
+    if req_loss == 'CMAL' and head_name not in ('cmal', 'cmal_deterministic'):
+        req_loss = 'MSE'
+    if req_loss == 'NSE':
+        valid_scaled = y_scaled_arr[:seq_len][
+            np.isfinite(y_scaled_arr[:seq_len])
+        ]
+        std_val = (
+            float(np.std(valid_scaled)) if len(valid_scaled) >= 2 else 1.0  # noqa: PLR2004
+        )
+        batch_for_da['per_basin_target_stds'] = torch.tensor(
+            [[max(std_val, 1e-3)]], dtype=torch.float32
+        )
+
+    da_block: dict[str, Any] = {
+        'assimilation_components': comp_spec,
+        'assimilation_window': int(effective_window),
+        'regularization_weight': float(reg_clamped),
+        'initial_learning_rate': float(lr_clamped),
+        'epochs': int(epochs_clamped),
+        'optimizer': 'Adam',
+        'loss': req_loss,
+    }
+    if clip_gradient_norm is not None and float(clip_gradient_norm) > 0.0:
+        da_block['clip_gradient_norm'] = float(clip_gradient_norm)
+    if (
+        early_stopping_tolerance is not None
+        and float(early_stopping_tolerance) > 0.0
+    ):
+        da_block['early_stopping_tolerance'] = float(early_stopping_tolerance)
+
+    parent_dict = dict(cfg.as_dict())
+    # AssimilationConfig._validate_window checks window <= seq_length - lead_time,
+    # whereas MeanEmbeddingForecastLSTM tensors have total length seq_len + lead_time.
+    parent_dict['seq_length'] = int(seq_len + lead_time)
+    parent_dict['lead_time'] = int(lead_time)
+
+    t_start = time.perf_counter()
+    assim_cfg = AssimilationConfig(da_block, parent_cfg=parent_dict)
+    engine = Assimilation(assim_cfg)
+    assimilated_dict = engine.assimilate(model, batch_for_da)
+    elapsed_sec = time.perf_counter() - t_start
+
+    with torch.no_grad():
+        assim_mm, assim_q_cms, assim_quantiles = _unscale_predictions(
+            pred_dict=assimilated_dict,
+            bundle=bundle,
+            area_km2=area_km2,
+            lead_time=lead_time,
+        )
+
+    assim_fc_series, assim_hc_series, peak_q, peak_date = (
+        _format_forecast_and_hindcast_series(
+            mm_per_day=assim_mm,
+            q_cms=assim_q_cms,
+            prob_quantiles_cms=assim_quantiles,
+            hindcast_dates=hindcast_dates,
+            forecast_dates=forecast_dates,
+        )
+    )
+
+    # Relative L2 embedding shift diagnostics inside the assimilation window
+    component_shifts: dict[str, float] = {}
+    for c_name in _ALL_ASSIMILATION_COMPONENTS:
+        if c_name in prior_dict and c_name in assimilated_dict:
+            p_t = prior_dict[c_name].detach().float()
+            a_t = assimilated_dict[c_name].detach().float()
+            if p_t.ndim >= _NDIM_3D:
+                p_t = p_t[:, win_start_idx:win_end_idx]
+                a_t = a_t[:, win_start_idx:win_end_idx]
+            v_mask = torch.isfinite(p_t) & torch.isfinite(a_t)
+            if bool(v_mask.any()):
+                diff_norm = float(
+                    torch.linalg.vector_norm((a_t - p_t)[v_mask]).item()
+                )
+                base_norm = float(
+                    torch.linalg.vector_norm(p_t[v_mask]).item()
+                )
+                component_shifts[c_name] = round(
+                    diff_norm / max(base_norm, 1e-6), 4
+                )
+            else:
+                component_shifts[c_name] = 0.0
+
+    # Window RMSE diagnostics in m^3/s
+    win_obs = y_cms_arr[win_start_idx:win_end_idx]
+    win_prior = prior_q_cms[win_start_idx:win_end_idx]
+    win_assim = assim_q_cms[win_start_idx:win_end_idx]
+    valid_win = (
+        np.isfinite(win_obs) & np.isfinite(win_prior) & np.isfinite(win_assim)
+    )
+    n_valid_obs = int(np.sum(valid_win))
+    if n_valid_obs > 0:
+        prior_rmse: float | None = round(
+            float(np.sqrt(np.mean((win_prior[valid_win] - win_obs[valid_win]) ** 2))),
+            3,
+        )
+        assim_rmse: float | None = round(
+            float(np.sqrt(np.mean((win_assim[valid_win] - win_obs[valid_win]) ** 2))),
+            3,
+        )
+    else:
+        prior_rmse = None
+        assim_rmse = None
+
+    # Build continuous assimilated series over the visible hindcast tail + forecast window
+    all_dates_ts = list(hindcast_dates) + list(forecast_dates)
+    tail_start_idx = max(0, min(win_start_idx, seq_len - _HINDCAST_TAIL_DAYS))
+    assimilated_series: list[dict[str, Any]] = []
+    for idx in range(tail_start_idx, seq_len + lead_time):
+        d_str = _format_date_str(all_dates_ts[idx])
+        a_q = _clean_float(assim_q_cms[idx])
+        b_q = _clean_float(prior_q_cms[idx])
+        if a_q is None or b_q is None:
+            continue
+        assimilated_series.append(
+            {
+                'date': d_str,
+                'discharge_cms': round(a_q, 3),
+                'baseline_cms': round(b_q, 3),
+                'delta_cms': round(a_q - b_q, 3),
+                'in_window': bool(win_start_idx <= idx < win_end_idx),
+                'is_forecast': bool(idx >= seq_len),
+            }
+        )
+
+    anchor_date = _format_date_str(hindcast_dates[last_obs_idx])
+    window_start_date = _format_date_str(hindcast_dates[win_start_idx])
+    window_end_date = _format_date_str(hindcast_dates[win_end_idx - 1])
+
+    return {
+        'status': 'success',
+        'method': 'variational',
+        'applied': True,
+        'catchment_id': cid_str,
+        'basin_id': cid_str,
+        'model_id': model_id,
+        'issue_date': issue_date_str,
+        'window_days': win_clamped,
+        'effective_window_days': effective_window,
+        'window_start_date': window_start_date,
+        'window_end_date': window_end_date,
+        'anchor_date': anchor_date,
+        'regularization_weight': round(reg_clamped, 4),
+        'initial_learning_rate': round(lr_clamped, 5),
+        'epochs': epochs_clamped,
+        'loss': req_loss,
+        'assimilation_components': comp_names,
+        'component_shifts': component_shifts,
+        'n_valid_obs': n_valid_obs,
+        'prior_window_rmse_cms': prior_rmse,
+        'assimilated_window_rmse_cms': assim_rmse,
+        'hindcast_tail': assim_hc_series,
+        'forecast': assim_fc_series,
+        'baseline_hindcast_tail': prior_hc_series,
+        'baseline_forecast': prior_fc_series,
+        'nudged_series': assimilated_series,
+        'assimilated_series': assimilated_series,
+        'peak_discharge_cms': round(peak_q, 3) if peak_q is not None else None,
+        'peak_date': peak_date,
+        'baseline_peak_discharge_cms': (
+            round(prior_peak_q, 3) if prior_peak_q is not None else None
+        ),
+        'elapsed_sec': round(elapsed_sec, 3),
+    }
+
+
+def run_data_assimilation_for_basin(  # noqa: PLR0913
+    username: str | None,
+    catchment_id: str,
+    *,
+    method: str = 'nudging',
+    rho: float = _DEFAULT_NUDGING_RHO,
+    alpha: float = _DEFAULT_NUDGING_ALPHA,
+    window_days: int = _DEFAULT_NUDGING_WINDOW_DAYS,
+    issue_date: str | None = None,
+    forecast_series: Sequence[dict[str, Any]] | None = None,
+    hindcast_series: Sequence[dict[str, Any]] | None = None,
+    observed_series: Sequence[dict[str, Any]] | None = None,
+    regularization_weight: float = _DEFAULT_VARIATIONAL_REG_WEIGHT,
+    initial_learning_rate: float = _DEFAULT_VARIATIONAL_LR,
+    epochs: int = _DEFAULT_VARIATIONAL_EPOCHS,
+    loss: str = _DEFAULT_VARIATIONAL_LOSS,
+    assimilation_components: Any = None,
+    clip_gradient_norm: float | None = _DEFAULT_VARIATIONAL_CLIP_NORM,
+    early_stopping_tolerance: float | None = _DEFAULT_VARIATIONAL_TOLERANCE,
+    model_id: str = _DEFAULT_MODEL_ID,
+    model_run_dir: Path | None = None,
+    precip_overrides: dict[str, Any] | None = None,
+    temp_overrides: dict[str, float] | None = None,
+    product_overrides: dict[str, dict[str, dict[str, float]]] | None = None,
+) -> dict[str, Any]:
+    """Server endpoint helper for ``POST /api/forecast/assimilate``."""
+    cid_str = str(catchment_id or '').strip()
+    if not cid_str:
+        raise ValueError('catchment_id is required for data assimilation.')
+
+    norm_method = str(method or 'nudging').strip().lower().replace('-', '_')
+    if norm_method in ('nudging', 'post_processing', 'postprocessing', 'ar1'):
+        obs = (
+            list(observed_series)
+            if observed_series is not None
+            else load_realtime_streamflow_series(username, cid_str)
+        )
+        res = compute_nudging_postprocessing(
+            forecast_series=list(forecast_series or []),
+            hindcast_series=list(hindcast_series or []),
+            observed_series=obs,
+            issue_date=issue_date,
+            rho=rho,
+            alpha=alpha,
+            window_days=window_days,
+        )
+        res['catchment_id'] = cid_str
+        res['basin_id'] = cid_str
+        return res
+
+    if norm_method in (
+        'variational',
+        'embedding',
+        'latent_variational',
+        '4dvar',
+        '4d_var',
+    ):
+        return run_variational_assimilation_for_basin(
+            username=username,
+            catchment_id=cid_str,
+            issue_date=issue_date,
+            window_days=(
+                _DEFAULT_VARIATIONAL_WINDOW_DAYS
+                if window_days is None
+                else window_days
+            ),
+            regularization_weight=regularization_weight,
+            initial_learning_rate=initial_learning_rate,
+            epochs=epochs,
+            loss=loss,
+            assimilation_components=assimilation_components,
+            clip_gradient_norm=clip_gradient_norm,
+            early_stopping_tolerance=early_stopping_tolerance,
+            observed_series=observed_series,
+            model_id=model_id,
+            model_run_dir=model_run_dir,
+            precip_overrides=precip_overrides,
+            temp_overrides=temp_overrides,
+            product_overrides=product_overrides,
+        )
+
+    raise ValueError(
+        f"Unsupported data assimilation method {method!r}; expected "
+        "'nudging' or 'variational'."
+    )
+

@@ -699,7 +699,14 @@ class ProfileManager:
         meta_file = p_dir / 'profile.json'
 
         if meta_file.is_file() and meta_file.stat().st_size > 0:
-            return json.loads(meta_file.read_text(encoding='utf-8'))
+            data = json.loads(meta_file.read_text(encoding='utf-8'))
+            if isinstance(data, dict):
+                data['username'] = user
+                data['is_guest'] = user == 'guest'
+                if user == 'guest':
+                    data['display_name'] = 'Guest User'
+                    data['email'] = ''
+                return data
 
         now_iso = datetime.now(UTC).isoformat()
         return {
