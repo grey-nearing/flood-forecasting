@@ -34,7 +34,9 @@ from __future__ import annotations
 from collections import defaultdict
 import io
 import logging
+import math
 from pathlib import Path
+import re
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 import warnings
 
@@ -312,6 +314,8 @@ class StaticAttributesExtractor:
     self.gcs_gdb_uri = gcs_gdb_uri
 
     self._hydroatlas_mode: str = "pyogrio"
+    self._available_levels: tuple[int, ...] = (12,)
+    self._level_layers: dict[int, str] = {}
     self._in_memory_gdf: Optional[gpd.GeoDataFrame] = None
     self._subpolygon_files: Dict[str, str] = {}
     self._cloud_attr_pq_path: Optional[str] = None
@@ -429,52 +433,100 @@ class StaticAttributesExtractor:
 
 
   @property
-  def available_levels(self) -> List[int]:
+  def available_levels(self) -> tuple[int, ...]:
     """Returns the HydroATLAS levels available in this extractor."""
-    return (12,)
+    return tuple(self._available_levels)
+
+  @staticmethod
+  def _validate_subbasin_bbox(bbox: tuple[float, float, float, float]) -> None:
+    """Validates a geographic bounding box `(minx, miny, maxx, maxy)`."""
+    if len(bbox) != 4:
+      raise ValueError("bbox must be a tuple of 4 floats")
+    if any(
+        isinstance(v, bool) or not isinstance(v, (int, float)) for v in bbox
+    ):
+      raise ValueError("bbox values must be numbers")
+    if not all(math.isfinite(v) for v in bbox):
+      raise ValueError("bbox values must be finite")
+    minx, miny, maxx, maxy = bbox
+    if minx >= maxx or miny >= maxy:
+      raise ValueError(
+          "bbox must be (minx, miny, maxx, maxy) and have non-zero area"
+      )
+    if minx < -180 or maxx > 180 or miny < -90 or maxy > 90:
+      raise ValueError("bbox values out of range")
+
+  @staticmethod
+  def _subset_subbasin_columns(
+      gdf: gpd.GeoDataFrame,
+      columns: list[str] | None,
+  ) -> gpd.GeoDataFrame:
+    """Normalizes and subsets a sub-basin GeoDataFrame to requested columns."""
+    if not columns:
+      return gdf
+    ordered_cols = list(columns)
+    if "HYBAS_ID" not in ordered_cols:
+      ordered_cols.insert(0, "HYBAS_ID")
+    if "geometry" not in ordered_cols:
+      ordered_cols.append("geometry")
+    if gdf.empty:
+      return gpd.GeoDataFrame(columns=ordered_cols, crs="EPSG:4326")
+    missing_in_gdf = [c for c in ordered_cols if c not in gdf.columns]
+    if missing_in_gdf:
+      raise KeyError(
+          f"Requested column {missing_in_gdf[0]!r} missing from sub-basin layer"
+      )
+    return gdf[ordered_cols]
 
   def read_subbasins(
-      self, bbox: Tuple[float, float, float, float], level: int = 12, columns: Optional[List[str]] = None
+      self,
+      bbox: tuple[float, float, float, float],
+      level: int = 12,
+      columns: list[str] | None = None,
   ) -> gpd.GeoDataFrame:
     """Reads sub-basins within bounding box."""
-    if level != 12:
-        if not isinstance(level, int):
-            raise UnsupportedHydroATLASLevelError(f"level {level} is not available")
-        raise UnsupportedHydroATLASLevelError(f"level {level} is not available")
-    
-    if len(bbox) != 4:
-        raise ValueError("bbox must be a tuple of 4 floats")
-    minx, miny, maxx, maxy = bbox
-    if not (isinstance(minx, (int, float)) and isinstance(miny, (int, float)) and isinstance(maxx, (int, float)) and isinstance(maxy, (int, float))):
-        raise ValueError("bbox values must be numbers")
-    import math
-    if math.isnan(minx) or math.isnan(miny) or math.isnan(maxx) or math.isnan(maxy):
-        raise ValueError("bbox values must be finite")
-    if minx >= maxx or miny >= maxy:
-        raise ValueError("bbox must be (minx, miny, maxx, maxy) and have non-zero area")
-    if minx < -180 or maxx > 180 or miny < -90 or maxy > 90:
-        raise ValueError("bbox values out of range")
+    if (
+        isinstance(level, bool)
+        or not isinstance(level, int)
+        or level not in self.available_levels
+    ):
+      raise UnsupportedHydroATLASLevelError(f"level {level} is not available")
+
+    self._validate_subbasin_bbox(bbox)
 
     if columns:
-        missing = [c for c in columns if c not in self.all_gdb_fields and c != "geometry" and c != "HYBAS_ID"]
-        if missing:
-            raise ValueError(f"Unknown HydroATLAS level 12 column: {missing[0]}")
-            
+      missing = [
+          c
+          for c in columns
+          if c not in self.all_gdb_fields and c not in ("geometry", "HYBAS_ID")
+      ]
+      if missing:
+        raise ValueError(
+            f"Unknown HydroATLAS level {level} column: {missing[0]}"
+        )
+
+    if self._hydroatlas_mode == "pyogrio" and not self.is_shapefile:
+      if self.gdb_path is None or not self.gdb_path.exists():
+        raise FileNotFoundError(
+            f"BasinATLAS dataset not found at {self.gdb_path}."
+        )
+      layer_name = self._level_layers.get(
+          level, f"BasinATLAS_v10_lev{level:02d}"
+      )
+      read_kwargs: dict[str, Any] = {
+          "bbox": bbox,
+          "layer": layer_name,
+      }
+      if columns:
+        cols_to_read = [c for c in columns if c != "geometry"]
+        if "HYBAS_ID" not in cols_to_read:
+          cols_to_read.insert(0, "HYBAS_ID")
+        read_kwargs["columns"] = cols_to_read
+      gdf = pyogrio.read_dataframe(self.gdb_path, **read_kwargs)
+      return self._subset_subbasin_columns(gdf, columns)
+
     gdf = self._read_subbasins_in_bbox(bbox)
-    if columns:
-        if not gdf.empty:
-            available_cols = [c for c in columns if c in gdf.columns]
-        else:
-            available_cols = columns.copy()
-        if "HYBAS_ID" not in available_cols:
-            available_cols.insert(0, "HYBAS_ID")
-        if "geometry" not in available_cols:
-            available_cols.append("geometry")
-        if not gdf.empty:
-            gdf = gdf[available_cols]
-        else:
-            gdf = gpd.GeoDataFrame(columns=available_cols, crs="EPSG:4326")
-    return gdf
+    return self._subset_subbasin_columns(gdf, columns)
 
   def read_subbasin_climate_indices(self, hybas_ids: List[int]) -> pd.DataFrame:
     """Reads climate indices for a list of HYBAS_IDs."""
@@ -577,6 +629,23 @@ class StaticAttributesExtractor:
     if self.is_shapefile:
       info = pyogrio.read_info(local_src)
     else:
+      layers = pyogrio.list_layers(local_src)
+      level_layers: dict[int, str] = {}
+      for layer_info in layers:
+        layer_name = str(layer_info[0])
+        match = re.match(r"^BasinATLAS_v10_lev(\d{2})$", layer_name)
+        if match:
+          lvl = int(match.group(1))
+          if 1 <= lvl <= 12:
+            level_layers[lvl] = layer_name
+      if 12 not in level_layers:
+        raise ValueError(
+            "Required HydroATLAS layer 'BasinATLAS_v10_lev12' not found in "
+            f"{local_src}."
+        )
+      self._level_layers = level_layers
+      self._available_levels = tuple(sorted(level_layers))
+      self.layer_name = level_layers[12]
       info = pyogrio.read_info(local_src, layer=self.layer_name)
     self.all_gdb_fields = list(info["fields"])
 

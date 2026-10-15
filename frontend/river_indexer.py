@@ -343,6 +343,7 @@ class HydroRiverNetwork:
         return self._build_collection(
             z4_feats,
             zoom,
+            resolution='Simplified z4 overview pyramid (0.008 deg tolerance)',
             min_stream_order_applied=min_stream_order,
             source=source_label,
         )
@@ -447,6 +448,40 @@ class HydroRiverNetwork:
                 resolution=res_str,
                 min_stream_order_applied=order_threshold,
                 source=src_str,
+            )
+
+        min_complete = (
+            _MERIT_Z4_COMPLETE_MIN_ORDER
+            if self.is_merit
+            else _Z4_COMPLETE_MIN_ORDER
+        )
+        effective_order = max(int(order_threshold), min_complete)
+        z4_feats = self._query_z4_pyramid(bbox, effective_order)
+        if z4_feats is not None:
+            tagged_feats = [
+                {
+                    **f,
+                    'properties': {
+                        **f.get('properties', {}),
+                        'simplified': True,
+                    },
+                }
+                for f in z4_feats
+            ]
+            source_label = (
+                'MERIT-Basins z4 pyramid (in-memory, simplified geometry)'
+                if self.is_merit
+                else 'HydroATLAS z4 pyramid (in-memory, simplified geometry)'
+            )
+            return self._build_collection(
+                tagged_feats,
+                zoom,
+                resolution=(
+                    'Simplified z4 overview pyramid (0.008 deg tolerance)'
+                ),
+                min_stream_order_applied=effective_order,
+                degraded=True,
+                source=source_label,
             )
 
         return {

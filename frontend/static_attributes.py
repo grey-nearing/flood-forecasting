@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MAX_MAP_FEATURES: int = 800
+MAX_MAP_FEATURES: int = 2500
 _FINEST_HYDROATLAS_LEVEL: int = 12
 
 ZOOM_TO_LEVEL: dict[int, int] = {
@@ -466,6 +466,11 @@ def build_map_layer_geojson(
 
     defn = get_attribute_definition(attribute)
     if defn and defn.source == 'era5_climate':
+        if level is not None and level != _FINEST_HYDROATLAS_LEVEL:
+            raise UnsupportedHydroATLASLevelError(
+                f"Attribute '{attribute}' (era5_climate) is only available "
+                f'at HydroATLAS level {_FINEST_HYDROATLAS_LEVEL}'
+            )
         target_level = _FINEST_HYDROATLAS_LEVEL
 
     label = defn.name if defn else attribute

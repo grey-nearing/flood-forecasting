@@ -160,6 +160,22 @@ _HIGHLIGHT_ATTRIBUTE_COLS = (
 _MIN_KEY_COLS = 5
 _MAX_KEY_COLS = 6
 _TWO_BASINS = 2
+MAX_WATERSHED_NAME_LEN: int = 120
+_ASCII_PRINTABLE_MIN: int = 32
+_ASCII_DEL: int = 127
+
+
+def is_valid_watershed_name(name: object) -> bool:
+    """Return True if `name` is a 1-120 char string without control chars."""
+    if not isinstance(name, str):
+        return False
+    clean = name.strip()
+    if not clean or len(clean) > MAX_WATERSHED_NAME_LEN:
+        return False
+    return not any(
+        ord(ch) < _ASCII_PRINTABLE_MIN or ord(ch) == _ASCII_DEL
+        for ch in clean
+    )
 
 
 def _sanitize_username(username: str | None) -> str:
@@ -928,6 +944,58 @@ class ProfileManager:
         ws_file.write_text(json.dumps(fc, indent=2), encoding='utf-8')
         self.sync_catchment_artifacts(features, username=user)
         return True
+
+    def rename_watershed(
+        self,
+        catchment_id: str,
+        new_name: str,
+        username: str | None = None,
+    ) -> dict[str, Any]:
+        """Rename a delineated watershed in memory and on disk.
+
+        Args:
+            catchment_id: The ID of the watershed to rename.
+            new_name: The new name for the watershed.
+            username: Target username, or active profile if None.
+
+        Returns:
+            The updated feature dictionary.
+
+        Raises:
+            ValueError: If catchment_id or new_name is invalid.
+            KeyError: If no watershed with catchment_id exists.
+        """
+        if not isinstance(catchment_id, str) or not catchment_id.strip():
+            raise ValueError('catchment_id must be a non-empty string')
+        if not is_valid_watershed_name(new_name):
+            raise ValueError(
+                'new_name must be a 1-120 character printable string'
+            )
+        clean_id = catchment_id.strip()
+        clean_name = new_name.strip()
+
+        features = self.load_watersheds(username=username)
+        updated_feature = None
+        for idx, feat in enumerate(features):
+            raw_id = str(
+                feat.get('properties', {}).get('catchment_id')
+                or feat.get('id')
+                or ''
+            )
+            if _extract_basin_id(feat, idx) == clean_id or raw_id == clean_id:
+                if 'properties' not in feat or not isinstance(
+                    feat['properties'], dict
+                ):
+                    feat['properties'] = {}
+                feat['properties']['name'] = clean_name
+                updated_feature = feat
+                break
+
+        if updated_feature is None:
+            raise KeyError(f'Watershed not found: {clean_id}')
+
+        self.save_watersheds(features, username=username)
+        return updated_feature
 
     def save_settings(
         self,
