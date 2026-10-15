@@ -1892,3 +1892,18 @@ def test_regenerate_era5_climate_tables_vectorized_parity(tmp_path):
   assert np.isclose(u_csv.loc[0, "p_mean"], b0_map["b_0"]["p_mean"])
   assert np.isclose(u_pq.loc["b_0", "p_mean"], b0_map["b_0"]["p_mean"])
 
+
+def test_gs_uri_preservation():
+    """Test that gs:// URIs are preserved in StaticAttributesExtractor.__init__"""
+    from unittest import mock
+    with mock.patch("multimet.static_extractor.extractor.StaticAttributesExtractor._init_hydroatlas_source"):
+        ext = StaticAttributesExtractor(
+            gdb_path="gs://my-bucket/hydroatlas.gdb",
+            era5_cache_dir="gs://my-bucket/era5",
+            era5_source="hybas",
+            no_download=False
+        )
+        assert ext.no_download is False
+        assert ext.era5_loader is not None
+        assert ext.gcs_era5_climate_uri == "gs://my-bucket/era5"
+        assert ext.era5_loader.gcs_source_uri == "gs://my-bucket/era5"

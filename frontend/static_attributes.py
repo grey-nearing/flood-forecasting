@@ -107,10 +107,10 @@ def resolve_app_static_extractor_paths() -> dict[str, Any]:
         Dictionary of resolved paths and GCS URIs for
         `StaticAttributesExtractor`.
     """
-    resolved_gdb: Path | None = None
+    resolved_gdb: Path | str | None = None
     env_gdb = os.environ.get('HYDROATLAS_GDB_PATH', '').strip()
     if env_gdb:
-        resolved_gdb = Path(env_gdb)
+        resolved_gdb = env_gdb if str(env_gdb).startswith(('gs://', 'gcs://')) else Path(env_gdb)
     else:
         gdb_candidates = (
             OPENHYDRONET_HYDROATLAS_CACHE_DIR / BASIN_ATLAS_GDB_NAME,
@@ -133,10 +133,10 @@ def resolve_app_static_extractor_paths() -> dict[str, Any]:
                 resolved_gdb = cand
                 break
 
-    resolved_era5: Path | None = None
+    resolved_era5: Path | str | None = None
     env_era5 = os.environ.get('ERA5_CLIMATE_CACHE_DIR', '').strip()
     if env_era5:
-        resolved_era5 = Path(env_era5)
+        resolved_era5 = env_era5 if str(env_era5).startswith(('gs://', 'gcs://')) else Path(env_era5)
     else:
         era5_candidates = (
             OPENHYDRONET_ERA5_CLIMATE_CACHE_DIR,

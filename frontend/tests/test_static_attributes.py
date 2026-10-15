@@ -578,3 +578,25 @@ class StaticAttributesAdapterTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+def test_gcs_era5_climate_uri_forwarding():
+    """Verify that gs:// URIs are preserved in resolved_gdb and resolved_era5."""
+    import os
+    from unittest import mock
+    import frontend.static_attributes as sa
+    from frontend.static_attributes import get_attributes_extractor
+    
+    sa._extractor_instance = None
+    with mock.patch("frontend.static_attributes.StaticAttributesExtractor") as mock_ext:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HYDROATLAS_GDB_PATH": "gs://bucket/gdb",
+                "ERA5_CLIMATE_CACHE_DIR": "gs://bucket/era5",
+            },
+        ):
+            get_attributes_extractor()
+            mock_ext.assert_called_once()
+            kwargs = mock_ext.call_args.kwargs
+            assert kwargs["gdb_path"] == "gs://bucket/gdb"
+            assert kwargs["era5_cache_dir"] == "gs://bucket/era5"
