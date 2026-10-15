@@ -880,7 +880,7 @@ class HRESExtractor(BaseExtractor):
             self.lats = np.linspace(90.0, -90.0, 1801, dtype=np.float64)
             lons_raw = np.linspace(0.0, 359.9, 3600, dtype=np.float64)
             lons_shifted = np.where(
-                lons_raw > 180.0, lons_raw  # noqa: PLR2004 - 360.0, lons_raw
+                lons_raw > 180.0, lons_raw - 360.0, lons_raw  # noqa: PLR2004
             )
             self.sort_lon_idx = np.argsort(lons_shifted)
             self.lons = lons_shifted[self.sort_lon_idx]
@@ -1327,7 +1327,7 @@ class HRESExtractor(BaseExtractor):
 
             sub_lons = sub.longitude.to_numpy()
             converted_lons = np.where(
-                sub_lons > 180.0, sub_lons  # noqa: PLR2004 - 360.0, sub_lons
+                sub_lons > 180.0, sub_lons - 360.0, sub_lons  # noqa: PLR2004
             )
             sub = sub.assign_coords(longitude=converted_lons).sortby(
                 'longitude'
@@ -1516,7 +1516,7 @@ class HRESExtractor(BaseExtractor):
 
             sub_lons = sub.longitude.to_numpy()
             converted_lons = np.where(
-                sub_lons > 180.0, sub_lons  # noqa: PLR2004 - 360.0, sub_lons
+                sub_lons > 180.0, sub_lons - 360.0, sub_lons  # noqa: PLR2004
             )
             sub = sub.assign_coords(longitude=converted_lons).sortby(
                 'longitude'
@@ -1524,7 +1524,7 @@ class HRESExtractor(BaseExtractor):
         else:
             sub_lons = ds_raw.longitude.to_numpy()
             converted_lons = np.where(
-                sub_lons > 180.0, sub_lons  # noqa: PLR2004 - 360.0, sub_lons
+                sub_lons > 180.0, sub_lons - 360.0, sub_lons  # noqa: PLR2004
             )
             sub = ds_raw.assign_coords(longitude=converted_lons).sortby(
                 'longitude'
