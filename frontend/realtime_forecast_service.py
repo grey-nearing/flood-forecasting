@@ -932,9 +932,14 @@ def _extract_latest_issue_from_store(
     if precip_vars and 'lead_time' in sub.dims:
         da = sub[precip_vars[0]]
         if da.shape[-1] >= _MIN_FORECAST_LEAD_STEPS:
-            fc_vals = da.isel(lead_time=slice(1, None)).to_numpy()
+            tail_da = da.isel(date=slice(-14, None))
+            fc_vals = tail_da.isel(lead_time=slice(1, None)).to_numpy()
             valid_fc_mask = (~np.isnan(fc_vals)).any(axis=-1)
-            valid_dates = sub['date'].to_numpy()[valid_fc_mask]
+            valid_dates = tail_da['date'].to_numpy()[valid_fc_mask]
+            if len(valid_dates) == 0 and da.shape[0] > 14:
+                fc_vals = da.isel(lead_time=slice(1, None)).to_numpy()
+                valid_fc_mask = (~np.isnan(fc_vals)).any(axis=-1)
+                valid_dates = sub['date'].to_numpy()[valid_fc_mask]
             if len(valid_dates) > 0:
                 return (
                     pd.Timestamp(valid_dates[-1]).floor('D').tz_localize(None)
@@ -1075,11 +1080,20 @@ def _extract_nowcast_product_entry(ctx: ProductSliceContext) -> dict[str, Any]:
         None,
     )
     store_dates = pd.to_datetime(ctx.sub['date'].to_numpy()).floor('D')
-    date_strs = [_format_date_str(d) for d in store_dates]
+    target_dates_set = set(pd.to_datetime(ctx.nowcast_dates).floor('D'))
+    keep_indices = [
+        i for i, d in enumerate(store_dates) if d in target_dates_set
+    ]
+    sub_window = (
+        ctx.sub.isel(date=keep_indices)
+        if keep_indices
+        else ctx.sub.isel(date=slice(0, 0))
+    )
+    date_strs = [_format_date_str(store_dates[i]) for i in keep_indices]
 
     var_maps: dict[str, dict[str, float | None]] = {}
     for v_name in ctx.all_vars:
-        vals_1d = ctx.sub[v_name].to_numpy()
+        vals_1d = sub_window[v_name].to_numpy()
         var_maps[v_name] = {
             d_s: _clean_float(val)
             for d_s, val in zip(date_strs, vals_1d, strict=False)
@@ -1171,11 +1185,20 @@ def _extract_forecast_product_entries(
         return None, None
 
     store_dates = pd.to_datetime(ctx.sub['date'].to_numpy()).floor('D')
-    store_date_strs = [_format_date_str(d) for d in store_dates]
+    target_dates_set = set(pd.to_datetime(ctx.nowcast_dates).floor('D'))
+    keep_indices = [
+        i for i, d in enumerate(store_dates) if d in target_dates_set
+    ]
+    hc_sub = (
+        ctx.sub.isel(date=keep_indices, lead_time=0)
+        if keep_indices
+        else ctx.sub.isel(date=slice(0, 0), lead_time=0)
+    )
+    store_date_strs = [_format_date_str(store_dates[i]) for i in keep_indices]
 
     hc_var_maps: dict[str, dict[str, float | None]] = {}
     for v_name in ctx.all_vars:
-        da_1d_v = ctx.sub[v_name].isel(lead_time=0).to_numpy()
+        da_1d_v = hc_sub[v_name].to_numpy()
         hc_var_maps[v_name] = {
             d_s: _clean_float(val)
             for d_s, val in zip(store_date_strs, da_1d_v, strict=False)
@@ -1386,6 +1409,21 @@ def _normalize_catchment_id_list(
     return ids
 
 
+def _collect_basins_with_realtime_data(
+    stores: dict[str, Path],
+) -> set[str]:
+    """Return lower-cased set of basin IDs present in any valid Zarr store."""
+    present: set[str] = set()
+    for store_path in stores.values():
+        if not _is_valid_zarr_store(store_path):
+            continue
+        ds = xr.open_zarr(store_path, consolidated=False)
+        if 'basin' in ds.coords:
+            for b in ds.coords['basin'].to_numpy():
+                present.add(str(b).lower())
+    return present
+
+
 def _basin_has_realtime_data(
     stores: dict[str, Path], catchment_id: str
 ) -> bool:
@@ -1433,12 +1471,13 @@ def _build_catchments_status_map(
             all_known_ids.append(cid)
 
     stores = _discover_zarr_stores(username)
+    basins_with_data = _collect_basins_with_realtime_data(stores)
     catchments_status: dict[str, dict[str, Any]] = {}
     for cid in all_known_ids:
         c_state = inspect_saved_state(
             username=username, catchment_id=cid, model_id=model_id
         )
-        c_has_data = _basin_has_realtime_data(stores, cid)
+        c_has_data = cid.lower() in basins_with_data
         c_prev = bool(
             c_state.get('exists')
             and c_state.get('state_date') == expected_state_date

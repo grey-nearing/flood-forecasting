@@ -1086,6 +1086,10 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'id="fcWhatIfScenariosList"',
             'fc-whatif-toggle-cb',
             'fc-whatif-delete-btn',
+            'hindcast_precip: 1',
+            'forecast_precip: 2',
+            'hindcast_temp: 3',
+            'forecast_temp: 4',
         ):
             assert token in html
 

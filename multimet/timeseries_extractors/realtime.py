@@ -265,50 +265,62 @@ def inspect_store_last_valid_date(
     if any(b not in ds_sub.data_vars for b in required_bands):
       return None
 
-    band_arrays = [
-        np.asarray(ds_sub[b].values, dtype=np.float32) for b in required_bands
-    ]
-    for b in PRODUCT_BANDS[product]:
-      if b not in required_bands and b in ds_sub.data_vars:
-        arr_opt = np.asarray(ds_sub[b].values, dtype=np.float32)
-        if not np.all(np.isnan(arr_opt)):
-          band_arrays.append(arr_opt)
     missing_var = MISSING_FRACTION_VAR.get(product)
-    miss_vals = (
-        np.asarray(ds_sub[missing_var].values, dtype=np.float32)
-        if missing_var and missing_var in ds_sub.data_vars
-        else None
-    )
-    dates = pd.DatetimeIndex(pd.to_datetime(ds_sub["date"].values).floor("D"))
     is_forecast = PRODUCT_TYPES[product] == ProductType.FORECAST
+    total_dates = len(ds_sub["date"])
+    candidate_slices = (
+        [ds_sub.isel(date=slice(-14, None)), ds_sub]
+        if total_dates > 14
+        else [ds_sub]
+    )
 
-    for d_idx in range(len(dates) - 1, -1, -1):
-      dt = dates[d_idx]
-      if is_forecast:
-        need_all_leads = require_all_leads_on_last_date or (
-            require_all_leads_from is not None and dt >= require_all_leads_from
-        )
-        if need_all_leads:
-          valid = all(
-              bool(np.all(~np.isnan(arr[:, d_idx, :]))) for arr in band_arrays
+    for ds_win in candidate_slices:
+      band_arrays = [
+          np.asarray(ds_win[b].values, dtype=np.float32) for b in required_bands
+      ]
+      for b in PRODUCT_BANDS[product]:
+        if b not in required_bands and b in ds_win.data_vars:
+          arr_opt = np.asarray(ds_win[b].values, dtype=np.float32)
+          if not np.all(np.isnan(arr_opt)):
+            band_arrays.append(arr_opt)
+      miss_vals = (
+          np.asarray(ds_win[missing_var].values, dtype=np.float32)
+          if missing_var and missing_var in ds_win.data_vars
+          else None
+      )
+      dates = pd.DatetimeIndex(
+          pd.to_datetime(ds_win["date"].values).floor("D")
+      )
+
+      for d_idx in range(len(dates) - 1, -1, -1):
+        dt = dates[d_idx]
+        if is_forecast:
+          need_all_leads = require_all_leads_on_last_date or (
+              require_all_leads_from is not None and dt >= require_all_leads_from
           )
-          if valid and miss_vals is not None:
-            valid = bool(np.all(miss_vals[:, d_idx, :] < 1.0))
+          if need_all_leads:
+            valid = all(
+                bool(np.all(~np.isnan(arr[:, d_idx, :])))
+                for arr in band_arrays
+            )
+            if valid and miss_vals is not None:
+              valid = bool(np.all(miss_vals[:, d_idx, :] < 1.0))
+          else:
+            valid = all(
+                bool(np.all(~np.isnan(arr[:, d_idx, 0])))
+                for arr in band_arrays
+            )
+            if valid and miss_vals is not None:
+              valid = bool(np.all(miss_vals[:, d_idx, 0] < 1.0))
         else:
           valid = all(
-              bool(np.all(~np.isnan(arr[:, d_idx, 0]))) for arr in band_arrays
+              bool(np.all(~np.isnan(arr[:, d_idx]))) for arr in band_arrays
           )
           if valid and miss_vals is not None:
-            valid = bool(np.all(miss_vals[:, d_idx, 0] < 1.0))
-      else:
-        valid = all(
-            bool(np.all(~np.isnan(arr[:, d_idx]))) for arr in band_arrays
-        )
-        if valid and miss_vals is not None:
-          valid = bool(np.all(miss_vals[:, d_idx] < 1.0))
+            valid = bool(np.all(miss_vals[:, d_idx] < 1.0))
 
-      if valid:
-        return dt
+        if valid:
+          return dt
   return None
 
 
