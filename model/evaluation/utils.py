@@ -43,16 +43,29 @@ def metrics_to_dataframe(
     A basin indexed DataFrame with one column per metric.
     """
     metrics_dict = defaultdict(dict)
+    extra_keys: list[str] = []
+    seen_extra: set[str] = set()
+    for basin_data in results.values():
+        for extra_key in basin_data:
+            if extra_key != 'xr' and extra_key not in seen_extra:
+                seen_extra.add(extra_key)
+                extra_keys.append(extra_key)
+
     for basin, basin_data in results.items():
         for target, metric in itertools.product(targets, metrics):
             metric_key = metric
             if len(targets) > 1:
                 metric_key = f'{target}_{metric}'
-            if metric_key in basin_data.keys():
+            if metric_key in basin_data:
                 metrics_dict[basin][metric_key] = basin_data[metric_key]
             else:
                 # in case the current period has no valid samples, the result dict has no metric-key
                 metrics_dict[basin][metric_key] = np.nan
+        for extra_key in extra_keys:
+            if extra_key not in metrics_dict[basin]:
+                metrics_dict[basin][extra_key] = basin_data.get(
+                    extra_key, np.nan
+                )
 
     df = pd.DataFrame.from_dict(metrics_dict, orient='index')
     df.index.name = 'basin'

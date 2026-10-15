@@ -21,13 +21,13 @@ needs on top of it:
   ``~/.cache/openhydronet/weather``);
 * an advisory ``sync.lock`` so two server instances on one host never run the
   same synchronisation twice;
-* failure isolation between upstream providers (dynamical.org, ECMWF Open
-  Data, NOAA PSL): an unreachable provider is recorded per model in
-  ``sync_status.json`` and does not stop the other providers from refreshing;
+* failure isolation between weather models (dynamical.org, ECMWF Open Data,
+  NOAA PSL): a failed model is recorded in ``sync_status.json`` and does not
+  stop the remaining models from refreshing;
 * a subprocess runner plus a daemon thread so the periodic check keeps large
   arrays out of the HTTP server process.
 
-Run ``python frontend/weather_sync.py --data-root <dir>`` for one manual sync.
+Run ``python -m frontend.weather_sync --data-root <dir>`` for one manual sync.
 """
 
 from __future__ import annotations
@@ -62,6 +62,7 @@ from multimet.weather_fetcher.sync import (
     IncompleteRunError,
     aggregate_rates,
     current_models_metadata,
+    open_dynamical_catalog,
     sync_all_models,
 )
 from multimet.weather_fetcher.sync import (
@@ -110,6 +111,7 @@ logger = logging.getLogger(__name__)
 
 _LOCK_FILE = 'sync.lock'
 _LOG_ROTATE_BYTES = 2 << 20
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 _SYNC_PYTHON_PROBE = 'import icechunk, numpy, pystac, scipy, xarray'
 _SYNC_PYTHON_PROBE_TIMEOUT_S = 120
 
@@ -149,12 +151,30 @@ def _provider_of(model_key: str) -> str:
     return SOURCE_LABELS[DYNAMICAL_MODELS[model_key]['source']]
 
 
-def _provider_groups(models: Sequence[str]) -> list[list[str]]:
-    """Split models into one ordered group per upstream provider."""
-    groups: dict[str, list[str]] = {}
+def _model_groups(models: Sequence[str]) -> list[list[str]]:
+    """Validate and split models into one isolated single-model group each."""
+    groups: list[list[str]] = []
     for model_key in models:
-        groups.setdefault(_provider_of(model_key), []).append(model_key)
-    return list(groups.values())
+        _provider_of(model_key)
+        groups.append([model_key])
+    return groups
+
+
+def _group_needs_catalog(
+    group: Sequence[str],
+    *,
+    has_catalog: bool,
+    has_open_dataset: bool,
+) -> bool:
+    """Return True when a group requires opening the dynamical STAC catalog."""
+    return (
+        not has_catalog
+        and not has_open_dataset
+        and any(
+            DYNAMICAL_MODELS[m]['source'] in ('dynamical', 'dynamical_analysis')
+            for m in group
+        )
+    )
 
 
 def _remove_own_partial_dirs(root: str, log: Callable[[str], None]) -> None:
@@ -194,7 +214,7 @@ def _merge_outcome(
     errors: dict[str, str],
     models: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    """Set ``last_result`` / ``message`` from merged per-provider outcome."""
+    """Set ``last_result`` / ``message`` from merged per-model outcome."""
     downloaded = ', '.join(
         f'{key} {(models.get(key) or {}).get("init_time")}' for key in updated
     )
@@ -244,11 +264,11 @@ def sync_latest(  # noqa: PLR0913
 ) -> dict[str, Any]:
     """Refresh every selected model whose newest upstream run changed.
 
-    Models are synchronised provider by provider through
+    Models are synchronised one by one through
     ``multimet.weather_fetcher.sync.sync_all_models``. An exception raised while
-    talking to one provider (catalog unreachable, GRIB download failed, ...) is
-    recorded for that provider's models in ``errors`` and the remaining
-    providers are still processed; nothing is retried with substitute data.
+    synchronising one model (catalog unreachable, GRIB download failed, ...) is
+    recorded for that model in ``errors`` and the remaining models are still
+    processed; nothing is retried with substitute data.
 
     Args:
         root: Data directory (default ``weather_data_root()``).
@@ -271,7 +291,7 @@ def sync_latest(  # noqa: PLR0913
     runs_path = Path(resolved_root) / 'runs'
     runs_path.mkdir(parents=True, exist_ok=True)
     selected = list(models) if models is not None else list(DEFAULT_SYNC_MODELS)
-    groups = _provider_groups(selected)
+    groups = _model_groups(selected)
     status_path = str(Path(resolved_root) / SYNC_STATUS_FILE)
     lock_path = Path(resolved_root) / _LOCK_FILE
 
@@ -292,21 +312,37 @@ def sync_latest(  # noqa: PLR0913
 
         updated: list[str] = []
         errors: dict[str, str] = {}
+        active_catalog = catalog
+        catalog_error_msg: str | None = None
         for group in groups:
+            needs_catalog = _group_needs_catalog(
+                group,
+                has_catalog=active_catalog is not None,
+                has_open_dataset=open_dataset is not None,
+            )
+            if needs_catalog and catalog_error_msg is not None:
+                log(f'[{", ".join(group)}] sync failed: {catalog_error_msg}')
+                for model_key in group:
+                    errors[model_key] = catalog_error_msg
+                continue
             try:
+                if needs_catalog:
+                    active_catalog = open_dynamical_catalog()
                 result = sync_all_models(
                     data_dir=resolved_root,
                     models=group,
                     force=force,
                     log=log,
-                    catalog=catalog,
+                    catalog=active_catalog,
                     open_dataset=open_dataset,
                     cpc_cache_dir=cpc_cache_dir,
                 )
             except (OSError, RuntimeError, ValueError, KeyError) as exc:
-                # Provider isolation: record failure per model in status.
+                # Model isolation: record failure per model in status.
                 _remove_own_partial_dirs(resolved_root, log)
                 message = f'{type(exc).__name__}: {exc}'
+                if needs_catalog and active_catalog is None:
+                    catalog_error_msg = message
                 log(f'[{", ".join(group)}] sync failed: {message}')
                 for model_key in group:
                     errors[model_key] = message
@@ -382,7 +418,7 @@ def run_sync_subprocess(
     force: bool = False,
 ) -> dict[str, Any]:
     """Run one sync in a separate process and return the resulting status."""
-    resolved_root = root or weather_data_root()
+    resolved_root = str(Path(root or weather_data_root()).resolve())
     Path(resolved_root).mkdir(parents=True, exist_ok=True)
     python = python or find_sync_python()
     if not python:
@@ -401,7 +437,7 @@ def run_sync_subprocess(
         )
         _write_json_atomic(str(Path(resolved_root) / SYNC_STATUS_FILE), status)
         return status
-    cmd = [python, str(Path(__file__).resolve()), '--data-root', resolved_root]
+    cmd = [python, '-m', 'frontend.weather_sync', '--data-root', resolved_root]
     if models is not None:
         cmd.extend(['--models', ','.join(models)])
     if force:
@@ -413,13 +449,43 @@ def run_sync_subprocess(
         text=True,
         timeout=SUBPROCESS_TIMEOUT_S,
         check=False,
+        cwd=_REPO_ROOT,
     )
     _append_log(
         resolved_root,
         f'\n=== {started} {" ".join(cmd)} (exit {proc.returncode})\n'
         f'{proc.stdout}{proc.stderr}',
     )
-    return read_sync_status(resolved_root)
+    status = read_sync_status(resolved_root)
+    if (status.get('last_check_utc') or '') < started:
+        if proc.returncode == 0:
+            status.update(
+                {
+                    'last_check_utc': _utc_now_str(),
+                    'check_interval_minutes': CHECK_INTERVAL_MINUTES,
+                    'last_result': 'busy',
+                    'message': 'Another weather sync is in progress.',
+                }
+            )
+        else:
+            stderr_lines = (proc.stderr or '').strip().splitlines()
+            detail = (
+                stderr_lines[-1]
+                if stderr_lines
+                else f'Sync subprocess exited with code {proc.returncode}'
+            )
+            status.update(
+                {
+                    'last_check_utc': _utc_now_str(),
+                    'check_interval_minutes': CHECK_INTERVAL_MINUTES,
+                    'last_result': 'error',
+                    'message': detail,
+                }
+            )
+            _write_json_atomic(
+                str(Path(resolved_root) / SYNC_STATUS_FILE), status
+            )
+    return status
 
 
 _SYNC_THREAD: threading.Thread | None = None

@@ -49,6 +49,16 @@ from return_periods.extract_peaks_utilities import (
     extract_n_highest_peaks,
     extract_peaks_by_separation_and_threshold,
 )
+from return_periods.forecast_evaluation import (
+    EXCEEDANCE_WEIGHT_SUM,
+    EXCEEDANCE_WEIGHTS,
+    PRIMARY_WINDOW_DAYS,
+    RETURN_PERIODS,
+    compute_precision_recall_f1_single_rp,
+    compute_series_return_period_thresholds,
+    evaluate_forecast_return_periods,
+    get_up_crossing_indices,
+)
 from return_periods.generalized_expected_moments_algorithm import GEMAFitter
 from return_periods.grubbs_beck_tester import (
     GrubbsBeckTester,
@@ -75,7 +85,11 @@ from return_periods.theoretical_distribution_utilities import (
 )
 
 __all__ = [
+    'EXCEEDANCE_WEIGHTS',
+    'EXCEEDANCE_WEIGHT_SUM',
     'PLOTTING_POSITION_TYPES',
+    'PRIMARY_WINDOW_DAYS',
+    'RETURN_PERIODS',
     'BaseFitter',
     'DataIntervalError',
     'DistributionParameterError',
@@ -90,11 +104,15 @@ __all__ = [
     'ReturnPeriodVisualizer',
     'SimpleLogPearson3Fitter',
     'bulletin17b_station_skew_mse',
+    'compute_precision_recall_f1_single_rp',
+    'compute_series_return_period_thresholds',
     'empirical_pdf',
+    'evaluate_forecast_return_periods',
     'exceedance_probability_plot',
     'extract_annual_maximums',
     'extract_n_highest_peaks',
     'extract_peaks_by_separation_and_threshold',
+    'get_up_crossing_indices',
     'histogram_plot',
     'hydrograph_plot',
     'mgbt_order_statistic_pvalue',

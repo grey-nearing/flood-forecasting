@@ -86,6 +86,7 @@ class HandoffForecastLSTM(BaseModel):
         'hindcast_lstm',
         'forecast_lstm',
         'handoff_net',
+        'handoff_linear',
         'hindcast_head',
         'forecast_head',
     ]

@@ -387,14 +387,18 @@ class DemDelineator:
         self._b_c: np.ndarray | None = None
         self._b_req: np.ndarray | None = None
 
-    def clean_created_cache(self) -> None:
-        """Delete only the tile files created in cache_dir by this instance."""
+    def close_tile_cache(self) -> None:
+        """Close all memory-mapped tile handles and clear the tile cache."""
         for arr in self._tile_cache.values():
             mmap_obj = getattr(arr, '_mmap', None)
             if mmap_obj is not None and not getattr(mmap_obj, 'closed', True):
                 mmap_obj.close()
         self._tile_cache.clear()
         gc.collect()
+
+    def clean_created_cache(self) -> None:
+        """Delete only the tile files created in cache_dir by this instance."""
+        self.close_tile_cache()
         for file_path in list(self.created_cache_files):
             if file_path.is_file():
                 file_path.unlink(missing_ok=True)

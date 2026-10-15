@@ -17,10 +17,12 @@
 import pytest
 import torch
 
+from model.modelzoo import MODEL_REGISTRY, get_model, get_model_class
 from model.modelzoo.basemodel import BaseModel
 from model.modelzoo.fc import FC
 from model.modelzoo.head import get_head
 from model.modelzoo.positional_encoding import PositionalEncoding
+from model.utils.config import Config
 
 
 @pytest.mark.unit
@@ -241,3 +243,97 @@ def test_load_weights_torch_compile_compatibility(
         train_model = torch.compile(train_model)
     trainer.model = train_model
     trainer._load_model_weights(weight_path)
+
+
+@pytest.mark.unit
+def test_all_registered_models_expose_tunable_module_parts() -> None:
+    """Verify every registered model class declares non-empty module_parts."""
+    assert MODEL_REGISTRY, 'MODEL_REGISTRY must not be empty'
+    for model_name, model_cls in MODEL_REGISTRY.items():
+        resolved_cls = get_model_class(model_name)
+        assert resolved_cls is model_cls
+        assert isinstance(model_cls.module_parts, list)
+        assert len(model_cls.module_parts) > 0, (
+            f'Model {model_name} must declare non-empty module_parts'
+        )
+        assert model_cls.get_tunable_component_names() == list(
+            model_cls.module_parts
+        )
+
+    with pytest.raises(NotImplementedError, match='not implemented'):
+        get_model_class('non_existent_model_name')
+
+
+@pytest.mark.unit
+def test_describe_tunable_components_covers_all_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+    minimal_config: Config,
+) -> None:
+    """Verify describe_tunable_components covers Handoff and MeanEmbedding."""
+    monkeypatch.setattr(
+        'model.modelzoo.basemodel.Scaler', lambda **_kwargs: None
+    )
+    minimal_config.update_config(
+        {
+            'model': 'handoff_forecast_lstm',
+            'head': 'regression',
+            'output_activation': 'linear',
+            'hidden_size': 16,
+            'forecast_hidden_size': 8,
+            'state_handoff_network': {'hiddens': [12], 'activation': 'tanh'},
+            'hindcast_inputs': [['era5_precip', 'era5_temp'], ['imerg_precip']],
+            'forecast_inputs': [['hres_precip', 'hres_temp']],
+            'static_attributes': ['area', 'p_mean'],
+            'target_variables': ['streamflow'],
+            'seq_length': 14,
+            'lead_time': 5,
+            'base_run_dir': None,
+            'run_dir': None,
+            'is_finetuning': False,
+        }
+    )
+    handoff_model = get_model(minimal_config)
+    assert isinstance(handoff_model, BaseModel)
+    handoff_comps = handoff_model.describe_tunable_components()
+    handoff_names = [c['name'] for c in handoff_comps]
+    assert 'handoff_linear' in handoff_names
+    for part in handoff_model.module_parts:
+        assert part in handoff_names
+
+    top_level_param_ids = {
+        id(param)
+        for part in handoff_model.module_parts
+        for param in getattr(handoff_model, part).parameters()
+    }
+    all_model_param_ids = {id(p) for p in handoff_model.parameters()}
+    assert top_level_param_ids == all_model_param_ids
+
+    # Also verify MeanEmbeddingForecastLSTM exposes per-product subcomponents
+    minimal_config.update_config(
+        {
+            'model': 'mean_embedding_forecast_lstm',
+            'hindcast_inputs': {
+                'era5': ['era5_precip', 'era5_temp'],
+                'imerg': ['imerg_precip'],
+            },
+            'forecast_inputs': {
+                'hres': ['hres_precip', 'hres_temp'],
+                'imerg': ['imerg_precip'],
+            },
+            'statics_embedding': {'type': 'fc', 'hiddens': [8]},
+            'dynamics_embedding': {'type': 'fc', 'hiddens': [8]},
+        }
+    )
+    mean_model = get_model(minimal_config)
+    assert isinstance(mean_model, BaseModel)
+    mean_comps = mean_model.describe_tunable_components()
+    sub_ids: set[object] = set()
+    for comp in mean_comps:
+        subcomponents = comp.get('subcomponents')
+        if isinstance(subcomponents, list):
+            for sub in subcomponents:
+                if isinstance(sub, dict) and 'id' in sub:
+                    sub_ids.add(sub['id'])
+    assert 'hindcast_embeddings_fc.era5' in sub_ids
+    assert 'forecast_embeddings_fc.hres' in sub_ids
+    assert 'shared_embeddings_fc.imerg' in sub_ids

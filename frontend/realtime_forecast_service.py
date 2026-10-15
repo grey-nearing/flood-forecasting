@@ -54,7 +54,7 @@ from frontend.config import (
 )
 from model.datasetzoo.caravan import load_caravan_attributes
 from model.datautils.scaler import Scaler
-from model.modelzoo import get_model
+from model.modelzoo import get_model, load_model_weights
 from model.utils.config import Config
 from model.utils.configutils import (
     flatten_feature_list,
@@ -2457,6 +2457,7 @@ def _load_forecast_model_bundle(
     cfg.update_config(
         {
             'device': 'cpu',
+            'compile': False,
             'run_dir': target_dir,
             'data_dir': target_dir,
         }
@@ -2468,12 +2469,7 @@ def _load_forecast_model_bundle(
         raise FileNotFoundError(
             f'No model_epoch*.pt checkpoint found in {target_dir}'
         )
-    state_dict = torch.load(
-        str(ckpts[-1]),
-        map_location=torch.device('cpu'),
-        weights_only=True,
-    )
-    model.load_state_dict(state_dict, strict=True)
+    load_model_weights(model, ckpts[-1], torch.device('cpu'))
     model.eval()
 
     scaler = Scaler(scaler_dir=target_dir, calculate_scaler=False)

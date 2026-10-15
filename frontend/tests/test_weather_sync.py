@@ -308,6 +308,76 @@ class WeatherSyncTest(unittest.TestCase):
         assert calls == []
         assert ws.current_run_dir(self.root) is None
 
+    def test_per_model_isolation_within_same_provider(self) -> None:
+        """Verify one failing dynamical model does not abort sibling models."""
+        t0 = np.datetime64('2026-09-29T00:00')
+        aifs_ds = _fake_forecast([t0], [0, 6])
+
+        def open_ds(_cat: object, dataset_id: str) -> xr.Dataset:
+            if dataset_id == 'noaa-gfs-forecast':
+                msg = 'gfs upstream corrupted'
+                raise RuntimeError(msg)
+            return aifs_ds
+
+        status = self._sync(['noaa_gfs', 'ecmwf_aifs'], open_ds)
+        assert status['last_result'] == 'partial'
+        assert status['updated_models'] == ['ecmwf_aifs']
+        assert status['errors'] == {
+            'noaa_gfs': 'RuntimeError: gfs upstream corrupted'
+        }
+        run_dir = ws.current_run_dir(self.root)
+        assert run_dir is not None
+        assert Path(run_dir, 'ecmwf_aifs_precip.bin').exists()
+
+    def test_open_dynamical_catalog_opened_once_and_cached(self) -> None:
+        """Verify STAC catalog is opened lazily once across dynamical groups."""
+        fake_cat = object()
+
+        with (
+            mock.patch.object(
+                ws, 'open_dynamical_catalog', return_value=fake_cat
+            ) as mock_open_cat,
+            mock.patch.object(
+                ws,
+                'sync_all_models',
+                return_value={
+                    'last_result': 'updated',
+                    'updated_models': ['noaa_gfs'],
+                },
+            ) as mock_sync_all,
+        ):
+            status = ws.sync_latest(
+                root=self.root,
+                models=['ecmwf_hres', 'noaa_gfs', 'ecmwf_aifs'],
+                log=lambda _m: None,
+            )
+            assert status['last_result'] == 'updated'
+            assert mock_open_cat.call_count == 1
+            seen_catalogs = [
+                c.kwargs['catalog'] for c in mock_sync_all.call_args_list
+            ]
+            assert seen_catalogs == [None, fake_cat, fake_cat]
+
+        with (
+            mock.patch.object(
+                ws,
+                'open_dynamical_catalog',
+                side_effect=RuntimeError('stac offline'),
+            ) as mock_fail_cat,
+            mock.patch.object(ws, 'sync_all_models'),
+        ):
+            status_err = ws.sync_latest(
+                root=self.root,
+                models=['noaa_gfs', 'ecmwf_aifs'],
+                log=lambda _m: None,
+            )
+            assert mock_fail_cat.call_count == 1
+            assert status_err['last_result'] == 'error'
+            assert status_err['errors'] == {
+                'noaa_gfs': 'RuntimeError: stac offline',
+                'ecmwf_aifs': 'RuntimeError: stac offline',
+            }
+
 
 @pytest.mark.unit
 class WeatherEngineReloadAndFramesTest(unittest.TestCase):
@@ -438,7 +508,7 @@ class ManualRefreshSubprocessTest(unittest.TestCase):
 
     @mock.patch('subprocess.run')
     def test_run_sync_subprocess_args(self, mock_run: mock.MagicMock) -> None:
-        """Verify CLI arguments passed to the sync subprocess."""
+        """Verify CLI arguments and cwd passed to the sync subprocess."""
         with tempfile.TemporaryDirectory() as tmp_root:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = 'ok'
@@ -452,10 +522,104 @@ class ManualRefreshSubprocessTest(unittest.TestCase):
             )
             assert mock_run.called
             cmd = mock_run.call_args[0][0]
+            assert cmd[:3] == ['fake_python', '-m', 'frontend.weather_sync']
+            assert '--data-root' in cmd
+            assert str(Path(tmp_root).resolve()) in cmd
             assert '--models' in cmd
             assert 'ecmwf_hres,noaa_gfs' in cmd
             assert '--force' in cmd
-            assert cmd[0] == 'fake_python'
+            expected_repo_root = str(Path(ws.__file__).resolve().parent.parent)
+            assert mock_run.call_args.kwargs['cwd'] == expected_repo_root
+
+    @mock.patch('subprocess.run')
+    def test_run_sync_subprocess_records_error_on_crash(
+        self, mock_run: mock.MagicMock
+    ) -> None:
+        """Verify non-zero subprocess exit without fresh status writes error."""
+        with tempfile.TemporaryDirectory() as tmp_root:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = '[ecmwf_hres] starting\n'
+            mock_run.return_value.stderr = (
+                'Traceback (most recent call last):\n'
+                'ModuleNotFoundError: No module named foo\n'
+            )
+            status = ws.run_sync_subprocess(python='fake_python', root=tmp_root)
+            assert status['last_result'] == 'error'
+            assert status['message'] == (
+                'ModuleNotFoundError: No module named foo'
+            )
+            persisted = ws.read_sync_status(tmp_root)
+            assert persisted['last_result'] == 'error'
+            assert persisted['message'] == status['message']
+
+            # Empty stderr falls back to exit code (never stdout log lines).
+            mock_run.return_value.returncode = 2
+            mock_run.return_value.stderr = ''
+            Path(tmp_root, 'sync_status.json').unlink()
+            status2 = ws.run_sync_subprocess(
+                python='fake_python', root=tmp_root
+            )
+            assert status2['last_result'] == 'error'
+            assert status2['message'] == 'Sync subprocess exited with code 2'
+
+    @mock.patch('subprocess.run')
+    def test_run_sync_subprocess_preserves_fresh_child_status(
+        self, mock_run: mock.MagicMock
+    ) -> None:
+        """Verify child-written partial status is preserved on exit code 1."""
+        with tempfile.TemporaryDirectory() as tmp_root:
+            status_file = Path(tmp_root) / 'sync_status.json'
+
+            def write_child_partial(
+                *_args: object, **_kwargs: object
+            ) -> mock.MagicMock:
+                status_file.write_text(
+                    json.dumps(
+                        {
+                            'last_check_utc': '9999-12-31T23:59:59Z',
+                            'last_result': 'partial',
+                            'message': (
+                                'Downloaded new run: ecmwf_aifs; failed:'
+                                ' noaa_gfs: timeout'
+                            ),
+                        }
+                    ),
+                    encoding='utf-8',
+                )
+                res = mock.MagicMock()
+                res.returncode = 1
+                res.stdout = ''
+                res.stderr = 'some warning\n'
+                return res
+
+            mock_run.side_effect = write_child_partial
+            status = ws.run_sync_subprocess(python='fake_python', root=tmp_root)
+            assert status['last_result'] == 'partial'
+            assert 'Downloaded new run: ecmwf_aifs' in status['message']
+
+    @mock.patch('subprocess.run')
+    def test_run_sync_subprocess_reports_busy_when_status_stale_on_exit_zero(
+        self, mock_run: mock.MagicMock
+    ) -> None:
+        """Verify exit 0 with stale sync_status.json reports busy, not stale."""
+        with tempfile.TemporaryDirectory() as tmp_root:
+            status_file = Path(tmp_root) / 'sync_status.json'
+            status_file.write_text(
+                json.dumps(
+                    {
+                        'last_check_utc': '2020-01-01T00:00:00Z',
+                        'last_result': 'updated',
+                        'message': 'Downloaded new run: old',
+                    }
+                ),
+                encoding='utf-8',
+            )
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = 'Another weather sync holds lock\n'
+            mock_run.return_value.stderr = ''
+            status = ws.run_sync_subprocess(python='fake_python', root=tmp_root)
+            assert status['last_result'] == 'busy'
+            assert 'in progress' in status['message']
 
     def test_get_sync_status_auto_update_false(self) -> None:
         """Verify auto_update is reported as False in sync status."""

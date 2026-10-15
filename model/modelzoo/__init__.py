@@ -21,6 +21,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from model.modelzoo.basemodel import BaseModel
 from model.modelzoo.handoff_forecast_lstm import HandoffForecastLSTM
 from model.modelzoo.mean_embedding_forecast_lstm import (
     MeanEmbeddingForecastLSTM,
@@ -29,11 +30,40 @@ from model.utils.config import Config
 
 LOGGER = logging.getLogger(__name__)
 
+MODEL_REGISTRY: dict[str, type[BaseModel]] = {
+    'handoff_forecast_lstm': HandoffForecastLSTM,
+    'mean_embedding_forecast_lstm': MeanEmbeddingForecastLSTM,
+}
+
 _DEFAULT_DYNAMIC_EMBEDDING_MODULES: tuple[str, ...] = (
     'hindcast_embeddings_fc',
     'forecast_embeddings_fc',
     'shared_embeddings_fc',
 )
+
+_MIN_EMBEDDING_KEY_PARTS = 2
+
+
+def get_model_class(model_name: str) -> type[BaseModel]:
+    """Resolve a model architecture name to its ``BaseModel`` subclass.
+
+    Parameters
+    ----------
+    model_name : str
+        Name of the model architecture (case-insensitive).
+
+    Returns
+    -------
+    type[BaseModel]
+        The registered ``BaseModel`` subclass.
+    """
+    key = model_name.strip().lower()
+    model_cls = MODEL_REGISTRY.get(key)
+    if model_cls is None:
+        raise NotImplementedError(
+            f'{model_name} not implemented or not linked in `get_model_class()`'
+        )
+    return model_cls
 
 
 def get_model(cfg: Config) -> nn.Module:
@@ -49,14 +79,8 @@ def get_model(cfg: Config) -> nn.Module:
     nn.Module
         A new model instance of the type specified in the config.
     """
-    if cfg.model.lower() == 'handoff_forecast_lstm':
-        model = HandoffForecastLSTM(cfg=cfg)
-    elif cfg.model.lower() == 'mean_embedding_forecast_lstm':
-        model = MeanEmbeddingForecastLSTM(cfg=cfg)
-    else:
-        raise NotImplementedError(
-            f'{cfg.model} not implemented or not linked in `get_model()`'
-        )
+    model_cls = get_model_class(cfg.model)
+    model = model_cls(cfg=cfg)
 
     if cfg.compile:
         return torch.compile(model, mode='max-autotune')
@@ -71,7 +95,7 @@ def _extract_embedding_pairs(
     for key in keys:
         if key.startswith(embedding_prefixes):
             parts = key.split('.', 2)
-            if len(parts) >= 2:  # noqa: PLR2004
+            if len(parts) >= _MIN_EMBEDDING_KEY_PARTS:
                 pairs.add((parts[0], parts[1]))
     return pairs
 
@@ -132,7 +156,8 @@ def load_model_weights(
     target_model = getattr(model, '_orig_mod', model)
     if not allow_new_embeddings:
         target_model.load_state_dict(state_dict)
-        target_model._newly_initialized_embeddings = set()  # noqa: SLF001
+        if isinstance(target_model, BaseModel):
+            target_model.set_newly_initialized_embeddings(set())
         return set(), set()
 
     model_keys = set(target_model.state_dict().keys())
@@ -183,5 +208,6 @@ def load_model_weights(
             [f'{grp}.{prod}' for grp, prod in sorted(dropped_pairs)],
         )
 
-    target_model._newly_initialized_embeddings = newly_init_pairs  # noqa: SLF001
+    if isinstance(target_model, BaseModel):
+        target_model.set_newly_initialized_embeddings(newly_init_pairs)
     return newly_init_pairs, dropped_pairs
