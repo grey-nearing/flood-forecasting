@@ -2035,6 +2035,11 @@
             </div>
           </div>
 
+          <!-- Structured 4-Group Interactive Legend for Input Forcing Series -->
+          <div id="fcForcingLegendContainer" class="hidden bg-[#f8f9fa] border border-[#dadce0] rounded-xl p-2.5">
+            <div id="fcForcingLegendGrid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2"></div>
+          </div>
+
           <div class="flex-1 relative min-h-[230px]">
             <canvas id="whatIfHyetographCanvas"></canvas>
           </div>
@@ -9339,6 +9344,7 @@
     let fcWhatIfCounterByBasin = {};
     let fcWhatIfDragState = null;
     let fcWhatIfCanvasBound = false;
+    let fcHiddenLegendKeys = new Set();
 
     const FC_WHATIF_COLORS = [
       { stroke: '#7c3aed', fill: 'rgba(124, 58, 237, 0.14)' }, // Vivid Violet
@@ -10348,6 +10354,7 @@
             },
             plugins: {
               legend: {
+                display: false,
                 labels: {
                   color: '#202124',
                   font: { size: 10 },
@@ -10912,6 +10919,196 @@
       IFS_ENS: '#e11d48'
     };
 
+    function renderForcingLegend() {
+      const container = document.getElementById('fcForcingLegendContainer');
+      const gridEl = document.getElementById('fcForcingLegendGrid');
+      if (!container || !gridEl) return;
+
+      const datasets = (hyetographChart && hyetographChart.data && Array.isArray(hyetographChart.data.datasets))
+        ? hyetographChart.data.datasets
+        : [];
+      if (datasets.length === 0) {
+        container.classList.add('hidden');
+        gridEl.innerHTML = '';
+        return;
+      }
+
+      const groupDefs = [
+        {
+          role: 'hindcast_precip',
+          title: 'Precip Hindcast',
+          windowBadge: '< t₀',
+          unitBadge: 'Bars · mm/d',
+          accentClass: 'border-l-4 border-l-[#0891b2]',
+          headerColor: 'text-[#0e7490]',
+          swatchKind: 'bar'
+        },
+        {
+          role: 'forecast_precip',
+          title: 'Precip Forecast',
+          windowBadge: '≥ t₀',
+          unitBadge: 'Bars · mm/d',
+          accentClass: 'border-l-4 border-l-[#1d4ed8]',
+          headerColor: 'text-[#1e3a8a]',
+          swatchKind: 'bar'
+        },
+        {
+          role: 'hindcast_temp',
+          title: '2m Temp Hindcast',
+          windowBadge: '< t₀',
+          unitBadge: 'Solid · °C',
+          accentClass: 'border-l-4 border-l-[#d97706]',
+          headerColor: 'text-[#b45309]',
+          swatchKind: 'solid_line'
+        },
+        {
+          role: 'forecast_temp',
+          title: '2m Temp Forecast',
+          windowBadge: '≥ t₀',
+          unitBadge: 'Dashed · °C',
+          accentClass: 'border-l-4 border-l-[#dc2626]',
+          headerColor: 'text-[#b91c1c]',
+          swatchKind: 'dashed_line'
+        }
+      ];
+
+      gridEl.innerHTML = '';
+      let activeGroupCount = 0;
+
+      groupDefs.forEach(group => {
+        const items = [];
+        datasets.forEach((ds, dsIdx) => {
+          if (ds && ds.$fcRole === group.role) {
+            items.push({ ds, dsIdx });
+          }
+        });
+        if (items.length === 0) return;
+        activeGroupCount++;
+
+        const card = document.createElement('div');
+        card.className = `bg-white rounded-lg border border-[#e0e3e7] ${group.accentClass} px-2.5 py-1.5 flex flex-col gap-1.5`;
+        card.dataset.legendRole = group.role;
+
+        const allVisible = items.every(it => hyetographChart.isDatasetVisible(it.dsIdx));
+
+        const header = document.createElement('div');
+        header.className = 'flex items-center justify-between gap-1.5 border-b border-[#f1f3f4] pb-1';
+
+        const titleWrap = document.createElement('div');
+        titleWrap.className = 'flex items-center gap-1 min-w-0';
+        titleWrap.innerHTML = `
+          <span class="text-[10px] font-bold uppercase tracking-wider ${group.headerColor} truncate">${group.title}</span>
+          <span class="text-[9px] font-mono font-semibold px-1 py-0.2 rounded bg-[#f1f3f4] text-[#3c4043] flex-shrink-0">${group.windowBadge}</span>
+        `;
+
+        const rightWrap = document.createElement('div');
+        rightWrap.className = 'flex items-center gap-1.5 flex-shrink-0';
+
+        const unitSpan = document.createElement('span');
+        unitSpan.className = 'text-[9px] font-mono text-[#5f6368]';
+        unitSpan.innerText = group.unitBadge;
+        rightWrap.appendChild(unitSpan);
+
+        if (items.length > 1) {
+          const toggleGroupBtn = document.createElement('button');
+          toggleGroupBtn.type = 'button';
+          toggleGroupBtn.className = 'text-[9px] font-semibold text-[#1a73e8] hover:underline px-1 rounded hover:bg-[#e8f0fe]/60 transition';
+          toggleGroupBtn.innerText = allVisible ? 'Hide All' : 'Show All';
+          toggleGroupBtn.title = allVisible
+            ? `Hide all ${group.title} series`
+            : `Show all ${group.title} series`;
+          toggleGroupBtn.addEventListener('click', () => {
+            const targetVisible = !allVisible;
+            items.forEach(({ ds, dsIdx }) => {
+              hyetographChart.setDatasetVisibility(dsIdx, targetVisible);
+              const lKey = `${ds.$fcRole}:${ds.$productKey}`;
+              if (targetVisible) {
+                fcHiddenLegendKeys.delete(lKey);
+              } else {
+                fcHiddenLegendKeys.add(lKey);
+              }
+            });
+            hyetographChart.update('none');
+            renderForcingLegend();
+          });
+          rightWrap.appendChild(toggleGroupBtn);
+        }
+
+        header.appendChild(titleWrap);
+        header.appendChild(rightWrap);
+        card.appendChild(header);
+
+        const chipsWrap = document.createElement('div');
+        chipsWrap.className = 'flex flex-wrap items-center gap-1';
+
+        items.forEach(({ ds, dsIdx }) => {
+          const isVisible = hyetographChart.isDatasetVisible(dsIdx);
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.dataset.datasetIndex = String(dsIdx);
+          chip.title = `${ds.label} — Click to ${isVisible ? 'hide' : 'show'}`;
+          chip.className = `inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[10px] font-mono transition cursor-pointer ${
+            isVisible
+              ? 'bg-[#f8f9fa] hover:bg-[#eef2f6] text-[#202124] border-[#dadce0] font-semibold shadow-2xs'
+              : 'bg-[#f8f9fa]/50 hover:bg-[#f1f3f4] text-[#9aa0a6] border-[#e8eaed] opacity-55 line-through'
+          }`;
+
+          const swatchBg = ds.$swatchBg || '#0891b2';
+          const swatchBorder = ds.$swatchBorder || '#0e7490';
+          let swatchHtml = '';
+          if (group.swatchKind === 'bar') {
+            swatchHtml = `<span class="inline-block w-3 h-2.5 rounded-[2px] flex-shrink-0" style="background:${swatchBg};border:1.5px solid ${swatchBorder};"></span>`;
+          } else if (group.swatchKind === 'solid_line') {
+            swatchHtml = `
+              <svg width="18" height="10" viewBox="0 0 18 10" class="flex-shrink-0" aria-hidden="true">
+                <line x1="1" y1="5" x2="17" y2="5" stroke="${swatchBorder}" stroke-width="2.2" stroke-linecap="round" />
+                <circle cx="9" cy="5" r="2.6" fill="${swatchBorder}" />
+              </svg>
+            `;
+          } else {
+            swatchHtml = `
+              <svg width="18" height="10" viewBox="0 0 18 10" class="flex-shrink-0" aria-hidden="true">
+                <line x1="1" y1="5" x2="17" y2="5" stroke="${swatchBorder}" stroke-width="2.2" stroke-dasharray="3,2" stroke-linecap="round" />
+                <circle cx="9" cy="5" r="2.6" fill="#ffffff" stroke="${swatchBorder}" stroke-width="1.8" />
+              </svg>
+            `;
+          }
+
+          const shortText = ds.$shortLabel || ds.$productKey || ds.label;
+          const labelSpan = document.createElement('span');
+          labelSpan.className = 'truncate max-w-[130px]';
+          labelSpan.textContent = shortText;
+
+          chip.innerHTML = swatchHtml;
+          chip.appendChild(labelSpan);
+
+          chip.addEventListener('click', () => {
+            const nextVisible = !hyetographChart.isDatasetVisible(dsIdx);
+            hyetographChart.setDatasetVisibility(dsIdx, nextVisible);
+            const lKey = `${ds.$fcRole}:${ds.$productKey}`;
+            if (nextVisible) {
+              fcHiddenLegendKeys.delete(lKey);
+            } else {
+              fcHiddenLegendKeys.add(lKey);
+            }
+            hyetographChart.update('none');
+            renderForcingLegend();
+          });
+
+          chipsWrap.appendChild(chip);
+        });
+
+        card.appendChild(chipsWrap);
+        gridEl.appendChild(card);
+      });
+
+      if (activeGroupCount > 0) {
+        container.classList.remove('hidden');
+      } else {
+        container.classList.add('hidden');
+      }
+    }
+
     function renderForcingChart() {
       if (!hyetographChart) return;
       const subtitleEl = document.getElementById('fcForcingSubtitle');
@@ -10941,6 +11138,7 @@
         hyetographChart.data.labels = [];
         hyetographChart.data.datasets = [];
         hyetographChart.update();
+        renderForcingLegend();
         renderLeadTimeInspector(null, null);
         if (subtitleEl) {
           subtitleEl.innerText = 'No real-time forcing data fetched for this catchment yet. Click "1. Fetch Real-Time Data" to populate.';
@@ -10983,7 +11181,11 @@
           data: dataArr,
           $fcRole: 'hindcast_precip',
           $productKey: ncKey,
+          $shortLabel: ncKey,
+          $swatchBg: pal.bg,
+          $swatchBorder: pal.border,
           $varKind: 'precip',
+          hidden: fcHiddenLegendKeys.has(`hindcast_precip:${ncKey}`),
           yAxisID: 'yPrecip',
           backgroundColor: pal.bg,
           borderColor: pal.border,
@@ -11012,7 +11214,11 @@
             data: dataArr,
             $fcRole: 'hindcast_precip',
             $productKey: fcKey,
+            $shortLabel: `${fcKey} (Day-1)`,
+            $swatchBg: 'rgba(8, 145, 178, 0.72)',
+            $swatchBorder: '#0e7490',
             $varKind: 'precip',
+            hidden: fcHiddenLegendKeys.has(`hindcast_precip:${fcKey}`),
             yAxisID: 'yPrecip',
             backgroundColor: 'rgba(8, 145, 178, 0.72)',
             borderColor: '#0e7490',
@@ -11053,7 +11259,11 @@
           data: dataArr,
           $fcRole: 'forecast_precip',
           $productKey: fcKey,
+          $shortLabel: fcKey,
+          $swatchBg: pal.bg,
+          $swatchBorder: pal.border,
           $varKind: 'precip',
+          hidden: fcHiddenLegendKeys.has(`forecast_precip:${fcKey}`),
           yAxisID: 'yPrecip',
           minBarLength: 7,
           backgroundColor: (ctx) => {
@@ -11106,7 +11316,11 @@
           data: dataArr,
           $fcRole: 'hindcast_temp',
           $productKey: ncKey,
+          $shortLabel: ncKey,
+          $swatchBg: 'rgba(217, 119, 6, 0.12)',
+          $swatchBorder: strokeColor,
           $varKind: 'temp',
+          hidden: fcHiddenLegendKeys.has(`hindcast_temp:${ncKey}`),
           yAxisID: 'yTemp',
           borderColor: strokeColor,
           backgroundColor: 'rgba(217, 119, 6, 0.12)',
@@ -11141,7 +11355,11 @@
           data: dataArr,
           $fcRole: 'hindcast_temp',
           $productKey: fcKey,
+          $shortLabel: `${fcKey} (Day-1)`,
+          $swatchBg: 'rgba(217, 119, 6, 0.12)',
+          $swatchBorder: strokeColor,
           $varKind: 'temp',
+          hidden: fcHiddenLegendKeys.has(`hindcast_temp:${fcKey}`),
           yAxisID: 'yTemp',
           borderColor: strokeColor,
           backgroundColor: 'rgba(217, 119, 6, 0.12)',
@@ -11187,8 +11405,12 @@
           data: dataArr,
           $fcRole: 'forecast_temp',
           $productKey: fcKey,
+          $shortLabel: fcKey,
+          $swatchBg: 'rgba(220, 38, 38, 0.14)',
+          $swatchBorder: strokeColor,
           $varKind: 'temp',
           $bridgedIndex: bridgedTempIdx,
+          hidden: fcHiddenLegendKeys.has(`forecast_temp:${fcKey}`),
           yAxisID: 'yTemp',
           borderColor: strokeColor,
           backgroundColor: 'rgba(220, 38, 38, 0.14)',
@@ -11241,6 +11463,7 @@
       hyetographChart.data.datasets = datasets;
       hyetographChart.update();
 
+      renderForcingLegend();
       renderLeadTimeInspector(leadTimeTargetObj, issueDate);
 
       if (subtitleEl) {
@@ -11670,6 +11893,9 @@
         renderForcingChart();
         renderHydrographChart(fcModelResultsByBasin[basinId] || null);
       } else {
+        fcStatusData = null;
+        renderForcingChart();
+        renderHydrographChart(null);
         const subtitleEl = document.getElementById('fcForcingSubtitle');
         if (subtitleEl) {
           subtitleEl.innerText = `Loading real-time input forcing for ${basinId}...`;

@@ -593,6 +593,8 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'executionModeSelect',
             'modelCheckpointSelect',
             'fcBasinSelect',
+            'fcForcingLegendContainer',
+            'fcForcingLegendGrid',
         ]
         for dom_id in required_ids:
             assert f'id="{dom_id}"' in html, f'Missing DOM ID: {dom_id}'
@@ -605,6 +607,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'LEFT_AXIS_WIDTH',
             'RIGHT_AXIS_WIDTH',
             'yRightAlign',
+            'renderForcingLegend',
         ]:
             assert expected_token in html, (
                 f'Missing expected UI token: {expected_token}'
