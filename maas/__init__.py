@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Models-as-a-Service (`maas`) multi-model operational flood data-fetching package.
+"""Models-as-a-Service (`maas`) multi-model flood data-fetching package.
 
 Provides unified clients, spatial river-network indexing, upstream-area reach
 snapping, return-period threshold calculators, and multi-model forecast

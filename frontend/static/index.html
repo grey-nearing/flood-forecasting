@@ -12000,21 +12000,21 @@
       floodhub: {
         name: 'Google FloodHub', shortName: 'FloodHub', streamMap: 'HydroSHEDS',
         cadenceLabel: 'daily',
-        color: '#0072b2', band: 'rgba(0, 114, 178, 0.20)',
+        color: '#0072b2', mapColor: '#0072b2', band: 'rgba(0, 114, 178, 0.20)',
         borderDash: [], pointStyle: 'circle', pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
         networkLabel: 'HydroSHEDS HydroRIVERS', reachLabel: 'HydroRIVERS reach'
       },
       glofas: {
         name: 'Copernicus GloFAS', shortName: 'GloFAS', streamMap: 'LISFLOOD',
         cadenceLabel: 'daily',
-        color: '#d55e00', band: 'rgba(213, 94, 0, 0.16)',
+        color: '#d55e00', mapColor: '#007b83', band: 'rgba(213, 94, 0, 0.16)',
         borderDash: [7, 4], pointStyle: 'rectRot', pointRadius: 4.5, pointHoverRadius: 6.5, pointBorderWidth: 1.5,
         networkLabel: 'LISFLOOD 0.05° river grid', reachLabel: 'GloFAS 0.05° river'
       },
       geoglows: {
         name: 'GEOGLOWS ECMWF', shortName: 'GEOGLOWS', streamMap: 'TDX-Hydro',
         cadenceLabel: '3-hourly',
-        color: '#009e73', band: 'rgba(0, 158, 115, 0.20)',
+        color: '#009e73', mapColor: '#009e73', band: 'rgba(0, 158, 115, 0.20)',
         borderDash: [3, 3], pointStyle: 'triangle', pointRadius: 3.2, pointHoverRadius: 5.5, pointBorderWidth: 1,
         networkLabel: 'TDX-Hydro streams', reachLabel: 'TDX-Hydro stream'
       }
@@ -12048,8 +12048,9 @@
 
     // Provider-standard return-period color schemes:
     // - When 1 hydrofabric is shown on the map, normal rivers (< 2-yr return period) are Blue (#1a73e8).
-    // - When 2+ hydrofabrics are shown on the map at once, normal rivers use each hydrofabric's signature color
-    //   (#1a73e8 HydroSHEDS, #007b83 LISFLOOD, #1e8e3e TDX-Hydro) so overlaid networks are easy to distinguish.
+    // - When 2+ hydrofabrics are shown on the map at once, normal rivers use each hydrofabric's signature mapColor
+    //   (#0072b2 HydroSHEDS, #007b83 LISFLOOD teal, #009e73 TDX-Hydro green) so overlaid networks are easy to distinguish
+    //   and never collide with warning/danger flood alert colors.
     // - Return-period exceedances always use each provider's official operational flood color standard:
     //   * Google FloodHub: Orange (Warning >=2-yr), Red (Danger >=5-yr), Dark Red (Extreme >=20-yr)
     //   * Copernicus GloFAS: Yellow (Medium >=2-yr), Red (High >=5-yr), Purple (Severe >=20-yr)
@@ -12103,14 +12104,15 @@
         const meta = MAAS_MODELS[key] || MAAS_MODELS.glofas;
         if (dot) {
           dot.classList.remove('hidden');
-          dot.style.background = meta.color;
+          dot.style.background = meta.mapColor || meta.color;
         }
         caption.textContent = meta.networkLabel;
       } else {
         if (dot) dot.classList.add('hidden');
         caption.innerHTML = activeMapModels.map(k => {
           const m = MAAS_MODELS[k];
-          return `<span class="inline-flex items-center gap-1 mr-2"><span class="w-2 h-2 rounded-full inline-block" style="background:${m.color}"></span><span>${maasEscapeHtml(m.streamMap)}</span></span>`;
+          const mc = m.mapColor || m.color;
+          return `<span class="inline-flex items-center gap-1 mr-2"><span class="w-2 h-2 rounded-full inline-block" style="background:${mc}"></span><span>${maasEscapeHtml(m.streamMap)}</span></span>`;
         }).join('');
       }
     }
@@ -12124,7 +12126,8 @@
         if (itemsEl) {
           const netRows = activeMapModels.map(k => {
             const m = MAAS_MODELS[k];
-            return `<span class="flex items-center gap-1.5"><span class="w-3.5 rounded-full inline-block" style="background:${m.color};height:4px"></span><span class="font-medium text-[#202124]">${maasEscapeHtml(m.shortName)}</span><span class="text-[#5f6368]">(${maasEscapeHtml(m.streamMap)})</span></span>`;
+            const mc = m.mapColor || m.color;
+            return `<span class="flex items-center gap-1.5"><span class="w-3.5 rounded-full inline-block" style="background:${mc};height:4px"></span><span class="font-medium text-[#202124]">${maasEscapeHtml(m.shortName)}</span><span class="text-[#5f6368]">(${maasEscapeHtml(m.streamMap)})</span></span>`;
           });
           const alertRows = [
             { color: '#eab308', label: '≥2-yr Warning / Medium', bold: true },
@@ -12159,8 +12162,9 @@
 
     function maasFlowPercentileColor(props, modelKey, multiHydrofabricMode = false) {
       const cfg = MAAS_PROVIDER_PALETTES[modelKey] || MAAS_PROVIDER_PALETTES.glofas;
+      const m = MAAS_MODELS[modelKey];
       const normalColor = multiHydrofabricMode
-        ? ((MAAS_MODELS[modelKey] && MAAS_MODELS[modelKey].color) || MAAS_NORMAL_BLUE)
+        ? ((m && (m.mapColor || m.color)) || MAAS_NORMAL_BLUE)
         : MAAS_NORMAL_BLUE;
       if (!props) return normalColor;
       const rank = Number(props.exceedance_rank);
@@ -12174,13 +12178,14 @@
     function maasModelPillButtonHtml(attrName, key, isSelected) {
       const m = MAAS_MODELS[key];
       const role = 'checkbox';
+      const swatchColor = attrName === 'data-maas-map-model' ? (m.mapColor || m.color) : m.color;
       const btnCls = isSelected
         ? 'bg-[#e8f0fe] border-[#d2e3fc] text-[#174ea6] font-medium shadow-[0_1px_2px_rgba(26,115,232,0.08)]'
         : 'bg-[#f8f9fa] border-[#dadce0] text-[#5f6368] hover:bg-[#f1f3f4]';
       const subLabel = attrName === 'data-maas-map-model' ? ` title="${maasEscapeHtml(m.name)} — ${maasEscapeHtml(m.networkLabel)}"` : '';
       return `<button type="button" ${attrName}="${key}" role="${role}" aria-checked="${isSelected}"${subLabel} class="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition ${btnCls}">
-        <span class="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0" style="border-color:${isSelected ? m.color : '#80868b'}">
-          ${isSelected ? `<span class="w-1.5 h-1.5 rounded-full" style="background:${m.color}"></span>` : ''}
+        <span class="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0" style="border-color:${isSelected ? swatchColor : '#80868b'}">
+          ${isSelected ? `<span class="w-1.5 h-1.5 rounded-full" style="background:${swatchColor}"></span>` : ''}
         </span>
         <span class="truncate">${maasEscapeHtml(m.shortName)}</span>
       </button>`;
@@ -12333,21 +12338,6 @@
       if (currentActiveTabId === 'tab-maas') fetchMaaSViewportRivers(false);
     }
 
-    function setMaaSModel(key) {
-      if (!MAAS_MODELS[key]) return;
-      const changed = key !== currentMaaSModel || selectedMaaSMapModels.size !== 1 || !selectedMaaSMapModels.has(key);
-      currentMaaSModel = key;
-      selectedMaaSMapModels.clear();
-      selectedMaaSMapModels.add(key);
-      renderMaaSMultiModelLists();
-      renderMaaSFlowLegend(key);
-      if (changed) {
-        clearTimeout(maasLiveRefreshTimer);
-        maasLiveRetryCount = 0;
-        if (currentActiveTabId === 'tab-maas') fetchMaaSViewportRivers(false);
-      }
-    }
-
     function initMaaSMapLayers() {
       if (!map) return;
       renderMaaSFlowLegend(currentMaaSModel);
@@ -12460,16 +12450,21 @@
           idLabel: gg.river_id ? `TDX-Hydro #${gg.river_id}` : 'TDX-Hydro reach',
           areaKm2: gg.upstream_area_km2
         } : null
-      ].filter(Boolean);
+      ].filter(item => item && (
+        selectedMaaSMapModels.has(item.key) ||
+        selectedMaaSModels.has(item.key) ||
+        (item.key === 'glofas' && (maasGlofasEnsembleEnabled || maasGlofasRangeEnabled))
+      ));
 
       for (const item of candidates) {
         const m = MAAS_MODELS[item.key];
         if (!m) continue;
+        const markerColor = m.mapColor || m.color;
         if (probe && isFinite(probe.lat) && isFinite(probe.lon)) {
           const dDeg = Math.hypot(item.lat - probe.lat, item.lon - probe.lon);
           if (dDeg > 0.002) {
             const line = L.polyline([[probe.lat, probe.lon], [item.lat, item.lon]], {
-              color: m.color,
+              color: markerColor,
               weight: 1.8,
               opacity: 0.75,
               dashArray: '3, 4',
@@ -12488,11 +12483,11 @@
             className: '',
             iconSize: [12, 12],
             iconAnchor: [6, 6],
-            html: `<div style="width:12px;height:12px;border-radius:50%;background:${m.color};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4)"></div>`
+            html: `<div style="width:12px;height:12px;border-radius:50%;background:${markerColor};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4)"></div>`
           })
         });
         marker.bindTooltip(
-          `<span style="color:${m.color};font-weight:600">${maasEscapeHtml(m.shortName)} (${maasEscapeHtml(m.streamMap)})</span><br>${maasEscapeHtml(item.idLabel)}${maasEscapeHtml(areaText)}`,
+          `<span style="color:${markerColor};font-weight:600">${maasEscapeHtml(m.shortName)} (${maasEscapeHtml(m.streamMap)})</span><br>${maasEscapeHtml(item.idLabel)}${maasEscapeHtml(areaText)}`,
           { direction: 'top', offset: [0, -6] }
         );
         maasSnappedReachesLayerGroup.addLayer(marker);
@@ -12552,7 +12547,6 @@
     let maasRiversDebounceTimer = null;
     let maasLiveRefreshTimer = null;
     let maasLiveRetryCount = 0;
-    let maasRiversLoaded = null; // legacy alias of the primary model's loaded view
     function loadMaaSViewportRivers() {
       clearTimeout(maasRiversDebounceTimer);
       clearTimeout(maasLiveRefreshTimer);
@@ -12565,7 +12559,6 @@
       clearTimeout(maasRiversDebounceTimer);
       clearTimeout(maasLiveRefreshTimer);
       maasLiveRetryCount = 0;
-      maasRiversLoaded = null;
       Object.keys(maasRiversLoadedByModel).forEach(k => { delete maasRiversLoadedByModel[k]; });
       const iconEl = document.getElementById('maasRefreshLiveIcon');
       if (iconEl) iconEl.classList.add('animate-spin');
@@ -12658,7 +12651,6 @@
           view.livePending = livePending;
           view.activeFloods = activeFloods;
           maasRiversLoadedByModel[model] = view;
-          if (model === currentMaaSModel) maasRiversLoaded = view;
           totalLiveColored += liveColored;
           totalLivePending += livePending;
           totalActiveFloods += activeFloods;
@@ -12666,6 +12658,7 @@
 
           if (!geojson || !Array.isArray(geojson.features) || !geojson.features.length) return;
           const modelMeta = MAAS_MODELS[model] || MAAS_MODELS.glofas;
+          const mapHighlightColor = modelMeta.mapColor || modelMeta.color;
           const paletteCfg = MAAS_PROVIDER_PALETTES[model] || MAAS_PROVIDER_PALETTES.glofas;
 
           // Draw non-forecast reaches first, then normal rivers, and active flood alerts LAST (on top) so they pop at every zoom level.
@@ -12731,9 +12724,9 @@
                   fhNote = `${gaugeId ? `<br><span style="color:#1a73e8">FloodHub: ${maasEscapeHtml(gaugeId)}</span>` : ''}<br><span style="color:#1e8e3e">✓ FloodHub forecast available — click to view</span>`;
                 }
               }
-              const netHeader = `<span style="color:${modelMeta.color};font-weight:600">${maasEscapeHtml(modelMeta.shortName)} · ${maasEscapeHtml(modelMeta.streamMap)}</span><br>`;
+              const netHeader = `<span style="color:${mapHighlightColor};font-weight:600">${maasEscapeHtml(modelMeta.shortName)} · ${maasEscapeHtml(modelMeta.streamMap)}</span><br>`;
               layer.bindTooltip(`${netHeader}<b>${maasEscapeHtml(name)}</b>${area ? `<br>${maasEscapeHtml(area)}` : ''}${flowNote}${pctNote}${fhNote}`, { sticky: true });
-              layer.on('mouseover', () => layer.setStyle({ color: modelMeta.color, weight: (layer.options.weight || 2) + 2, opacity: 1.0, dashArray: null }));
+              layer.on('mouseover', () => layer.setStyle({ color: mapHighlightColor, weight: (layer.options.weight || 2) + 2, opacity: 1.0, dashArray: null }));
               layer.on('mouseout', () => riverLayer.resetStyle(layer));
               layer.on('click', (e) => {
                 L.DomEvent.stopPropagation(e);
@@ -12750,7 +12743,7 @@
         }
       }));
 
-      if (!anyFetched && !isLiveRefresh && !forceManualRefresh) return;
+      if (!anyFetched && !isLiveRefresh && !forceManualRefresh && totalLivePending === 0) return;
       const liveBadgeEl = document.getElementById('maasLiveColorBadge');
       const iconEl = document.getElementById('maasRefreshLiveIcon');
       if (liveBadgeEl) {
@@ -12853,6 +12846,8 @@
           if (fullData) {
             currentMaaSForecastData = fullData;
             updateMaaSSnappedReachMarkers(fullData);
+          } else {
+            console.warn('MaaS background full-model prefetch did not complete; will retry on model toggle.');
           }
           renderMaaSForecast();
           return;

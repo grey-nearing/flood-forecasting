@@ -110,6 +110,7 @@ DISTANCE_WEIGHT = 0.35
 RANGE_SLACK = 1.15
 MAX_CORRIDOR_SNAP_KM = 15.0
 _MAX_DISTANT_AREA_RATIO = 8.0
+_MAX_CORRIDOR_AREA_RATIO = 50.0
 _MIN_GEOGLOWS_LINKNO = 100_000_000
 _MAX_GEOGLOWS_LINKNO = 999_999_999
 _LINKNO_DIGITS = 9
@@ -920,6 +921,7 @@ def _choose(
     area_range: tuple[float, float] | None,
 ) -> int:
     """Select the index best matching `target` upstream area and proximity."""
+    areas = np.maximum(areas, 1.0)
     if area_range:
         lo, hi = area_range
         inside = np.flatnonzero(
@@ -927,10 +929,11 @@ def _choose(
         )
         if inside.size:
             return int(inside[np.lexsort((-areas[inside], dist[inside]))[0]])
-        target = math.sqrt(lo * hi)
+        target = math.sqrt(max(lo, 1.0) * max(hi, 1.0))
+    target = max(float(target), 1.0)
     return int(
         np.argmin(
-            np.abs(np.log(areas / target))
+            np.abs(np.log10(areas / target))
             + DISTANCE_WEIGHT * dist / max(float(radius), 1e-6)
         )
     )
@@ -980,9 +983,7 @@ def snap_glofas_cell_from_network(  # noqa: PLR0913, PLR0917
     rr = np.zeros(0, dtype=np.int64)
     cc = np.zeros(0, dtype=np.int64)
     pos = np.zeros(0, dtype=np.int64)
-    eff_radius = radius_cells
     for rad in (radius_cells, max(radius_cells + 3, 6)):
-        eff_radius = rad
         dr, dc = np.mgrid[-rad : rad + 1, -rad : rad + 1]
         rr_cand = round(fr) + dr.ravel()
         cc_cand = round(fc) + dc.ravel()
@@ -1004,9 +1005,14 @@ def snap_glofas_cell_from_network(  # noqa: PLR0913, PLR0917
     areas = net['cell_area'][pos[hit]].astype(np.float64)
     dist = np.hypot(rr - fr, (cc - fc) * math.cos(math.radians(lat)))
     if target_area_km2 is not None and target_area_km2 > 0:
-        k = _choose(areas, dist, eff_radius, target_area_km2, area_range)
+        k = _choose(areas, dist, radius_cells, target_area_km2, area_range)
     else:
         k = int(np.argmin(dist))
+    offset_km = float(dist[k]) * res * 111.2
+    if _reject_distant_area_mismatch(
+        float(areas[k]), target_area_km2, area_range, offset_km
+    ):
+        return None
     cell_lat = round(90.0 - (int(rr[k]) + 0.5) * res, 3)
     cell_lon = round(-180.0 + (int(cc[k]) + 0.5) * res, 3)
     return {
@@ -1016,6 +1022,7 @@ def snap_glofas_cell_from_network(  # noqa: PLR0913, PLR0917
         'query_lon': round(cell_lon - res, 3),
         'upstream_area_km2': round(float(areas[k]), 1),
         'offset_cells': round(float(dist[k]), 2),
+        'offset_km': round(offset_km, 2),
     }
 
 
@@ -1025,17 +1032,19 @@ def _reject_distant_area_mismatch(
     area_range: tuple[float, float] | None,
     offset_km: float,
 ) -> bool:
-    """Return True if a distant snap candidate differs >8x from target area."""
-    if (
-        target_area_km2 is None
-        or target_area_km2 <= 0
-        or area_range is not None
-        or offset_km <= MAX_CORRIDOR_SNAP_KM
-    ):
+    """Return True if a snap candidate's upstream area is incompatible."""
+    if target_area_km2 is None or target_area_km2 <= 0:
         return False
-    ratio = max(area_cand, float(target_area_km2)) / max(
-        min(area_cand, float(target_area_km2)), 1.0
-    )
+    if area_range is not None:
+        lo, hi = area_range
+        if lo / RANGE_SLACK <= area_cand <= hi * RANGE_SLACK:
+            return False
+        eff_target = math.sqrt(max(lo, 1.0) * max(hi, 1.0))
+    else:
+        eff_target = float(target_area_km2)
+    ratio = max(area_cand, eff_target) / max(min(area_cand, eff_target), 1.0)
+    if offset_km <= MAX_CORRIDOR_SNAP_KM:
+        return ratio > _MAX_CORRIDOR_AREA_RATIO
     return ratio > _MAX_DISTANT_AREA_RATIO
 
 
@@ -1054,9 +1063,7 @@ def snap_floodhub_reach_from_network(  # noqa: PLR0913, PLR0917
     kx = math.cos(math.radians(lat))
     idx = np.zeros(0, dtype=np.int64)
     dist = np.zeros(0, dtype=np.float64)
-    eff_radius = radius_deg
     for rad in (radius_deg, max(radius_deg * 1.75, 0.35)):
-        eff_radius = rad
         pad = rad + 0.05
         i0 = int(np.searchsorted(rlat, lat - pad, side='left'))
         i1 = int(np.searchsorted(rlat, lat + pad, side='right'))
@@ -1083,7 +1090,7 @@ def snap_floodhub_reach_from_network(  # noqa: PLR0913, PLR0917
         return None
     a = np.maximum(net['reach_area'][idx].astype(np.float64), 1.0)
     k = (
-        _choose(a, dist, eff_radius, target_area_km2, area_range)
+        _choose(a, dist, radius_deg, target_area_km2, area_range)
         if target_area_km2 is not None and target_area_km2 > 0
         else int(np.argmin(dist))
     )
@@ -1095,9 +1102,7 @@ def snap_floodhub_reach_from_network(  # noqa: PLR0913, PLR0917
     chosen = int(idx[k])
     hb_id = int(net['reach_hybas_l12'][chosen])
     hyriv_id = (
-        int(net['reach_hyriv_id'][chosen])
-        if 'reach_hyriv_id' in net
-        else 0
+        int(net['reach_hyriv_id'][chosen]) if 'reach_hyriv_id' in net else 0
     )
     return {
         'gauge_id': f'hybas_{hb_id}' if hb_id > 0 else None,
@@ -1128,9 +1133,7 @@ def snap_geoglows_reach_from_network(  # noqa: PLR0913, PLR0917
     py = lat
     idx = np.zeros(0, dtype=np.int64)
     dist = np.zeros(0, dtype=np.float64)
-    eff_radius = radius_deg
     for rad in (radius_deg, max(radius_deg * 1.8, 0.32)):
-        eff_radius = rad
         pad = rad + 0.05
         i0 = int(np.searchsorted(rlat, lat - pad, side='left'))
         i1 = int(np.searchsorted(rlat, lat + pad, side='right'))
@@ -1161,7 +1164,7 @@ def snap_geoglows_reach_from_network(  # noqa: PLR0913, PLR0917
     a = net['reach_area'][idx].astype(np.float64)
     links = net['reach_linkno'][idx]
     k = (
-        _choose(a, dist, eff_radius, target_area_km2, area_range)
+        _choose(a, dist, radius_deg, target_area_km2, area_range)
         if target_area_km2 is not None and target_area_km2 > 0
         else int(np.argmin(dist))
     )
@@ -1304,15 +1307,36 @@ def resolve_cross_network_click(  # noqa: C901, PLR0912, PLR0913, PLR0917
                 gg_lat, gg_lon, out['target_area_km2'], radius_deg=0.25
             )
     else:
-        if snap_floodhub_fn is not None:
+        fh_reach_id = (
+            str(river_id)
+            if river_id and not is_geoglows_river_id(river_id)
+            else None
+        )
+        if gauge_id and (rng is None or rng[0] >= rng[1]):
+            out['floodhub'] = {
+                'gauge_id': gauge_id,
+                'river_id': fh_reach_id,
+                'lat': round(float(lat), 4),
+                'lon': round(float(lon), 4),
+                'upstream_area_km2': round(area, 1),
+                'offset_km': 0.0,
+            }
+        elif snap_floodhub_fn is not None:
             snapped_fh = snap_floodhub_fn(
                 lat, lon, area, area_range=rng, radius_deg=0.20
             )
             if snapped_fh is not None:
-                if gauge_id and (rng is None or rng[0] >= rng[1]):
-                    snapped_fh = {**snapped_fh, 'gauge_id': gauge_id}
                 out['floodhub'] = snapped_fh
                 out['target_area_km2'] = snapped_fh['upstream_area_km2']
+            elif gauge_id:
+                out['floodhub'] = {
+                    'gauge_id': gauge_id,
+                    'river_id': fh_reach_id,
+                    'lat': round(float(lat), 4),
+                    'lon': round(float(lon), 4),
+                    'upstream_area_km2': round(area, 1),
+                    'offset_km': 0.0,
+                }
         target_a = out['target_area_km2']
         out['glofas'] = snap_glofas_fn(
             lat, lon, target_a, area_range=rng, radius_cells=4

@@ -218,6 +218,79 @@ class TestPyramidSerializationAndSnapping:
             fh_net, 38.90, -90.180, target_area_km2=10.0
         )
         assert fh_offshore is None
+        gg_offshore = snap_geoglows_reach_from_network(
+            gg_net, 38.90, -90.180, target_area_km2=10.0
+        )
+        assert gg_offshore is None
+        gl_offshore = snap_glofas_cell_from_network(
+            gl_net, 38.85, -90.180, target_area_km2=10.0, radius_cells=6
+        )
+        assert gl_offshore is None
+
+        # Extreme area mismatch (>50x) inside corridor is also rejected
+        gl_corridor_mismatch = snap_glofas_cell_from_network(
+            gl_net, 38.625, -90.175, target_area_km2=1.5
+        )
+        assert gl_corridor_mismatch is None
+
+        # Single-reach FloodHub click preserves exact clicked gauge/coords/area
+        single_fh_click = resolve_cross_network_click(
+            38.621,
+            -90.181,
+            upstream_area_km2=1785000.0,
+            area_min_km2=1785000.0,
+            snap_glofas_fn=lambda lat, lon, area, **kw: (
+                snap_glofas_cell_from_network(gl_net, lat, lon, area, **kw)
+            ),
+            snap_geoglows_fn=lambda lat, lon, area, **kw: (
+                snap_geoglows_reach_from_network(gg_net, lat, lon, area, **kw)
+            ),
+            snap_floodhub_fn=lambda lat, lon, area, **kw: (
+                snap_floodhub_reach_from_network(fh_net, lat, lon, area, **kw)
+            ),
+            network='floodhub',
+            river_id='HYRIV_70099999',
+            gauge_id='hybas_7120099990',
+        )
+        assert single_fh_click is not None
+        assert single_fh_click['floodhub']['gauge_id'] == 'hybas_7120099990'
+        assert single_fh_click['floodhub']['river_id'] == 'HYRIV_70099999'
+        assert single_fh_click['floodhub']['lat'] == pytest.approx(38.621)
+        assert single_fh_click['floodhub']['lon'] == pytest.approx(-90.181)
+        assert single_fh_click['floodhub'][
+            'upstream_area_km2'
+        ] == pytest.approx(1785000.0)
+        assert single_fh_click['floodhub']['offset_km'] == 0.0
+        assert 'offset_km' in single_fh_click['glofas']
+
+        # Merged FloodHub chain click (area_min_km2 < upstream_area_km2) snaps
+        # to the reach along the merged corridor at the clicked coordinate
+        merged_fh_click = resolve_cross_network_click(
+            38.624,
+            -90.181,
+            upstream_area_km2=1850000.0,
+            area_min_km2=1200000.0,
+            snap_glofas_fn=lambda lat, lon, area, **kw: (
+                snap_glofas_cell_from_network(gl_net, lat, lon, area, **kw)
+            ),
+            snap_geoglows_fn=lambda lat, lon, area, **kw: (
+                snap_geoglows_reach_from_network(gg_net, lat, lon, area, **kw)
+            ),
+            snap_floodhub_fn=lambda lat, lon, area, **kw: (
+                snap_floodhub_reach_from_network(fh_net, lat, lon, area, **kw)
+            ),
+            network='floodhub',
+            river_id='HYRIV_70099999',
+            gauge_id='hybas_7120099990',
+        )
+        assert merged_fh_click is not None
+        assert (
+            merged_fh_click['floodhub']['gauge_id']
+            == f'hybas_{_EXPECTED_HYBAS_L12}'
+        )
+        assert merged_fh_click['floodhub'][
+            'upstream_area_km2'
+        ] == pytest.approx(1790000.0)
 
         resolved_from_gg = resolve_cross_network_click(
             38.627,
@@ -240,9 +313,9 @@ class TestPyramidSerializationAndSnapping:
             resolved_from_gg['floodhub']['gauge_id']
             == f'hybas_{_EXPECTED_HYBAS_L12}'
         )
-        assert resolved_from_gg['glofas'][
-            'upstream_area_km2'
-        ] == pytest.approx(1800000.0)
+        assert resolved_from_gg['glofas']['upstream_area_km2'] == pytest.approx(
+            1800000.0
+        )
         assert resolved_from_gg['geoglows']['river_id'] == _EXPECTED_LINKNO
 
     def test_geoglows_in_memory_snapping_and_floodhub_level_features(
