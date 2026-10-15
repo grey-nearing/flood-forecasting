@@ -22,6 +22,7 @@ from model.modelzoo.basemodel import BaseModel
 from model.modelzoo.fc import FC
 from model.modelzoo.head import get_head
 from model.modelzoo.positional_encoding import PositionalEncoding
+from model.utils.config import Config
 
 
 @pytest.mark.unit
@@ -266,13 +267,13 @@ def test_all_registered_models_expose_tunable_module_parts() -> None:
 @pytest.mark.unit
 def test_describe_tunable_components_covers_all_parameters(
     monkeypatch: pytest.MonkeyPatch,
-    minimal_config: object,
+    minimal_config: Config,
 ) -> None:
     """Verify describe_tunable_components covers Handoff and MeanEmbedding."""
     monkeypatch.setattr(
         'model.modelzoo.basemodel.Scaler', lambda **_kwargs: None
     )
-    minimal_config.update_config(  # type: ignore[attr-defined]
+    minimal_config.update_config(
         {
             'model': 'handoff_forecast_lstm',
             'head': 'regression',
@@ -291,7 +292,8 @@ def test_describe_tunable_components_covers_all_parameters(
             'is_finetuning': False,
         }
     )
-    handoff_model = get_model(minimal_config)  # type: ignore[arg-type]
+    handoff_model = get_model(minimal_config)
+    assert isinstance(handoff_model, BaseModel)
     handoff_comps = handoff_model.describe_tunable_components()
     handoff_names = [c['name'] for c in handoff_comps]
     assert 'handoff_linear' in handoff_names
@@ -307,7 +309,7 @@ def test_describe_tunable_components_covers_all_parameters(
     assert top_level_param_ids == all_model_param_ids
 
     # Also verify MeanEmbeddingForecastLSTM exposes per-product subcomponents
-    minimal_config.update_config(  # type: ignore[attr-defined]
+    minimal_config.update_config(
         {
             'model': 'mean_embedding_forecast_lstm',
             'hindcast_inputs': {
@@ -322,13 +324,16 @@ def test_describe_tunable_components_covers_all_parameters(
             'dynamics_embedding': {'type': 'fc', 'hiddens': [8]},
         }
     )
-    mean_model = get_model(minimal_config)  # type: ignore[arg-type]
+    mean_model = get_model(minimal_config)
+    assert isinstance(mean_model, BaseModel)
     mean_comps = mean_model.describe_tunable_components()
-    sub_ids = {
-        sub['id']
-        for comp in mean_comps
-        for sub in comp.get('subcomponents', [])  # type: ignore[union-attr]
-    }
+    sub_ids: set[object] = set()
+    for comp in mean_comps:
+        subcomponents = comp.get('subcomponents')
+        if isinstance(subcomponents, list):
+            for sub in subcomponents:
+                if isinstance(sub, dict) and 'id' in sub:
+                    sub_ids.add(sub['id'])
     assert 'hindcast_embeddings_fc.era5' in sub_ids
     assert 'forecast_embeddings_fc.hres' in sub_ids
     assert 'shared_embeddings_fc.imerg' in sub_ids

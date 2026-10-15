@@ -1412,7 +1412,6 @@
             <label for="ftModelSelect" class="text-[11px] text-[#5f6368] block mb-1">Select Pretrained Model</label>
             <select id="ftModelSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2.5 py-2 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
               <option value="google-floodhub-settings-110-epochs" selected>Google FloodHub Pretrained (110 Epochs, CMAL)</option>
-              <option value="5-basin-example">5-Basin Tutorial Pretrained (5 Epochs, Regression)</option>
             </select>
           </div>
           <div id="ftModelMetaSummary" class="grid grid-cols-3 gap-1.5 text-[10px] font-mono bg-white border border-[#dadce0] rounded-lg p-2 text-[#3c4043]">
@@ -1498,7 +1497,7 @@
               </div>
               <div>
                 <label for="ftBasinAreaInput" class="text-[10px] text-[#5f6368] block">Area km&sup2; (if m&sup3;/s)</label>
-                <input id="ftBasinAreaInput" type="number" step="any" min="0.1" value="250" class="w-full bg-[#f8f9fa] border border-[#dadce0] text-[11px] rounded px-1.5 py-1 text-[#202124] font-mono">
+                <input id="ftBasinAreaInput" type="number" step="any" min="0.1" placeholder="e.g. 250.0" class="w-full bg-[#f8f9fa] border border-[#dadce0] text-[11px] rounded px-1.5 py-1 text-[#202124] font-mono">
               </div>
             </div>
             <div class="flex items-center gap-1.5">
@@ -1509,13 +1508,10 @@
             </div>
           </div>
 
-          <!-- Sample Data & Template Helpers -->
+          <!-- Template & Clear Helpers -->
           <div class="flex items-center gap-1.5 pt-1">
-            <button type="button" id="ftLoadSampleDataBtn" class="flex-1 bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#174ea6] border border-[#d2e3fc] text-[11px] font-semibold py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition" title="Generate realistic time x lead_time precip, temp, and streamflow CSVs for immediate interactive fine-tuning">
-              <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> Load Sample Basin CSVs
-            </button>
-            <button type="button" id="ftDownloadTemplateBtn" class="bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] text-[11px] font-medium py-1.5 px-2 rounded-lg flex items-center gap-1 transition" title="Download time x lead_time CSV template">
-              <i data-lucide="download" class="w-3.5 h-3.5"></i> Template
+            <button type="button" id="ftDownloadTemplateBtn" class="flex-1 bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] text-[11px] font-medium py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition" title="Download time x lead_time CSV template">
+              <i data-lucide="download" class="w-3.5 h-3.5"></i> Download CSV Template
             </button>
             <button type="button" id="ftClearDataBtn" class="bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#dadce0] text-[11px] font-medium py-1.5 px-2 rounded-lg transition" title="Clear uploaded data">
               <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
@@ -1598,10 +1594,9 @@
             <div>
               <label for="ftLrStrategySelect" class="text-[11px] text-[#5f6368] block mb-1">LR Schedule</label>
               <select id="ftLrStrategySelect" class="w-full bg-white border border-[#dadce0] text-xs rounded px-2 py-1.5 text-[#202124]">
-                <option value="constant" selected>Constant</option>
-                <option value="ReduceLROnPlateau">Plateau</option>
+                <option value="ConstantLR" selected>ConstantLR</option>
+                <option value="ReduceLROnPlateau">ReduceLROnPlateau</option>
                 <option value="StepLR">StepLR</option>
-                <option value="ExponentialLR">Exponential</option>
               </select>
             </div>
             <div>
@@ -1639,7 +1634,7 @@
                 <span id="ftSessionStatePill" class="text-[10px] bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] px-2 py-0.5 rounded-full font-mono font-semibold">Ready</span>
               </div>
               <p id="ftSessionSubtitle" class="text-xs text-[#5f6368]">
-                Upload local basin CSVs (or load sample data), choose tunable model components, and advance training epoch-by-epoch.
+                Upload local basin CSVs, choose tunable model components, and advance training epoch-by-epoch.
               </p>
             </div>
           </div>
@@ -12903,29 +12898,32 @@
     }
 
     function recomputeClientPartition(dates, baseSeqLen, leadTime, splitRatio) {
-      if (!Array.isArray(dates) || dates.length < leadTime + 14) return null;
+      const minSeq = Math.max(8, leadTime);
+      const minRequired = minSeq + leadTime + leadTime + 2;
+      if (!Array.isArray(dates) || dates.length < minRequired) return null;
       const numDays = dates.length;
-      const maxAllowedSeq = Math.max(7, Math.floor((numDays - leadTime - 6) / 2));
+      const maxAllowedSeq = Math.max(minSeq, Math.floor((numDays - leadTime - leadTime - 4) / 2));
       const effSeq = Math.min(baseSeqLen, maxAllowedSeq);
       const firstSampleIdx = effSeq;
       const lastSampleIdx = numDays - leadTime;
-      const totalSampleDays = lastSampleIdx - firstSampleIdx + 1;
-      if (totalSampleDays < 4) return null;
+      const usableSampleDays = (lastSampleIdx - firstSampleIdx + 1) - (leadTime - 1);
+      if (usableSampleDays < 4) return null;
       const clamped = Math.max(0.2, Math.min(0.9, splitRatio));
-      const trainCount = Math.max(2, Math.min(totalSampleDays - 2, Math.round(totalSampleDays * clamped)));
+      const trainCount = Math.max(2, Math.min(usableSampleDays - 2, Math.round(usableSampleDays * clamped)));
       const splitIdx = firstSampleIdx + trainCount - 1;
-      const valStartIdx = splitIdx + 1;
+      const valStartIdx = splitIdx + leadTime;
+      const valCount = lastSampleIdx - valStartIdx + 1;
       return {
         effective_seq_length: effSeq,
         lead_time: leadTime,
-        split_ratio: Number((trainCount / totalSampleDays).toFixed(3)),
+        split_ratio: Number((trainCount / usableSampleDays).toFixed(3)),
         train_start_date: dates[firstSampleIdx],
         train_end_date: dates[splitIdx],
         validation_start_date: dates[valStartIdx],
         validation_end_date: dates[lastSampleIdx],
         split_date: dates[splitIdx],
         train_sample_days: trainCount,
-        validation_sample_days: totalSampleDays - trainCount,
+        validation_sample_days: valCount,
         total_days: numDays,
       };
     }
@@ -13204,7 +13202,7 @@
           const td = document.createElement('td');
           td.colSpan = 7;
           td.className = 'py-6 text-center text-[#5f6368] font-sans';
-          td.textContent = 'No epochs run yet. Upload CSVs or click "Load Sample Basin CSVs", then click "Run Epochs & Pause".';
+          td.textContent = 'No epochs run yet. Upload local basin CSVs, then click "Run Epochs & Pause".';
           tr.appendChild(td);
           tbody.appendChild(tr);
         } else {
@@ -13382,6 +13380,18 @@
       const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
       const unitsSel = document.getElementById('ftStreamflowUnitsSelect');
       const areaInp = document.getElementById('ftBasinAreaInput');
+      const selectedUnits = dataType === 'streamflow'
+        ? (unitsSel ? unitsSel.value : 'mm/day')
+        : (dataType === 'temp' ? 'degC' : 'mm/day');
+      let areaVal = null;
+      if (dataType === 'streamflow' && selectedUnits === 'm3/s') {
+        const parsedArea = areaInp ? parseFloat(areaInp.value) : NaN;
+        if (!Number.isFinite(parsedArea) || parsedArea <= 0) {
+          setFtStatusBanner('Basin area (km² > 0) is required when uploading streamflow in m³/s.', 'error');
+          return;
+        }
+        areaVal = parsedArea;
+      }
 
       setFtStatusBanner('Uploading ' + file.name + '...', 'info');
       const resp = await fetch('/api/finetune/upload-csv', {
@@ -13393,8 +13403,8 @@
           data_type: dataType,
           filename: file.name,
           csv_content: text,
-          units: unitsSel ? unitsSel.value : 'mm/day',
-          area_km2: areaInp ? parseFloat(areaInp.value) : 250.0,
+          units: selectedUnits,
+          area_km2: areaVal,
         }),
       });
       const payload = await resp.json();
@@ -13475,30 +13485,6 @@
       wireUpload('ftUploadPrecipBtn', 'ftPrecipFileInput', 'precip');
       wireUpload('ftUploadTempBtn', 'ftTempFileInput', 'temp');
       wireUpload('ftUploadStreamflowBtn', 'ftStreamflowFileInput', 'streamflow');
-
-      // Sample Data button
-      const sampleBtn = document.getElementById('ftLoadSampleDataBtn');
-      if (sampleBtn) {
-        sampleBtn.addEventListener('click', async () => {
-          const basinId = getActiveFtBasinId();
-          const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
-          setFtStatusBanner('Generating sample time × lead_time CSVs for ' + basinId + '...', 'info');
-          sampleBtn.disabled = true;
-          const resp = await fetch('/api/finetune/sample-data', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ basin_id: basinId, model_id: modelId, num_days: 240, lead_time: 7 }),
-          });
-          sampleBtn.disabled = false;
-          const payload = await resp.json();
-          if (!resp.ok) {
-            setFtStatusBanner(payload.error || 'Failed to generate sample data', 'error');
-            return;
-          }
-          setFtStatusBanner('Loaded 240-day time × lead_time sample CSVs (precip, temp, streamflow). Ready to fine-tune!', 'success');
-          applyFtWorkspacePayload(payload.workspace);
-        });
-      }
 
       // Download Template button
       const tmplBtn = document.getElementById('ftDownloadTemplateBtn');
@@ -13618,7 +13604,7 @@
           const lossSel = document.getElementById('ftLossSelect');
           const lossVal = (lossSel && lossSel.value) || 'CMALLoss';
           const stratSel = document.getElementById('ftLrStrategySelect');
-          const lrStrat = (stratSel && stratSel.value) || 'constant';
+          const lrStrat = (stratSel && stratSel.value) || 'ConstantLR';
           const bsInp = document.getElementById('ftBatchSizeInput');
           const batchSize = (bsInp && parseInt(bsInp.value, 10)) || 16;
           const splitRatio = splitSlider ? (parseInt(splitSlider.value, 10) / 100.0) : 0.7;

@@ -520,6 +520,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         finally:
             self._post('/api/profile/logout', {})
 
+    @pytest.mark.unit
     def test_issue86_unified_left_sidebar_across_all_tabs(self) -> None:
         """Verify Issue #86 unified left sidebar across all 8 tabs."""
         expected_sidebars = (

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import logging
@@ -24,7 +25,7 @@ import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -34,12 +35,18 @@ import xarray as xr
 from frontend.profile_manager import get_profile_manager
 from model.datasetzoo import get_dataset
 from model.datasetzoo.multimet import MultimetDataLoader
-from model.modelzoo import get_model, get_model_class, load_model_weights
+from model.modelzoo import (
+    BaseModel,
+    get_model,
+    get_model_class,
+    load_model_weights,
+)
 from model.training import get_loss_obj, get_optimizer, get_regularization_obj
 from model.utils.config import Config
-from utils.file_paths import SCALER_ZARR_NAME
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from model.datasetzoo.basedataset import BaseDataset
 
     from model.datautils.scaler import Scaler
@@ -47,13 +54,20 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-
-def _users_dir() -> Path:
-    return get_profile_manager().profiles_dir
 _METRIC_EPS = 1e-12
+_MIN_CSV_COLUMNS = 2
+_MIN_SAMPLE_DAYS = 4
+_MIN_METRIC_POINTS = 2
+_MAX_EPOCHS_PER_STEP = 200
+_MIN_SEQ_LENGTH = 8
+_MIN_SPLIT_RATIO = 0.2
+_MAX_SPLIT_RATIO = 0.9
+_M3S_TO_MM_DAY_FACTOR = 86.4
+
 _DATE_COLUMN_ALIASES = frozenset(
     {'date', 'time', 'datetime', 'timestamp', 'issue_date'}
 )
+_NA_STRINGS = frozenset({'', 'nan', 'null', 'none', 'na', 'n/a'})
 _SUPPORTED_DATA_TYPES = frozenset(
     {
         'precip',
@@ -65,6 +79,10 @@ _SUPPORTED_DATA_TYPES = frozenset(
         'discharge',
     }
 )
+_PRECIP_UNITS = frozenset({'mm/day', 'mm/d', 'mm'})
+_TEMP_UNITS = frozenset({'degc', '°c', 'c', 'celsius'})
+_STREAMFLOW_MM_UNITS = frozenset({'mm/day', 'mm/d', 'mm'})
+_STREAMFLOW_CMS_UNITS = frozenset({'m3/s', 'cms', 'm³/s'})
 
 PRETRAINED_MODEL_DIRS: tuple[tuple[str, str, Path], ...] = (
     (
@@ -74,11 +92,6 @@ PRETRAINED_MODEL_DIRS: tuple[tuple[str, str, Path], ...] = (
         / 'model'
         / 'pretrained-models'
         / 'google-floodhub-settings-110-epochs',
-    ),
-    (
-        '5-basin-example',
-        '5-Basin Tutorial Pretrained (5 Epochs, Regression)',
-        REPO_ROOT / 'model' / 'tutorial' / 'model-runs' / '5-basin-example',
     ),
 )
 
@@ -91,66 +104,172 @@ SUPPORTED_LOSSES: tuple[str, ...] = (
 )
 
 SUPPORTED_LR_STRATEGIES: tuple[str, ...] = (
-    'constant',
+    'ConstantLR',
     'StepLR',
     'ReduceLROnPlateau',
-    'ExponentialLR',
 )
 
 _SAFE_ID_RE = re.compile(r'[^a-zA-Z0-9._-]+')
 _LEAD_COL_RE = re.compile(
-    r'^(?:lead[_\s-]*|t\+|d\+|day[_\s-]*|\+)?(\d+)(?:d|day|days|h|hr|hrs)?$',
+    r'^(?:lead[_\s-]*|t\+|d\+|day[_\s-]*|\+)?([1-9]\d*)(?:d|day|days)?$',
     re.IGNORECASE,
+)
+_LEAD_LIKE_PREFIX_RE = re.compile(
+    r'^(?:lead|t\+|d\+|day|\+|-?\d)', re.IGNORECASE
 )
 
 
-def _sanitize_id(value: str, fallback: str = 'default') -> str:
-    cleaned = _SAFE_ID_RE.sub('_', (value or '').strip()).strip('._-')
-    return cleaned or fallback
+@dataclasses.dataclass(frozen=True)
+class _FinetuneConfigParams:
+    """Parameters used to construct a per-basin fine-tuning ``Config``."""
+
+    base_cfg: Config
+    base_run_dir: Path
+    run_dir: Path
+    zarr_root: Path
+    global_dyn_dir: Path
+    attr_path: Path
+    partition: dict[str, object]
+    lead_time: int
+    lr_val: float
+    loss_val: str
+    lr_strat_val: str
+    bs_val: int
+
+
+@dataclasses.dataclass(frozen=True)
+class _EpochEvalContext:
+    """Context bundle for evaluating train/validation hydrograph metrics."""
+
+    model: torch.nn.Module
+    train_eval_ds: BaseDataset
+    val_ds: BaseDataset
+    loss_obj: BaseLoss
+    scaler: Scaler
+    common_dates: pd.DatetimeIndex
+    obs_series: np.ndarray
+    train_mask: np.ndarray
+    val_mask: np.ndarray
+    lead_time: int
+    unfrozen_parts: list[str]
+
+
+def _require_safe_id(value: str, field_name: str) -> str:
+    raw = (value or '').strip()
+    if not raw:
+        raise ValueError(f'{field_name} must be a non-empty string.')
+    cleaned = _SAFE_ID_RE.sub('_', raw).strip('._-')
+    if not cleaned:
+        raise ValueError(
+            f'{field_name} {value!r} contains no valid identifier characters.'
+        )
+    return cleaned
+
+
+def _validate_finite_float(
+    value: object,
+    field_name: str,
+    *,
+    strictly_positive: bool = False,
+    min_val: float | None = None,
+    max_val: float | None = None,
+) -> float:
+    if isinstance(value, bool) or not isinstance(
+        value, (int, float, np.number)
+    ):
+        raise TypeError(f'{field_name} must be a finite number.')
+    fval = float(value)
+    if not math.isfinite(fval):
+        raise ValueError(f'{field_name} must be a finite number (got {value}).')
+    if strictly_positive and fval <= 0.0:
+        raise ValueError(f'{field_name} must be > 0 (got {fval}).')
+    if min_val is not None and fval < min_val:
+        raise ValueError(f'{field_name} must be >= {min_val} (got {fval}).')
+    if max_val is not None and fval > max_val:
+        raise ValueError(f'{field_name} must be <= {max_val} (got {fval}).')
+    return fval
+
+
+def _validate_positive_int(
+    value: object,
+    field_name: str,
+    *,
+    min_val: int = 1,
+    max_val: int | None = None,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f'{field_name} must be an integer.')
+    if value < min_val:
+        raise ValueError(f'{field_name} must be >= {min_val} (got {value}).')
+    if max_val is not None and value > max_val:
+        raise ValueError(f'{field_name} must be <= {max_val} (got {value}).')
+    return value
 
 
 def _session_root(username: str, basin_id: str, model_id: str) -> Path:
-    safe_user = _sanitize_id(username, 'default_user')
-    safe_basin = _sanitize_id(basin_id, 'custom_basin')
-    safe_model = _sanitize_id(model_id, 'google-floodhub-settings-110-epochs')
-    return (
-        _users_dir()
-        / safe_user
-        / 'finetune_workspace'
-        / safe_basin
-        / safe_model
-    )
+    profile_dir = get_profile_manager().get_profile_dir(username)
+    safe_basin = _require_safe_id(basin_id, 'basin_id')
+    safe_model = _require_safe_id(model_id, 'model_id')
+    return profile_dir / 'finetune_workspace' / safe_basin / safe_model
 
 
 def _basin_data_root(username: str, basin_id: str) -> Path:
-    safe_user = _sanitize_id(username, 'default_user')
-    safe_basin = _sanitize_id(basin_id, 'custom_basin')
-    return _users_dir() / safe_user / 'finetune_data' / safe_basin
+    profile_dir = get_profile_manager().get_profile_dir(username)
+    safe_basin = _require_safe_id(basin_id, 'basin_id')
+    return profile_dir / 'finetune_data' / safe_basin
+
+
+def _parse_checkpoint_epoch(path: Path) -> int:
+    match = re.search(r'model_epoch(\d+)\.pt$', path.name)
+    return int(match.group(1)) if match else -1
 
 
 def _find_latest_checkpoint(run_dir: Path) -> tuple[Path | None, int]:
-    checkpoints = sorted(run_dir.glob('model_epoch*.pt'))
-    if not checkpoints:
+    candidates = [
+        (_parse_checkpoint_epoch(p), p)
+        for p in run_dir.glob('model_epoch*.pt')
+        if _parse_checkpoint_epoch(p) >= 0
+    ]
+    if not candidates:
         return None, 0
-    latest = checkpoints[-1]
-    match = re.search(r'model_epoch(\d+)\.pt$', latest.name)
-    epoch = int(match.group(1)) if match else len(checkpoints)
+    candidates.sort(key=lambda item: (item[0], item[1].name))
+    epoch, latest = candidates[-1]
     return latest, epoch
 
 
 def _extract_product_groups(
-    inputs_cfg: dict[str, list[str]] | list[str] | None,
+    inputs_cfg: dict[str, list[str]] | list[str] | list[list[str]] | None,
 ) -> list[str]:
     if isinstance(inputs_cfg, dict):
         return list(inputs_cfg.keys())
     if isinstance(inputs_cfg, list):
         groups: list[str] = []
-        for feat in inputs_cfg:
-            prefix = feat.split('_', 1)[0]
-            if prefix not in groups:
-                groups.append(prefix)
+        for entry in inputs_cfg:
+            items = entry if isinstance(entry, list) else [entry]
+            for feat in items:
+                prefix = str(feat).split('_', 1)[0]
+                if prefix and prefix not in groups:
+                    groups.append(prefix)
         return groups
     return []
+
+
+def _normalize_lr_strategy_name(raw_strategy: object) -> str:
+    text = str(raw_strategy or '').strip()
+    if not text or text.lower() == 'constant':
+        return 'ConstantLR'
+    for canonical in SUPPORTED_LR_STRATEGIES:
+        if text.lower() == canonical.lower():
+            return canonical
+    return 'ConstantLR'
+
+
+def _default_head_component_name(component_names: Sequence[str]) -> str:
+    if 'head' in component_names:
+        return 'head'
+    if 'forecast_head' in component_names:
+        return 'forecast_head'
+    return component_names[-1] if component_names else 'head'
 
 
 def _inspect_model_from_run_dir(
@@ -159,7 +278,7 @@ def _inspect_model_from_run_dir(
     run_dir: Path,
     *,
     extra_local_products: dict[str, list[str]] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     cfg_path = run_dir / 'config.yml'
     ckpt_path, ckpt_epoch = _find_latest_checkpoint(run_dir)
     if not cfg_path.exists() or ckpt_path is None:
@@ -176,12 +295,10 @@ def _inspect_model_from_run_dir(
     cfg_dict['is_finetuning'] = False
 
     newly_init: set[tuple[str, str]] = set()
-    if extra_local_products:
-        hindcast_in = (
-            dict(cfg_dict.get('hindcast_inputs', {}))
-            if isinstance(cfg_dict.get('hindcast_inputs'), dict)
-            else {}
-        )
+    if extra_local_products and isinstance(
+        cfg_dict.get('hindcast_inputs'), dict
+    ):
+        hindcast_in = dict(cfg_dict.get('hindcast_inputs', {}))
         forecast_in = (
             dict(cfg_dict.get('forecast_inputs', {}))
             if isinstance(cfg_dict.get('forecast_inputs'), dict)
@@ -197,10 +314,14 @@ def _inspect_model_from_run_dir(
     inspect_cfg = Config(cfg_dict, dev_mode=True)
     model_cls = get_model_class(inspect_cfg.model)
     model = get_model(inspect_cfg)
-    if newly_init:
-        model._newly_initialized_embeddings = newly_init  # noqa: SLF001
+    if isinstance(model, BaseModel) and newly_init:
+        model.set_newly_initialized_embeddings(newly_init)
 
-    components = model.describe_tunable_components()
+    components = (
+        model.describe_tunable_components()
+        if isinstance(model, BaseModel)
+        else []
+    )
     total_params = sum(p.numel() for p in model.parameters())
 
     head_name = str(cfg.head).lower()
@@ -209,6 +330,12 @@ def _inspect_model_from_run_dir(
         if head_name in ('cmal', 'cmal_deterministic')
         else ['MSE', 'NSE', 'RMSE', 'WMSE']
     )
+    default_loss = (
+        'CMALLoss'
+        if head_name in ('cmal', 'cmal_deterministic')
+        else str(cfg.loss).upper()
+    )
+    tunable_names = model_cls.get_tunable_component_names()
 
     return {
         'model_id': model_id,
@@ -219,12 +346,12 @@ def _inspect_model_from_run_dir(
         'architecture': str(cfg.model),
         'architecture_class': model_cls.__name__,
         'head': str(cfg.head),
-        'default_loss': str(cfg.loss),
+        'default_loss': default_loss,
         'allowed_losses': allowed_losses,
         'supported_lr_strategies': list(SUPPORTED_LR_STRATEGIES),
         'default_learning_rate': float(cfg.initial_learning_rate or 5e-4),
-        'default_lr_strategy': str(
-            getattr(cfg, 'learning_rate_strategy', None) or 'constant'
+        'default_lr_strategy': _normalize_lr_strategy_name(
+            getattr(cfg, 'learning_rate_strategy', None)
         ),
         'default_batch_size': int(cfg.batch_size or 32),
         'seq_length': int(cfg.seq_length),
@@ -233,7 +360,7 @@ def _inspect_model_from_run_dir(
         'predict_last_n': int(cfg.predict_last_n or cfg.lead_time),
         'hidden_size': int(cfg.hidden_size),
         'total_parameters': int(total_params),
-        'tunable_component_names': model_cls.get_tunable_component_names(),
+        'tunable_component_names': tunable_names,
         'tunable_components': components,
         'base_hindcast_products': _extract_product_groups(cfg.hindcast_inputs),
         'base_forecast_products': _extract_product_groups(cfg.forecast_inputs),
@@ -243,10 +370,10 @@ def _inspect_model_from_run_dir(
 
 
 def list_finetune_models(
-    username: str = 'default_user',
-) -> list[dict[str, Any]]:
+    username: str = 'guest',
+) -> list[dict[str, object]]:
     """Return inventory of base models and dynamically inspected components."""
-    inventory: list[dict[str, Any]] = []
+    inventory: list[dict[str, object]] = []
     local_override = {
         'local_forcing': ['local_precipitation', 'local_temperature']
     }
@@ -261,8 +388,7 @@ def list_finetune_models(
             )
             inventory.append(info)
 
-    safe_user = _sanitize_id(username, 'default_user')
-    user_runs_dir = _users_dir() / safe_user / 'runs'
+    user_runs_dir = get_profile_manager().get_model_runs_dir(username)
     if user_runs_dir.exists():
         for run_dir in sorted(user_runs_dir.iterdir()):
             if not run_dir.is_dir():
@@ -282,20 +408,32 @@ def list_finetune_models(
 
 
 def _resolve_model_dir(
-    model_id: str, username: str = 'default_user'
+    model_id: str, username: str = 'guest'
 ) -> tuple[str, Path]:
+    clean_id = (model_id or '').strip()
+    if not clean_id:
+        raise ValueError('model_id must be a non-empty string.')
+
     for mid, label, run_dir in PRETRAINED_MODEL_DIRS:
-        if mid == model_id and (run_dir / 'config.yml').exists():
+        if mid == clean_id and (run_dir / 'config.yml').exists():
             return label, run_dir
-    if model_id.startswith('user_'):
-        safe_user = _sanitize_id(username, 'default_user')
-        run_name = model_id.removeprefix('user_')
-        candidate = _users_dir() / safe_user / 'runs' / run_name
-        if (candidate / 'config.yml').exists():
+
+    if clean_id.startswith('user_'):
+        run_name = clean_id.removeprefix('user_')
+        if (
+            not run_name
+            or '/' in run_name
+            or '\\' in run_name
+            or '..' in run_name
+        ):
+            raise ValueError(f'Invalid user model_id: {model_id!r}')
+        runs_dir = get_profile_manager().get_model_runs_dir(username).resolve()
+        candidate = (runs_dir / run_name).resolve()
+        if candidate.parent != runs_dir:
+            raise ValueError(f'Invalid user model_id: {model_id!r}')
+        if (candidate / 'config.yml').is_file():
             return f'User Model: {run_name}', candidate
-    for _mid, label, run_dir in PRETRAINED_MODEL_DIRS:
-        if (run_dir / 'config.yml').exists():
-            return label, run_dir
+
     raise FileNotFoundError(f'Unknown model_id: {model_id}')
 
 
@@ -303,7 +441,24 @@ def _identify_date_column(df: pd.DataFrame) -> str:
     for col in df.columns:
         if str(col).strip().lower() in _DATE_COLUMN_ALIASES:
             return str(col)
-    return str(df.columns[0])
+    raise ValueError(
+        'CSV must contain an explicit date column named one of '
+        f'{sorted(_DATE_COLUMN_ALIASES)}.'
+    )
+
+
+def _validate_numeric_column(series: pd.Series, col_name: str) -> None:
+    str_vals = series.dropna().astype(str).str.strip()
+    non_empty_mask = ~str_vals.str.lower().isin(_NA_STRINGS)
+    non_empty_vals = str_vals.loc[non_empty_mask]
+    if non_empty_vals.empty:
+        return
+    coerced = pd.to_numeric(non_empty_vals, errors='coerce')
+    if coerced.isna().any():
+        bad_sample = str(non_empty_vals.loc[coerced.isna()].iloc[0])
+        raise ValueError(
+            f"Column '{col_name}' contains non-numeric value {bad_sample!r}."
+        )
 
 
 def _extract_daily_dataframe(
@@ -314,34 +469,42 @@ def _extract_daily_dataframe(
         raise ValueError('Uploaded CSV content is empty.')
 
     df = pd.read_csv(io.StringIO(text))
-    if df.empty or len(df.columns) < 2:  # noqa: PLR2004
+    if df.empty or len(df.columns) < _MIN_CSV_COLUMNS:
         raise ValueError(
             'CSV must contain a date/time column and at least one data column.'
         )
 
     date_col = _identify_date_column(df)
     raw_dates = pd.to_datetime(df[date_col], errors='coerce', utc=False)
-    if raw_dates.isna().all():
+    if raw_dates.isna().any():
+        bad_count = int(raw_dates.isna().sum())
         raise ValueError(
-            f"Could not parse dates from column '{date_col}'. "
-            'Expected ISO dates (YYYY-MM-DD).'
+            f"Column '{date_col}' contains {bad_count} unparseable date "
+            'row(s). Expected ISO dates (YYYY-MM-DD).'
         )
     if hasattr(raw_dates.dt, 'tz') and raw_dates.dt.tz is not None:
         raw_dates = raw_dates.dt.tz_localize(None)
-    raw_dates = raw_dates.dt.floor('D')
-
-    valid_date_mask = ~raw_dates.isna()
-    df = df.loc[valid_date_mask].copy()
-    df['__parsed_date__'] = raw_dates.loc[valid_date_mask]
-    df = df.sort_values('__parsed_date__').drop_duplicates(
-        subset=['__parsed_date__'], keep='last'
-    )
+    if (raw_dates != raw_dates.dt.floor('D')).any():
+        raise ValueError(
+            'Sub-daily timestamps are not supported; expected daily dates '
+            '(YYYY-MM-DD).'
+        )
+    if raw_dates.duplicated().any():
+        raise ValueError(
+            'CSV contains duplicate dates; each daily timestamp must be unique.'
+        )
 
     data_cols = [
         str(c) for c in df.columns if c not in (date_col, '__parsed_date__')
     ]
     if not data_cols:
         raise ValueError('CSV contains no numeric data columns.')
+    for col in data_cols:
+        _validate_numeric_column(df[col], col)
+
+    df = df.copy()
+    df['__parsed_date__'] = raw_dates
+    df = df.sort_values('__parsed_date__')
 
     min_date = df['__parsed_date__'].iloc[0]
     max_date = df['__parsed_date__'].iloc[-1]
@@ -352,24 +515,48 @@ def _extract_daily_dataframe(
 
 def _extract_lead_columns(
     df: pd.DataFrame, data_cols: list[str]
-) -> tuple[dict[int, np.ndarray], list[np.ndarray]]:
+) -> dict[int, np.ndarray]:
     lead_map: dict[int, np.ndarray] = {}
-    unmatched_cols: list[np.ndarray] = []
-    for col in data_cols:
+    if len(data_cols) == 1:
+        col = data_cols[0]
         col_str = str(col).strip()
         vals = pd.to_numeric(df[col], errors='coerce').to_numpy(
             dtype=np.float32
         )
-        m = _LEAD_COL_RE.match(col_str)
-        if m:
-            lead_idx = int(m.group(1))
-            if lead_idx >= 1:
-                lead_map[lead_idx] = vals
-            elif lead_idx == 0 and 1 not in lead_map:
-                lead_map[1] = vals
+        match = _LEAD_COL_RE.match(col_str)
+        if match:
+            lead_idx = int(match.group(1))
+        elif _LEAD_LIKE_PREFIX_RE.match(col_str):
+            raise ValueError(
+                f"Invalid lead column name '{col_str}'. Expected 'lead_1' .. "
+                "'lead_N' with positive daily lead indices."
+            )
         else:
-            unmatched_cols.append(vals)
-    return lead_map, unmatched_cols
+            lead_idx = 1
+        lead_map[lead_idx] = vals
+        return lead_map
+
+    unmatched: list[str] = []
+    for col in data_cols:
+        col_str = str(col).strip()
+        match = _LEAD_COL_RE.match(col_str)
+        if not match:
+            unmatched.append(col_str)
+            continue
+        lead_idx = int(match.group(1))
+        if lead_idx in lead_map:
+            raise ValueError(
+                f'Duplicate column for lead_{lead_idx} in uploaded CSV.'
+            )
+        lead_map[lead_idx] = pd.to_numeric(df[col], errors='coerce').to_numpy(
+            dtype=np.float32
+        )
+    if unmatched:
+        raise ValueError(
+            f'Unrecognized lead column names {unmatched} in multi-column CSV. '
+            "Expected 'lead_1', 'lead_2', ..."
+        )
+    return lead_map
 
 
 def parse_time_by_lead_csv(
@@ -391,34 +578,21 @@ def parse_time_by_lead_csv(
     tuple[pd.DatetimeIndex, np.ndarray, list[int]]
         - ``dates``: Sorted daily ``DatetimeIndex`` of length ``T``.
         - ``matrix``: Float32 array of shape ``(T, target_lead_time)`` where
-          missing values are preserved as ``np.nan``.
-        - ``parsed_leads``: List of integer lead times found in the CSV columns.
+          un-uploaded leads and missing values remain ``np.nan``.
+        - ``parsed_leads``: Sorted list of positive integer lead times found.
     """
+    target_leads = _validate_positive_int(
+        target_lead_time, 'target_lead_time', min_val=1
+    )
     df, full_dates, data_cols = _extract_daily_dataframe(csv_content)
-    lead_map, unmatched_cols = _extract_lead_columns(df, data_cols)
+    lead_map = _extract_lead_columns(df, data_cols)
 
     num_dates = len(full_dates)
-    matrix = np.full((num_dates, target_lead_time), np.nan, dtype=np.float32)
-
-    if len(data_cols) == 1:
-        daily_series = (
-            lead_map[next(iter(lead_map))] if lead_map else unmatched_cols[0]
-        )
-        for k in range(target_lead_time):
-            if k == 0:
-                matrix[:, 0] = daily_series
-            elif k < num_dates:
-                matrix[:-k, k] = daily_series[k:]
-        parsed_leads = [1]
-    elif lead_map:
-        parsed_leads = sorted(lead_map.keys())
-        for k in range(1, target_lead_time + 1):
-            if k in lead_map:
-                matrix[:, k - 1] = lead_map[k]
-    else:
-        parsed_leads = list(range(1, len(unmatched_cols) + 1))
-        for idx, vals in enumerate(unmatched_cols[:target_lead_time]):
-            matrix[:, idx] = vals
+    matrix = np.full((num_dates, target_leads), np.nan, dtype=np.float32)
+    parsed_leads = sorted(lead_map.keys())
+    for k in parsed_leads:
+        if 1 <= k <= target_leads:
+            matrix[:, k - 1] = lead_map[k]
 
     return full_dates, matrix, parsed_leads
 
@@ -426,37 +600,58 @@ def parse_time_by_lead_csv(
 def _resolve_upload_key_and_units(
     dtype_clean: str,
     matrix: np.ndarray,
-    units: str,
+    units: str | None,
     area_km2: float | None,
 ) -> tuple[str, np.ndarray, str]:
+    u_clean = (units or '').strip().lower()
     if dtype_clean in ('precip', 'precipitation'):
+        if u_clean and u_clean not in _PRECIP_UNITS:
+            raise ValueError(
+                f"Unsupported precipitation units '{units}'. Expected 'mm/day'."
+            )
         if np.nanmin(matrix) < 0.0:
             raise ValueError('Precipitation values cannot be negative.')
         return 'precip', matrix, 'mm/day'
+
     if dtype_clean in ('temp', 'temperature'):
+        if u_clean and u_clean not in _TEMP_UNITS:
+            raise ValueError(
+                f"Unsupported temperature units '{units}'. Expected 'degC'."
+            )
         return 'temp', matrix, 'degC'
 
-    if units.strip().lower() in ('m3/s', 'cms', 'm³/s'):
-        if area_km2 is None or area_km2 <= 0:
+    if np.nanmin(matrix) < 0.0:
+        raise ValueError('Streamflow values cannot be negative.')
+
+    if not u_clean or u_clean in _STREAMFLOW_MM_UNITS:
+        return 'streamflow', matrix, 'mm/day'
+
+    if u_clean in _STREAMFLOW_CMS_UNITS:
+        if area_km2 is None:
             raise ValueError(
                 'Basin area_km2 (> 0) is required to convert streamflow '
                 'from m³/s to mm/day.'
             )
-        matrix = (matrix * (86.4 / float(area_km2))).astype(np.float32)
-    return 'streamflow', matrix, 'mm/day'
+        valid_area = _validate_finite_float(
+            area_km2, 'area_km2', strictly_positive=True
+        )
+        converted = (matrix * (_M3S_TO_MM_DAY_FACTOR / valid_area)).astype(
+            np.float32
+        )
+        return 'streamflow', converted, 'mm/day'
+
+    raise ValueError(
+        f"Unsupported streamflow units '{units}'. Expected 'mm/day' or 'm3/s'."
+    )
 
 
-def upload_finetune_csv(  # noqa: PLR0913
+def upload_finetune_csv(
     username: str,
     basin_id: str,
     data_type: str,
     csv_content: str,
-    *,
-    filename: str = '',
-    units: str = 'mm/day',
-    area_km2: float | None = None,
-    target_lead_time: int = 7,
-) -> dict[str, Any]:
+    **options: object,
+) -> dict[str, object]:
     """Parse and store per-basin local CSV data (precip, temp, or streamflow).
 
     Parameters
@@ -469,17 +664,35 @@ def upload_finetune_csv(  # noqa: PLR0913
         One of ``'precip'``, ``'temp'``, or ``'streamflow'``.
     csv_content : str
         Raw CSV string.
-    filename : str, optional
-        Original filename for display metadata.
-    units : str, optional
-        For streamflow: ``'mm/day'`` or ``'m3/s'`` (CMS). If ``'m3/s'`` and
-        ``area_km2`` is provided, converts to ``mm/day``
-        (``cms * 86.4 / area_km2``) to match Caravan/FloodHub scaler units.
-    area_km2 : float | None, optional
-        Basin drainage area in km² used when converting streamflow from m³/s.
-    target_lead_time : int, optional
-        Number of lead times to store in the local forcing dataset (default 7).
+    **options : object
+        Optional keyword arguments:
+        - ``filename`` (``str``): Original filename for display metadata.
+        - ``units`` (``str | None``): Physical units of the uploaded data.
+        - ``area_km2`` (``float | None``): Basin drainage area in km² when
+          converting streamflow from ``m3/s`` to ``mm/day``.
+        - ``target_lead_time`` (``int``): Number of lead times (default 7).
     """
+    allowed_opts = {'filename', 'units', 'area_km2', 'target_lead_time'}
+    unknown_opts = set(options) - allowed_opts
+    if unknown_opts:
+        raise TypeError(
+            f'Unexpected keyword argument(s): {sorted(unknown_opts)}'
+        )
+
+    filename = str(options.get('filename') or '')
+    raw_units = options.get('units')
+    units = str(raw_units) if raw_units is not None else None
+    raw_area = options.get('area_km2')
+    area_km2 = (
+        _validate_finite_float(raw_area, 'area_km2', strictly_positive=True)
+        if raw_area is not None
+        else None
+    )
+    raw_lead = options.get('target_lead_time', 7)
+    target_lead_time = _validate_positive_int(
+        raw_lead, 'target_lead_time', min_val=1
+    )
+
     dtype_clean = (data_type or '').strip().lower()
     if dtype_clean not in _SUPPORTED_DATA_TYPES:
         raise ValueError(
@@ -494,16 +707,18 @@ def upload_finetune_csv(  # noqa: PLR0913
     if not np.isfinite(matrix[:, 0]).any():
         raise ValueError(
             f'Uploaded {data_type} CSV contains no finite values '
-            'in the primary lead column.'
+            'in the primary lead_1 column.'
         )
 
     data_root = _basin_data_root(username, basin_id)
     raw_dir = data_root / 'raw_arrays'
     raw_dir.mkdir(parents=True, exist_ok=True)
     meta_path = data_root / 'upload_meta.json'
-    meta: dict[str, Any] = {}
-    if meta_path.exists():
-        meta = json.loads(meta_path.read_text())
+    meta: dict[str, object] = (
+        json.loads(meta_path.read_text(encoding='utf-8'))
+        if meta_path.exists()
+        else {}
+    )
 
     key, matrix, canonical_units = _resolve_upload_key_and_units(
         dtype_clean, matrix, units, area_km2
@@ -517,7 +732,7 @@ def upload_finetune_csv(  # noqa: PLR0913
     )
 
     finite_mask = np.isfinite(matrix[:, 0])
-    meta[key] = {
+    entry_meta: dict[str, object] = {
         'filename': filename or f'{key}.csv',
         'uploaded_at': datetime.now(UTC).isoformat(),
         'start_date': str(dates[0].strftime('%Y-%m-%d')),
@@ -527,126 +742,30 @@ def upload_finetune_csv(  # noqa: PLR0913
         'num_lead_columns': len(parsed_leads),
         'parsed_leads': parsed_leads,
         'units': canonical_units,
-        'original_units': units,
+        'original_units': units or canonical_units,
         'area_km2': area_km2,
         'min_val': float(np.nanmin(matrix[:, 0])),
         'max_val': float(np.nanmax(matrix[:, 0])),
         'mean_val': float(np.nanmean(matrix[:, 0])),
     }
+    meta[key] = entry_meta
     meta['basin_id'] = basin_id
-    meta_path.write_text(json.dumps(meta, indent=2))
+    meta_path.write_text(json.dumps(meta, indent=2), encoding='utf-8')
 
     _rebuild_local_zarr_stores(
         username, basin_id, target_lead_time=target_lead_time
     )
-    return meta[key]
+    return entry_meta
 
 
-def generate_sample_basin_csvs(
-    username: str,
-    basin_id: str,
-    *,
-    num_days: int = 240,
-    lead_time: int = 7,
-    seed: int = 42,
-) -> dict[str, Any]:
-    """Generate realistic synthetic ``time`` x ``lead_time`` CSVs."""
-    rng = np.random.default_rng(seed)
-    dates = pd.date_range('2022-01-01', periods=num_days, freq='D')
-    t_idx = np.arange(num_days, dtype=np.float64)
-
-    base_temp = 12.0 + 10.0 * np.sin(2.0 * np.pi * (t_idx - 80.0) / 365.0)
-    daily_temp = (base_temp + rng.normal(0.0, 2.2, size=num_days)).astype(
-        np.float32
-    )
-
-    rain_prob = 0.28 + 0.12 * np.sin(2.0 * np.pi * t_idx / 90.0)
-    wet_days = rng.uniform(0.0, 1.0, size=num_days) < rain_prob
-    daily_precip = np.where(
-        wet_days, rng.gamma(shape=1.6, scale=6.5, size=num_days), 0.0
-    ).astype(np.float32)
-
-    streamflow = np.zeros(num_days, dtype=np.float32)
-    soil_storage = 25.0
-    slow_store = 8.0
-    quick_store = 0.0
-    for i in range(num_days):
-        p = float(daily_precip[i])
-        et = max(0.2, 0.08 * max(0.0, float(daily_temp[i]) + 5.0))
-        soil_storage = max(0.0, min(80.0, soil_storage + 0.65 * p - et))
-        effective_rain = max(0.0, p * (0.15 + 0.55 * (soil_storage / 80.0)))
-        quick_store = 0.45 * quick_store + 0.75 * effective_rain
-        slow_store = 0.94 * slow_store + 0.25 * effective_rain
-        q = 0.35 * quick_store + 0.08 * slow_store + 0.4
-        streamflow[i] = max(0.05, q + float(rng.normal(0.0, 0.08)))
-
-    lead_cols = [f'lead_{k}' for k in range(1, lead_time + 1)]
-
-    def _to_matrix_csv(series: np.ndarray, noise_std: float) -> str:
-        rows: list[dict[str, Any]] = []
-        for i, d in enumerate(dates):
-            row: dict[str, Any] = {'date': d.strftime('%Y-%m-%d')}
-            for k in range(1, lead_time + 1):
-                src_idx = min(num_days - 1, i + k - 1)
-                val = float(series[src_idx])
-                if k > 1 and noise_std > 0:
-                    val += float(rng.normal(0.0, noise_std * math.sqrt(k - 1)))
-                    if series is daily_precip:
-                        val = max(0.0, val)
-                row[f'lead_{k}'] = round(val, 3)
-            rows.append(row)
-        df_out = pd.DataFrame(rows, columns=['date', *lead_cols])
-        return df_out.to_csv(index=False)
-
-    precip_csv = _to_matrix_csv(daily_precip, noise_std=0.35)
-    temp_csv = _to_matrix_csv(daily_temp, noise_std=0.25)
-    sf_df = pd.DataFrame(
-        {
-            'date': dates.strftime('%Y-%m-%d'),
-            'lead_1': np.round(streamflow, 3),
-        }
-    )
-    sf_csv = sf_df.to_csv(index=False)
-
-    upload_finetune_csv(
-        username,
-        basin_id,
-        'precip',
-        precip_csv,
-        filename=f'{basin_id}_precip_time_by_lead.csv',
-        target_lead_time=lead_time,
-    )
-    upload_finetune_csv(
-        username,
-        basin_id,
-        'temp',
-        temp_csv,
-        filename=f'{basin_id}_temp_time_by_lead.csv',
-        target_lead_time=lead_time,
-    )
-    upload_finetune_csv(
-        username,
-        basin_id,
-        'streamflow',
-        sf_csv,
-        filename=f'{basin_id}_streamflow.csv',
-        target_lead_time=lead_time,
-    )
-    return {
-        'precip_csv_preview': '\n'.join(precip_csv.splitlines()[:6]),
-        'temp_csv_preview': '\n'.join(temp_csv.splitlines()[:6]),
-        'streamflow_csv_preview': '\n'.join(sf_csv.splitlines()[:6]),
-    }
-
-
-def clear_finetune_data(username: str, basin_id: str) -> dict[str, Any]:
+def clear_finetune_data(username: str, basin_id: str) -> dict[str, object]:
     """Delete uploaded local CSVs and fine-tuning sessions for ``basin_id``."""
     data_root = _basin_data_root(username, basin_id)
     if data_root.exists():
         shutil.rmtree(data_root)
-    safe_user = _sanitize_id(username, 'default_user')
-    safe_basin = _sanitize_id(basin_id, 'custom_basin')
-    ws_dir = _users_dir() / safe_user / 'finetune_workspace' / safe_basin
+    profile_dir = get_profile_manager().get_profile_dir(username)
+    safe_basin = _require_safe_id(basin_id, 'basin_id')
+    ws_dir = profile_dir / 'finetune_workspace' / safe_basin
     if ws_dir.exists():
         shutil.rmtree(ws_dir)
     return {'status': 'cleared', 'basin_id': basin_id}
@@ -674,7 +793,7 @@ def _rebuild_local_zarr_stores(
     basin_id: str,
     *,
     target_lead_time: int = 7,
-) -> dict[str, Any] | None:
+) -> dict[str, object] | None:
     """Write ``LOCAL_FORCING/timeseries.zarr`` and ``streamflow.zarr``."""
     loaded = _load_uploaded_arrays(username, basin_id)
     if not all(k in loaded for k in ('precip', 'temp', 'streamflow')):
@@ -698,13 +817,6 @@ def _rebuild_local_zarr_stores(
         idx = dates.get_indexer(common_dates)
         valid = idx >= 0
         out[valid, :cols] = mat[idx[valid], :cols]
-        for k in range(cols, target_lead_time):
-            if k < num_dates:
-                out[:-k, k] = out[k:, 0]
-            out[-k:, k] = out[-1, 0]
-        for k in range(1, target_lead_time):
-            tail_nan = ~np.isfinite(out[:, k]) & np.isfinite(out[:, 0])
-            out[tail_nan, k] = out[tail_nan, 0]
         return out
 
     precip_mat = _align('precip')
@@ -759,7 +871,7 @@ def _rebuild_local_zarr_stores(
     sf_ds.to_zarr(sf_zarr_path, mode='w')
 
     basin_file = zarr_root / 'basin.txt'
-    basin_file.write_text(f'{basin_id}\n')
+    basin_file.write_text(f'{basin_id}\n', encoding='utf-8')
 
     return {
         'start_date': common_dates[0].strftime('%Y-%m-%d'),
@@ -768,14 +880,101 @@ def _rebuild_local_zarr_stores(
     }
 
 
-def _ensure_placeholder_global_stores(
+def _is_valid_zarr_dir(zarr_path: Path) -> bool:
+    if not zarr_path.is_dir():
+        return False
+    return any(
+        (zarr_path / marker).exists()
+        for marker in ('.zmetadata', '.zgroup', 'zarr.json')
+    )
+
+
+def _read_statics_zarr_for_basin(
+    statics_zarr: Path, basin_id: str
+) -> dict[str, float]:
+    if not _is_valid_zarr_dir(statics_zarr):
+        return {}
+    ds = xr.open_zarr(str(statics_zarr), decode_timedelta=False).load()
+    basin_coord = next(
+        (
+            c
+            for c in ('basin', 'basin_id', 'catchment_id', 'gauge_id')
+            if c in ds.coords
+        ),
+        None,
+    )
+    if basin_coord is None:
+        return {}
+    basin_vals = [str(b) for b in ds.coords[basin_coord].to_numpy()]
+    if basin_id not in basin_vals:
+        return {}
+    sub = ds.sel({basin_coord: basin_id})
+    out: dict[str, float] = {}
+    for var_name in ds.data_vars:
+        val = float(np.asarray(sub[var_name].values).item())
+        if math.isfinite(val):
+            out[str(var_name)] = val
+    return out
+
+
+def _read_statics_csv_for_basin(
+    csv_path: Path, basin_id: str
+) -> dict[str, float]:
+    if not csv_path.is_file() or csv_path.stat().st_size == 0:
+        return {}
+    df_csv = pd.read_csv(csv_path)
+    id_col = next(
+        (
+            c
+            for c in ('gauge_id', 'basin_id', 'catchment_id', 'basin', 'id')
+            if c in df_csv.columns
+        ),
+        None,
+    )
+    if id_col is None:
+        return {}
+    matches = df_csv[df_csv[id_col].astype(str) == basin_id]
+    if matches.empty:
+        return {}
+    row = matches.iloc[-1]
+    out: dict[str, float] = {}
+    for col in df_csv.columns:
+        if col == id_col or pd.isna(row[col]):
+            continue
+        val_num = pd.to_numeric(pd.Series([row[col]]), errors='coerce')
+        if not val_num.isna().iloc[0]:
+            fval = float(val_num.iloc[0])
+            if math.isfinite(fval):
+                out[str(col)] = fval
+    return out
+
+
+def _load_profile_static_attributes_for_basin(
+    username: str, basin_id: str
+) -> dict[str, float]:
+    """Load real static attributes for ``basin_id`` from the user profile."""
+    pm = get_profile_manager()
+    found = _read_statics_zarr_for_basin(
+        pm.get_statics_zarr_path(username), basin_id
+    )
+    for csv_dir in (
+        pm.get_caravan_attributes_dir(username),
+        pm.get_attributes_dir(username),
+    ):
+        if csv_dir.is_dir():
+            for csv_path in sorted(csv_dir.glob('*.csv')):
+                found.update(_read_statics_csv_for_basin(csv_path, basin_id))
+    return found
+
+
+def _prepare_finetune_zarr_stores(
+    username: str,
     base_cfg: Config,
-    base_run_dir: Path,
     basin_id: str,
     dates: pd.DatetimeIndex,
     zarr_root: Path,
 ) -> tuple[Path, Path]:
-    """Create local NaN placeholder Zarr stores for base products & statics."""
+    """Write NaN stores for unused global products and real basin statics."""
     global_dyn_dir = zarr_root / 'global_dyn_placeholders'
     lead_time = int(base_cfg.lead_time)
     lead_coords = pd.timedelta_range(start='1D', periods=lead_time, freq='D')
@@ -806,9 +1005,7 @@ def _ensure_placeholder_global_stores(
                 (1, len(dates), lead_time), np.nan, dtype=np.float32
             )
             ds = xr.Dataset(
-                dict.fromkeys(
-                    bands, (('basin', 'date', 'lead_time'), nan_arr)
-                ),
+                dict.fromkeys(bands, (('basin', 'date', 'lead_time'), nan_arr)),
                 coords={
                     'basin': [basin_id],
                     'date': dates,
@@ -826,19 +1023,30 @@ def _ensure_placeholder_global_stores(
     attr_path = zarr_root / 'attributes.zarr'
     if attr_path.exists():
         shutil.rmtree(attr_path)
-    base_scaler = xr.open_zarr(base_run_dir / SCALER_ZARR_NAME).load()
-    static_vars: dict[str, tuple[tuple[str], np.ndarray]] = {}
-    for attr_name in base_cfg.static_attributes or []:
-        if attr_name in base_scaler.data_vars:
-            center_val = float(
-                base_scaler[attr_name].sel(parameter='center').values
-            )
-        else:
-            center_val = 0.0
-        static_vars[attr_name] = (
-            ('basin',),
-            np.array([center_val], dtype=np.float32),
+
+    required_attrs = list(base_cfg.static_attributes or [])
+    basin_attrs = _load_profile_static_attributes_for_basin(username, basin_id)
+    if not basin_attrs and required_attrs:
+        raise FileNotFoundError(
+            f"Static attributes for basin '{basin_id}' were not found in "
+            f"profile '{username}'. Extract or upload catchment static "
+            'attributes before fine-tuning.'
         )
+
+    missing_attrs = [a for a in required_attrs if a not in basin_attrs]
+    if missing_attrs:
+        raise KeyError(
+            f"Basin '{basin_id}' is missing required static attribute(s): "
+            f'{missing_attrs}'
+        )
+
+    static_vars: dict[str, tuple[tuple[str], np.ndarray]] = {
+        attr_name: (
+            ('basin',),
+            np.array([basin_attrs[attr_name]], dtype=np.float32),
+        )
+        for attr_name in required_attrs
+    }
     attr_ds = xr.Dataset(static_vars, coords={'basin': [basin_id]})
     attr_ds.to_zarr(attr_path, mode='w')
     return global_dyn_dir, attr_path
@@ -850,44 +1058,70 @@ def compute_partition_dates(
     base_seq_length: int,
     lead_time: int,
     split_ratio: float = 0.7,
-) -> dict[str, Any]:
-    """Compute effective sequence length and train/validation date bounds."""
+    predict_last_n: int | None = None,
+) -> dict[str, object]:
+    """Compute effective sequence length and disjoint train/val date bounds."""
+    ratio_val = _validate_finite_float(
+        split_ratio,
+        'split_ratio',
+        min_val=_MIN_SPLIT_RATIO,
+        max_val=_MAX_SPLIT_RATIO,
+    )
+    lead_val = _validate_positive_int(lead_time, 'lead_time', min_val=1)
+    base_seq_val = _validate_positive_int(
+        base_seq_length, 'base_seq_length', min_val=1
+    )
+    pred_last = (
+        _validate_positive_int(predict_last_n, 'predict_last_n', min_val=1)
+        if predict_last_n is not None
+        else lead_val
+    )
+    target_horizon = max(lead_val, pred_last)
+    min_seq = max(_MIN_SEQ_LENGTH, target_horizon)
+
     num_days = len(dates)
-    min_required = lead_time + 14
+    min_required = min_seq + lead_val + target_horizon + (_MIN_SAMPLE_DAYS - 2)
     if num_days < min_required:
         raise ValueError(
             f'Uploaded record has {num_days} overlapping days, but at least '
-            f'{min_required} days are required for lead_time={lead_time}.'
+            f'{min_required} days are required for lead_time={lead_val} and '
+            f'disjoint train/validation windows.'
         )
 
-    max_allowed_seq = max(7, (num_days - lead_time - 6) // 2)
-    eff_seq_length = min(int(base_seq_length), int(max_allowed_seq))
+    max_allowed_seq = max(
+        min_seq, (num_days - lead_val - target_horizon - 4) // 2
+    )
+    eff_seq_length = min(base_seq_val, max_allowed_seq)
 
     first_sample_idx = eff_seq_length
-    last_sample_idx = num_days - lead_time
-    total_sample_days = last_sample_idx - first_sample_idx + 1
-    if total_sample_days < 4:  # noqa: PLR2004
+    last_sample_idx = num_days - lead_val
+    usable_sample_days = (last_sample_idx - first_sample_idx + 1) - (
+        target_horizon - 1
+    )
+    if usable_sample_days < _MIN_SAMPLE_DAYS:
         raise ValueError(
-            f'Insufficient valid sample dates ({total_sample_days}) after '
+            f'Insufficient valid sample dates ({usable_sample_days}) after '
             f'accounting for seq_length={eff_seq_length} and '
-            f'lead_time={lead_time}.'
+            f'lead_time={lead_val}.'
         )
 
-    clamped_ratio = max(0.2, min(0.9, float(split_ratio)))
     train_count = max(
         2,
         min(
-            total_sample_days - 2,
-            round(total_sample_days * clamped_ratio),
+            usable_sample_days - 2,
+            round(usable_sample_days * ratio_val),
         ),
     )
     split_sample_idx = first_sample_idx + train_count - 1
-    val_start_idx = split_sample_idx + 1
+    val_start_idx = split_sample_idx + target_horizon
+    val_count = last_sample_idx - val_start_idx + 1
 
     return {
         'effective_seq_length': eff_seq_length,
-        'lead_time': lead_time,
-        'split_ratio': round(train_count / total_sample_days, 3),
+        'base_seq_length': base_seq_val,
+        'seq_length_shortened': eff_seq_length < base_seq_val,
+        'lead_time': lead_val,
+        'split_ratio': round(train_count / usable_sample_days, 3),
         'record_start_date': dates[0].strftime('%Y-%m-%d'),
         'record_end_date': dates[-1].strftime('%Y-%m-%d'),
         'train_start_date': dates[first_sample_idx].strftime('%Y-%m-%d'),
@@ -896,7 +1130,7 @@ def compute_partition_dates(
         'validation_end_date': dates[last_sample_idx].strftime('%Y-%m-%d'),
         'split_date': dates[split_sample_idx].strftime('%Y-%m-%d'),
         'train_sample_days': int(train_count),
-        'validation_sample_days': int(total_sample_days - train_count),
+        'validation_sample_days': int(val_count),
         'total_days': int(num_days),
     }
 
@@ -905,7 +1139,7 @@ def _compute_metrics(
     obs: np.ndarray, sim: np.ndarray
 ) -> dict[str, float | None]:
     mask = np.isfinite(obs) & np.isfinite(sim)
-    if int(mask.sum()) < 2:  # noqa: PLR2004
+    if int(mask.sum()) < _MIN_METRIC_POINTS:
         return {'nse': None, 'kge': None, 'rmse': None}
     o = obs[mask].astype(np.float64)
     s = sim[mask].astype(np.float64)
@@ -947,27 +1181,29 @@ def _compute_metrics(
     }
 
 
-def _append_subkey_to_spec(spec: dict[str, Any], grp: str, sub: str) -> None:
+def _append_subkey_to_spec(spec: dict[str, object], grp: str, sub: str) -> None:
     existing = spec.get(grp)
     if existing is True:
         return
-    sub_list = list(existing) if isinstance(existing, list) else []
+    sub_list = [str(x) for x in existing] if isinstance(existing, list) else []
     if sub not in sub_list:
         sub_list.append(sub)
     spec[grp] = sub_list
 
 
 def _build_finetune_modules_spec(
-    selected_components: list[str] | dict[str, Any] | None,
+    selected_components: list[str] | dict[str, object] | None,
     model: torch.nn.Module,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Convert UI component selections into ``Config.finetune_modules``."""
     target_model = getattr(model, '_orig_mod', model)
-    newly_init: set[tuple[str, str]] = getattr(
-        target_model, '_newly_initialized_embeddings', set()
+    newly_init: set[tuple[str, str]] = (
+        target_model.get_newly_initialized_embeddings()
+        if isinstance(target_model, BaseModel)
+        else set()
     )
 
-    spec: dict[str, Any] = {}
+    spec: dict[str, object] = {}
     if isinstance(selected_components, dict):
         for k, v in selected_components.items():
             spec[str(k)] = v
@@ -982,11 +1218,14 @@ def _build_finetune_modules_spec(
             else:
                 spec[token] = True
 
+    if not spec:
+        module_parts = list(getattr(target_model, 'module_parts', []))
+        default_head = _default_head_component_name(module_parts)
+        spec[default_head] = True
+
     for grp, prod in sorted(newly_init):
         _append_subkey_to_spec(spec, grp, prod)
 
-    if not spec:
-        spec['head'] = True
     return spec
 
 
@@ -995,54 +1234,97 @@ def _unfreeze_module_dict(
     module_name: str,
     subspec: object,
 ) -> list[str]:
-    unfrozen: list[str] = []
-    keys_to_unfreeze: list[str] = []
-    if subspec is True:
+    if isinstance(subspec, bool):
+        if not subspec:
+            return []
         keys_to_unfreeze = list(module.keys())
-    elif isinstance(subspec, list):
-        keys_to_unfreeze = [str(k) for k in subspec if str(k) in module]
+    elif isinstance(subspec, str):
+        keys_to_unfreeze = [subspec]
+    elif isinstance(subspec, list) and all(isinstance(k, str) for k in subspec):
+        keys_to_unfreeze = [str(k) for k in subspec]
+    else:
+        raise ValueError(
+            f'Invalid value {subspec!r} for ModuleDict {module_name!r} in '
+            "'finetune_modules'; expected bool, str, or list[str]."
+        )
+
+    unfrozen: list[str] = []
     for sub_key in keys_to_unfreeze:
+        if sub_key not in module:
+            raise KeyError(
+                f"Submodule '{sub_key}' not found in '{module_name}'. "
+                f'Available keys: {list(module.keys())}'
+            )
         for p in module[sub_key].parameters():
             p.requires_grad = True
         unfrozen.append(f'{module_name}.{sub_key}')
     return unfrozen
 
 
+def _validate_newly_init_unfrozen(target_model: torch.nn.Module) -> None:
+    if not isinstance(target_model, BaseModel):
+        return
+    for grp, prod in sorted(target_model.get_newly_initialized_embeddings()):
+        group_obj = getattr(target_model, grp, None)
+        if (
+            isinstance(group_obj, torch.nn.ModuleDict)
+            and prod in group_obj
+            and not any(p.requires_grad for p in group_obj[prod].parameters())
+        ):
+            raise ValueError(
+                f"Newly initialized embedding '{grp}.{prod}' must be "
+                "unfrozen in 'finetune_modules'."
+            )
+
+
 def _apply_freeze_spec(
-    model: torch.nn.Module, finetune_modules: dict[str, Any]
+    model: torch.nn.Module, finetune_modules: dict[str, object]
 ) -> list[str]:
     """Freeze all parameters except those enabled in ``finetune_modules``."""
     target_model = getattr(model, '_orig_mod', model)
+    allowed_parts = set(getattr(target_model, 'module_parts', []))
     for param in target_model.parameters():
         param.requires_grad = False
 
     unfrozen: list[str] = []
     for module_name, subspec in finetune_modules.items():
-        module = getattr(target_model, module_name, None)
-        if module is None:
-            continue
-        if isinstance(module, torch.nn.ModuleDict):
-            unfrozen.extend(
-                _unfreeze_module_dict(module, module_name, subspec)
+        if module_name not in allowed_parts:
+            raise KeyError(
+                f"Unknown finetune module '{module_name}'. "
+                f'Available module_parts: {sorted(allowed_parts)}'
             )
-        elif subspec is True:
-            for p in module.parameters():
-                p.requires_grad = True
-            unfrozen.append(module_name)
+        module = getattr(target_model, module_name)
+        if isinstance(module, torch.nn.ModuleDict):
+            unfrozen.extend(_unfreeze_module_dict(module, module_name, subspec))
+        else:
+            if not isinstance(subspec, bool):
+                raise TypeError(
+                    f'Invalid value {subspec!r} for non-ModuleDict module '
+                    f"'{module_name}'; expected bool."
+                )
+            if subspec:
+                for p in module.parameters():
+                    p.requires_grad = True
+                unfrozen.append(module_name)
+
+    _validate_newly_init_unfrozen(target_model)
+    if not any(p.requires_grad for p in target_model.parameters()):
+        raise ValueError(
+            'At least one model component must be unfrozen for fine-tuning.'
+        )
     return unfrozen
 
 
-def _evaluate_dataset_predictions(  # noqa: PLR0913
+def _evaluate_dataset_predictions(
     model: torch.nn.Module,
     dataset: BaseDataset,
     loss_obj: BaseLoss,
     scaler: Scaler,
     full_dates: pd.DatetimeIndex,
-    *,
-    lead_time: int,
 ) -> tuple[float, list[float | None], list[float | None]]:
     """Evaluate loss and unscaled streamflow predictions across a dataset."""
     model.eval()
+    lead_time = int(getattr(dataset, 'lead_time', 1))
     loader = MultimetDataLoader(
         dataset,
         lazy_load=False,
@@ -1058,7 +1340,9 @@ def _evaluate_dataset_predictions(  # noqa: PLR0913
     sf_scale = float(sf_var.sel(parameter='scale').values)
 
     losses: list[float] = []
-    all_preds: list[np.ndarray] = []
+    sim_lead1: list[float | None] = [None] * len(full_dates)
+    sim_lead_last: list[float | None] = [None] * len(full_dates)
+    date_to_pos = {d: i for i, d in enumerate(full_dates)}
 
     with torch.no_grad():
         for xs_raw in loader:
@@ -1072,35 +1356,20 @@ def _evaluate_dataset_predictions(  # noqa: PLR0913
             unscaled = (
                 forecast_slice.detach().cpu().numpy() * sf_scale + sf_center
             )
-            all_preds.append(unscaled)
+            batch_dates = np.asarray(xs_raw['date'])
+            for row_idx in range(unscaled.shape[0]):
+                issue_date = pd.Timestamp(batch_dates[row_idx, -lead_time])
+                last_date = pd.Timestamp(batch_dates[row_idx, -1])
+                pos1 = date_to_pos.get(issue_date)
+                if pos1 is not None and np.isfinite(unscaled[row_idx, 0]):
+                    sim_lead1[pos1] = round(float(unscaled[row_idx, 0]), 4)
+                pos_last = date_to_pos.get(last_date)
+                if pos_last is not None and np.isfinite(unscaled[row_idx, -1]):
+                    sim_lead_last[pos_last] = round(
+                        float(unscaled[row_idx, -1]), 4
+                    )
 
     mean_loss = float(np.mean(losses)) if losses else float('nan')
-    sim_lead1: list[float | None] = [None] * len(full_dates)
-    sim_lead_last: list[float | None] = [None] * len(full_dates)
-
-    if not all_preds:
-        return mean_loss, sim_lead1, sim_lead_last
-
-    pred_matrix = np.concatenate(all_preds, axis=0)
-    date_to_pos = {d: i for i, d in enumerate(full_dates)}
-
-    ds_dates = pd.DatetimeIndex(dataset._dataset.coords['date'].values)  # noqa: SLF001
-    for sample_pos in range(len(dataset._sample_index)):  # noqa: SLF001
-        if sample_pos >= pred_matrix.shape[0]:
-            break
-        sample_idx = dataset._sample_index[sample_pos]  # noqa: SLF001
-        date_int_idx = int(sample_idx['date'])
-        issue_date = ds_dates[date_int_idx]
-        pos1 = date_to_pos.get(issue_date)
-        if pos1 is not None and np.isfinite(pred_matrix[sample_pos, 0]):
-            sim_lead1[pos1] = round(float(pred_matrix[sample_pos, 0]), 4)
-        last_lead_date = issue_date + pd.Timedelta(days=lead_time - 1)
-        pos_last = date_to_pos.get(last_lead_date)
-        if pos_last is not None and np.isfinite(pred_matrix[sample_pos, -1]):
-            sim_lead_last[pos_last] = round(
-                float(pred_matrix[sample_pos, -1]), 4
-            )
-
     return mean_loss, sim_lead1, sim_lead_last
 
 
@@ -1110,46 +1379,54 @@ def get_finetune_workspace_status(
     model_id: str = 'google-floodhub-settings-110-epochs',
     *,
     split_ratio: float | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Return full status of the per-basin fine-tuning workspace."""
+    _resolve_model_dir(model_id, username)
     models = list_finetune_models(username)
     selected_model = next(
         (m for m in models if m['model_id'] == model_id),
-        models[0] if models else None,
+        None,
     )
     if selected_model is None:
-        raise FileNotFoundError('No pretrained models found in repository.')
+        raise FileNotFoundError(f'Unknown model_id: {model_id}')
 
     data_root = _basin_data_root(username, basin_id)
     meta_path = data_root / 'upload_meta.json'
     upload_meta = (
-        json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        json.loads(meta_path.read_text(encoding='utf-8'))
+        if meta_path.exists()
+        else {}
     )
     loaded = _load_uploaded_arrays(username, basin_id)
     data_ready = all(k in loaded for k in ('precip', 'temp', 'streamflow'))
 
-    sess_dir = _session_root(username, basin_id, selected_model['model_id'])
+    sess_dir = _session_root(
+        username, basin_id, str(selected_model['model_id'])
+    )
     state_path = sess_dir / 'session_state.json'
-    session_state: dict[str, Any] = (
-        json.loads(state_path.read_text()) if state_path.exists() else {}
+    session_state: dict[str, object] = (
+        json.loads(state_path.read_text(encoding='utf-8'))
+        if state_path.exists()
+        else {}
     )
 
     active_split = (
-        float(split_ratio)
+        _validate_finite_float(
+            split_ratio,
+            'split_ratio',
+            min_val=_MIN_SPLIT_RATIO,
+            max_val=_MAX_SPLIT_RATIO,
+        )
         if split_ratio is not None
-        else float(session_state.get('split_ratio', 0.7))
+        else float(str(session_state.get('split_ratio', 0.7)))
     )
 
-    timeseries_payload: dict[str, Any] | None = None
-    partition_info: dict[str, Any] | None = None
+    timeseries_payload: dict[str, object] | None = None
+    partition_info: dict[str, object] | None = None
 
     if data_ready:
-        start_d = max(
-            loaded[k][0][0] for k in ('precip', 'temp', 'streamflow')
-        )
-        end_d = min(
-            loaded[k][0][-1] for k in ('precip', 'temp', 'streamflow')
-        )
+        start_d = max(loaded[k][0][0] for k in ('precip', 'temp', 'streamflow'))
+        end_d = min(loaded[k][0][-1] for k in ('precip', 'temp', 'streamflow'))
         common_dates = pd.date_range(start_d, end_d, freq='D')
 
         def _extract_lead1(key: str) -> list[float | None]:
@@ -1163,11 +1440,15 @@ def get_finetune_workspace_status(
                     out.append(None)
             return out
 
+        seq_len_val = int(str(selected_model['seq_length']))
+        lead_val = int(str(selected_model['lead_time']))
+        pred_last_val = int(str(selected_model['predict_last_n']))
         partition_info = compute_partition_dates(
             common_dates,
-            base_seq_length=int(selected_model['seq_length']),
-            lead_time=int(selected_model['lead_time']),
+            base_seq_length=seq_len_val,
+            lead_time=lead_val,
             split_ratio=active_split,
+            predict_last_n=pred_last_val,
         )
         timeseries_payload = {
             'dates': [d.strftime('%Y-%m-%d') for d in common_dates],
@@ -1175,6 +1456,11 @@ def get_finetune_workspace_status(
             'temp': _extract_lead1('temp'),
             'streamflow_obs': _extract_lead1('streamflow'),
         }
+
+    comp_names = selected_model.get('tunable_component_names')
+    default_head = _default_head_component_name(
+        comp_names if isinstance(comp_names, list) else ['head']
+    )
 
     return {
         'basin_id': basin_id,
@@ -1186,7 +1472,7 @@ def get_finetune_workspace_status(
         'partition': partition_info,
         'timeseries': timeseries_payload,
         'session': {
-            'current_epoch': int(session_state.get('current_epoch', 0)),
+            'current_epoch': int(str(session_state.get('current_epoch', 0))),
             'status': session_state.get(
                 'status', 'ready' if data_ready else 'awaiting_data'
             ),
@@ -1208,7 +1494,7 @@ def get_finetune_workspace_status(
                     'batch_size': selected_model['default_batch_size'],
                     'finetune_modules': [
                         'shared_embeddings_fc.local_forcing',
-                        'head',
+                        default_head,
                     ],
                 },
             ),
@@ -1220,8 +1506,9 @@ def reset_finetune_session(
     username: str,
     basin_id: str,
     model_id: str = 'google-floodhub-settings-110-epochs',
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Reset the interactive fine-tuning session back to Epoch 0."""
+    _resolve_model_dir(model_id, username)
     sess_dir = _session_root(username, basin_id, model_id)
     if sess_dir.exists():
         shutil.rmtree(sess_dir)
@@ -1232,7 +1519,16 @@ def _create_lr_scheduler(
     optimizer: torch.optim.Optimizer,
     lr_strat_val: str,
     ft_cfg: Config,
-) -> Any:  # noqa: ANN401
+) -> (
+    torch.optim.lr_scheduler.LRScheduler
+    | torch.optim.lr_scheduler.ReduceLROnPlateau
+):
+    if lr_strat_val == 'ConstantLR':
+        return torch.optim.lr_scheduler.ConstantLR(
+            optimizer,
+            factor=1.0,
+            total_iters=1,
+        )
     if lr_strat_val == 'StepLR':
         return torch.optim.lr_scheduler.StepLR(
             optimizer,
@@ -1246,87 +1542,65 @@ def _create_lr_scheduler(
             factor=float(ft_cfg.learning_rate_drop_factor or 0.5),
             patience=max(1, int(ft_cfg.learning_rate_epochs_drop or 3)),
         )
-    if lr_strat_val == 'ExponentialLR':
-        return torch.optim.lr_scheduler.ExponentialLR(
-            optimizer,
-            gamma=float(ft_cfg.learning_rate_drop_factor or 0.95),
-        )
-    return None
+    raise ValueError(f'Unsupported learning_rate_strategy: {lr_strat_val!r}')
 
 
-def _build_finetune_config(  # noqa: PLR0913, PLR0917
-    base_cfg: Config,
-    base_run_dir: Path,
-    run_dir: Path,
-    zarr_root: Path,
-    global_dyn_dir: Path,
-    attr_path: Path,
-    partition: dict[str, Any],
-    *,
-    lead_time: int,
-    lr_val: float,
-    loss_val: str,
-    lr_strat_val: str,
-    bs_val: int,
-) -> Config:
-    eff_seq = int(partition['effective_seq_length'])
-    cfg_dict = base_cfg.as_dict().copy()
+def _build_finetune_config(params: _FinetuneConfigParams) -> Config:
+    eff_seq = int(str(params.partition['effective_seq_length']))
+    cfg_dict = params.base_cfg.as_dict().copy()
     cfg_dict['is_finetuning'] = True
-    cfg_dict['base_run_dir'] = str(base_run_dir)
-    cfg_dict['run_dir'] = str(run_dir)
+    cfg_dict['base_run_dir'] = str(params.base_run_dir)
+    cfg_dict['run_dir'] = str(params.run_dir)
     cfg_dict['compile'] = False
     cfg_dict['device'] = 'cpu'
     cfg_dict['num_workers'] = 0
     cfg_dict['lazy_load'] = False
     cfg_dict['seq_length'] = eff_seq
     cfg_dict['forecast_overlap'] = eff_seq
-    cfg_dict['lead_time'] = lead_time
-    cfg_dict['predict_last_n'] = lead_time
-    cfg_dict['initial_learning_rate'] = lr_val
-    cfg_dict['loss'] = loss_val
-    cfg_dict['learning_rate_strategy'] = lr_strat_val
-    if lr_strat_val in ('StepLR', 'ReduceLROnPlateau'):
-        default_drop = 5 if lr_strat_val == 'StepLR' else 3
+    cfg_dict['lead_time'] = params.lead_time
+    base_pred_last = int(params.base_cfg.predict_last_n or params.lead_time)
+    cfg_dict['predict_last_n'] = min(eff_seq, base_pred_last)
+    cfg_dict['initial_learning_rate'] = params.lr_val
+    cfg_dict['loss'] = params.loss_val
+    cfg_dict['learning_rate_strategy'] = params.lr_strat_val
+    if params.lr_strat_val in ('StepLR', 'ReduceLROnPlateau'):
+        default_drop = 5 if params.lr_strat_val == 'StepLR' else 3
         cfg_dict['learning_rate_epochs_drop'] = max(
             1, int(cfg_dict.get('learning_rate_epochs_drop') or default_drop)
         )
         cfg_dict['learning_rate_drop_factor'] = float(
             cfg_dict.get('learning_rate_drop_factor') or 0.5
         )
-    elif lr_strat_val == 'ExponentialLR':
-        cfg_dict['learning_rate_drop_factor'] = float(
-            cfg_dict.get('learning_rate_drop_factor') or 0.95
-        )
-    cfg_dict['batch_size'] = bs_val
+    cfg_dict['batch_size'] = params.bs_val
     cfg_dict['nan_handling_method'] = 'masked_mean'
     cfg_dict['union_mapping'] = {}
 
-    basin_file = zarr_root / 'basin.txt'
+    basin_file = params.zarr_root / 'basin.txt'
     cfg_dict['train_basin_file'] = str(basin_file)
     cfg_dict['validation_basin_file'] = str(basin_file)
     cfg_dict['test_basin_file'] = str(basin_file)
 
     fmt = '%d/%m/%Y'
     cfg_dict['train_start_date'] = pd.Timestamp(
-        partition['train_start_date']
+        str(params.partition['train_start_date'])
     ).strftime(fmt)
     cfg_dict['train_end_date'] = pd.Timestamp(
-        partition['train_end_date']
+        str(params.partition['train_end_date'])
     ).strftime(fmt)
     cfg_dict['validation_start_date'] = pd.Timestamp(
-        partition['validation_start_date']
+        str(params.partition['validation_start_date'])
     ).strftime(fmt)
     cfg_dict['validation_end_date'] = pd.Timestamp(
-        partition['validation_end_date']
+        str(params.partition['validation_end_date'])
     ).strftime(fmt)
     cfg_dict['test_start_date'] = cfg_dict['validation_start_date']
     cfg_dict['test_end_date'] = cfg_dict['validation_end_date']
 
-    cfg_dict['statics_data_dir'] = str(attr_path)
-    cfg_dict['targets_data_dir'] = str(zarr_root / 'streamflow.zarr')
+    cfg_dict['statics_data_dir'] = str(params.attr_path)
+    cfg_dict['targets_data_dir'] = str(params.zarr_root / 'streamflow.zarr')
     cfg_dict['dynamics_data_dir'] = [
-        str(global_dyn_dir),
-        str(zarr_root / 'local_dyn'),
+        str(params.global_dyn_dir),
+        str(params.zarr_root / 'local_dyn'),
     ]
 
     hindcast_in = dict(cfg_dict.get('hindcast_inputs', {}))
@@ -1339,39 +1613,26 @@ def _build_finetune_config(  # noqa: PLR0913, PLR0917
     return Config(cfg_dict, dev_mode=True)
 
 
-def _evaluate_and_build_epoch_record(  # noqa: PLR0913, PLR0917
+def _evaluate_and_build_epoch_record(
+    ctx: _EpochEvalContext,
     epoch: int,
     label: str,
-    model: torch.nn.Module,
-    train_eval_ds: BaseDataset,
-    val_ds: BaseDataset,
-    loss_obj: BaseLoss,
-    scaler: Scaler,
-    common_dates: pd.DatetimeIndex,
-    obs_series: np.ndarray,
-    train_mask: np.ndarray,
-    val_mask: np.ndarray,
-    *,
-    lead_time: int,
     learning_rate: float,
-    unfrozen_parts: list[str],
     override_train_loss: float | None = None,
-) -> tuple[dict[str, Any], float]:
+) -> tuple[dict[str, object], float]:
     tr_loss, tr_sim1, tr_sim_last = _evaluate_dataset_predictions(
-        model,
-        train_eval_ds,
-        loss_obj,
-        scaler,
-        common_dates,
-        lead_time=lead_time,
+        ctx.model,
+        ctx.train_eval_ds,
+        ctx.loss_obj,
+        ctx.scaler,
+        ctx.common_dates,
     )
     val_loss, val_sim1, val_sim_last = _evaluate_dataset_predictions(
-        model,
-        val_ds,
-        loss_obj,
-        scaler,
-        common_dates,
-        lead_time=lead_time,
+        ctx.model,
+        ctx.val_ds,
+        ctx.loss_obj,
+        ctx.scaler,
+        ctx.common_dates,
     )
     if override_train_loss is not None:
         tr_loss = override_train_loss
@@ -1388,9 +1649,13 @@ def _evaluate_and_build_epoch_record(  # noqa: PLR0913, PLR0917
         [np.nan if x is None else x for x in combined_sim1],
         dtype=np.float32,
     )
-    tr_metrics = _compute_metrics(obs_series[train_mask], sim_arr[train_mask])
-    val_metrics = _compute_metrics(obs_series[val_mask], sim_arr[val_mask])
-    record = {
+    tr_metrics = _compute_metrics(
+        ctx.obs_series[ctx.train_mask], sim_arr[ctx.train_mask]
+    )
+    val_metrics = _compute_metrics(
+        ctx.obs_series[ctx.val_mask], sim_arr[ctx.val_mask]
+    )
+    record: dict[str, object] = {
         'epoch': epoch,
         'label': label,
         'train_loss': round(tr_loss, 5) if math.isfinite(tr_loss) else None,
@@ -1402,7 +1667,7 @@ def _evaluate_and_build_epoch_record(  # noqa: PLR0913, PLR0917
         'train_rmse': tr_metrics['rmse'],
         'val_rmse': val_metrics['rmse'],
         'learning_rate': learning_rate,
-        'unfrozen_components': unfrozen_parts,
+        'unfrozen_components': ctx.unfrozen_parts,
         'streamflow_sim_lead1': combined_sim1,
         'streamflow_sim_lead_last': combined_sim_last,
     }
@@ -1414,214 +1679,258 @@ def _train_single_epoch(
     train_loader: MultimetDataLoader,
     optimizer: torch.optim.Optimizer,
     loss_obj: BaseLoss,
-    clip_grad_norm: float | None,
+    ft_cfg: Config,
 ) -> float:
     model.train()
+    clip_grad_norm = ft_cfg.clip_gradient_norm
+    allow_nan = int(ft_cfg.allow_subsequent_nan_losses or 0)
+    nan_count = 0
     batch_losses: list[float] = []
+
     for xs_raw in train_loader:
-        optimizer.zero_grad()
         xs = model.pre_model_hook(xs_raw, is_train=True)
         output = model(xs)
         loss_tensor, _ = loss_obj(output, xs)
+        if not torch.isfinite(loss_tensor):
+            nan_count += 1
+            if nan_count > allow_nan:
+                raise RuntimeError(
+                    f'Loss was non-finite for {nan_count} consecutive batch '
+                    'step(s). Stopped fine-tuning.'
+                )
+            continue
+        nan_count = 0
+        optimizer.zero_grad()
         loss_tensor.backward()
         if clip_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
         optimizer.step()
-        if torch.isfinite(loss_tensor):
-            batch_losses.append(float(loss_tensor.item()))
-    return float(np.mean(batch_losses)) if batch_losses else float('nan')
+        batch_losses.append(float(loss_tensor.item()))
+
+    if not batch_losses:
+        raise RuntimeError('All training batches produced non-finite loss.')
+    return float(np.mean(batch_losses))
 
 
-def _step_lr_scheduler(lr_scheduler: object, val_loss: float) -> None:
-    if lr_scheduler is None:
-        return
+def _step_lr_scheduler(
+    lr_scheduler: (
+        torch.optim.lr_scheduler.LRScheduler
+        | torch.optim.lr_scheduler.ReduceLROnPlateau
+    ),
+    val_loss: float,
+) -> None:
     if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
         if math.isfinite(val_loss):
             lr_scheduler.step(val_loss)
-    elif hasattr(lr_scheduler, 'step'):
-        lr_scheduler.step()  # type: ignore[union-attr]
-
-
-def run_finetune_epochs(  # noqa: C901, PLR0913, PLR0915
-    username: str,
-    basin_id: str,
-    model_id: str,
-    *,
-    epochs: int = 5,
-    learning_rate: float | None = None,
-    loss: str | None = None,
-    learning_rate_strategy: str | None = None,
-    batch_size: int | None = None,
-    finetune_modules: list[str] | dict[str, Any] | None = None,
-    split_ratio: float = 0.7,
-) -> dict[str, Any]:
-    """Run ``epochs`` of interactive per-basin fine-tuning and pause."""
-    if epochs < 1 or epochs > 200:  # noqa: PLR2004
-        raise ValueError('epochs per step must be between 1 and 200.')
-
-    _, base_run_dir = _resolve_model_dir(model_id, username)
-    base_ckpt, _ = _find_latest_checkpoint(base_run_dir)
-    if base_ckpt is None:
-        raise FileNotFoundError(f'No checkpoint found in {base_run_dir}.')
-
-    base_cfg = Config(base_run_dir / 'config.yml', dev_mode=True)
-    lead_time = int(base_cfg.lead_time)
-
-    zarr_meta = _rebuild_local_zarr_stores(
-        username, basin_id, target_lead_time=lead_time
-    )
-    if zarr_meta is None:
-        raise ValueError(
-            'Please upload local precipitation, temperature, and streamflow '
-            'CSVs before fine-tuning.'
-        )
-
-    loaded = _load_uploaded_arrays(username, basin_id)
-    start_d = max(loaded[k][0][0] for k in ('precip', 'temp', 'streamflow'))
-    end_d = min(loaded[k][0][-1] for k in ('precip', 'temp', 'streamflow'))
-    common_dates = pd.date_range(start_d, end_d, freq='D')
-
-    partition = compute_partition_dates(
-        common_dates,
-        base_seq_length=int(base_cfg.seq_length),
-        lead_time=lead_time,
-        split_ratio=split_ratio,
-    )
-
-    data_root = _basin_data_root(username, basin_id)
-    zarr_root = data_root / 'zarr_store'
-    global_dyn_dir, attr_path = _ensure_placeholder_global_stores(
-        base_cfg, base_run_dir, basin_id, common_dates, zarr_root
-    )
-
-    sess_dir = _session_root(username, basin_id, model_id)
-    run_dir = sess_dir / 'run'
-    run_dir.mkdir(parents=True, exist_ok=True)
-    state_path = sess_dir / 'session_state.json'
-    session_state: dict[str, Any] = (
-        json.loads(state_path.read_text()) if state_path.exists() else {}
-    )
-
-    prev_split = session_state.get('split_date')
-    if prev_split is not None and prev_split != partition['split_date']:
-        shutil.rmtree(run_dir)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        session_state = {}
-
-    lr_val = float(
-        learning_rate
-        if learning_rate is not None
-        else (base_cfg.initial_learning_rate or 5e-4)
-    )
-    head_name = str(base_cfg.head).lower()
-    loss_val = str(loss) if loss is not None else str(base_cfg.loss)
-    if (
-        head_name in ('cmal', 'cmal_deterministic')
-        and loss_val.lower() != 'cmalloss'
-    ):
-        loss_val = 'CMALLoss'
-
-    lr_strat_val = str(
-        learning_rate_strategy
-        if learning_rate_strategy is not None
-        else (getattr(base_cfg, 'learning_rate_strategy', None) or 'constant')
-    )
-    if lr_strat_val not in SUPPORTED_LR_STRATEGIES:
-        lr_strat_val = 'constant'
-
-    bs_val = int(
-        batch_size if batch_size is not None else (base_cfg.batch_size or 16)
-    )
-
-    ft_cfg = _build_finetune_config(
-        base_cfg,
-        base_run_dir,
-        run_dir,
-        zarr_root,
-        global_dyn_dir,
-        attr_path,
-        partition,
-        lead_time=lead_time,
-        lr_val=lr_val,
-        loss_val=loss_val,
-        lr_strat_val=lr_strat_val,
-        bs_val=bs_val,
-    )
-
-    train_ds = get_dataset(
-        cfg=ft_cfg, is_train=True, period='train', compute_scaler=False
-    )
-    val_ds = get_dataset(
-        cfg=ft_cfg, is_train=False, period='validation', compute_scaler=False
-    )
-    train_eval_ds = get_dataset(
-        cfg=ft_cfg, is_train=False, period='train', compute_scaler=False
-    )
-
-    torch.manual_seed(int(ft_cfg.seed or 42))
-    model = get_model(ft_cfg).to(torch.device('cpu'))
-    latest_sess_ckpt, current_epoch = _find_latest_checkpoint(run_dir)
-    if latest_sess_ckpt is not None and current_epoch > 0:
-        load_model_weights(
-            model, latest_sess_ckpt, device='cpu', allow_new_embeddings=False
-        )
-        model._newly_initialized_embeddings = {  # noqa: SLF001
-            ('shared_embeddings_fc', 'local_forcing')
-        }
     else:
-        current_epoch = 0
-        load_model_weights(
-            model, base_ckpt, device='cpu', allow_new_embeddings=True
-        )
+        lr_scheduler.step()
 
-    ft_spec = _build_finetune_modules_spec(finetune_modules, model)
-    unfrozen_parts = _apply_freeze_spec(model, ft_spec)
-    ft_cfg.update_config({'finetune_modules': ft_spec})
-    cfg_yml_path = run_dir / 'config.yml'
-    if cfg_yml_path.exists():
-        cfg_yml_path.unlink()
-    ft_cfg.dump_config(folder=run_dir)
 
-    loss_obj = get_loss_obj(ft_cfg)
-    if ft_cfg.regularization:
-        loss_obj.set_regularization_terms(get_regularization_obj(cfg=ft_cfg))
-
-    optimizer = get_optimizer(model, ft_cfg)
-    lr_scheduler = _create_lr_scheduler(optimizer, lr_strat_val, ft_cfg)
-
-    sf_dates, sf_mat = loaded['streamflow']
-    sf_indexer = sf_dates.get_indexer(common_dates)
-    obs_series = np.full(len(common_dates), np.nan, dtype=np.float32)
-    valid_obs = sf_indexer >= 0
-    obs_series[valid_obs] = sf_mat[sf_indexer[valid_obs], 0]
-
-    train_mask = (
-        common_dates >= pd.Timestamp(partition['train_start_date'])
-    ) & (common_dates <= pd.Timestamp(partition['train_end_date']))
-    val_mask = (
-        common_dates >= pd.Timestamp(partition['validation_start_date'])
-    ) & (common_dates <= pd.Timestamp(partition['validation_end_date']))
-
-    epoch_history: list[dict[str, Any]] = list(
-        session_state.get('epoch_history', [])
+def _resolve_and_validate_loss(requested_loss: object, base_cfg: Config) -> str:
+    head_name = str(base_cfg.head).lower()
+    allowed = (
+        ('CMALLoss',)
+        if head_name in ('cmal', 'cmal_deterministic')
+        else ('MSE', 'NSE', 'RMSE', 'WMSE')
     )
+    if requested_loss is None or str(requested_loss).strip() == '':
+        return allowed[0] if len(allowed) == 1 else str(base_cfg.loss).upper()
+    raw = str(requested_loss).strip()
+    for candidate in allowed:
+        if raw.lower() == candidate.lower():
+            return candidate
+    raise ValueError(
+        f"Loss '{raw}' is not compatible with model head '{base_cfg.head}'. "
+        f'Allowed losses: {list(allowed)}'
+    )
+
+
+def _resolve_and_validate_lr_strategy(
+    requested_strategy: object, base_cfg: Config
+) -> str:
+    if requested_strategy is None or str(requested_strategy).strip() == '':
+        return _normalize_lr_strategy_name(
+            getattr(base_cfg, 'learning_rate_strategy', None)
+        )
+    raw = str(requested_strategy).strip()
+    for canonical in SUPPORTED_LR_STRATEGIES:
+        if raw.lower() == canonical.lower():
+            return canonical
+    raise ValueError(
+        f"Unsupported learning_rate_strategy '{raw}'. "
+        f'Supported strategies: {list(SUPPORTED_LR_STRATEGIES)}'
+    )
+
+
+def _validate_uploaded_forecast_leads(
+    loaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]],
+    lead_time: int,
+) -> None:
+    for key in ('precip', 'temp'):
+        _, mat = loaded[key]
+        missing_leads = [
+            k + 1
+            for k in range(lead_time)
+            if k >= mat.shape[1] or not np.isfinite(mat[:, k]).any()
+        ]
+        if missing_leads:
+            raise ValueError(
+                f"Uploaded '{key}' CSV is missing finite values for forecast "
+                f'lead column(s) {missing_leads} required by model '
+                f'lead_time={lead_time}.'
+            )
+
+
+def _save_optimizer_state(
+    run_dir: Path,
+    epoch: int,
+    optimizer: torch.optim.Optimizer,
+    lr_scheduler: (
+        torch.optim.lr_scheduler.LRScheduler
+        | torch.optim.lr_scheduler.ReduceLROnPlateau
+    ),
+    unfrozen_parts: list[str],
+) -> None:
+    opt_path = run_dir / f'optimizer_state_epoch{epoch:03d}.pt'
+    payload = {
+        'optimizer': optimizer.state_dict(),
+        'lr_scheduler': lr_scheduler.state_dict(),
+        'unfrozen_parts': list(unfrozen_parts),
+        'lr_scheduler_cls': type(lr_scheduler).__name__,
+    }
+    torch.save(payload, opt_path)
+
+
+def _restore_optimizer_state(
+    run_dir: Path,
+    epoch: int,
+    optimizer: torch.optim.Optimizer,
+    lr_scheduler: (
+        torch.optim.lr_scheduler.LRScheduler
+        | torch.optim.lr_scheduler.ReduceLROnPlateau
+    ),
+    unfrozen_parts: list[str],
+) -> None:
+    opt_path = run_dir / f'optimizer_state_epoch{epoch:03d}.pt'
+    if not opt_path.is_file():
+        return
+    target_lr = float(optimizer.param_groups[0]['lr'])
+    saved = torch.load(str(opt_path), map_location='cpu', weights_only=True)
+    if not isinstance(saved, dict):
+        return
+    if saved.get('unfrozen_parts') == list(unfrozen_parts):
+        opt_state = saved.get('optimizer')
+        if isinstance(opt_state, dict):
+            optimizer.load_state_dict(opt_state)
+            for group in optimizer.param_groups:
+                group['lr'] = target_lr
+        if saved.get('lr_scheduler_cls') == type(lr_scheduler).__name__:
+            sched_state = saved.get('lr_scheduler')
+            if isinstance(sched_state, dict):
+                lr_scheduler.load_state_dict(sched_state)
+
+
+def _parse_run_options(
+    options: dict[str, object], base_cfg: Config
+) -> tuple[
+    int,
+    float,
+    str,
+    str,
+    int,
+    list[str] | dict[str, object] | None,
+    float,
+]:
+    allowed_opts = {
+        'epochs',
+        'learning_rate',
+        'loss',
+        'learning_rate_strategy',
+        'batch_size',
+        'finetune_modules',
+        'split_ratio',
+    }
+    unknown = set(options) - allowed_opts
+    if unknown:
+        raise TypeError(f'Unexpected keyword argument(s): {sorted(unknown)}')
+
+    epochs = _validate_positive_int(
+        options.get('epochs', 5),
+        'epochs',
+        min_val=1,
+        max_val=_MAX_EPOCHS_PER_STEP,
+    )
+    raw_lr = options.get('learning_rate')
+    lr_val = (
+        _validate_finite_float(raw_lr, 'learning_rate', strictly_positive=True)
+        if raw_lr is not None
+        else float(base_cfg.initial_learning_rate or 5e-4)
+    )
+    loss_val = _resolve_and_validate_loss(options.get('loss'), base_cfg)
+    lr_strat_val = _resolve_and_validate_lr_strategy(
+        options.get('learning_rate_strategy'), base_cfg
+    )
+    raw_bs = options.get('batch_size')
+    bs_val = (
+        _validate_positive_int(raw_bs, 'batch_size', min_val=1)
+        if raw_bs is not None
+        else int(base_cfg.batch_size or 16)
+    )
+    raw_modules = options.get('finetune_modules')
+    if raw_modules is not None and not isinstance(raw_modules, (list, dict)):
+        raise TypeError('finetune_modules must be a list or dict.')
+    ft_modules: list[str] | dict[str, object] | None = (
+        [str(x) for x in raw_modules]
+        if isinstance(raw_modules, list)
+        else (dict(raw_modules) if isinstance(raw_modules, dict) else None)
+    )
+    split_ratio = _validate_finite_float(
+        options.get('split_ratio', 0.7),
+        'split_ratio',
+        min_val=_MIN_SPLIT_RATIO,
+        max_val=_MAX_SPLIT_RATIO,
+    )
+    return (
+        epochs,
+        lr_val,
+        loss_val,
+        lr_strat_val,
+        bs_val,
+        ft_modules,
+        split_ratio,
+    )
+
+
+def _execute_epoch_training_steps(
+    eval_ctx: _EpochEvalContext,
+    train_ds: BaseDataset,
+    ft_cfg: Config,
+    current_epoch: int,
+    epoch_history: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    run_dir = Path(str(ft_cfg.run_dir))
+    lr_val = float(ft_cfg.initial_learning_rate)
+    lr_strat_val = str(ft_cfg.learning_rate_strategy)
+    bs_val = int(ft_cfg.batch_size)
+    epochs = int(ft_cfg.epochs)
+
+    optimizer = get_optimizer(eval_ctx.model, ft_cfg)
+    lr_scheduler = _create_lr_scheduler(optimizer, lr_strat_val, ft_cfg)
+    if current_epoch > 0:
+        _restore_optimizer_state(
+            run_dir,
+            current_epoch,
+            optimizer,
+            lr_scheduler,
+            eval_ctx.unfrozen_parts,
+        )
 
     if current_epoch == 0 and not epoch_history:
         rec0, _ = _evaluate_and_build_epoch_record(
+            eval_ctx,
             0,
             'Epoch 0 (Pretrained Initial)',
-            model,
-            train_eval_ds,
-            val_ds,
-            loss_obj,
-            train_ds.scaler,
-            common_dates,
-            obs_series,
-            train_mask,
-            val_mask,
-            lead_time=lead_time,
-            learning_rate=lr_val,
-            unfrozen_parts=unfrozen_parts,
+            lr_val,
         )
         epoch_history.append(rec0)
 
@@ -1638,44 +1947,234 @@ def run_finetune_epochs(  # noqa: C901, PLR0913, PLR0915
     for step_idx in range(1, epochs + 1):
         target_epoch = current_epoch + step_idx
         mean_tr_loss = _train_single_epoch(
-            model,
+            eval_ctx.model,
             train_loader,
             optimizer,
-            loss_obj,
-            ft_cfg.clip_gradient_norm,
+            eval_ctx.loss_obj,
+            ft_cfg,
         )
 
         ckpt_out = run_dir / f'model_epoch{target_epoch:03d}.pt'
-        torch.save(model.state_dict(), ckpt_out)
+        torch.save(eval_ctx.model.state_dict(), ckpt_out)
 
         active_lr = float(optimizer.param_groups[0]['lr'])
         rec_ep, val_loss = _evaluate_and_build_epoch_record(
+            eval_ctx,
             target_epoch,
             f'Epoch {target_epoch}',
-            model,
-            train_eval_ds,
-            val_ds,
-            loss_obj,
-            train_ds.scaler,
-            common_dates,
-            obs_series,
-            train_mask,
-            val_mask,
-            lead_time=lead_time,
-            learning_rate=active_lr,
-            unfrozen_parts=unfrozen_parts,
+            active_lr,
             override_train_loss=mean_tr_loss,
         )
         _step_lr_scheduler(lr_scheduler, val_loss)
+        _save_optimizer_state(
+            run_dir,
+            target_epoch,
+            optimizer,
+            lr_scheduler,
+            eval_ctx.unfrozen_parts,
+        )
         epoch_history.append(rec_ep)
 
-    new_current_epoch = current_epoch + epochs
+    return epoch_history
+
+
+def _load_or_init_finetune_model(
+    ft_cfg: Config,
+    run_dir: Path,
+    base_ckpt: Path,
+    finetune_modules: list[str] | dict[str, object] | None,
+) -> tuple[torch.nn.Module, int, list[str]]:
+    torch.manual_seed(int(ft_cfg.seed or 42))
+    model = get_model(ft_cfg).to(torch.device('cpu'))
+    latest_sess_ckpt, current_epoch = _find_latest_checkpoint(run_dir)
+    if latest_sess_ckpt is not None and current_epoch > 0:
+        load_model_weights(
+            model, latest_sess_ckpt, device='cpu', allow_new_embeddings=False
+        )
+        if isinstance(model, BaseModel):
+            model.set_newly_initialized_embeddings(
+                {('shared_embeddings_fc', 'local_forcing')}
+            )
+    else:
+        current_epoch = 0
+        load_model_weights(
+            model, base_ckpt, device='cpu', allow_new_embeddings=True
+        )
+
+    ft_spec = _build_finetune_modules_spec(finetune_modules, model)
+    unfrozen_parts = _apply_freeze_spec(model, ft_spec)
+    ft_cfg.update_config({'finetune_modules': ft_spec})
+    cfg_yml_path = run_dir / 'config.yml'
+    if cfg_yml_path.exists():
+        cfg_yml_path.unlink()
+    ft_cfg.dump_config(folder=run_dir)
+    return model, current_epoch, unfrozen_parts
+
+
+def _build_epoch_eval_context(
+    model: torch.nn.Module,
+    ft_cfg: Config,
+    train_ds: BaseDataset,
+    partition: dict[str, object],
+    unfrozen_parts: list[str],
+) -> _EpochEvalContext:
+    val_ds = get_dataset(
+        cfg=ft_cfg, is_train=False, period='validation', compute_scaler=False
+    )
+    train_eval_ds = get_dataset(
+        cfg=ft_cfg, is_train=False, period='train', compute_scaler=False
+    )
+    loss_obj = get_loss_obj(ft_cfg)
+    if ft_cfg.regularization:
+        loss_obj.set_regularization_terms(get_regularization_obj(cfg=ft_cfg))
+
+    sf_ds = xr.open_zarr(
+        str(ft_cfg.targets_data_dir), decode_timedelta=False
+    ).load()
+    common_dates = pd.DatetimeIndex(sf_ds.coords['date'].to_numpy())
+    obs_series = np.asarray(sf_ds['streamflow'].to_numpy()[0], dtype=np.float32)
+
+    train_mask = (
+        common_dates >= pd.Timestamp(str(partition['train_start_date']))
+    ) & (common_dates <= pd.Timestamp(str(partition['train_end_date'])))
+    val_mask = (
+        common_dates >= pd.Timestamp(str(partition['validation_start_date']))
+    ) & (common_dates <= pd.Timestamp(str(partition['validation_end_date'])))
+
+    return _EpochEvalContext(
+        model=model,
+        train_eval_ds=train_eval_ds,
+        val_ds=val_ds,
+        loss_obj=loss_obj,
+        scaler=train_ds.scaler,
+        common_dates=common_dates,
+        obs_series=obs_series,
+        train_mask=train_mask,
+        val_mask=val_mask,
+        lead_time=int(ft_cfg.lead_time),
+        unfrozen_parts=unfrozen_parts,
+    )
+
+
+def run_finetune_epochs(
+    username: str,
+    basin_id: str,
+    model_id: str,
+    **options: object,
+) -> dict[str, object]:
+    """Run ``epochs`` of interactive per-basin fine-tuning and pause."""
+    _, base_run_dir = _resolve_model_dir(model_id, username)
+    base_ckpt, _ = _find_latest_checkpoint(base_run_dir)
+    if base_ckpt is None:
+        raise FileNotFoundError(f'No checkpoint found in {base_run_dir}.')
+
+    base_cfg = Config(base_run_dir / 'config.yml', dev_mode=True)
+    lead_time = int(base_cfg.lead_time)
+    (
+        epochs,
+        lr_val,
+        loss_val,
+        lr_strat_val,
+        bs_val,
+        finetune_modules,
+        split_ratio,
+    ) = _parse_run_options(options, base_cfg)
+
+    if (
+        _rebuild_local_zarr_stores(
+            username, basin_id, target_lead_time=lead_time
+        )
+        is None
+    ):
+        raise ValueError(
+            'Please upload local precipitation, temperature, and streamflow '
+            'CSVs before fine-tuning.'
+        )
+
+    loaded = _load_uploaded_arrays(username, basin_id)
+    _validate_uploaded_forecast_leads(loaded, lead_time)
+
+    start_d = max(loaded[k][0][0] for k in ('precip', 'temp', 'streamflow'))
+    end_d = min(loaded[k][0][-1] for k in ('precip', 'temp', 'streamflow'))
+    common_dates = pd.date_range(start_d, end_d, freq='D')
+
+    partition = compute_partition_dates(
+        common_dates,
+        base_seq_length=int(base_cfg.seq_length),
+        lead_time=lead_time,
+        split_ratio=split_ratio,
+        predict_last_n=int(base_cfg.predict_last_n or lead_time),
+    )
+
+    zarr_root = _basin_data_root(username, basin_id) / 'zarr_store'
+    global_dyn_dir, attr_path = _prepare_finetune_zarr_stores(
+        username, base_cfg, basin_id, common_dates, zarr_root
+    )
+
+    sess_dir = _session_root(username, basin_id, model_id)
+    run_dir = sess_dir / 'run'
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state_path = sess_dir / 'session_state.json'
+    session_state: dict[str, object] = (
+        json.loads(state_path.read_text(encoding='utf-8'))
+        if state_path.exists()
+        else {}
+    )
+
+    prev_split = session_state.get('split_date')
+    if prev_split is not None and prev_split != partition['split_date']:
+        shutil.rmtree(run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        session_state = {}
+
+    ft_cfg = _build_finetune_config(
+        _FinetuneConfigParams(
+            base_cfg=base_cfg,
+            base_run_dir=base_run_dir,
+            run_dir=run_dir,
+            zarr_root=zarr_root,
+            global_dyn_dir=global_dyn_dir,
+            attr_path=attr_path,
+            partition=partition,
+            lead_time=lead_time,
+            lr_val=lr_val,
+            loss_val=loss_val,
+            lr_strat_val=lr_strat_val,
+            bs_val=bs_val,
+        )
+    )
+    ft_cfg.update_config({'epochs': epochs})
+
+    train_ds = get_dataset(
+        cfg=ft_cfg, is_train=True, period='train', compute_scaler=False
+    )
+    model, current_epoch, unfrozen_parts = _load_or_init_finetune_model(
+        ft_cfg, run_dir, base_ckpt, finetune_modules
+    )
+    eval_ctx = _build_epoch_eval_context(
+        model,
+        ft_cfg,
+        train_ds,
+        partition,
+        unfrozen_parts,
+    )
+
+    raw_history = session_state.get('epoch_history')
+    epoch_history = _execute_epoch_training_steps(
+        eval_ctx,
+        train_ds,
+        ft_cfg,
+        current_epoch,
+        list(raw_history) if isinstance(raw_history, list) else [],
+    )
+
+    split_ratio_out = float(str(partition['split_ratio']))
     session_state = {
         'basin_id': basin_id,
         'model_id': model_id,
-        'current_epoch': new_current_epoch,
+        'current_epoch': current_epoch + epochs,
         'status': 'paused',
-        'split_ratio': partition['split_ratio'],
+        'split_ratio': split_ratio_out,
         'split_date': partition['split_date'],
         'updated_at': datetime.now(UTC).isoformat(),
         'last_hyperparameters': {
@@ -1688,8 +2187,8 @@ def run_finetune_epochs(  # noqa: C901, PLR0913, PLR0915
         },
         'epoch_history': epoch_history,
     }
-    state_path.write_text(json.dumps(session_state, indent=2))
+    state_path.write_text(json.dumps(session_state, indent=2), encoding='utf-8')
 
     return get_finetune_workspace_status(
-        username, basin_id, model_id, split_ratio=partition['split_ratio']
+        username, basin_id, model_id, split_ratio=split_ratio_out
     )

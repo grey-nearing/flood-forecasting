@@ -18,23 +18,35 @@ from __future__ import annotations
 
 import http.client
 import json
+import shutil
 import threading
 import unittest
 from html.parser import HTMLParser
 from http.server import ThreadingHTTPServer
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import pandas as pd
 import pytest
+import torch
+import xarray as xr
 
+import frontend.tests as _isolated_profiles
 from frontend import finetune_service, profile_manager
-from frontend import tests as _isolated_profiles  # noqa: F401
 from frontend.config import STATIC_DIR
 from frontend.server import EarthkitHydroHandler
+from model.datautils.scaler import Scaler
+from model.modelzoo import get_model
+from model.utils.config import Config
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 TEST_USER = 'test_ft_user'
+_ISOLATED_PROFILES_PKG = _isolated_profiles.__name__
 TEST_BASIN = 'camels_01022500'
+SYNTH_MODEL_RUN = 'synthetic_reg'
+SYNTH_MODEL_ID = f'user_{SYNTH_MODEL_RUN}'
 HTTP_OK = 200
 HTTP_BAD_REQUEST = 400
 EXPECTED_NUM_DAYS = 10
@@ -146,6 +158,141 @@ def _populate_test_watershed_and_attrs(username: str = TEST_USER) -> None:
     df.to_csv(attr_dir / 'attributes_caravan_camels.csv', index=False)
 
 
+def _seed_hermetic_user_model(username: str = TEST_USER) -> Path:
+    """Create a lightweight hermetic pretrained user model in profile."""
+    pm = profile_manager.get_profile_manager()
+    run_dir = pm.get_model_runs_dir(username) / SYNTH_MODEL_RUN
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    dummy_ds = xr.Dataset(
+        {
+            'era5_precip': (
+                ('sample',),
+                np.array([1.0, 3.0, 5.0], dtype=np.float32),
+            ),
+            'area': (
+                ('sample',),
+                np.array([100.0, 500.0, 900.0], dtype=np.float32),
+            ),
+            'p_mean': (
+                ('sample',),
+                np.array([2.0, 3.5, 5.0], dtype=np.float32),
+            ),
+            'streamflow': (
+                ('sample',),
+                np.array([0.5, 2.5, 6.0], dtype=np.float32),
+            ),
+        }
+    )
+    scaler = Scaler(
+        scaler_dir=run_dir,
+        calculate_scaler=True,
+        custom_normalization={},
+        dataset=dummy_ds,
+    )
+    if scaler.scaler is not None:
+        scaler.scaler = scaler.scaler.compute().astype(np.float32)
+    scaler.save()
+
+    cfg_dict: dict[str, object] = {
+        'experiment_name': SYNTH_MODEL_RUN,
+        'run_dir': str(run_dir),
+        'base_run_dir': str(run_dir),
+        'dataset': 'multimet',
+        'model': 'mean_embedding_forecast_lstm',
+        'head': 'regression',
+        'output_activation': 'linear',
+        'loss': 'MSE',
+        'optimizer': 'Adam',
+        'initial_learning_rate': 1e-3,
+        'learning_rate_strategy': 'ConstantLR',
+        'batch_size': 32,
+        'epochs': 1,
+        'hidden_size': 8,
+        'seq_length': 14,
+        'forecast_overlap': 14,
+        'lead_time': EXPECTED_LEAD_TIME,
+        'predict_last_n': EXPECTED_LEAD_TIME,
+        'hindcast_inputs': {'era5': ['era5_precip']},
+        'forecast_inputs': {'era5': ['era5_precip']},
+        'static_attributes': ['area', 'p_mean'],
+        'target_variables': ['streamflow'],
+        'statics_embedding': {'type': 'fc', 'hiddens': [8]},
+        'dynamics_embedding': {'type': 'fc', 'hiddens': [8]},
+        'nan_handling_method': 'masked_mean',
+        'nan_handling_pos_encoding': True,
+        'initial_forget_bias': 3,
+        'dropout': 0.0,
+        'device': 'cpu',
+        'compile': False,
+        'seed': 42,
+    }
+    cfg = Config(cfg_dict, dev_mode=True)
+    cfg.dump_config(folder=run_dir)
+    torch.manual_seed(42)
+    model = get_model(cfg).to(torch.device('cpu'))
+    torch.save(model.state_dict(), run_dir / 'model_epoch001.pt')
+    return run_dir
+
+
+def _build_test_csv_strings(
+    num_days: int = 80, lead_time: int = EXPECTED_LEAD_TIME
+) -> dict[str, str]:
+    """Build deterministic test CSV strings for precip, temp, and streamflow."""
+    dates = pd.date_range('2021-01-01', periods=num_days, freq='D')
+    header = 'date,' + ','.join(f'lead_{k}' for k in range(1, lead_time + 1))
+    p_rows = [header]
+    t_rows = [header]
+    q_rows = [header]
+    for idx, dt in enumerate(dates):
+        d_str = dt.strftime('%Y-%m-%d')
+        p_vals = [
+            f'{max(0.0, 3.0 * np.sin(0.2 * (idx + k)) + 2.0):.3f}'
+            for k in range(lead_time)
+        ]
+        t_vals = [
+            f'{12.0 + 6.0 * np.cos(0.1 * (idx + k)):.3f}'
+            for k in range(lead_time)
+        ]
+        q_vals = [
+            f'{1.5 + 0.8 * np.sin(0.2 * (idx + k - 1)) + 1.0:.3f}'
+            for k in range(lead_time)
+        ]
+        p_rows.append(f'{d_str},' + ','.join(p_vals))
+        t_rows.append(f'{d_str},' + ','.join(t_vals))
+        q_rows.append(f'{d_str},' + ','.join(q_vals))
+    return {
+        'precip': '\n'.join(p_rows),
+        'temp': '\n'.join(t_rows),
+        'streamflow': '\n'.join(q_rows),
+    }
+
+
+def _upload_all_test_csvs(
+    username: str = TEST_USER,
+    basin_id: str = TEST_BASIN,
+    num_days: int = 80,
+    lead_time: int = EXPECTED_LEAD_TIME,
+) -> dict[str, str]:
+    """Upload precip, temp, and streamflow CSVs for a test basin."""
+    csv_map = _build_test_csv_strings(num_days=num_days, lead_time=lead_time)
+    for dtype, content in csv_map.items():
+        units = 'degC' if dtype == 'temp' else 'mm/day'
+        finetune_service.upload_finetune_csv(
+            username=username,
+            basin_id=basin_id,
+            data_type=dtype,
+            csv_content=content,
+            filename=f'{dtype}.csv',
+            units=units,
+            target_lead_time=lead_time,
+        )
+    return csv_map
+
+
+@pytest.mark.unit
 class FineTuningDOMTests(unittest.TestCase):
     """Verify Training and Fine Tuning tabs are separated and complete."""
 
@@ -160,6 +307,7 @@ class FineTuningDOMTests(unittest.TestCase):
         assert 'tab-finetuning' in tab_targets
         assert 'tab-training' in inspector.by_id
         assert 'tab-finetuning' in inspector.by_id
+        assert 'ftLoadSampleDataBtn' not in inspector.by_id
 
         required_ft_ids = [
             'ftModelSelect',
@@ -173,7 +321,6 @@ class FineTuningDOMTests(unittest.TestCase):
             'ftStreamflowUnitsSelect',
             'ftBasinAreaInput',
             'ftDownloadTemplateBtn',
-            'ftLoadSampleDataBtn',
             'ftClearDataBtn',
             'ftSplitRatioSlider',
             'ftSplitRatioLabel',
@@ -197,9 +344,9 @@ class FineTuningDOMTests(unittest.TestCase):
         ]
         for el_id in required_ft_ids:
             assert el_id in inspector.by_id, f'Missing #{el_id} in HTML'
-            assert (
-                'tab-finetuning' in inspector.by_id[el_id]['ancestor_ids']
-            ), f'#{el_id} must be inside #tab-finetuning'
+            assert 'tab-finetuning' in inspector.by_id[el_id]['ancestor_ids'], (
+                f'#{el_id} must be inside #tab-finetuning'
+            )
 
         for train_id in (
             'trainingSidebar',
@@ -210,16 +357,18 @@ class FineTuningDOMTests(unittest.TestCase):
             assert 'tab-training' in inspector.by_id[train_id]['ancestor_ids']
 
 
-class FineTuneServiceTests(unittest.TestCase):
-    """Unit tests for CSV parsing, model introspection, and fine-tuning."""
+@pytest.mark.unit
+class FineTuneServiceUnitTests(unittest.TestCase):
+    """Unit tests for CSV validation, model inventory, and error handling."""
 
     def setUp(self) -> None:
-        """Prepare test basin and clear prior fine-tuning artifacts."""
+        """Prepare test basin, hermetic model, and clean workspace."""
         _populate_test_watershed_and_attrs(TEST_USER)
+        _seed_hermetic_user_model(TEST_USER)
         finetune_service.clear_finetune_data(TEST_USER, TEST_BASIN)
 
     def test_parse_time_by_lead_csv_matrix_and_daily(self) -> None:
-        """Verify parsing both time x lead_time matrices and daily series."""
+        """Verify 7-lead CSV and 1-column CSV (with NaNs at leads 2..7)."""
         dates = pd.date_range('2018-01-01', periods=EXPECTED_NUM_DAYS, freq='D')
         rows = ['date,lead_1,lead_2,lead_3,lead_4,lead_5,lead_6,lead_7']
         for i, dt in enumerate(dates):
@@ -248,28 +397,94 @@ class FineTuneServiceTests(unittest.TestCase):
         assert d_leads == [1]
         assert d_mat.shape == (EXPECTED_NUM_DAYS, EXPECTED_LEAD_TIME)
         np.testing.assert_allclose(d_mat[0, 0], 0.0)
-        np.testing.assert_allclose(d_mat[0, 1], 0.5)
+        np.testing.assert_allclose(d_mat[1, 0], 0.5)
+        assert np.all(np.isnan(d_mat[:, 1:]))
 
-    def test_parse_time_by_lead_csv_rejects_invalid_or_empty(self) -> None:
-        """Verify empty CSVs and all-NaN uploads raise ValueError."""
+    def test_parse_time_by_lead_csv_strict_validation(self) -> None:
+        """Verify malformed CSVs raise explicit ValueError without fallback."""
         with pytest.raises(ValueError, match='empty'):
             finetune_service.parse_time_by_lead_csv('')
 
-        bad_nan_csv = 'date,lead_1\n2020-01-01,NaN\n2020-01-02,NaN\n'
-        with pytest.raises(ValueError, match='no finite values'):
-            finetune_service.upload_finetune_csv(
-                username=TEST_USER,
-                basin_id=TEST_BASIN,
-                data_type='streamflow',
-                csv_content=bad_nan_csv,
+        with pytest.raises(ValueError, match='explicit date column'):
+            finetune_service.parse_time_by_lead_csv(
+                'station_id,lead_1\n01022500,1.2\n'
             )
 
-    def test_list_finetune_models_includes_dynamic_components(self) -> None:
-        """Verify pretrained models expose dynamic tunable components."""
+        with pytest.raises(ValueError, match='unparseable date'):
+            finetune_service.parse_time_by_lead_csv(
+                'date,lead_1\nnot-a-date,1.0\n2020-01-02,2.0\n'
+            )
+
+        with pytest.raises(ValueError, match='duplicate dates'):
+            finetune_service.parse_time_by_lead_csv(
+                'date,lead_1\n2020-01-01,1.0\n2020-01-01,2.0\n'
+            )
+
+        with pytest.raises(ValueError, match='non-numeric'):
+            finetune_service.parse_time_by_lead_csv(
+                'date,lead_1\n2020-01-01,1.0\n2020-01-02,ERR\n'
+            )
+
+        with pytest.raises(ValueError, match='Unrecognized lead column'):
+            finetune_service.parse_time_by_lead_csv(
+                'date,lead_1,foo_col\n2020-01-01,1.0,2.0\n'
+            )
+
+        with pytest.raises(ValueError, match='Invalid lead column'):
+            finetune_service.parse_time_by_lead_csv(
+                'date,lead_0\n2020-01-01,1.0\n'
+            )
+
+    def test_upload_csv_physical_and_unit_validation(self) -> None:
+        """Verify negative precip/flow, bad units, and missing area fail."""
+        neg_csv = 'date,lead_1\n2020-01-01,-1.5\n2020-01-02,2.0\n'
+        with pytest.raises(ValueError, match='cannot be negative'):
+            finetune_service.upload_finetune_csv(
+                TEST_USER, TEST_BASIN, 'precip', neg_csv
+            )
+        with pytest.raises(ValueError, match='cannot be negative'):
+            finetune_service.upload_finetune_csv(
+                TEST_USER, TEST_BASIN, 'streamflow', neg_csv
+            )
+
+        valid_csv = 'date,lead_1\n2020-01-01,10.0\n2020-01-02,12.0\n'
+        with pytest.raises(ValueError, match='Unsupported streamflow units'):
+            finetune_service.upload_finetune_csv(
+                TEST_USER,
+                TEST_BASIN,
+                'streamflow',
+                valid_csv,
+                units='ft3/s',
+            )
+        with pytest.raises(ValueError, match='area_km2'):
+            finetune_service.upload_finetune_csv(
+                TEST_USER,
+                TEST_BASIN,
+                'streamflow',
+                valid_csv,
+                units='m3/s',
+            )
+
+        res = finetune_service.upload_finetune_csv(
+            username=TEST_USER,
+            basin_id=TEST_BASIN,
+            data_type='streamflow',
+            csv_content=valid_csv,
+            filename='q_m3s.csv',
+            units='m3/s',
+            area_km2=573.6,
+        )
+        assert res['units'] == 'mm/day'
+        expected_mm_d = 11.0 * 86.4 / 573.6
+        assert res['mean_val'] == pytest.approx(expected_mm_d, abs=1e-3)
+
+    def test_list_finetune_models_and_strict_model_id_resolution(self) -> None:
+        """Verify model inventory and strict FileNotFoundError on unknown id."""
         models = finetune_service.list_finetune_models(TEST_USER)
         model_ids = {m['model_id'] for m in models}
         assert 'google-floodhub-settings-110-epochs' in model_ids
-        assert '5-basin-example' in model_ids
+        assert SYNTH_MODEL_ID in model_ids
+        assert '5-basin-example' not in model_ids
 
         for m in models:
             assert 'tunable_component_names' in m
@@ -284,89 +499,128 @@ class FineTuneServiceTests(unittest.TestCase):
             }
             assert 'shared_embeddings_fc.local_forcing' in sub_ids
 
-    def test_upload_csv_and_m3s_unit_conversion(self) -> None:
-        """Verify m3/s streamflow CSV upload converts to mm/day."""
-        dates = pd.date_range('2015-01-01', periods=60, freq='D')
-        q_m3s = 10.0
-        rows = ['date,lead_1'] + [
-            f'{d.strftime("%Y-%m-%d")},{q_m3s}' for d in dates
-        ]
-        res = finetune_service.upload_finetune_csv(
-            username=TEST_USER,
-            basin_id=TEST_BASIN,
-            data_type='streamflow',
-            csv_content='\n'.join(rows),
-            filename='q_m3s.csv',
-            units='m3/s',
-            area_km2=573.6,
-        )
-        assert res['units'] == 'mm/day'
-        expected_mm_d = q_m3s * 86.4 / 573.6
-        assert res['mean_val'] == pytest.approx(expected_mm_d, abs=1e-3)
+        with pytest.raises(FileNotFoundError, match='Unknown model_id'):
+            finetune_service.get_finetune_workspace_status(
+                TEST_USER, TEST_BASIN, model_id='non_existent_model_id'
+            )
 
-    def test_interactive_pause_and_resume_finetuning_workflow(self) -> None:
-        """Verify interactive step-by-step pause-and-resume fine-tuning."""
-        finetune_service.generate_sample_basin_csvs(
-            username=TEST_USER,
-            basin_id=TEST_BASIN,
-            num_days=180,
-        )
+        with pytest.raises(ValueError, match='Invalid user model_id'):
+            finetune_service.get_finetune_workspace_status(
+                TEST_USER, TEST_BASIN, model_id='user_../escape'
+            )
+
+    def test_missing_static_attributes_raises_instead_of_scaler_fallback(
+        self,
+    ) -> None:
+        """Verify missing basin static attributes raise FileNotFoundError."""
+        unlisted_basin = 'unlisted_basin_999'
+        _upload_all_test_csvs(TEST_USER, unlisted_basin, num_days=60)
+        with pytest.raises(
+            FileNotFoundError, match='Static attributes for basin'
+        ):
+            finetune_service.run_finetune_epochs(
+                username=TEST_USER,
+                basin_id=unlisted_basin,
+                model_id=SYNTH_MODEL_ID,
+                epochs=1,
+            )
+
+
+@pytest.mark.integration
+class FineTuneWorkflowIntegrationTests(unittest.TestCase):
+    """Integration tests for interactive fine-tuning, freezing, and HTTP API."""
+
+    _USER = 'test_ft_workflow_user'
+
+    def setUp(self) -> None:
+        """Prepare test basin, hermetic model, and clean workspace."""
+        _populate_test_watershed_and_attrs(self._USER)
+        _seed_hermetic_user_model(self._USER)
+        finetune_service.clear_finetune_data(self._USER, TEST_BASIN)
+
+    def test_interactive_pause_resume_and_module_freezing(self) -> None:
+        """Verify frozen weights stay identical while unfrozen weights train."""
+        _upload_all_test_csvs(self._USER, TEST_BASIN, num_days=75)
 
         status_70 = finetune_service.get_finetune_workspace_status(
-            username=TEST_USER,
+            username=self._USER,
             basin_id=TEST_BASIN,
-            model_id='5-basin-example',
+            model_id=SYNTH_MODEL_ID,
             split_ratio=0.70,
         )
         status_85 = finetune_service.get_finetune_workspace_status(
-            username=TEST_USER,
+            username=self._USER,
             basin_id=TEST_BASIN,
-            model_id='5-basin-example',
+            model_id=SYNTH_MODEL_ID,
             split_ratio=0.85,
         )
         assert status_70['data_ready']
-        assert (
-            status_70['partition']['split_date']
-            < status_85['partition']['split_date']
-        )
-        assert status_70['timeseries'] is not None
-        assert len(status_70['timeseries']['dates']) == len(
-            status_70['timeseries']['precip']
-        )
+        part_70 = status_70['partition']
+        assert part_70['split_date'] < status_85['partition']['split_date']
+        gap_days = (
+            pd.Timestamp(part_70['validation_start_date'])
+            - pd.Timestamp(part_70['train_end_date'])
+        ).days
+        assert gap_days == EXPECTED_LEAD_TIME
 
         step1 = finetune_service.run_finetune_epochs(
-            username=TEST_USER,
+            username=self._USER,
             basin_id=TEST_BASIN,
-            model_id='5-basin-example',
+            model_id=SYNTH_MODEL_ID,
             epochs=EXPECTED_STEP1_EPOCH,
-            learning_rate=1e-3,
+            learning_rate=5e-3,
             loss='MSE',
-            learning_rate_strategy='constant',
-            batch_size=64,
-            finetune_modules=[
-                'head',
-                'shared_embeddings_fc.local_forcing',
-            ],
-            split_ratio=0.75,
+            learning_rate_strategy='ConstantLR',
+            batch_size=16,
+            finetune_modules=['head', 'shared_embeddings_fc.local_forcing'],
+            split_ratio=0.70,
         )
         assert step1['session']['status'] == 'paused'
         assert step1['session']['current_epoch'] == EXPECTED_STEP1_EPOCH
         history1 = step1['session']['epoch_history']
         assert len(history1) == EXPECTED_STEP1_HISTORY_LEN
         assert [e['epoch'] for e in history1] == [0, 1, 2]
-        assert 'streamflow_sim_lead1' in history1[-1]
+
+        pm = profile_manager.get_profile_manager()
+        base_ckpt = (
+            pm.get_model_runs_dir(self._USER)
+            / SYNTH_MODEL_RUN
+            / 'model_epoch001.pt'
+        )
+        sess_run_dir = (
+            pm.get_profile_dir(self._USER)
+            / 'finetune_workspace'
+            / TEST_BASIN
+            / SYNTH_MODEL_ID
+            / 'run'
+        )
+        ft_ckpt_2 = sess_run_dir / 'model_epoch002.pt'
+        opt_ckpt_2 = sess_run_dir / 'optimizer_state_epoch002.pt'
+        assert ft_ckpt_2.is_file()
+        assert opt_ckpt_2.is_file()
+
+        base_sd = torch.load(base_ckpt, map_location='cpu', weights_only=True)
+        ft_sd = torch.load(ft_ckpt_2, map_location='cpu', weights_only=True)
+        for key, base_tensor in base_sd.items():
+            if key.startswith(('hindcast_lstm.', 'forecast_lstm.')):
+                torch.testing.assert_close(
+                    ft_sd[key], base_tensor, rtol=0.0, atol=0.0
+                )
+        assert not torch.equal(
+            ft_sd['head.net.0.weight'], base_sd['head.net.0.weight']
+        )
 
         step2 = finetune_service.run_finetune_epochs(
-            username=TEST_USER,
+            username=self._USER,
             basin_id=TEST_BASIN,
-            model_id='5-basin-example',
+            model_id=SYNTH_MODEL_ID,
             epochs=1,
             learning_rate=5e-4,
             loss='NSE',
             learning_rate_strategy='StepLR',
-            batch_size=32,
+            batch_size=16,
             finetune_modules=['head', 'forecast_lstm'],
-            split_ratio=0.75,
+            split_ratio=0.70,
         )
         assert step2['session']['status'] == 'paused'
         assert step2['session']['current_epoch'] == EXPECTED_STEP2_EPOCH
@@ -375,19 +629,30 @@ class FineTuneServiceTests(unittest.TestCase):
         assert [e['epoch'] for e in history2] == [0, 1, 2, 3]
         assert history2[-1]['learning_rate'] == pytest.approx(5e-4)
 
+        with pytest.raises(KeyError, match='Unknown finetune module'):
+            finetune_service.run_finetune_epochs(
+                username=self._USER,
+                basin_id=TEST_BASIN,
+                model_id=SYNTH_MODEL_ID,
+                epochs=1,
+                finetune_modules=['non_existent_layer'],
+            )
+
         reset_res = finetune_service.reset_finetune_session(
-            username=TEST_USER,
+            username=self._USER,
             basin_id=TEST_BASIN,
-            model_id='5-basin-example',
+            model_id=SYNTH_MODEL_ID,
         )
         assert reset_res['session']['current_epoch'] == 0
         assert reset_res['session']['epoch_history'] == []
         assert reset_res['data_ready']
 
 
+@pytest.mark.integration
 class FineTuningHTTPServerTests(unittest.TestCase):
     """End-to-end HTTP API tests for `/api/finetune/*` endpoints."""
 
+    _USER = 'test_ft_http_user'
     server: ClassVar[ThreadingHTTPServer]
     port: ClassVar[int]
     server_thread: ClassVar[threading.Thread]
@@ -395,7 +660,8 @@ class FineTuningHTTPServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         """Start local HTTP server for fine-tuning endpoint tests."""
-        _populate_test_watershed_and_attrs(TEST_USER)
+        _populate_test_watershed_and_attrs(cls._USER)
+        _seed_hermetic_user_model(cls._USER)
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), EarthkitHydroHandler)
         cls.port = cls.server.server_port
         cls.server_thread = threading.Thread(
@@ -416,7 +682,7 @@ class FineTuningHTTPServerTests(unittest.TestCase):
         payload: dict[str, Any] | None = None,
     ) -> tuple[int, dict[str, Any]]:
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=60)
-        headers = {'X-Earthkit-User': TEST_USER}
+        headers = {'X-User-Profile': self._USER}
         body = None
         if payload is not None:
             body = json.dumps(payload).encode('utf-8')
@@ -428,42 +694,50 @@ class FineTuningHTTPServerTests(unittest.TestCase):
         return resp.status, json.loads(raw)
 
     def test_http_endpoints_lifecycle(self) -> None:
-        """Test /api/finetune/* HTTP routes from sample data to reset."""
+        """Test /api/finetune/* HTTP routes from CSV upload to reset."""
+        finetune_service.clear_finetune_data(self._USER, TEST_BASIN)
+
         status, data = self._request('GET', '/api/finetune/models')
         assert status == HTTP_OK
         assert len(data.get('models', [])) >= MIN_EXPECTED_MODELS
 
-        status, sample_data = self._request(
-            'POST',
-            '/api/finetune/sample-data',
-            {
-                'basin_id': TEST_BASIN,
-                'model_id': 'google-floodhub-settings-110-epochs',
-                'num_days': 160,
-            },
-        )
-        assert status == HTTP_OK
-        assert sample_data['workspace']['data_ready']
+        csv_map = _build_test_csv_strings(num_days=75)
+        for dtype, content in csv_map.items():
+            st_up, up_res = self._request(
+                'POST',
+                '/api/finetune/upload-csv',
+                {
+                    'basin_id': TEST_BASIN,
+                    'model_id': SYNTH_MODEL_ID,
+                    'data_type': dtype,
+                    'filename': f'{dtype}.csv',
+                    'csv_content': content,
+                    'units': 'degC' if dtype == 'temp' else 'mm/day',
+                },
+            )
+            assert st_up == HTTP_OK
+            assert up_res['status'] == 'uploaded'
 
         status, ws = self._request(
             'GET',
             f'/api/finetune/status?basin_id={TEST_BASIN}'
-            '&model_id=google-floodhub-settings-110-epochs&split_ratio=0.80',
+            f'&model_id={SYNTH_MODEL_ID}&split_ratio=0.80',
         )
         assert status == HTTP_OK
-        assert ws['partition']['split_ratio'] == pytest.approx(0.80, abs=0.02)
+        assert ws['data_ready']
+        assert ws['partition']['split_ratio'] == pytest.approx(0.80, abs=0.03)
 
         status, run_res = self._request(
             'POST',
             '/api/finetune/run',
             {
                 'basin_id': TEST_BASIN,
-                'model_id': 'google-floodhub-settings-110-epochs',
+                'model_id': SYNTH_MODEL_ID,
                 'epochs': 1,
-                'learning_rate': 0.0005,
-                'loss': 'CMALLoss',
-                'learning_rate_strategy': 'constant',
-                'batch_size': 64,
+                'learning_rate': 0.001,
+                'loss': 'MSE',
+                'learning_rate_strategy': 'ConstantLR',
+                'batch_size': 16,
                 'finetune_modules': [
                     'head',
                     'shared_embeddings_fc.local_forcing',
@@ -480,7 +754,7 @@ class FineTuningHTTPServerTests(unittest.TestCase):
             '/api/finetune/reset',
             {
                 'basin_id': TEST_BASIN,
-                'model_id': 'google-floodhub-settings-110-epochs',
+                'model_id': SYNTH_MODEL_ID,
             },
         )
         assert status == HTTP_OK
@@ -491,7 +765,7 @@ class FineTuningHTTPServerTests(unittest.TestCase):
             '/api/finetune/clear-data',
             {
                 'basin_id': TEST_BASIN,
-                'model_id': 'google-floodhub-settings-110-epochs',
+                'model_id': SYNTH_MODEL_ID,
             },
         )
         assert status == HTTP_OK

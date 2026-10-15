@@ -44,7 +44,6 @@ from frontend.delineator import HydroDelineator
 from frontend.dem_tile_server import DemTileServer
 from frontend.finetune_service import (
     clear_finetune_data,
-    generate_sample_basin_csvs,
     get_finetune_workspace_status,
     list_finetune_models,
     reset_finetune_session,
@@ -1018,9 +1017,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         if not basin_id:
             basin_id = 'custom_basin_01'
         model_id = (
-            query.get(
-                'model_id', ['google-floodhub-settings-110-epochs']
-            )[0]
+            query.get('model_id', ['google-floodhub-settings-110-epochs'])[0]
             or 'google-floodhub-settings-110-epochs'
         ).strip()
         split_ratio = _parse_float(query.get('split_ratio', [''])[0] or None)
@@ -1384,7 +1381,6 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/forecast/fetch-realtime': self._post_forecast_fetch_realtime,
             '/api/forecast/run-model': self._post_forecast_run_model,
             '/api/finetune/upload-csv': self._post_finetune_upload_csv,
-            '/api/finetune/sample-data': self._post_finetune_sample_data,
             '/api/finetune/clear-data': self._post_finetune_clear_data,
             '/api/finetune/run': self._post_finetune_run,
             '/api/finetune/reset': self._post_finetune_reset,
@@ -2376,60 +2372,30 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             or 'custom_basin_01'
         ).strip()
         data_type = str(data.get('data_type') or '').strip()
-        csv_content = str(
-            data.get('csv_content') or data.get('csv') or ''
-        )
+        csv_content = str(data.get('csv_content') or data.get('csv') or '')
+        if not data_type or not csv_content.strip():
+            self._send_error(
+                'Both data_type and non-empty csv_content are required.',
+                status=400,
+            )
+            return
         filename = str(data.get('filename') or f'{data_type}.csv')
-        units = str(data.get('units') or 'mm/day')
+        raw_units = data.get('units')
+        units = str(raw_units) if raw_units is not None else None
         area_km2 = _parse_float(data.get('area_km2'))
         lead_time = _parse_int(data.get('lead_time'), default=7) or 7
         model_id = str(
             data.get('model_id') or 'google-floodhub-settings-110-epochs'
         )
-        try:
-            upload_info = upload_finetune_csv(
-                username=user,
-                basin_id=basin_id,
-                data_type=data_type,
-                csv_content=csv_content,
-                filename=filename,
-                units=units,
-                area_km2=area_km2,
-                target_lead_time=lead_time,
-            )
-            status_payload = get_finetune_workspace_status(
-                username=user,
-                basin_id=basin_id,
-                model_id=model_id,
-            )
-        except ValueError as exc:
-            self._send_error(str(exc), status=400)
-            return
-        self._send_json(
-            {
-                'status': 'uploaded',
-                'upload': upload_info,
-                'workspace': status_payload,
-            }
-        )
-
-    def _post_finetune_sample_data(self, data: dict[str, Any]) -> None:
-        user = self._get_request_username(data)
-        basin_id = str(
-            data.get('basin_id')
-            or data.get('catchment_id')
-            or 'custom_basin_01'
-        ).strip()
-        num_days = _parse_int(data.get('num_days'), default=240) or 240
-        lead_time = _parse_int(data.get('lead_time'), default=7) or 7
-        model_id = str(
-            data.get('model_id') or 'google-floodhub-settings-110-epochs'
-        )
-        previews = generate_sample_basin_csvs(
+        upload_info = upload_finetune_csv(
             username=user,
             basin_id=basin_id,
-            num_days=num_days,
-            lead_time=lead_time,
+            data_type=data_type,
+            csv_content=csv_content,
+            filename=filename,
+            units=units,
+            area_km2=area_km2,
+            target_lead_time=lead_time,
         )
         status_payload = get_finetune_workspace_status(
             username=user,
@@ -2438,8 +2404,8 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         )
         self._send_json(
             {
-                'status': 'generated',
-                'previews': previews,
+                'status': 'uploaded',
+                'upload': upload_info,
                 'workspace': status_payload,
             }
         )
@@ -2483,27 +2449,19 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         lr_strategy = data.get('learning_rate_strategy')
         batch_size = _parse_int(data.get('batch_size'))
         finetune_modules = data.get('finetune_modules')
-        split_ratio = (
-            _parse_float(data.get('split_ratio'), default=0.7) or 0.7
+        split_ratio = _parse_float(data.get('split_ratio'), default=0.7) or 0.7
+        payload = run_finetune_epochs(
+            username=user,
+            basin_id=basin_id,
+            model_id=model_id,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            loss=str(loss) if loss else None,
+            learning_rate_strategy=(str(lr_strategy) if lr_strategy else None),
+            batch_size=batch_size,
+            finetune_modules=finetune_modules,
+            split_ratio=split_ratio,
         )
-        try:
-            payload = run_finetune_epochs(
-                username=user,
-                basin_id=basin_id,
-                model_id=model_id,
-                epochs=epochs,
-                learning_rate=learning_rate,
-                loss=str(loss) if loss else None,
-                learning_rate_strategy=(
-                    str(lr_strategy) if lr_strategy else None
-                ),
-                batch_size=batch_size,
-                finetune_modules=finetune_modules,
-                split_ratio=split_ratio,
-            )
-        except (ValueError, FileNotFoundError) as exc:
-            self._send_error(str(exc), status=400)
-            return
         self._send_json(payload)
 
     def _post_finetune_reset(self, data: dict[str, Any]) -> None:

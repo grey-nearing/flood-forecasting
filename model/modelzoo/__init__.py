@@ -41,6 +41,8 @@ _DEFAULT_DYNAMIC_EMBEDDING_MODULES: tuple[str, ...] = (
     'shared_embeddings_fc',
 )
 
+_MIN_EMBEDDING_KEY_PARTS = 2
+
 
 def get_model_class(model_name: str) -> type[BaseModel]:
     """Resolve a model architecture name to its ``BaseModel`` subclass.
@@ -59,7 +61,7 @@ def get_model_class(model_name: str) -> type[BaseModel]:
     model_cls = MODEL_REGISTRY.get(key)
     if model_cls is None:
         raise NotImplementedError(
-            f'{model_name} not implemented or not linked in `get_model()`'
+            f'{model_name} not implemented or not linked in `get_model_class()`'
         )
     return model_cls
 
@@ -93,7 +95,7 @@ def _extract_embedding_pairs(
     for key in keys:
         if key.startswith(embedding_prefixes):
             parts = key.split('.', 2)
-            if len(parts) >= 2:  # noqa: PLR2004
+            if len(parts) >= _MIN_EMBEDDING_KEY_PARTS:
                 pairs.add((parts[0], parts[1]))
     return pairs
 
@@ -154,7 +156,8 @@ def load_model_weights(
     target_model = getattr(model, '_orig_mod', model)
     if not allow_new_embeddings:
         target_model.load_state_dict(state_dict)
-        target_model._newly_initialized_embeddings = set()  # noqa: SLF001
+        if isinstance(target_model, BaseModel):
+            target_model.set_newly_initialized_embeddings(set())
         return set(), set()
 
     model_keys = set(target_model.state_dict().keys())
@@ -205,5 +208,6 @@ def load_model_weights(
             [f'{grp}.{prod}' for grp, prod in sorted(dropped_pairs)],
         )
 
-    target_model._newly_initialized_embeddings = newly_init_pairs  # noqa: SLF001
+    if isinstance(target_model, BaseModel):
+        target_model.set_newly_initialized_embeddings(newly_init_pairs)
     return newly_init_pairs, dropped_pairs

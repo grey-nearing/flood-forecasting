@@ -72,15 +72,11 @@ class BaseModel(nn.Module):
             parameter counts and whether a dynamic embedding was newly
             initialized during fine-tuning.
         """
-        newly_init: set[tuple[str, str]] = getattr(
-            self, '_newly_initialized_embeddings', set()
-        )
+        newly_init = self._newly_initialized_embeddings
         dynamic_groups = set(self.dynamic_embedding_modules)
         components: list[dict[str, object]] = []
         for part_name in self.module_parts:
-            module = getattr(self, part_name, None)
-            if module is None:
-                continue
+            module = getattr(self, part_name)
             total_params = sum(p.numel() for p in module.parameters())
             is_module_dict = isinstance(module, nn.ModuleDict)
             subcomponents: list[dict[str, object]] = []
@@ -128,6 +124,17 @@ class BaseModel(nn.Module):
             calculate_scaler=False,
         )
         self._preloaded_state = None
+        self._newly_initialized_embeddings: set[tuple[str, str]] = set()
+
+    def set_newly_initialized_embeddings(
+        self, pairs: set[tuple[str, str]]
+    ) -> None:
+        """Record ``(module_group, product_key)`` pairs initialized at load."""
+        self._newly_initialized_embeddings = set(pairs)
+
+    def get_newly_initialized_embeddings(self) -> set[tuple[str, str]]:
+        """Return ``(module_group, product_key)`` pairs initialized at load."""
+        return set(self._newly_initialized_embeddings)
 
     def sample(
         self,
