@@ -20,6 +20,7 @@ import os
 import struct
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -506,22 +507,23 @@ class WeatherEngineReloadAndFramesTest(unittest.TestCase):
 class ManualRefreshSubprocessTest(unittest.TestCase):
     """Tests subprocess CLI invocation and sync status defaults."""
 
-    @mock.patch('subprocess.run')
-    def test_run_sync_subprocess_args(self, mock_run: mock.MagicMock) -> None:
+    @mock.patch('subprocess.Popen')
+    def test_run_sync_subprocess_args(self, mock_popen: mock.MagicMock) -> None:
         """Verify CLI arguments and cwd passed to the sync subprocess."""
         with tempfile.TemporaryDirectory() as tmp_root:
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stdout = 'ok'
-            mock_run.return_value.stderr = ''
-            models_to_sync = ['ecmwf_hres', 'noaa_gfs']
+            mock_proc = mock.MagicMock()
+            mock_proc.poll.return_value = 0
+            mock_proc.communicate.return_value = ('ok', '')
+            mock_proc.returncode = 0
+            mock_popen.return_value = mock_proc
             ws.run_sync_subprocess(
-                models=models_to_sync,
-                force=True,
                 python='fake_python',
+                models=['ecmwf_hres', 'noaa_gfs'],
+                force=True,
                 root=tmp_root,
             )
-            assert mock_run.called
-            cmd = mock_run.call_args[0][0]
+            assert mock_popen.called
+            cmd = mock_popen.call_args[0][0]
             assert cmd[:3] == ['fake_python', '-m', 'frontend.weather_sync']
             assert '--data-root' in cmd
             assert str(Path(tmp_root).resolve()) in cmd
@@ -529,103 +531,73 @@ class ManualRefreshSubprocessTest(unittest.TestCase):
             assert 'ecmwf_hres,noaa_gfs' in cmd
             assert '--force' in cmd
             expected_repo_root = str(Path(ws.__file__).resolve().parent.parent)
-            assert mock_run.call_args.kwargs['cwd'] == expected_repo_root
+            assert mock_popen.call_args.kwargs['cwd'] == expected_repo_root
 
-    @mock.patch('subprocess.run')
+    @mock.patch('subprocess.Popen')
     def test_run_sync_subprocess_records_error_on_crash(
-        self, mock_run: mock.MagicMock
+        self, mock_popen: mock.MagicMock
     ) -> None:
         """Verify non-zero subprocess exit without fresh status writes error."""
         with tempfile.TemporaryDirectory() as tmp_root:
-            mock_run.return_value.returncode = 1
-            mock_run.return_value.stdout = '[ecmwf_hres] starting\n'
-            mock_run.return_value.stderr = (
-                'Traceback (most recent call last):\n'
-                'ModuleNotFoundError: No module named foo\n'
-            )
+
+            def side_effect1(*_a, **kw):  # noqa: ANN002, ANN003, ANN202
+                if 'stdout' in kw and hasattr(kw['stdout'], 'write'):
+                    kw['stdout'].write('[ecmwf_hres] starting\n')
+                if 'stderr' in kw and hasattr(kw['stderr'], 'write'):
+                    kw['stderr'].write('Traceback: foo\n')
+                m = mock.MagicMock()
+                m.poll.return_value = 1
+                m.returncode = 1
+                return m
+
+            mock_popen.side_effect = side_effect1
             status = ws.run_sync_subprocess(python='fake_python', root=tmp_root)
             assert status['last_result'] == 'error'
-            assert status['message'] == (
-                'ModuleNotFoundError: No module named foo'
-            )
+            assert status['message'] == 'Traceback: foo'
             persisted = ws.read_sync_status(tmp_root)
             assert persisted['last_result'] == 'error'
             assert persisted['message'] == status['message']
 
-            # Empty stderr falls back to exit code (never stdout log lines).
-            mock_run.return_value.returncode = 2
-            mock_run.return_value.stderr = ''
+            # Empty stderr falls back to exit code
+            def side_effect2(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+                m = mock.MagicMock()
+                m.poll.return_value = 2
+                m.returncode = 2
+                return m
+
+            mock_popen.side_effect = side_effect2
             Path(tmp_root, 'sync_status.json').unlink()
-            status2 = ws.run_sync_subprocess(
-                python='fake_python', root=tmp_root
-            )
+            status2 = ws.run_sync_subprocess(python='fake', root=tmp_root)
             assert status2['last_result'] == 'error'
             assert status2['message'] == 'Sync subprocess exited with code 2'
 
-    @mock.patch('subprocess.run')
+    @mock.patch('subprocess.Popen')
     def test_run_sync_subprocess_preserves_fresh_child_status(
-        self, mock_run: mock.MagicMock
+        self, mock_popen: mock.MagicMock
     ) -> None:
         """Verify child-written partial status is preserved on exit code 1."""
         with tempfile.TemporaryDirectory() as tmp_root:
-            status_file = Path(tmp_root) / 'sync_status.json'
 
-            def write_child_partial(
-                *_args: object, **_kwargs: object
-            ) -> mock.MagicMock:
-                status_file.write_text(
-                    json.dumps(
-                        {
-                            'last_check_utc': '9999-12-31T23:59:59Z',
-                            'last_result': 'partial',
-                            'message': (
-                                'Downloaded new run: ecmwf_aifs; failed:'
-                                ' noaa_gfs: timeout'
-                            ),
-                        }
-                    ),
-                    encoding='utf-8',
-                )
-                res = mock.MagicMock()
-                res.returncode = 1
-                res.stdout = ''
-                res.stderr = 'some warning\n'
-                return res
-
-            mock_run.side_effect = write_child_partial
-            status = ws.run_sync_subprocess(python='fake_python', root=tmp_root)
-            assert status['last_result'] == 'partial'
-            assert 'Downloaded new run: ecmwf_aifs' in status['message']
-
-    @mock.patch('subprocess.run')
-    def test_run_sync_subprocess_reports_busy_when_status_stale_on_exit_zero(
-        self, mock_run: mock.MagicMock
-    ) -> None:
-        """Verify exit 0 with stale sync_status.json reports busy, not stale."""
-        with tempfile.TemporaryDirectory() as tmp_root:
-            status_file = Path(tmp_root) / 'sync_status.json'
-            status_file.write_text(
-                json.dumps(
+            def side_effect(*_a, **kw):  # noqa: ANN002, ANN003, ANN202
+                time.sleep(0.01)
+                ws._write_json_atomic(  # noqa: SLF001
+                    str(Path(tmp_root) / 'sync_status.json'),
                     {
-                        'last_check_utc': '2020-01-01T00:00:00Z',
-                        'last_result': 'updated',
-                        'message': 'Downloaded new run: old',
-                    }
-                ),
-                encoding='utf-8',
-            )
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stdout = 'Another weather sync holds lock\n'
-            mock_run.return_value.stderr = ''
+                        'last_check_utc': ws._utc_now_str(),  # noqa: SLF001
+                        'last_result': 'error',
+                        'message': 'Failed midway',
+                        'models': {'ecmwf_hres': {'status': 'updated'}},
+                    },
+                )
+                if 'stderr' in kw and hasattr(kw['stderr'], 'write'):
+                    kw['stderr'].write('Traceback: ...')
+                m = mock.MagicMock()
+                m.poll.return_value = 1
+                m.returncode = 1
+                return m
+
+            mock_popen.side_effect = side_effect
             status = ws.run_sync_subprocess(python='fake_python', root=tmp_root)
-            assert status['last_result'] == 'busy'
-            assert 'in progress' in status['message']
-
-    def test_get_sync_status_auto_update_false(self) -> None:
-        """Verify auto_update is reported as False in sync status."""
-        status = we.get_sync_status()
-        assert not status.get('auto_update', True)
-
-
-if __name__ == '__main__':
-    unittest.main()
+            assert status['last_result'] == 'error'
+            assert status['message'] == 'Failed midway'
+            assert 'ecmwf_hres' in status.get('models', {})

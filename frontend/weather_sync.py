@@ -20,6 +20,7 @@ needs on top of it:
 * the frontend data-directory convention (``$OPENHYDRONET_WEATHER_DATA_DIR`` or
   ``~/.cache/openhydronet/weather``);
 * an advisory ``sync.lock`` so two server instances on one host never run the
+import tempfile
   same synchronisation twice;
 * failure isolation between weather models (dynamical.org, ECMWF Open Data,
   NOAA PSL): a failed model is recorded in ``sync_status.json`` and does not
@@ -38,6 +39,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -416,7 +418,7 @@ def run_sync_subprocess(
     models: Sequence[str] | None = None,
     *,
     force: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, Any] | bool:
     """Run one sync in a separate process and return the resulting status."""
     resolved_root = str(Path(root or weather_data_root()).resolve())
     Path(resolved_root).mkdir(parents=True, exist_ok=True)
@@ -443,18 +445,37 @@ def run_sync_subprocess(
     if force:
         cmd.append('--force')
     started = _utc_now_str()
-    proc = subprocess.run(  # noqa: S603
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-        check=False,
-        cwd=_REPO_ROOT,
-    )
+
+    with (
+        tempfile.TemporaryFile(mode='w+', encoding='utf-8') as out_f,
+        tempfile.TemporaryFile(mode='w+', encoding='utf-8') as err_f,
+    ):
+        proc = subprocess.Popen(  # noqa: S603
+            cmd,
+            stdout=out_f,
+            stderr=err_f,
+            cwd=_REPO_ROOT,
+        )
+        start_time = time.monotonic()
+        while proc.poll() is None:
+            if time.monotonic() - start_time > SUBPROCESS_TIMEOUT_S:
+                proc.kill()
+                proc.wait()
+                logger.error(
+                    'Weather sync subprocess timed out after %s seconds',
+                    SUBPROCESS_TIMEOUT_S,
+                )
+                return False
+            time.sleep(0.5)
+
+        out_f.seek(0)
+        stdout = out_f.read()
+        err_f.seek(0)
+        stderr = err_f.read()
     _append_log(
         resolved_root,
         f'\n=== {started} {" ".join(cmd)} (exit {proc.returncode})\n'
-        f'{proc.stdout}{proc.stderr}',
+        f'{stdout}{stderr}',
     )
     status = read_sync_status(resolved_root)
     if (status.get('last_check_utc') or '') < started:
@@ -468,7 +489,7 @@ def run_sync_subprocess(
                 }
             )
         else:
-            stderr_lines = (proc.stderr or '').strip().splitlines()
+            stderr_lines = (stderr or '').strip().splitlines()
             detail = (
                 stderr_lines[-1]
                 if stderr_lines
