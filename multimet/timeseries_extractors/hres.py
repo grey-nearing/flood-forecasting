@@ -168,12 +168,19 @@ def decode_grib2_message(
           pds_nums = grib_tags.get("GRIB_PDS_TEMPLATE_NUMBERS", "").split()
     if param and len(pds_nums) >= 2:
       cat_num = (int(pds_nums[0]), int(pds_nums[1]))
+      is_msl_surface = (
+          grib_tags.get("GRIB_SHORT_NAME") == "0-MSL"
+          or (len(pds_nums) > 13 and int(pds_nums[13]) == 101)
+      )
       pds_to_param = {
           (0, 0): "2t",
-          (3, 0): "sp",
+          (3, 0): "msl" if is_msl_surface else "sp",
+          (3, 1): "msl",
           (1, 193): "tp",
           (1, 52): "tp",
           (1, 8): "tp",
+          (2, 2): "10u",
+          (2, 3): "10v",
           (4, 9): "ssr",
           (180, 176): "ssr",
           (5, 5): "str",
@@ -207,6 +214,7 @@ def decode_grib2_message(
     pos = 16
     end = len(raw_bytes) - 4
     cat_num_hdr: tuple[int, int] | None = None
+    surface_type_hdr: int | None = None
     data_bytes: bytes | None = None
     while pos + 5 <= end:
       sec_len, sec_num = struct.unpack(">IB", raw_bytes[pos : pos + 5])
@@ -215,16 +223,21 @@ def decode_grib2_message(
       sec = raw_bytes[pos : pos + sec_len]
       if sec_num == 4 and sec_len >= 11:
         cat_num_hdr = (sec[9], sec[10])
+        if sec_len >= 23:
+          surface_type_hdr = sec[22]
       elif sec_num == 7:
         data_bytes = sec[5:]
       pos += sec_len
     if param and cat_num_hdr is not None:
       pds_to_param = {
           (0, 0): "2t",
-          (3, 0): "sp",
+          (3, 0): "msl" if surface_type_hdr == 101 else "sp",
+          (3, 1): "msl",
           (1, 193): "tp",
           (1, 52): "tp",
           (1, 8): "tp",
+          (2, 2): "10u",
+          (2, 3): "10v",
           (4, 9): "ssr",
           (180, 176): "ssr",
           (5, 5): "str",

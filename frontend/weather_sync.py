@@ -48,6 +48,10 @@ if os.name == 'nt':
 else:
     import fcntl
 
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 from multimet.weather_fetcher.config import (
     DEFAULT_SYNC_MODELS,
     DYNAMICAL_MODELS,
@@ -62,6 +66,7 @@ from multimet.weather_fetcher.sync import (
     IncompleteRunError,
     aggregate_rates,
     current_models_metadata,
+    open_dynamical_catalog,
     sync_all_models,
 )
 from multimet.weather_fetcher.sync import (
@@ -150,11 +155,12 @@ def _provider_of(model_key: str) -> str:
 
 
 def _provider_groups(models: Sequence[str]) -> list[list[str]]:
-    """Split models into one ordered group per upstream provider."""
-    groups: dict[str, list[str]] = {}
+    """Split models into one isolated single-model group per model."""
+    groups: list[list[str]] = []
     for model_key in models:
-        groups.setdefault(_provider_of(model_key), []).append(model_key)
-    return list(groups.values())
+        _provider_of(model_key)
+        groups.append([model_key])
+    return groups
 
 
 def _remove_own_partial_dirs(root: str, log: Callable[[str], None]) -> None:
@@ -292,19 +298,30 @@ def sync_latest(  # noqa: PLR0913
 
         updated: list[str] = []
         errors: dict[str, str] = {}
+        active_catalog = catalog
         for group in groups:
             try:
+                if (
+                    active_catalog is None
+                    and open_dataset is None
+                    and any(
+                        DYNAMICAL_MODELS[m]['source']
+                        in ('dynamical', 'dynamical_analysis')
+                        for m in group
+                    )
+                ):
+                    active_catalog = open_dynamical_catalog()
                 result = sync_all_models(
                     data_dir=resolved_root,
                     models=group,
                     force=force,
                     log=log,
-                    catalog=catalog,
+                    catalog=active_catalog,
                     open_dataset=open_dataset,
                     cpc_cache_dir=cpc_cache_dir,
                 )
             except (OSError, RuntimeError, ValueError, KeyError) as exc:
-                # Provider isolation: record failure per model in status.
+                # Model isolation: record failure per model in status.
                 _remove_own_partial_dirs(resolved_root, log)
                 message = f'{type(exc).__name__}: {exc}'
                 log(f'[{", ".join(group)}] sync failed: {message}')
@@ -359,6 +376,7 @@ def find_sync_python() -> str | None:
             capture_output=True,
             timeout=_SYNC_PYTHON_PROBE_TIMEOUT_S,
             check=False,
+            cwd=_REPO_ROOT,
         )
         if probe.returncode == 0:
             return python
@@ -413,13 +431,29 @@ def run_sync_subprocess(
         text=True,
         timeout=SUBPROCESS_TIMEOUT_S,
         check=False,
+        cwd=_REPO_ROOT,
     )
     _append_log(
         resolved_root,
         f'\n=== {started} {" ".join(cmd)} (exit {proc.returncode})\n'
         f'{proc.stdout}{proc.stderr}',
     )
-    return read_sync_status(resolved_root)
+    status = read_sync_status(resolved_root)
+    if proc.returncode != 0 and (status.get('last_check_utc') or '') < started:
+        detail = (
+            (proc.stderr or proc.stdout or '').strip().splitlines()[-1:]
+            or [f'Sync subprocess exited with code {proc.returncode}']
+        )[0]
+        status.update(
+            {
+                'last_check_utc': _utc_now_str(),
+                'check_interval_minutes': CHECK_INTERVAL_MINUTES,
+                'last_result': 'error',
+                'message': detail,
+            }
+        )
+        _write_json_atomic(str(Path(resolved_root) / SYNC_STATUS_FILE), status)
+    return status
 
 
 _SYNC_THREAD: threading.Thread | None = None
