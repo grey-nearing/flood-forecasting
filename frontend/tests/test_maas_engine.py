@@ -373,6 +373,9 @@ def _fake_requests_get(
             'flow_25p': [1950.0 + 10.5 * s for s in range(steps)] + [''],
             'flow_75p': [2400.0 + 13.0 * s for s in range(steps)] + [''],
             'flow_max': [2750.0 + 15.0 * s for s in range(steps)] + [''],
+            'high_res': [2120.0 + 11.0 * s for s in range(steps)] + [''],
+            'ensemble_01': [1750.0 + 9.0 * s for s in range(steps)] + [''],
+            'ensemble_02': [2750.0 + 15.0 * s for s in range(steps)] + [''],
         }
     elif '/returnperiods/' in url:
         payload = {
@@ -962,6 +965,11 @@ class TestMaaSServerEndpoints(unittest.TestCase):
             == expected_geoglows_steps
         )
         assert gg_tl['central'][0] == pytest.approx(2100.0)
+        assert gg_tl['mean'][0] == pytest.approx(2150.0)
+        assert gg_tl['deterministic'][0] == pytest.approx(2120.0)
+        assert set(gg_tl['members']) == {'member01', 'member02'}
+        assert gg_tl['members']['member01'][0] == pytest.approx(1750.0)
+        assert gg_tl['members']['member02'][0] == pytest.approx(2750.0)
         fh_tl = data['timeline']['series']['floodhub']
         assert fh_tl['cadence'] == 'daily'
         assert (
@@ -1140,7 +1148,7 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         ) > _MIN_CROSS_NETWORK_AREA_KM2
 
     def test_maas_multi_hydrofabric_ui_controls_present(self) -> None:
-        """Verify multi-hydrofabric toggle and GloFAS ensemble hooks in UI."""
+        """Verify multi-hydrofabric and ensemble UI hooks in index.html."""
         html_path = (
             Path(__file__).resolve().parents[1] / 'static' / 'index.html'
         )
@@ -1155,6 +1163,21 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         assert 'maasGlofasRangeEnabled' in html_text
         assert 'toggleMaaSGlofasRange' in html_text
         assert 'appendMaaSGlofasRangeDatasets' in html_text
+        assert 'maasGlofasSubmenuHtml' in html_text
+        assert 'maasGeoglowsEnsembleEnabled' in html_text
+        assert 'toggleMaaSGeoglowsEnsemble' in html_text
+        assert 'appendMaaSGeoglowsEnsembleDatasets' in html_text
+        assert 'maasGeoglowsRangeEnabled' in html_text
+        assert 'toggleMaaSGeoglowsRange' in html_text
+        assert 'appendMaaSGeoglowsRangeDatasets' in html_text
+        assert 'maasGeoglowsSubmenuHtml' in html_text
+        assert 'overrideMaaSModelReach' in html_text
+        assert 'findNearestMaaSFeatureForModel' in html_text
+        assert 'applyMaaSModelOverrideToData' in html_text
+        assert 'toggleMaaSMovingModel' in html_text
+        assert 'draggable: canMoveModelDots' in html_text
+        assert 'drawMaaSThresholdMarkerShape' in html_text
+        assert 'providerList.flatMap' in html_text
 
     def test_live_network_status_coloring(self) -> None:
         """Verify live flow percentile bins and exceedance rank coloring."""

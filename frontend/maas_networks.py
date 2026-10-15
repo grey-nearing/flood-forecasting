@@ -54,6 +54,7 @@ from maas.networks import (
     build_geoglows_pyramid,
     build_glofas_pyramid,
     extract_level_features,
+    extract_prediction_points,
     load_geoglows_lookup,
     load_network_pyramid,
     lod_for_zoom,
@@ -74,6 +75,7 @@ from maas.tools.build_network_pyramids import (
 _LOG = logging.getLogger(__name__)
 
 _PROMOTE_MAX_ZOOM: int = 8
+_PREDICTION_POINTS_MIN_ZOOM: int = 7
 _MAX_PROMOTED_HITS: int = 250
 _MIN_LINE_VERTICES: int = 2
 _GLOFAS_OWS_TOP_LAT: float = 75.0
@@ -651,6 +653,19 @@ def get_model_network(  # noqa: PLR0913, PLR0917
         )
         props['last_refreshed_utc'] = get_last_refresh_iso(model)
 
+    props['prediction_points'] = (
+        extract_prediction_points(
+            model,
+            _network(model),
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+            min_area_km2=float(props.get('min_area_km2') or 0.0),
+        )
+        if zoom >= _PREDICTION_POINTS_MIN_ZOOM
+        else []
+    )
     props['feature_count'] = len(feats)
     return {'type': 'FeatureCollection', 'properties': props, 'features': feats}
 

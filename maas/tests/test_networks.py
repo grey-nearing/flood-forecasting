@@ -31,6 +31,7 @@ from maas.networks import (
     GLOFAS_LOD,
     as_linkno,
     extract_level_features,
+    extract_prediction_points,
     glofas_cell_center,
     glofas_cell_polygon,
     is_geoglows_river_id,
@@ -485,3 +486,68 @@ class TestMainStemTracing:
         assert len(chain) == _EXPECTED_CHAIN_LEN
         assert snap_km is not None
         assert snap_km < 1.0
+
+
+class TestExtractPredictionPoints:
+    """Tests discrete prediction point extraction and HYBAS deduplication."""
+
+    def test_floodhub_deduplicates_by_hybas_and_filters_forecast(self) -> None:
+        """Verify FloodHub keeps one max-area forecast reach per HYBAS_L12."""
+        fh_net = {
+            'reach_lon': np.array([-90.20, -90.19, -90.15], dtype=np.float32),
+            'reach_lat': np.array([38.62, 38.625, 38.64], dtype=np.float32),
+            'reach_area': np.array([60.0, 218000.0, 5000.0], dtype=np.float32),
+            'reach_hyriv_id': np.array(
+                [70000101, 70000102, 70000103], dtype=np.int32
+            ),
+            'reach_hybas_l12': np.array(
+                [_EXPECTED_HYBAS_L12, _EXPECTED_HYBAS_L12, 0], dtype=np.int64
+            ),
+            'reach_order': np.array([3, 8, 5], dtype=np.int8),
+        }
+        pts = extract_prediction_points(
+            'floodhub', fh_net, -91.0, 38.0, -89.0, 39.0
+        )
+        assert len(pts) == 1
+        assert pts[0]['gauge_id'] == f'hybas_{_EXPECTED_HYBAS_L12}'
+        assert pts[0]['river_id'] == 'HYRIV_70000102'
+        assert pts[0]['upstream_area_km2'] == pytest.approx(218000.0)
+        assert pts[0]['has_forecast'] is True
+
+        # Snapping near the side-ditch (-90.20, 38.62) still resolves to the
+        # main-stem reach (HYRIV_70000102) inside that HYBAS_L12 gauge polygon.
+        snapped = snap_floodhub_reach_from_network(fh_net, 38.62, -90.20)
+        assert snapped is not None
+        assert snapped['reach_id'] == 'HYRIV_70000102'
+        assert snapped['gauge_id'] == f'hybas_{_EXPECTED_HYBAS_L12}'
+
+    def test_glofas_and_geoglows_extract_prediction_points(self) -> None:
+        """Verify GloFAS cell centers and GEOGLOWS reaches are extracted."""
+        # GloFAS row/col for 38.625N, -90.175E:
+        # r = int(round((89.975 - 38.625) / 0.05)) = 1027
+        # c = int(round((-90.175 - (-179.975)) / 0.05)) = 1796
+        lin_idx = 1027 * 7200 + 1796
+        gl_net = {
+            'cell_lin': np.array([lin_idx], dtype=np.int32),
+            'cell_area': np.array([1800000.0], dtype=np.float32),
+        }
+        gl_pts = extract_prediction_points(
+            'glofas', gl_net, -91.0, 38.0, -89.0, 39.0
+        )
+        assert len(gl_pts) == 1
+        assert gl_pts[0]['lat'] == pytest.approx(38.625, abs=1e-3)
+        assert gl_pts[0]['lon'] == pytest.approx(-90.175, abs=1e-3)
+        assert gl_pts[0]['has_forecast'] is True
+
+        gg_net = {
+            'reach_lon': np.array([-90.18], dtype=np.float32),
+            'reach_lat': np.array([38.63], dtype=np.float32),
+            'reach_area': np.array([1795000.0], dtype=np.float32),
+            'reach_linkno': np.array([_EXPECTED_LINKNO], dtype=np.int32),
+        }
+        gg_pts = extract_prediction_points(
+            'geoglows', gg_net, -91.0, 38.0, -89.0, 39.0
+        )
+        assert len(gg_pts) == 1
+        assert gg_pts[0]['river_id'] == _EXPECTED_LINKNO
+        assert gg_pts[0]['has_forecast'] is True

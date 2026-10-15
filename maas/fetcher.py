@@ -1251,7 +1251,7 @@ class MaaSDataFetcher:
                     None,
                 )
             rp_key = f'geoglows_rp_{rid}'
-            fc_key = f'geoglows_fc_{rid}'
+            fc_key = f'geoglows_fc_v2_{rid}'
             is_live_gg = not hasattr(self.geoglows.fetch_forecast, '_mock_name')
             gg_r = self.flood_cache.get(rp_key, max_age_s=180 * 86400)
             gg_f_cached = (
@@ -1364,10 +1364,10 @@ class MaaSDataFetcher:
         reaches['floodhub'] = {
             **reaches['floodhub'],
             'gauge_id': eff_gauge_id,
-            'lat': ((fh_fc or {}).get('gauge_location') or {}).get('lat')
-            or reaches['floodhub'].get('lat'),
-            'lon': ((fh_fc or {}).get('gauge_location') or {}).get('lon')
-            or reaches['floodhub'].get('lon'),
+            'lat': reaches['floodhub'].get('lat')
+            or ((fh_fc or {}).get('gauge_location') or {}).get('lat'),
+            'lon': reaches['floodhub'].get('lon')
+            or ((fh_fc or {}).get('gauge_location') or {}).get('lon'),
             'distance_km': (fh_fc or {}).get('distance_km')
             if (fh_fc or {}).get('distance_km') is not None
             else reaches['floodhub'].get('offset_km'),

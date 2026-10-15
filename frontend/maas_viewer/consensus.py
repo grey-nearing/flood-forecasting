@@ -369,6 +369,16 @@ def build_aligned_timeline(  # noqa: PLR0913
         if gg_fc
         else {}
     )
+    gg_mean_d = (
+        _timestamp_series((gg_fc or {}).get('data'), 'flow_avg')
+        if gg_fc
+        else {}
+    )
+    gg_hres_d = (
+        _timestamp_series((gg_fc or {}).get('data'), 'high_res')
+        if gg_fc
+        else {}
+    )
     gg_p25_d = (
         _timestamp_series((gg_fc or {}).get('data'), 'flow_25p')
         if gg_fc
@@ -393,7 +403,16 @@ def build_aligned_timeline(  # noqa: PLR0913
     for native in gl_native.values():
         gl_ts |= set(native)
     gl_ts |= set(gl_p25_d) | set(gl_p75_d) | set(gl_max_d) | set(gl_min_d)
-    dates = sorted(set(fh_daily) | gl_ts | set(gg_daily))
+    gg_ts = (
+        set(gg_daily)
+        | set(gg_mean_d)
+        | set(gg_hres_d)
+        | set(gg_p25_d)
+        | set(gg_p75_d)
+        | set(gg_max_d)
+        | set(gg_min_d)
+    )
+    dates = sorted(set(fh_daily) | gl_ts | gg_ts)
     timeline_series: dict[str, Any] = {}
     if 'floodhub' in models and fh_daily:
         fh_aligned = align_daily_series(fh_daily, dates)
@@ -422,16 +441,19 @@ def build_aligned_timeline(  # noqa: PLR0913
             'members': _align_glofas_members(gl_fc, dates),
             'cadence': _infer_cadence_label(tuple(gl_ts)),
         }
-    if 'geoglows' in models and gg_daily:
+    if 'geoglows' in models and gg_ts:
         gg_aligned = align_daily_series(gg_daily, dates)
         timeline_series['geoglows'] = {
             'central': gg_aligned,
             'median': gg_aligned,
+            'mean': align_daily_series(gg_mean_d, dates),
+            'deterministic': align_daily_series(gg_hres_d, dates),
             'p25': align_daily_series(gg_p25_d, dates),
             'p75': align_daily_series(gg_p75_d, dates),
             'max': align_daily_series(gg_max_d, dates),
             'min': align_daily_series(gg_min_d, dates),
-            'cadence': _infer_cadence_label(tuple(gg_daily)),
+            'members': _align_glofas_members(gg_fc, dates),
+            'cadence': _infer_cadence_label(tuple(gg_ts)),
         }
     return {
         'dates': dates,

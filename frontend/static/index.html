@@ -414,9 +414,9 @@
         </div>
         <!-- Forecast view: selected reach, multi-select model pill buttons, and hydrograph -->
         <div id="maasForecastViewContainer" class="hidden flex-1 min-w-0 h-full flex flex-col gap-3 p-5 bg-[#f8f9fa] border-l border-[#dadce0]">
-          <div class="flex items-center gap-3 flex-wrap">
-            <h2 id="maasStationTitle" class="flex-1 min-w-[180px] truncate text-sm font-semibold text-[#202124]"></h2>
-            <div id="maasForecastMultiModelList" role="group" aria-label="Forecast models to plot (click one or multiple)" class="flex items-center gap-1.5 flex-wrap"></div>
+          <div class="flex items-start gap-3 flex-wrap">
+            <h2 id="maasStationTitle" class="flex-1 min-w-[180px] truncate text-sm font-semibold text-[#202124] pt-1"></h2>
+            <div id="maasForecastMultiModelList" role="group" aria-label="Forecast models to plot (click one or multiple)" class="flex items-start gap-2 flex-wrap"></div>
             <button id="maasCloseForecastBtn" type="button" title="Close forecast (Esc)" aria-label="Close forecast" class="p-1.5 rounded-md text-[#5f6368] hover:text-[#202124] hover:bg-[#f1f3f4] transition">
               <i data-lucide="x" class="w-4 h-4"></i>
             </button>
@@ -12352,6 +12352,8 @@
     const selectedMaaSModels = new Set(['glofas']); // 0..3 deterministic/central models plotted in the forecast view
     let maasGlofasEnsembleEnabled = false; // Forecast-view-only sub-option under GloFAS for the 50 actual ensemble member traces
     let maasGlofasRangeEnabled = false; // Forecast-view-only sub-option under GloFAS for the full Min–Max ensemble range
+    let maasGeoglowsEnsembleEnabled = false; // Forecast-view-only sub-option under GEOGLOWS for the 51 actual ensemble member traces
+    let maasGeoglowsRangeEnabled = false; // Forecast-view-only sub-option under GEOGLOWS for the full Min–Max ensemble range
     // Native GloFAS v4 reference series used for BOTH the GloFAS hydrograph line and the backend
     // consensus / return-period exceedance (`/api/maas/forecast?glofas_reference=...`).
     const MAAS_GLOFAS_REFERENCES = {
@@ -12360,6 +12362,12 @@
       mean: { label: 'Ensemble Mean', field: 'mean' }
     };
     let maasGlofasReference = 'control';
+    const MAAS_GEOGLOWS_REFERENCES = {
+      median: { label: 'Ensemble Median', field: 'median' },
+      mean: { label: 'Ensemble Mean', field: 'mean' },
+      high_res: { label: 'High-Res (HRES)', field: 'deterministic' }
+    };
+    let maasGeoglowsReference = 'median';
     // Daily-mean series (FloodHub, GloFAS `dis24`) are drawn at 00:00 UTC; GEOGLOWS points are instantaneous 3-hourly values.
     const MAAS_CADENCE_NOTES = { floodhub: 'daily mean', glofas: 'daily mean', geoglows: '3-hourly instantaneous' };
     let currentMaaSView = 'map'; // 'map' | 'forecast'
@@ -12368,11 +12376,17 @@
     let currentMaaSForecastNote = null; // loading / error text while there is no payload
     let maasForecastFullPending = false; // true while the 3-model background fetch is still in flight
     let maasForecastRequestSeq = 0; // drops responses superseded by a newer click or a close
+    let activeMaaSMovingModel = null; // 'floodhub' | 'glofas' | 'geoglows' | null when click-moving a single model dot
+    let currentMaaSModelOverrides = {}; // { [modelKey]: { lat, lon, snappedOnClient, meta, data } } manual reach overrides
+    let maasOverrideRequestSeq = 0; // sequence counter for independent single-model dot relocation fetches
+    let maasMapMoveClickBound = false;
     let maasChart = null;
     let maasRiversLayerGroup = null;
     const maasModelSubLayers = {}; // { floodhub: L.LayerGroup, glofas: L.LayerGroup, geoglows: L.LayerGroup }
     const maasRiversLoadedByModel = {}; // { [model]: view }
     const maasRiversAbortByModel = {}; // { [model]: AbortController }
+    const maasPredictionPointsByModel = {}; // { [model]: Array<{ lat, lon, gauge_id, river_id, reach_id, upstream_area_km2, area_min_km2, has_forecast }> }
+    const MAAS_PREDICTION_DOTS_MIN_ZOOM = 8; // Zoom threshold where discrete model prediction points are drawn as dots on the river map
     let maasRiversAbortController = null;
     let maasRiverRenderer = null;
     let maasActiveProbeMarker = null;
@@ -12432,6 +12446,16 @@
       const dot = document.getElementById('maasMapModelDot');
       const caption = document.getElementById('maasNetworkCaption');
       if (!caption) return;
+      if (activeMaaSMovingModel && MAAS_MODELS[activeMaaSMovingModel]) {
+        const mv = MAAS_MODELS[activeMaaSMovingModel];
+        const mc = mv.mapColor || mv.color;
+        if (dot) {
+          dot.classList.remove('hidden');
+          dot.style.background = mc;
+        }
+        caption.innerHTML = `<span style="color:${mc};font-weight:600">Moving ${maasEscapeHtml(mv.shortName)} dot</span> · Click any river reach (or drag dot) · Esc to cancel`;
+        return;
+      }
       if (activeMapModels.length <= 1) {
         const key = activeMapModels[0] || currentMaaSModel || 'glofas';
         const meta = MAAS_MODELS[key] || MAAS_MODELS.glofas;
@@ -12442,11 +12466,15 @@
         caption.textContent = meta.networkLabel;
       } else {
         if (dot) dot.classList.add('hidden');
-        caption.innerHTML = activeMapModels.map(k => {
+        const netBadges = activeMapModels.map(k => {
           const m = MAAS_MODELS[k];
           const mc = m.mapColor || m.color;
           return `<span class="inline-flex items-center gap-1 mr-2"><span class="w-2 h-2 rounded-full inline-block" style="background:${mc}"></span><span>${maasEscapeHtml(m.streamMap)}</span></span>`;
         }).join('');
+        const dragHint = currentMaaSView === 'forecast'
+          ? `<span class="text-[#5f6368] text-[10px] ml-1" title="Drag any colored model dot or click a dot then click a reach to relocate that model independently">· Drag or click model dots to adjust</span>`
+          : '';
+        caption.innerHTML = `${netBadges}${dragHint}`;
       }
     }
 
@@ -12524,49 +12552,73 @@
       </button>`;
     }
 
-    function maasGlofasForecastGroupHtml(isDetSelected, isEnsSelected, isRangeSelected) {
+    function maasGlofasSubmenuHtml(isDetSelected, isEnsSelected, isRangeSelected) {
       const m = MAAS_MODELS.glofas;
-      const refMeta = MAAS_GLOFAS_REFERENCES[maasGlofasReference] || MAAS_GLOFAS_REFERENCES.control;
-      const detCls = isDetSelected
-        ? 'bg-[#e8f0fe] text-[#174ea6] font-medium'
-        : 'bg-[#f8f9fa] text-[#5f6368] hover:bg-[#f1f3f4]';
       const ensCls = isEnsSelected
-        ? 'bg-[#fef3e8] text-[#9a3412] font-medium'
-        : 'bg-[#f8f9fa] text-[#5f6368] hover:bg-[#f1f3f4]';
+        ? 'bg-[#fef3e8] border-[#f6c8a0] text-[#9a3412] font-medium'
+        : 'bg-[#f8f9fa] border-[#dadce0] text-[#5f6368] hover:bg-[#f1f3f4]';
       const rangeCls = isRangeSelected
-        ? 'bg-[#fef3e8] text-[#9a3412] font-medium'
-        : 'bg-[#f8f9fa] text-[#5f6368] hover:bg-[#f1f3f4]';
-      const groupBorder = (isDetSelected || isEnsSelected || isRangeSelected)
-        ? 'border-[#d2e3fc] shadow-[0_1px_2px_rgba(26,115,232,0.08)]'
-        : 'border-[#dadce0]';
+        ? 'bg-[#fef3e8] border-[#f6c8a0] text-[#9a3412] font-medium'
+        : 'bg-[#f8f9fa] border-[#dadce0] text-[#5f6368] hover:bg-[#f1f3f4]';
       const refOptions = Object.keys(MAAS_GLOFAS_REFERENCES).map(key =>
         `<option value="${key}"${key === maasGlofasReference ? ' selected' : ''}>${maasEscapeHtml(MAAS_GLOFAS_REFERENCES[key].label)}</option>`
       ).join('');
-      return `<div id="maasGlofasForecastGroup" class="inline-flex items-stretch rounded-lg border overflow-hidden transition ${groupBorder}" role="group" aria-label="Copernicus GloFAS forecast options">
-        <button type="button" data-maas-forecast-model="glofas" role="checkbox" aria-checked="${isDetSelected}" aria-label="Copernicus GloFAS reference trace (${maasEscapeHtml(refMeta.label)})" title="Copernicus GloFAS reference trace: ${maasEscapeHtml(refMeta.label)} (${maasEscapeHtml(m.streamMap)})" class="flex items-center gap-1.5 text-xs px-2.5 py-1.5 transition ${detCls}">
-          <span class="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0" style="border-color:${isDetSelected ? m.color : '#80868b'}">
-            ${isDetSelected ? `<span class="w-1.5 h-1.5 rounded-full" style="background:${m.color}"></span>` : ''}
-          </span>
-          <span class="truncate">${maasEscapeHtml(m.shortName)}</span>
-        </button>
-        <label class="flex items-center gap-1 text-[11px] px-2 py-1.5 border-l border-[#dadce0] bg-[#f8f9fa] text-[#5f6368]" title="Native GloFAS series used for the GloFAS hydrograph line, the consensus peak, and the return-period exceedance">
-          <span class="whitespace-nowrap">GloFAS Reference:</span>
-          <select id="maasGlofasReferenceSelect" data-maas-glofas-reference="select" aria-label="GloFAS reference series" class="text-[11px] bg-white border border-[#dadce0] rounded px-1 py-0.5 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
+      const mutedCls = isDetSelected ? '' : 'opacity-60';
+      return `<div id="maasGlofasForecastGroup" class="flex flex-col gap-1 px-2 py-1.5 rounded-lg border border-[#dadce0] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)] text-[10.5px] transition ${mutedCls}" role="group" aria-label="Copernicus GloFAS suboptions">
+        <label class="flex items-center gap-1 text-[10.5px] text-[#5f6368]" title="Native GloFAS series used for the GloFAS hydrograph line, the consensus peak, and the return-period exceedance">
+          <select id="maasGlofasReferenceSelect" data-maas-glofas-reference="select" aria-label="GloFAS Reference:" class="w-full text-[10.5px] bg-[#f8f9fa] border border-[#dadce0] rounded px-1.5 py-0.5 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
             ${refOptions}
           </select>
         </label>
-        <button type="button" id="maasGlofasEnsembleBtn" data-maas-glofas-ensemble="toggle" role="checkbox" aria-checked="${isEnsSelected}" aria-label="Copernicus GloFAS 50-member ensemble traces" title="Plot all 50 Copernicus GloFAS ensemble member trajectories (Forecast View only)" class="flex items-center gap-1 text-[11px] px-2 py-1.5 border-l border-[#dadce0] transition ${ensCls}">
-          <span class="w-3 h-3 rounded border flex items-center justify-center flex-shrink-0" style="border-color:${isEnsSelected ? m.color : '#80868b'};background:${isEnsSelected ? m.color : 'transparent'}">
-            ${isEnsSelected ? '<span class="text-white text-[9px] leading-none font-bold">✓</span>' : ''}
-          </span>
-          <span>+ Ensemble</span>
-        </button>
-        <button type="button" id="maasGlofasRangeBtn" data-maas-glofas-range="toggle" role="checkbox" aria-checked="${isRangeSelected}" aria-label="Copernicus GloFAS full ensemble range (Min–Max)" title="Plot Copernicus GloFAS full ensemble range (Min–Max envelope, Forecast View only)" class="flex items-center gap-1 text-[11px] px-2 py-1.5 border-l border-[#dadce0] transition ${rangeCls}">
-          <span class="w-3 h-3 rounded border flex items-center justify-center flex-shrink-0" style="border-color:${isRangeSelected ? m.color : '#80868b'};background:${isRangeSelected ? m.color : 'transparent'}">
-            ${isRangeSelected ? '<span class="text-white text-[9px] leading-none font-bold">✓</span>' : ''}
-          </span>
-          <span>+ Range</span>
-        </button>
+        <div class="flex items-center gap-1">
+          <button type="button" id="maasGlofasEnsembleBtn" data-maas-glofas-ensemble="toggle" role="checkbox" aria-checked="${isEnsSelected}" aria-label="Copernicus GloFAS 50-member ensemble traces" title="Plot all 50 Copernicus GloFAS ensemble member trajectories (Forecast View only)" class="inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.5 rounded border transition ${ensCls}">
+            <span class="w-3 h-3 rounded border flex items-center justify-center flex-shrink-0" style="border-color:${isEnsSelected ? m.color : '#80868b'};background:${isEnsSelected ? m.color : 'transparent'}">
+              ${isEnsSelected ? '<span class="text-white text-[9px] leading-none font-bold">✓</span>' : ''}
+            </span>
+            <span>+ Ensemble</span>
+          </button>
+          <button type="button" id="maasGlofasRangeBtn" data-maas-glofas-range="toggle" role="checkbox" aria-checked="${isRangeSelected}" aria-label="Copernicus GloFAS full ensemble range (Min–Max)" title="Plot Copernicus GloFAS full ensemble range (Min–Max envelope, Forecast View only)" class="inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.5 rounded border transition ${rangeCls}">
+            <span class="w-3 h-3 rounded border flex items-center justify-center flex-shrink-0" style="border-color:${isRangeSelected ? m.color : '#80868b'};background:${isRangeSelected ? m.color : 'transparent'}">
+              ${isRangeSelected ? '<span class="text-white text-[9px] leading-none font-bold">✓</span>' : ''}
+            </span>
+            <span>+ Range</span>
+          </button>
+        </div>
+      </div>`;
+    }
+
+    function maasGeoglowsSubmenuHtml(isDetSelected, isEnsSelected, isRangeSelected) {
+      const m = MAAS_MODELS.geoglows;
+      const ensCls = isEnsSelected
+        ? 'bg-[#e6f7f1] border-[#8ce0c4] text-[#065f46] font-medium'
+        : 'bg-[#f8f9fa] border-[#dadce0] text-[#5f6368] hover:bg-[#f1f3f4]';
+      const rangeCls = isRangeSelected
+        ? 'bg-[#e6f7f1] border-[#8ce0c4] text-[#065f46] font-medium'
+        : 'bg-[#f8f9fa] border-[#dadce0] text-[#5f6368] hover:bg-[#f1f3f4]';
+      const refOptions = Object.keys(MAAS_GEOGLOWS_REFERENCES).map(key =>
+        `<option value="${key}"${key === maasGeoglowsReference ? ' selected' : ''}>${maasEscapeHtml(MAAS_GEOGLOWS_REFERENCES[key].label)}</option>`
+      ).join('');
+      const mutedCls = isDetSelected ? '' : 'opacity-60';
+      return `<div id="maasGeoglowsForecastGroup" class="flex flex-col gap-1 px-2 py-1.5 rounded-lg border border-[#dadce0] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)] text-[10.5px] transition ${mutedCls}" role="group" aria-label="GEOGLOWS ECMWF suboptions">
+        <label class="flex items-center gap-1 text-[10.5px] text-[#5f6368]" title="Native GEOGLOWS series used for the GEOGLOWS hydrograph reference line">
+          <select id="maasGeoglowsReferenceSelect" data-maas-geoglows-reference="select" aria-label="GEOGLOWS reference series" class="w-full text-[10.5px] bg-[#f8f9fa] border border-[#dadce0] rounded px-1.5 py-0.5 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
+            ${refOptions}
+          </select>
+        </label>
+        <div class="flex items-center gap-1">
+          <button type="button" id="maasGeoglowsEnsembleBtn" data-maas-geoglows-ensemble="toggle" role="checkbox" aria-checked="${isEnsSelected}" aria-label="GEOGLOWS ECMWF 51-member ensemble traces" title="Plot all 51 GEOGLOWS ECMWF ensemble member trajectories (Forecast View only)" class="inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.5 rounded border transition ${ensCls}">
+            <span class="w-3 h-3 rounded border flex items-center justify-center flex-shrink-0" style="border-color:${isEnsSelected ? m.color : '#80868b'};background:${isEnsSelected ? m.color : 'transparent'}">
+              ${isEnsSelected ? '<span class="text-white text-[9px] leading-none font-bold">✓</span>' : ''}
+            </span>
+            <span>+ Ensemble</span>
+          </button>
+          <button type="button" id="maasGeoglowsRangeBtn" data-maas-geoglows-range="toggle" role="checkbox" aria-checked="${isRangeSelected}" aria-label="GEOGLOWS ECMWF full ensemble range (Min–Max)" title="Plot GEOGLOWS ECMWF full ensemble range (Min–Max envelope, Forecast View only)" class="inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.5 rounded border transition ${rangeCls}">
+            <span class="w-3 h-3 rounded border flex items-center justify-center flex-shrink-0" style="border-color:${isRangeSelected ? m.color : '#80868b'};background:${isRangeSelected ? m.color : 'transparent'}">
+              ${isRangeSelected ? '<span class="text-white text-[9px] leading-none font-bold">✓</span>' : ''}
+            </span>
+            <span>+ Range</span>
+          </button>
+        </div>
       </div>`;
     }
 
@@ -12579,12 +12631,26 @@
             ? '[data-maas-glofas-range]'
             : activeEl.hasAttribute('data-maas-glofas-reference')
               ? '[data-maas-glofas-reference]'
-              : activeEl.hasAttribute('data-maas-forecast-model')
-                ? `[data-maas-forecast-model="${activeEl.getAttribute('data-maas-forecast-model')}"]`
-                : activeEl.hasAttribute('data-maas-map-model')
-                  ? `[data-maas-map-model="${activeEl.getAttribute('data-maas-map-model')}"]`
-                  : null)
+              : activeEl.hasAttribute('data-maas-geoglows-ensemble')
+                ? '[data-maas-geoglows-ensemble]'
+                : activeEl.hasAttribute('data-maas-geoglows-range')
+                  ? '[data-maas-geoglows-range]'
+                  : activeEl.hasAttribute('data-maas-geoglows-reference')
+                    ? '[data-maas-geoglows-reference]'
+                    : activeEl.hasAttribute('data-maas-forecast-model')
+                      ? `[data-maas-forecast-model="${activeEl.getAttribute('data-maas-forecast-model')}"]`
+                      : activeEl.hasAttribute('data-maas-map-model')
+                        ? `[data-maas-map-model="${activeEl.getAttribute('data-maas-map-model')}"]`
+                        : null)
         : null;
+      if (!selectedMaaSModels.has('glofas')) {
+        maasGlofasEnsembleEnabled = false;
+        maasGlofasRangeEnabled = false;
+      }
+      if (!selectedMaaSModels.has('geoglows')) {
+        maasGeoglowsEnsembleEnabled = false;
+        maasGeoglowsRangeEnabled = false;
+      }
       const mapList = document.getElementById('maasMapMultiModelList');
       if (mapList) {
         mapList.innerHTML = MAAS_MODEL_ORDER.map(k =>
@@ -12593,11 +12659,24 @@
       }
       const fcList = document.getElementById('maasForecastMultiModelList');
       if (fcList) {
-        fcList.innerHTML = MAAS_MODEL_ORDER.map(k =>
-          k === 'glofas'
-            ? maasGlofasForecastGroupHtml(selectedMaaSModels.has('glofas'), maasGlofasEnsembleEnabled, maasGlofasRangeEnabled)
-            : maasModelPillButtonHtml('data-maas-forecast-model', k, selectedMaaSModels.has(k))
-        ).join('');
+        fcList.innerHTML = MAAS_MODEL_ORDER.map(k => {
+          const btnHtml = maasModelPillButtonHtml('data-maas-forecast-model', k, selectedMaaSModels.has(k));
+          let subHtml = '';
+          if (k === 'glofas') {
+            subHtml = maasGlofasSubmenuHtml(
+              selectedMaaSModels.has('glofas'),
+              maasGlofasEnsembleEnabled,
+              maasGlofasRangeEnabled
+            );
+          } else if (k === 'geoglows') {
+            subHtml = maasGeoglowsSubmenuHtml(
+              selectedMaaSModels.has('geoglows'),
+              maasGeoglowsEnsembleEnabled,
+              maasGeoglowsRangeEnabled
+            );
+          }
+          return `<div class="inline-flex flex-col items-start gap-1">${btnHtml}${subHtml}</div>`;
+        }).join('');
       }
       if (focusSelector) {
         const nextFocus = document.querySelector(focusSelector);
@@ -12607,61 +12686,118 @@
     }
 
     function maasTotalActiveForecastSelections() {
-      return selectedMaaSModels.size + (maasGlofasEnsembleEnabled ? 1 : 0) + (maasGlofasRangeEnabled ? 1 : 0);
+      return selectedMaaSModels.size;
     }
 
-    function ensureMaaSGlofasForecastFetched() {
-      const hasGlofasPayload = currentMaaSForecastData && currentMaaSForecastData.models && currentMaaSForecastData.models.glofas;
-      if (!hasGlofasPayload && !maasForecastFullPending && currentMaaSProbe) {
+    function ensureMaaSModelForecastFetched(key) {
+      const hasModelPayload = currentMaaSForecastData && currentMaaSForecastData.models && currentMaaSForecastData.models[key];
+      if (!hasModelPayload && !maasForecastFullPending && currentMaaSProbe) {
         const p = currentMaaSProbe;
         fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta, true);
       }
     }
 
+    function ensureMaaSGlofasForecastFetched() {
+      ensureMaaSModelForecastFetched('glofas');
+    }
+
+    function ensureMaaSGeoglowsForecastFetched() {
+      ensureMaaSModelForecastFetched('geoglows');
+    }
+
     function toggleMaaSMultiModel(key) {
       if (!MAAS_MODELS[key]) return;
       if (selectedMaaSModels.has(key)) {
-        if (maasTotalActiveForecastSelections() <= 1) return; // keep at least one trace selected in forecast view
+        if (selectedMaaSModels.size <= 1) return; // keep at least one model selected in forecast view
         selectedMaaSModels.delete(key);
+        if (key === 'glofas') {
+          maasGlofasEnsembleEnabled = false;
+          maasGlofasRangeEnabled = false;
+        } else if (key === 'geoglows') {
+          maasGeoglowsEnsembleEnabled = false;
+          maasGeoglowsRangeEnabled = false;
+        }
       } else {
         selectedMaaSModels.add(key);
-        // If this model's forecast is not yet in currentMaaSForecastData and no full fetch is in flight, fetch all models now.
-        const hasModelPayload = currentMaaSForecastData && currentMaaSForecastData.models && currentMaaSForecastData.models[key];
-        if (!hasModelPayload && !maasForecastFullPending && currentMaaSProbe) {
-          const p = currentMaaSProbe;
-          fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta, true);
-        }
+        ensureMaaSModelForecastFetched(key);
       }
       renderMaaSMultiModelLists();
-      if (currentMaaSView === 'forecast') renderMaaSForecast();
+      if (currentMaaSView === 'forecast') {
+        if (currentMaaSForecastData) updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+        renderMaaSForecast();
+      }
     }
 
     function toggleMaaSGlofasEnsemble() {
       if (maasGlofasEnsembleEnabled) {
-        if (maasTotalActiveForecastSelections() <= 1) {
-          selectedMaaSModels.add('glofas');
-        }
         maasGlofasEnsembleEnabled = false;
       } else {
+        selectedMaaSModels.add('glofas');
         maasGlofasEnsembleEnabled = true;
         ensureMaaSGlofasForecastFetched();
       }
       renderMaaSMultiModelLists();
-      if (currentMaaSView === 'forecast') renderMaaSForecast();
+      if (currentMaaSView === 'forecast') {
+        if (currentMaaSForecastData) updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+        renderMaaSForecast();
+      }
     }
 
     function toggleMaaSGlofasRange() {
       if (maasGlofasRangeEnabled) {
-        if (maasTotalActiveForecastSelections() <= 1) {
-          selectedMaaSModels.add('glofas');
-        }
         maasGlofasRangeEnabled = false;
       } else {
+        selectedMaaSModels.add('glofas');
         maasGlofasRangeEnabled = true;
         ensureMaaSGlofasForecastFetched();
       }
       renderMaaSMultiModelLists();
-      if (currentMaaSView === 'forecast') renderMaaSForecast();
+      if (currentMaaSView === 'forecast') {
+        if (currentMaaSForecastData) updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+        renderMaaSForecast();
+      }
+    }
+
+    function toggleMaaSGeoglowsEnsemble() {
+      if (maasGeoglowsEnsembleEnabled) {
+        maasGeoglowsEnsembleEnabled = false;
+      } else {
+        selectedMaaSModels.add('geoglows');
+        maasGeoglowsEnsembleEnabled = true;
+        ensureMaaSGeoglowsForecastFetched();
+      }
+      renderMaaSMultiModelLists();
+      if (currentMaaSView === 'forecast') {
+        if (currentMaaSForecastData) updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+        renderMaaSForecast();
+      }
+    }
+
+    function toggleMaaSGeoglowsRange() {
+      if (maasGeoglowsRangeEnabled) {
+        maasGeoglowsRangeEnabled = false;
+      } else {
+        selectedMaaSModels.add('geoglows');
+        maasGeoglowsRangeEnabled = true;
+        ensureMaaSGeoglowsForecastFetched();
+      }
+      renderMaaSMultiModelLists();
+      if (currentMaaSView === 'forecast') {
+        if (currentMaaSForecastData) updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+        renderMaaSForecast();
+      }
+    }
+
+    function setMaaSGeoglowsReference(key) {
+      if (!MAAS_GEOGLOWS_REFERENCES[key] || key === maasGeoglowsReference) return;
+      maasGeoglowsReference = key;
+      selectedMaaSModels.add('geoglows');
+      ensureMaaSGeoglowsForecastFetched();
+      renderMaaSMultiModelLists();
+      if (currentMaaSView === 'forecast') {
+        if (currentMaaSForecastData) updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+        renderMaaSForecast();
+      }
     }
 
     // Switches the native GloFAS reference series (Control / Ensemble Median / Ensemble Mean). The hydrograph
@@ -12670,8 +12806,12 @@
     function setMaaSGlofasReference(key) {
       if (!MAAS_GLOFAS_REFERENCES[key] || key === maasGlofasReference) return;
       maasGlofasReference = key;
+      selectedMaaSModels.add('glofas');
       renderMaaSMultiModelLists();
-      if (currentMaaSView === 'forecast') renderMaaSForecast();
+      if (currentMaaSView === 'forecast') {
+        if (currentMaaSForecastData) updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+        renderMaaSForecast();
+      }
       if (currentMaaSProbe) {
         const p = currentMaaSProbe;
         fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta, true);
@@ -12692,6 +12832,9 @@
       }
       renderMaaSMultiModelLists();
       renderMaaSFlowLegend(currentMaaSModel);
+      if (currentMaaSView === 'forecast' && currentMaaSForecastData) {
+        updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+      }
       clearTimeout(maasLiveRefreshTimer);
       maasLiveRetryCount = 0;
       if (currentActiveTabId === 'tab-maas') fetchMaaSViewportRivers(false);
@@ -12704,6 +12847,18 @@
       if (!map.hasLayer(maasRiversLayerGroup)) maasRiversLayerGroup.addTo(map);
       if (!maasSnappedReachesLayerGroup) maasSnappedReachesLayerGroup = L.layerGroup();
       if (!map.hasLayer(maasSnappedReachesLayerGroup)) maasSnappedReachesLayerGroup.addTo(map);
+      if (!maasMapMoveClickBound) {
+        maasMapMoveClickBound = true;
+        map.on('click', (e) => {
+          if (currentActiveTabId === 'tab-maas' && currentMaaSView === 'forecast' && activeMaaSMovingModel) {
+            const targetKey = activeMaaSMovingModel;
+            const snapped = findNearestMaaSFeatureForModel(targetKey, e.latlng, 64);
+            if (snapped) {
+              overrideMaaSModelReach(targetKey, snapped.lat, snapped.lon, snapped.meta, true);
+            }
+          }
+        });
+      }
       // The Delineation tab's river layer would duplicate the MaaS reaches (and go stale on pan).
       if (riverLayerGroup && map.hasLayer(riverLayerGroup)) {
         map.removeLayer(riverLayerGroup);
@@ -12741,6 +12896,7 @@
       }
       const forecastBox = document.getElementById('maasForecastViewContainer');
       if (forecastBox) forecastBox.classList.toggle('hidden', !split);
+      updateMaaSMapNetworkCaption();
       [50, 250].forEach(ms => setTimeout(() => {
         if (map) map.invalidateSize();
         if (split && maasChart) maasChart.resize();
@@ -12749,7 +12905,10 @@
 
     function closeMaaSForecastView() {
       maasForecastRequestSeq++; // ignore a response that is still in flight
+      maasOverrideRequestSeq++;
       maasForecastFullPending = false;
+      activeMaaSMovingModel = null;
+      currentMaaSModelOverrides = {};
       setMaaSView('map');
       if (maasActiveProbeMarker && map) map.removeLayer(maasActiveProbeMarker);
       maasActiveProbeMarker = null;
@@ -12772,8 +12931,372 @@
       }).addTo(map);
     }
 
+    // Extracts discrete valid prediction points for `modelKey` from rendered GeoJSON features
+    // as a fallback when `geojson.properties.prediction_points` is not populated (e.g. coarse zoom < 7).
+    function deriveMaaSPredictionPointsFromFeatures(modelKey, features) {
+      if (!Array.isArray(features) || !features.length) return [];
+      const seen = new Map();
+      for (const feat of features) {
+        if (!feat || !feat.geometry) continue;
+        const p = feat.properties || {};
+        if (modelKey === 'floodhub') {
+          if (p.has_forecast === false || !p.gauge_id) continue;
+        } else if (modelKey === 'geoglows') {
+          if (!(p.river_id || p.reach_id)) continue;
+        }
+        const g = feat.geometry;
+        const lines = g.type === 'MultiLineString' ? (g.coordinates || []) : g.type === 'LineString' ? [g.coordinates || []] : [];
+        if (!lines.length || !lines[0].length) continue;
+        if (modelKey === 'glofas') {
+          for (const coords of lines) {
+            for (const [lonVal, latVal] of coords) {
+              if (!isFinite(latVal) || !isFinite(lonVal)) continue;
+              const qLon = Number((Math.round((lonVal - 0.025) / 0.05) * 0.05 + 0.025).toFixed(4));
+              const qLat = Number((Math.round((latVal - 0.025) / 0.05) * 0.05 + 0.025).toFixed(4));
+              const key = `glofas:${qLon}:${qLat}`;
+              const area = Number(p.upstream_area_km2 || 0);
+              const prev = seen.get(key);
+              if (!prev || area > Number(prev.upstream_area_km2 || 0)) {
+                seen.set(key, {
+                  lat: qLat,
+                  lon: qLon,
+                  gauge_id: null,
+                  river_id: null,
+                  reach_id: null,
+                  upstream_area_km2: area,
+                  area_min_km2: p.area_min_km2 || area,
+                  has_forecast: true,
+                  exceedance_rank: p.exceedance_rank,
+                  flow_percentile: p.flow_percentile,
+                  current_flow_m3s: p.current_flow_m3s,
+                  return_period_2yr: p.return_period_2yr,
+                });
+              }
+            }
+          }
+        } else {
+          const allVerts = lines.reduce((acc, c) => acc.concat(c), []);
+          if (!allVerts.length) continue;
+          const mid = allVerts[Math.floor(allVerts.length / 2)];
+          const lonVal = Number(mid[0]);
+          const latVal = Number(mid[1]);
+          if (!isFinite(latVal) || !isFinite(lonVal)) continue;
+          const reachId = p.river_id || p.reach_id || p.HYRIV_ID || null;
+          const gaugeId = p.gauge_id || null;
+          const key = modelKey === 'floodhub' ? `fh:${gaugeId}` : `gg:${reachId}`;
+          const area = Number(p.upstream_area_km2 || 0);
+          const prev = seen.get(key);
+          if (!prev || area > Number(prev.upstream_area_km2 || 0)) {
+            seen.set(key, {
+              lat: Number(latVal.toFixed(5)),
+              lon: Number(lonVal.toFixed(5)),
+              gauge_id: gaugeId,
+              river_id: reachId,
+              reach_id: reachId,
+              upstream_area_km2: area,
+              area_min_km2: p.area_min_km2 || area,
+              has_forecast: true,
+              exceedance_rank: p.exceedance_rank,
+              flow_percentile: p.flow_percentile,
+              current_flow_m3s: p.current_flow_m3s,
+              return_period_2yr: p.return_period_2yr,
+            });
+          }
+        }
+      }
+      return Array.from(seen.values());
+    }
+
+    function getMaaSPredictionPointsForModel(modelKey) {
+      const explicit = maasPredictionPointsByModel[modelKey];
+      if (Array.isArray(explicit) && explicit.length) return explicit;
+      const subGroup = maasModelSubLayers[modelKey];
+      if (!subGroup || typeof subGroup.eachLayer !== 'function') return [];
+      const feats = [];
+      subGroup.eachLayer((geoJsonLayer) => {
+        if (!geoJsonLayer || typeof geoJsonLayer.eachLayer !== 'function') return;
+        geoJsonLayer.eachLayer((featLayer) => {
+          if (featLayer && featLayer.feature) feats.push(featLayer.feature);
+        });
+      });
+      return deriveMaaSPredictionPointsFromFeatures(modelKey, feats);
+    }
+
+    // Finds the nearest discrete valid prediction point for `modelKey` on the map within `maxDistPx` pixels,
+    // returning `{ lat, lon, distPx, meta }` strictly locked onto a point with an underlying prediction for `modelKey`.
+    function findNearestMaaSFeatureForModel(modelKey, latlng, maxDistPx = 56) {
+      if (!map || !latlng) return null;
+      const predPts = getMaaSPredictionPointsForModel(modelKey);
+      if (!predPts.length) return null;
+      const targetPt = map.latLngToContainerPoint(latlng);
+      let best = null;
+      let bestDistPx = Infinity;
+      for (const pt of predPts) {
+        if (!pt || pt.has_forecast === false) continue;
+        const lat = Number(pt.lat);
+        const lon = Number(pt.lon);
+        if (!isFinite(lat) || !isFinite(lon)) continue;
+        const candPt = map.latLngToContainerPoint([lat, lon]);
+        const distPx = Math.hypot(candPt.x - targetPt.x, candPt.y - targetPt.y);
+        if (distPx <= maxDistPx && distPx < bestDistPx) {
+          bestDistPx = distPx;
+          const reachId = pt.river_id || pt.reach_id || null;
+          const gaugeId = pt.gauge_id || null;
+          best = {
+            lat,
+            lon,
+            distPx,
+            meta: {
+              network: modelKey,
+              gaugeId,
+              riverId: reachId,
+              upstreamAreaKm2: pt.upstream_area_km2,
+              areaMinKm2: pt.area_min_km2 || pt.upstream_area_km2,
+            }
+          };
+        }
+      }
+      return best;
+    }
+
+    function remapMaaSTimelineSeries(seriesObj, oldDates, unionDates) {
+      if (!seriesObj || typeof seriesObj !== 'object') return seriesObj;
+      const idxByDate = new Map();
+      (oldDates || []).forEach((d, i) => idxByDate.set(d, i));
+      const remapArr = (arr) => {
+        if (!Array.isArray(arr)) return arr;
+        return unionDates.map(d => {
+          const i = idxByDate.get(d);
+          return (i !== undefined && i < arr.length) ? arr[i] : null;
+        });
+      };
+      const out = Object.assign({}, seriesObj);
+      for (const field of ['central', 'deterministic', 'median', 'mean', 'p25', 'p75', 'min', 'max']) {
+        if (Array.isArray(out[field])) {
+          out[field] = remapArr(out[field]);
+        }
+      }
+      if (out.members && typeof out.members === 'object') {
+        const newMembers = {};
+        for (const [mk, mArr] of Object.entries(out.members)) {
+          newMembers[mk] = remapArr(mArr);
+        }
+        out.members = newMembers;
+      }
+      return out;
+    }
+
+    // Merges a single relocated model's forecast payload (`overrideEntry.data`) into `baseData`
+    // without modifying the other two models' locations, reaches, return periods, or hydrograph series.
+    function applyMaaSModelOverrideToData(baseData, modelKey, overrideEntry) {
+      if (!baseData || !overrideEntry || !MAAS_MODELS[modelKey]) return;
+      baseData.reaches = baseData.reaches || {};
+      baseData.virtual_station = baseData.virtual_station || {};
+      const vsKey = modelKey === 'floodhub' ? 'floodhub_gauge' : (modelKey === 'glofas' ? 'glofas_cell' : 'geoglows_reach');
+      const singleData = overrideEntry.data;
+      if (!singleData) {
+        // Optimistic coordinate update while the single-model fetch is in flight
+        const prevReach = Object.assign({}, baseData.reaches[modelKey] || baseData.virtual_station[vsKey] || {});
+        if (modelKey === 'glofas') {
+          prevReach.cell_center_lat = overrideEntry.lat;
+          prevReach.cell_center_lon = overrideEntry.lon;
+        } else {
+          prevReach.lat = overrideEntry.lat;
+          prevReach.lon = overrideEntry.lon;
+        }
+        if (overrideEntry.meta) {
+          if (modelKey === 'floodhub' && overrideEntry.meta.gaugeId) prevReach.gauge_id = overrideEntry.meta.gaugeId;
+          if (modelKey === 'geoglows' && overrideEntry.meta.riverId) prevReach.river_id = overrideEntry.meta.riverId;
+          if (overrideEntry.meta.upstreamAreaKm2) prevReach.upstream_area_km2 = overrideEntry.meta.upstreamAreaKm2;
+        }
+        prevReach.manual_override = true;
+        baseData.reaches[modelKey] = prevReach;
+        baseData.virtual_station[vsKey] = prevReach;
+        return;
+      }
+
+      baseData.models = baseData.models || {};
+      if (singleData.models && singleData.models[modelKey]) {
+        baseData.models[modelKey] = singleData.models[modelKey];
+      }
+
+      const newReach = Object.assign({}, (singleData.reaches || {})[modelKey] || {});
+      if (modelKey === 'glofas') {
+        if (!isFinite(Number(newReach.cell_center_lat))) newReach.cell_center_lat = overrideEntry.lat;
+        if (!isFinite(Number(newReach.cell_center_lon))) newReach.cell_center_lon = overrideEntry.lon;
+      } else {
+        if (overrideEntry.snappedOnClient || !isFinite(Number(newReach.lat))) newReach.lat = overrideEntry.lat;
+        if (overrideEntry.snappedOnClient || !isFinite(Number(newReach.lon))) newReach.lon = overrideEntry.lon;
+      }
+      if (overrideEntry.meta && overrideEntry.meta.upstreamAreaKm2 && !isFinite(Number(newReach.upstream_area_km2))) {
+        newReach.upstream_area_km2 = overrideEntry.meta.upstreamAreaKm2;
+      }
+      newReach.manual_override = true;
+      baseData.reaches[modelKey] = newReach;
+      baseData.virtual_station[vsKey] = newReach;
+
+      if (singleData.return_periods && modelKey in singleData.return_periods) {
+        baseData.return_periods = baseData.return_periods || {};
+        baseData.return_periods[modelKey] = singleData.return_periods[modelKey];
+      }
+      if (singleData.thresholds_by_model && modelKey in singleData.thresholds_by_model) {
+        baseData.thresholds_by_model = baseData.thresholds_by_model || {};
+        baseData.thresholds_by_model[modelKey] = singleData.thresholds_by_model[modelKey];
+      }
+
+      if (Array.isArray(singleData.consensus)) {
+        const newRow = singleData.consensus.find(r => r && r.model === modelKey);
+        if (newRow) {
+          const existing = Array.isArray(baseData.consensus)
+            ? baseData.consensus.filter(r => r && r.model !== modelKey)
+            : [];
+          existing.push(newRow);
+          const orderMap = { floodhub: 0, glofas: 1, geoglows: 2 };
+          existing.sort((a, b) => (orderMap[a.model] ?? 99) - (orderMap[b.model] ?? 99));
+          baseData.consensus = existing;
+          const indep = existing.filter(r => r.available && r.independent && (r.status === 'live' || r.status === 'severity_only'));
+          const nExceed = indep.filter(r => Number(r.exceedance_rank || 0) >= 1).length;
+          baseData.flood_summary = Object.assign({}, baseData.flood_summary || {}, {
+            models_exceeding_2yr: nExceed,
+            independent_models_evaluated: indep.length,
+            agreement: `${nExceed} of ${indep.length} independent models forecast ≥ 2-yr exceedance`
+          });
+        }
+      }
+
+      const baseTl = baseData.timeline || { dates: [], series: {}, status: {} };
+      const singleTl = singleData.timeline || { dates: [], series: {}, status: {} };
+      const baseDates = Array.isArray(baseTl.dates) ? baseTl.dates : [];
+      const singleDates = Array.isArray(singleTl.dates) ? singleTl.dates : [];
+      const unionDates = Array.from(new Set([...baseDates, ...singleDates])).sort();
+      const mergedSeries = {};
+      for (const [k, sObj] of Object.entries(baseTl.series || {})) {
+        if (k !== modelKey) {
+          mergedSeries[k] = remapMaaSTimelineSeries(sObj, baseDates, unionDates);
+        }
+      }
+      if (singleTl.series && singleTl.series[modelKey]) {
+        mergedSeries[modelKey] = remapMaaSTimelineSeries(singleTl.series[modelKey], singleDates, unionDates);
+      }
+      baseData.timeline = {
+        dates: unionDates,
+        series: mergedSeries,
+        status: Object.assign({}, baseTl.status || {}, singleTl.status && modelKey in singleTl.status ? { [modelKey]: singleTl.status[modelKey] } : {})
+      };
+    }
+
+    function applyAllMaaSModelOverrides(baseData) {
+      if (!baseData || !currentMaaSModelOverrides) return;
+      for (const [modelKey, entry] of Object.entries(currentMaaSModelOverrides)) {
+        applyMaaSModelOverrideToData(baseData, modelKey, entry);
+      }
+    }
+
+    async function ensureMaaSPredictionPointsForModel(modelKey) {
+      if (!map || !MAAS_MODELS[modelKey]) return;
+      const existing = maasPredictionPointsByModel[modelKey];
+      if (Array.isArray(existing) && existing.length) return;
+      try {
+        const bounds = map.getBounds();
+        const bbox = [
+          Math.max(-180, bounds.getWest()),
+          Math.max(-85, bounds.getSouth()),
+          Math.min(180, bounds.getEast()),
+          Math.min(85, bounds.getNorth()),
+        ].map(v => v.toFixed(4)).join(',');
+        const queryZoom = Math.max(map.getZoom() || MAAS_PREDICTION_DOTS_MIN_ZOOM, MAAS_PREDICTION_DOTS_MIN_ZOOM);
+        const resp = await fetch(`/api/maas/network?model=${encodeURIComponent(modelKey)}&bbox=${bbox}&zoom=${queryZoom}`);
+        if (!resp.ok) return;
+        const geojson = await resp.json();
+        const gProps = (geojson && geojson.properties) || {};
+        if (Array.isArray(gProps.prediction_points) && gProps.prediction_points.length) {
+          maasPredictionPointsByModel[modelKey] = gProps.prediction_points.filter(
+            pt => pt && pt.has_forecast !== false && isFinite(Number(pt.lat)) && isFinite(Number(pt.lon))
+          );
+        } else if (geojson && Array.isArray(geojson.features)) {
+          maasPredictionPointsByModel[modelKey] = deriveMaaSPredictionPointsFromFeatures(modelKey, geojson.features);
+        }
+      } catch (_) {}
+    }
+
+    function toggleMaaSMovingModel(modelKey) {
+      if (!MAAS_MODELS[modelKey]) return;
+      activeMaaSMovingModel = activeMaaSMovingModel === modelKey ? null : modelKey;
+      if (activeMaaSMovingModel) {
+        ensureMaaSPredictionPointsForModel(activeMaaSMovingModel);
+      }
+      updateMaaSMapNetworkCaption();
+      if (currentMaaSForecastData) {
+        updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+      }
+    }
+
+    // Relocates a single model's dot (`modelKey`) to `(lat, lon)` independently of the other models,
+    // fetches only that model's forecast & return periods, and merges the result into `currentMaaSForecastData`.
+    async function overrideMaaSModelReach(modelKey, lat, lon, meta = null, snappedOnClient = false) {
+      if (!MAAS_MODELS[modelKey] || !currentMaaSForecastData) return;
+      activeMaaSMovingModel = null;
+      updateMaaSMapNetworkCaption();
+      const targetLat = Number(lat);
+      const targetLon = Number(lon);
+      if (!isFinite(targetLat) || !isFinite(targetLon)) return;
+      const reqSeq = ++maasOverrideRequestSeq;
+      const probeSeq = maasForecastRequestSeq;
+      const effMeta = Object.assign({ network: modelKey }, meta || {});
+      currentMaaSModelOverrides[modelKey] = {
+        lat: targetLat,
+        lon: targetLon,
+        snappedOnClient: Boolean(snappedOnClient),
+        meta: effMeta,
+        data: null
+      };
+      selectedMaaSModels.add(modelKey);
+      renderMaaSMultiModelLists();
+      applyMaaSModelOverrideToData(currentMaaSForecastData, modelKey, currentMaaSModelOverrides[modelKey]);
+      updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+
+      const statusEl = document.getElementById('maasModelStatus');
+      if (statusEl) {
+        statusEl.textContent = `Updating ${MAAS_MODELS[modelKey].shortName} forecast at moved reach…`;
+        statusEl.classList.remove('hidden');
+      }
+
+      let url = `/api/maas/forecast?lat=${targetLat.toFixed(4)}&lon=${targetLon.toFixed(4)}&models=${encodeURIComponent(modelKey)}&network=${encodeURIComponent(modelKey)}`;
+      if (modelKey === 'floodhub' && effMeta.gaugeId) {
+        url += `&gauge_id=${encodeURIComponent(effMeta.gaugeId)}`;
+      }
+      if ((modelKey === 'geoglows' || modelKey === 'floodhub') && effMeta.riverId) {
+        url += `&river_id=${encodeURIComponent(effMeta.riverId)}`;
+      }
+      if (effMeta.upstreamAreaKm2) {
+        url += `&upstream_area_km2=${encodeURIComponent(effMeta.upstreamAreaKm2)}`;
+      }
+      if (effMeta.areaMinKm2) {
+        url += `&area_min_km2=${encodeURIComponent(effMeta.areaMinKm2)}`;
+      }
+      url += `&glofas_reference=${encodeURIComponent(maasGlofasReference)}`;
+
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const singleData = await resp.json();
+        if (probeSeq !== maasForecastRequestSeq || !currentMaaSForecastData) return;
+        if (!currentMaaSModelOverrides[modelKey]) return;
+        currentMaaSModelOverrides[modelKey].data = singleData;
+        applyMaaSModelOverrideToData(currentMaaSForecastData, modelKey, currentMaaSModelOverrides[modelKey]);
+        updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+        renderMaaSForecast();
+      } catch (err) {
+        if (reqSeq === maasOverrideRequestSeq) {
+          console.error(`Failed to fetch overridden forecast for ${modelKey}:`, err);
+          renderMaaSForecast();
+        }
+      }
+    }
+
     // Renders per-hydrofabric snapped reach markers and subtle connector lines when a reach is selected,
-    // so users viewing multiple hydrofabrics can see the exact cross-network match on every model.
+    // so users viewing multiple hydrofabrics can see the exact cross-network match on every model and
+    // drag-and-drop (or click-and-move) any individual model dot to a different river segment independently.
     function updateMaaSSnappedReachMarkers(data) {
       if (!map) return;
       if (!maasSnappedReachesLayerGroup) {
@@ -12793,62 +13316,116 @@
           lat: Number(fh.lat),
           lon: Number(fh.lon),
           idLabel: fh.gauge_id || fh.reach_id || 'HydroSHEDS reach',
-          areaKm2: fh.upstream_area_km2
+          areaKm2: fh.upstream_area_km2,
+          manualOverride: Boolean(fh.manual_override)
         } : null,
         gl && isFinite(Number(gl.cell_center_lat)) && isFinite(Number(gl.cell_center_lon)) ? {
           key: 'glofas',
           lat: Number(gl.cell_center_lat),
           lon: Number(gl.cell_center_lon),
           idLabel: `Cell (${Number(gl.cell_center_lat).toFixed(3)}°, ${Number(gl.cell_center_lon).toFixed(3)}°)`,
-          areaKm2: gl.upstream_area_km2
+          areaKm2: gl.upstream_area_km2,
+          manualOverride: Boolean(gl.manual_override)
         } : null,
         gg && isFinite(Number(gg.lat)) && isFinite(Number(gg.lon)) ? {
           key: 'geoglows',
           lat: Number(gg.lat),
           lon: Number(gg.lon),
           idLabel: gg.river_id ? `TDX-Hydro #${gg.river_id}` : 'TDX-Hydro reach',
-          areaKm2: gg.upstream_area_km2
+          areaKm2: gg.upstream_area_km2,
+          manualOverride: Boolean(gg.manual_override)
         } : null
       ].filter(item => item && (
         selectedMaaSMapModels.has(item.key) ||
         selectedMaaSModels.has(item.key) ||
-        (item.key === 'glofas' && (maasGlofasEnsembleEnabled || maasGlofasRangeEnabled))
+        (item.key === 'glofas' && (maasGlofasEnsembleEnabled || maasGlofasRangeEnabled)) ||
+        (item.key === 'geoglows' && (maasGeoglowsEnsembleEnabled || maasGeoglowsRangeEnabled))
       ));
+
+      const canMoveModelDots = selectedMaaSMapModels.size >= 2 || candidates.length >= 2;
 
       for (const item of candidates) {
         const m = MAAS_MODELS[item.key];
         if (!m) continue;
         const markerColor = m.mapColor || m.color;
+        const isMovingThis = activeMaaSMovingModel === item.key;
+        let line = null;
         if (probe && isFinite(probe.lat) && isFinite(probe.lon)) {
           const dDeg = Math.hypot(item.lat - probe.lat, item.lon - probe.lon);
-          if (dDeg > 0.002) {
-            const line = L.polyline([[probe.lat, probe.lon], [item.lat, item.lon]], {
-              color: markerColor,
-              weight: 1.8,
-              opacity: 0.75,
-              dashArray: '3, 4',
-              interactive: false
-            });
-            maasSnappedReachesLayerGroup.addLayer(line);
-          }
+          line = L.polyline([[probe.lat, probe.lon], [item.lat, item.lon]], {
+            color: markerColor,
+            weight: 1.8,
+            opacity: dDeg > 0.002 ? 0.78 : 0.0,
+            dashArray: '3, 4',
+            interactive: false
+          });
+          maasSnappedReachesLayerGroup.addLayer(line);
         }
         const areaText = Number(item.areaKm2) > 0
           ? ` · ${Math.round(Number(item.areaKm2)).toLocaleString()} km²`
           : '';
+        const manualBadge = item.manualOverride ? ' · <i>manual</i>' : '';
+        const moveHint = canMoveModelDots
+          ? (isMovingThis
+            ? `<br><span style="color:${markerColor};font-weight:600;font-size:10px">Click a target river segment on map (Esc to cancel)</span>`
+            : '<br><span style="color:#5f6368;font-size:10px">Drag dot or click dot then click a reach to move independently</span>')
+          : '';
+        const ringShadow = isMovingThis
+          ? `0 0 0 4px ${markerColor}66, 0 1px 4px rgba(0,0,0,0.5)`
+          : (item.manualOverride ? `0 0 0 2px ${markerColor}, 0 1px 3px rgba(0,0,0,0.45)` : '0 1px 3px rgba(0,0,0,0.45)');
+        const cursorStyle = canMoveModelDots ? 'cursor:grab;' : '';
         const marker = L.marker([item.lat, item.lon], {
           interactive: true,
+          draggable: canMoveModelDots,
           keyboard: false,
+          zIndexOffset: isMovingThis ? 1500 : 1000,
           icon: L.divIcon({
             className: '',
-            iconSize: [12, 12],
-            iconAnchor: [6, 6],
-            html: `<div style="width:12px;height:12px;border-radius:50%;background:${markerColor};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4)"></div>`
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+            html: `<div data-maas-model-dot="${item.key}" style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;${cursorStyle}"><div style="width:14px;height:14px;border-radius:50%;background:${markerColor};border:2.2px solid #fff;box-shadow:${ringShadow};transition:transform 0.12s ease;${isMovingThis ? 'transform:scale(1.2);' : ''}"></div></div>`
           })
         });
         marker.bindTooltip(
-          `<span style="color:${markerColor};font-weight:600">${maasEscapeHtml(m.shortName)} (${maasEscapeHtml(m.streamMap)})</span><br>${maasEscapeHtml(item.idLabel)}${maasEscapeHtml(areaText)}`,
-          { direction: 'top', offset: [0, -6] }
+          `<span style="color:${markerColor};font-weight:600">${maasEscapeHtml(m.shortName)} (${maasEscapeHtml(m.streamMap)})</span><br>${maasEscapeHtml(item.idLabel)}${maasEscapeHtml(areaText)}${manualBadge}${moveHint}`,
+          { direction: 'top', offset: [0, -8] }
         );
+        if (canMoveModelDots) {
+          ensureMaaSPredictionPointsForModel(item.key);
+          marker.on('click', (e) => {
+            L.DomEvent.stopPropagation(e);
+            toggleMaaSMovingModel(item.key);
+          });
+          marker.on('dragstart', () => {
+            activeMaaSMovingModel = null;
+            ensureMaaSPredictionPointsForModel(item.key);
+            updateMaaSMapNetworkCaption();
+            marker.closeTooltip();
+          });
+          marker.on('drag', () => {
+            const cur = marker.getLatLng();
+            if (line && probe && isFinite(probe.lat) && isFinite(probe.lon)) {
+              const snapped = findNearestMaaSFeatureForModel(item.key, cur, 56);
+              const endPt = snapped ? [snapped.lat, snapped.lon] : [item.lat, item.lon];
+              line.setLatLngs([[probe.lat, probe.lon], endPt]);
+              line.setStyle({ opacity: 0.85 });
+            }
+          });
+          marker.on('dragend', () => {
+            const dropLatLng = marker.getLatLng();
+            const snapped = findNearestMaaSFeatureForModel(item.key, dropLatLng, 56);
+            if (snapped) {
+              marker.setLatLng([snapped.lat, snapped.lon]);
+              overrideMaaSModelReach(item.key, snapped.lat, snapped.lon, snapped.meta, true);
+            } else {
+              // Strictly lock onto discrete prediction points only; revert if dropped outside any valid prediction point.
+              marker.setLatLng([item.lat, item.lon]);
+              if (line && probe && isFinite(probe.lat) && isFinite(probe.lon)) {
+                line.setLatLngs([[probe.lat, probe.lon], [item.lat, item.lon]]);
+              }
+            }
+          });
+        }
         maasSnappedReachesLayerGroup.addLayer(marker);
       }
     }
@@ -12959,6 +13536,7 @@
             maasRiversLayerGroup.removeLayer(maasModelSubLayers[m]);
           }
           delete maasRiversLoadedByModel[m];
+          delete maasPredictionPointsByModel[m];
         }
       }
 
@@ -13019,6 +13597,35 @@
           const modelMeta = MAAS_MODELS[model] || MAAS_MODELS.glofas;
           const mapHighlightColor = modelMeta.mapColor || modelMeta.color;
           const paletteCfg = MAAS_PROVIDER_PALETTES[model] || MAAS_PROVIDER_PALETTES.glofas;
+
+          const derivedPts = deriveMaaSPredictionPointsFromFeatures(model, geojson.features);
+          if (Array.isArray(gProps.prediction_points) && gProps.prediction_points.length) {
+            const liveByKey = new Map();
+            for (const dp of derivedPts) {
+              const k = model === 'floodhub'
+                ? `fh:${dp.gauge_id}`
+                : (model === 'geoglows' ? `gg:${dp.river_id || dp.reach_id}` : `gl:${dp.lon}:${dp.lat}`);
+              liveByKey.set(k, dp);
+            }
+            maasPredictionPointsByModel[model] = gProps.prediction_points
+              .filter(pt => pt && pt.has_forecast !== false && isFinite(Number(pt.lat)) && isFinite(Number(pt.lon)))
+              .map(pt => {
+                const k = model === 'floodhub'
+                  ? `fh:${pt.gauge_id}`
+                  : (model === 'geoglows' ? `gg:${pt.river_id || pt.reach_id}` : `gl:${Number(pt.lon).toFixed(4)}:${Number(pt.lat).toFixed(4)}`);
+                const liveMatch = liveByKey.get(k);
+                return liveMatch
+                  ? Object.assign({}, liveMatch, pt, {
+                      exceedance_rank: pt.exceedance_rank !== undefined ? pt.exceedance_rank : liveMatch.exceedance_rank,
+                      flow_percentile: pt.flow_percentile !== undefined ? pt.flow_percentile : liveMatch.flow_percentile,
+                      current_flow_m3s: pt.current_flow_m3s !== undefined ? pt.current_flow_m3s : liveMatch.current_flow_m3s,
+                      return_period_2yr: pt.return_period_2yr !== undefined ? pt.return_period_2yr : liveMatch.return_period_2yr,
+                    })
+                  : pt;
+              });
+          } else {
+            maasPredictionPointsByModel[model] = derivedPts;
+          }
 
           // Draw non-forecast reaches first, then normal rivers, and active flood alerts LAST (on top) so they pop at every zoom level.
           const reachArea = (f) => Number((f.properties || {}).upstream_area_km2 || 0);
@@ -13090,6 +13697,14 @@
               layer.on('click', (e) => {
                 L.DomEvent.stopPropagation(e);
                 const pt = maasSnapToFeature(feat, e.latlng);
+                if (currentMaaSView === 'forecast' && activeMaaSMovingModel) {
+                  const targetKey = activeMaaSMovingModel;
+                  const snapped = findNearestMaaSFeatureForModel(targetKey, e.latlng, 64);
+                  if (snapped) {
+                    overrideMaaSModelReach(targetKey, snapped.lat, snapped.lon, snapped.meta, true);
+                  }
+                  return;
+                }
                 probeMaaSPoint(pt.lat, pt.lon, gaugeId, reachId, area ? `${name} · ${area}` : name, {
                   upstreamAreaKm2: p.upstream_area_km2, areaMinKm2: p.area_min_km2, network: model,
                 });
@@ -13097,6 +13712,69 @@
             }
           });
           subGroup.addLayer(riverLayer);
+
+          // When zoomed in enough (zoom >= MAAS_PREDICTION_DOTS_MIN_ZOOM), render each model's discrete valid
+          // prediction locations as dots along the river network so users can see and click/snap onto exact prediction points.
+          if (zoom >= MAAS_PREDICTION_DOTS_MIN_ZOOM) {
+            const predPts = maasPredictionPointsByModel[model] || [];
+            const dotRadius = zoom >= 10 ? 4.2 : (zoom >= 9 ? 3.5 : 2.9);
+            for (const pt of predPts) {
+              if (!pt || pt.has_forecast === false) continue;
+              const ptLat = Number(pt.lat);
+              const ptLon = Number(pt.lon);
+              if (!isFinite(ptLat) || !isFinite(ptLon)) continue;
+              const ptReachId = pt.river_id || pt.reach_id || null;
+              const ptGaugeId = pt.gauge_id || null;
+              const ptArea = Number(pt.upstream_area_km2 || 0);
+              const dotFillColor = maasFlowPercentileColor(pt, model, multiHydrofabricMode);
+              const predDot = L.circleMarker([ptLat, ptLon], {
+                renderer: maasRiverRenderer,
+                radius: dotRadius,
+                fillColor: dotFillColor,
+                color: '#ffffff',
+                weight: 1.3,
+                opacity: 0.95,
+                fillOpacity: 0.92,
+              });
+              const ptLabel = model === 'floodhub'
+                ? (ptGaugeId ? `FloodHub ${ptGaugeId}` : 'FloodHub prediction point')
+                : (model === 'geoglows'
+                  ? (ptReachId ? `TDX-Hydro #${ptReachId}` : 'GEOGLOWS prediction point')
+                  : `GloFAS 0.05° cell (${ptLat.toFixed(3)}°, ${ptLon.toFixed(3)}°)`);
+              const ptAreaStr = ptArea > 0 ? `${Math.round(ptArea).toLocaleString()} km² upstream` : '';
+              predDot.bindTooltip(
+                `<span style="color:${mapHighlightColor};font-weight:600">${maasEscapeHtml(modelMeta.shortName)} prediction point</span><br><b>${maasEscapeHtml(ptLabel)}</b>${ptAreaStr ? `<br>${maasEscapeHtml(ptAreaStr)}` : ''}`,
+                { direction: 'top', offset: [0, -4] }
+              );
+              predDot.on('click', (e) => {
+                L.DomEvent.stopPropagation(e);
+                if (currentMaaSView === 'forecast' && activeMaaSMovingModel) {
+                  const targetKey = activeMaaSMovingModel;
+                  if (targetKey === model) {
+                    overrideMaaSModelReach(targetKey, ptLat, ptLon, {
+                      network: model,
+                      gaugeId: ptGaugeId,
+                      riverId: ptReachId,
+                      upstreamAreaKm2: ptArea,
+                      areaMinKm2: pt.area_min_km2 || ptArea,
+                    }, true);
+                  } else {
+                    const snapped = findNearestMaaSFeatureForModel(targetKey, e.latlng, 64);
+                    if (snapped) {
+                      overrideMaaSModelReach(targetKey, snapped.lat, snapped.lon, snapped.meta, true);
+                    }
+                  }
+                  return;
+                }
+                probeMaaSPoint(ptLat, ptLon, ptGaugeId, ptReachId, ptAreaStr ? `${ptLabel} · ${ptAreaStr}` : ptLabel, {
+                  upstreamAreaKm2: ptArea,
+                  areaMinKm2: pt.area_min_km2 || ptArea,
+                  network: model,
+                });
+              });
+              subGroup.addLayer(predDot);
+            }
+          }
         } catch (err) {
           if (err.name !== 'AbortError') console.warn(`MaaS river fetch error (${model}):`, err);
         }
@@ -13131,6 +13809,9 @@
     // the forecast model buttons then toggle models without refetching.
     function probeMaaSPoint(lat, lon, gaugeId = null, riverId = null, label = null, meta = null) {
       currentMaaSProbe = { lat, lon, gaugeId, riverId, label, meta };
+      activeMaaSMovingModel = null;
+      currentMaaSModelOverrides = {};
+      maasOverrideRequestSeq++;
       currentMaaSForecastData = null;
       currentMaaSForecastNote = 'Loading forecast…';
       // Ensure the forecast view includes the model(s) corresponding to the clicked hydrofabric / active map view
@@ -13138,7 +13819,8 @@
       const clickedNet = meta && meta.network && MAAS_MODELS[meta.network] ? meta.network : null;
       if (clickedNet) {
         const alreadyHasClickedProvider = selectedMaaSModels.has(clickedNet) ||
-          (clickedNet === 'glofas' && (maasGlofasEnsembleEnabled || maasGlofasRangeEnabled));
+          (clickedNet === 'glofas' && (maasGlofasEnsembleEnabled || maasGlofasRangeEnabled)) ||
+          (clickedNet === 'geoglows' && (maasGeoglowsEnsembleEnabled || maasGeoglowsRangeEnabled));
         if (currentMaaSView !== 'forecast') {
           if (selectedMaaSMapModels.size >= 2) {
             selectedMaaSModels.clear();
@@ -13151,12 +13833,20 @@
             selectedMaaSModels.add(clickedNet);
           }
         } else if (!alreadyHasClickedProvider) {
-          if (selectedMaaSMapModels.size === 1 && selectedMaaSModels.size === 1 && !maasGlofasEnsembleEnabled && !maasGlofasRangeEnabled) {
+          if (selectedMaaSMapModels.size === 1 && selectedMaaSModels.size === 1 && !maasGlofasEnsembleEnabled && !maasGlofasRangeEnabled && !maasGeoglowsEnsembleEnabled && !maasGeoglowsRangeEnabled) {
             selectedMaaSModels.clear();
             selectedMaaSModels.add(clickedNet);
           } else {
             selectedMaaSModels.add(clickedNet);
           }
+        }
+        if (!selectedMaaSModels.has('glofas')) {
+          maasGlofasEnsembleEnabled = false;
+          maasGlofasRangeEnabled = false;
+        }
+        if (!selectedMaaSModels.has('geoglows')) {
+          maasGeoglowsEnsembleEnabled = false;
+          maasGeoglowsRangeEnabled = false;
         }
         renderMaaSMultiModelLists();
       }
@@ -13186,6 +13876,7 @@
       try {
         const activeFetchModels = new Set(selectedMaaSModels);
         if (maasGlofasEnsembleEnabled || maasGlofasRangeEnabled) activeFetchModels.add('glofas');
+        if (maasGeoglowsEnsembleEnabled || maasGeoglowsRangeEnabled) activeFetchModels.add('geoglows');
         if (!forceAllModels && activeFetchModels.size === 1) {
           const [onlyModel] = activeFetchModels;
           maasForecastFullPending = true;
@@ -13196,6 +13887,7 @@
           if (!fastResp.ok) throw new Error(`HTTP ${fastResp.status}`);
           const fastData = await fastResp.json();
           if (requestSeq !== maasForecastRequestSeq) return;
+          applyAllMaaSModelOverrides(fastData);
           currentMaaSForecastData = fastData;
           currentMaaSForecastNote = null;
           updateMaaSSnappedReachMarkers(fastData);
@@ -13204,6 +13896,7 @@
           if (requestSeq !== maasForecastRequestSeq) return;
           maasForecastFullPending = false;
           if (fullData) {
+            applyAllMaaSModelOverrides(fullData);
             currentMaaSForecastData = fullData;
             updateMaaSSnappedReachMarkers(fullData);
           } else {
@@ -13218,9 +13911,15 @@
         const data = await resp.json();
         if (requestSeq !== maasForecastRequestSeq) return; // superseded by a newer click or a close
         maasForecastFullPending = false;
+        applyAllMaaSModelOverrides(data);
         currentMaaSForecastData = data;
         currentMaaSForecastNote = null;
         updateMaaSSnappedReachMarkers(data);
+        if (forceAllModels && currentMaaSModelOverrides && Object.keys(currentMaaSModelOverrides).length > 0) {
+          for (const [overrideKey, entry] of Object.entries(currentMaaSModelOverrides)) {
+            overrideMaaSModelReach(overrideKey, entry.lat, entry.lon, entry.meta, entry.snappedOnClient);
+          }
+        }
       } catch (err) {
         if (requestSeq !== maasForecastRequestSeq) return;
         maasForecastFullPending = false;
@@ -13230,8 +13929,40 @@
       renderMaaSForecast();
     }
 
+    // Draws a small model marker shape ('circle', 'rectRot' diamond, or 'triangle') at (cx, cy) on a 2D canvas.
+    function drawMaaSThresholdMarkerShape(ctx, shape, cx, cy, r, color) {
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      if (shape === 'rectRot') {
+        const d = r * 1.15;
+        ctx.moveTo(cx, cy - d);
+        ctx.lineTo(cx + d, cy);
+        ctx.lineTo(cx, cy + d);
+        ctx.lineTo(cx - d, cy);
+        ctx.closePath();
+        ctx.fill();
+      } else if (shape === 'triangle') {
+        const d = r * 1.2;
+        ctx.moveTo(cx, cy - d);
+        ctx.lineTo(cx + d, cy + d * 0.85);
+        ctx.lineTo(cx - d, cy + d * 0.85);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // Draws horizontal return-period threshold lines ONLY when the chart's natural Y-axis
-    // maximum (yScale.max) reaches or exceeds the threshold.
+    // maximum (yScale.max) reaches or exceeds the threshold. Each line and pill uses its
+    // model's Okabe–Ito color and marker shape so multiple models' thresholds are distinct.
     const maasReturnPeriodLinesPlugin = {
       id: 'maasReturnPeriodLines',
       afterDatasetsDraw(chart) {
@@ -13247,6 +13978,8 @@
 
         const ctx = chart.ctx;
         ctx.save();
+        ctx.font = '600 9.5px Inter, system-ui, sans-serif';
+        const visible = [];
         thresholds.forEach((t) => {
           if (!t || !Number.isFinite(t.value) || t.value <= 0) return;
           if (t.value > yMax || t.value < yMin) return;
@@ -13255,8 +13988,8 @@
 
           const stroke = t.color || '#dc2626';
           ctx.beginPath();
-          ctx.setLineDash([5, 4]);
-          ctx.lineWidth = 1.5;
+          ctx.setLineDash(Array.isArray(t.lineDash) ? t.lineDash : [5, 4]);
+          ctx.lineWidth = Number(t.lineWidth) || 1.5;
           ctx.strokeStyle = stroke;
           ctx.moveTo(area.left, yPx);
           ctx.lineTo(area.right, yPx);
@@ -13265,17 +13998,37 @@
 
           const unit = t.unit || 'm³/s';
           const labelText = `${t.label} (${Number(t.value).toFixed(1)} ${unit})`;
-          ctx.font = '600 9.5px Inter, system-ui, sans-serif';
           const tw = ctx.measureText(labelText).width;
+          const iconSpace = 11;
           const padX = 5;
-          const pillW = tw + padX * 2;
-          const pillH = 14;
+          const pillW = tw + iconSpace + padX * 2;
+          const pillH = 15;
           const pillX = Math.max(area.left + 4, area.right - pillW - 6);
-          const pillY = Math.max(area.top + 2, Math.min(area.bottom - pillH - 2, yPx - pillH - 2));
+          const rawPillY = Math.max(area.top + 2, Math.min(area.bottom - pillH - 2, yPx - pillH - 2));
+          visible.push({ t, stroke, labelText, iconSpace, padX, pillW, pillH, pillX, pillY: rawPillY, yPx });
+        });
 
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+        // Sort top-to-bottom on canvas and nudge overlapping pills so labels remain legible when thresholds are close.
+        visible.sort((a, b) => a.yPx - b.yPx);
+        for (let i = 1; i < visible.length; i++) {
+          const prev = visible[i - 1];
+          const curr = visible[i];
+          if (curr.pillY < prev.pillY + prev.pillH + 2) {
+            curr.pillY = Math.min(area.bottom - curr.pillH - 2, prev.pillY + prev.pillH + 2);
+          }
+        }
+        for (let i = visible.length - 2; i >= 0; i--) {
+          const next = visible[i + 1];
+          const curr = visible[i];
+          if (curr.pillY + curr.pillH + 2 > next.pillY) {
+            curr.pillY = Math.max(area.top + 2, next.pillY - curr.pillH - 2);
+          }
+        }
+
+        visible.forEach(({ t, stroke, labelText, iconSpace, padX, pillW, pillH, pillX, pillY }) => {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
           ctx.strokeStyle = stroke;
-          ctx.lineWidth = 1;
+          ctx.lineWidth = 1.15;
           ctx.beginPath();
           if (typeof ctx.roundRect === 'function') {
             ctx.roundRect(pillX, pillY, pillW, pillH, 3);
@@ -13285,10 +14038,13 @@
           ctx.fill();
           ctx.stroke();
 
+          const midY = pillY + pillH / 2;
+          drawMaaSThresholdMarkerShape(ctx, t.pointStyle || 'circle', pillX + padX + 3.5, midY, 3.0, stroke);
+
           ctx.fillStyle = stroke;
           ctx.textAlign = 'left';
           ctx.textBaseline = 'middle';
-          ctx.fillText(labelText, pillX + padX, pillY + pillH / 2);
+          ctx.fillText(labelText, pillX + padX + iconSpace, midY);
         });
         ctx.restore();
       }
@@ -13388,19 +14144,34 @@
       });
     }
 
-    // Dashed flood thresholds from the selected model's own return periods in `maas` (or FloodHub gauge thresholds).
+    // Dashed flood thresholds from `key`'s own return periods in `maas` (or FloodHub gauge thresholds),
+    // styled with that model's Okabe–Ito color, marker shape, and shortName so multiple models' return
+    // periods can be plotted simultaneously and matched to their respective hydrograph lines.
     function maasModelThresholds(data, key) {
       const m = (data && data.models && data.models[key]) || {};
       const rps = (data && data.return_periods) || {};
+      const byModel = (data && data.thresholds_by_model && data.thresholds_by_model[key]) || {};
       const fh = key === 'floodhub';
-      const pal = MAAS_PROVIDER_PALETTES[key] || MAAS_PROVIDER_PALETTES.glofas;
-      const src = (fh ? m.thresholds : (m.return_periods || rps[key])) || {};
+      const meta = MAAS_MODELS[key] || MAAS_MODELS.glofas;
+      const src = (fh ? (m.thresholds || byModel) : (m.return_periods || rps[key] || byModel)) || {};
+      const v2 = fh ? src.warning_2yr : (src.return_period_2 ?? src.warning_2yr);
+      const v5 = fh ? src.danger_5yr : (src.return_period_5 ?? src.danger_5yr);
+      const v20 = fh ? src.extreme_20yr : (src.return_period_20 ?? src.extreme_20yr);
+      const prefix = meta.shortName || key;
       return [
-        [fh ? 'Warning level' : '2-yr return period', fh ? src.warning_2yr : src.return_period_2, (pal.colors && pal.colors[1]) || '#eab308'],
-        [fh ? 'Danger level' : '5-yr return period', fh ? src.danger_5yr : src.return_period_5, (pal.colors && pal.colors[2]) || '#dc2626'],
-        [fh ? 'Extreme danger level' : '20-yr return period', fh ? src.extreme_20yr : src.return_period_20, (pal.colors && pal.colors[3]) || '#9333ea']
+        [fh ? `${prefix} · 2-yr Warning` : `${prefix} · 2-yr RP`, v2, [3, 4], 1.35],
+        [fh ? `${prefix} · 5-yr Danger` : `${prefix} · 5-yr RP`, v5, [7, 4], 1.6],
+        [fh ? `${prefix} · 20-yr Extreme` : `${prefix} · 20-yr RP`, v20, [11, 4, 2, 4], 1.85]
       ].filter(([, v]) => v !== null && v !== undefined && isFinite(v) && Number(v) > 0)
-        .map(([label, v, color]) => ({ label, value: Number(v), color }));
+        .map(([label, v, lineDash, lineWidth]) => ({
+          model: key,
+          label,
+          value: Number(v),
+          color: meta.color || '#dc2626',
+          pointStyle: meta.pointStyle || 'circle',
+          lineDash,
+          lineWidth
+        }));
     }
 
     function maasIsFiniteVal(v) {
@@ -13440,11 +14211,11 @@
       const parts = [];
       for (const k of keys) {
         if (k === 'glofas' && gl && gl.cell_center_lat !== undefined) {
-          parts.push(`LISFLOOD (${Number(gl.cell_center_lat).toFixed(2)}°, ${Number(gl.cell_center_lon).toFixed(2)}°)`);
+          parts.push(`LISFLOOD (${Number(gl.cell_center_lat).toFixed(2)}°, ${Number(gl.cell_center_lon).toFixed(2)}°)${gl.manual_override ? ' [moved]' : ''}`);
         } else if (k === 'floodhub' && fh && fh.gauge_id) {
-          parts.push(`HydroSHEDS ${fh.gauge_id}`);
+          parts.push(`HydroSHEDS ${fh.gauge_id}${fh.manual_override ? ' [moved]' : ''}`);
         } else if (k === 'geoglows' && gg && gg.river_id) {
-          parts.push(`TDX-Hydro #${gg.river_id}`);
+          parts.push(`TDX-Hydro #${gg.river_id}${gg.manual_override ? ' [moved]' : ''}`);
         }
       }
       const targetArea = probe && Number(probe.upstream_area_km2) > 0
@@ -13618,8 +14389,131 @@
       return Array.isArray(glSeries[refMeta.field]) ? glSeries[refMeta.field] : null;
     }
 
+    // Returns the aligned GEOGLOWS series for the active reference selection (`median` / `mean` / `deterministic`).
+    function maasGeoglowsReferenceTrace(ggSeries) {
+      if (!ggSeries) return null;
+      const refMeta = MAAS_GEOGLOWS_REFERENCES[maasGeoglowsReference] || MAAS_GEOGLOWS_REFERENCES.median;
+      return Array.isArray(ggSeries[refMeta.field])
+        ? ggSeries[refMeta.field]
+        : (Array.isArray(ggSeries.central) ? ggSeries.central : null);
+    }
+
+    // Plots the 51 GEOGLOWS ECMWF ensemble member trajectories (`member01`..`member51`) at their 3-hourly timestamps
+    // when the GEOGLOWS "+ Ensemble" sub-option is active.
+    function appendMaaSGeoglowsEnsembleDatasets(datasets, ggSeries, activeIndices, unit = 'm³/s', rangeEnabled = false) {
+      if (!ggSeries || !Array.isArray(activeIndices) || !activeIndices.length) return false;
+      const hasValues = (arr) => Array.isArray(arr) && arr.some(maasIsFiniteVal);
+      const membersObj = (ggSeries.members && typeof ggSeries.members === 'object') ? ggSeries.members : {};
+      const memberKeys = Object.keys(membersObj).sort();
+      const cadenceLabel = ggSeries.cadence || MAAS_MODELS.geoglows.cadenceLabel;
+      const [minSlice, maxSlice] = computeMaaSGlofasFullRangeBounds(ggSeries, activeIndices);
+      const validMembers = [];
+      for (const mk of memberKeys) {
+        const rawArr = membersObj[mk];
+        if (!Array.isArray(rawArr)) continue;
+        const sliced = maasPickIndices(rawArr, activeIndices);
+        if (hasValues(sliced)) {
+          validMembers.push([mk, sliced]);
+        }
+      }
+      const countText = validMembers.length < memberKeys.length
+        ? `${validMembers.length} of ${memberKeys.length} members`
+        : `${memberKeys.length} members`;
+
+      validMembers.forEach(([mk, sliced], idx) => {
+        const isFirst = idx === 0;
+        datasets.push({
+          label: isFirst
+            ? `GEOGLOWS ECMWF Ensemble (${countText}, ${cadenceLabel})`
+            : `GEOGLOWS ${mk}`,
+          data: sliced,
+          bandLow: (isFirst && !rangeEnabled) ? minSlice : null,
+          bandHigh: (isFirst && !rangeEnabled) ? maxSlice : null,
+          unit,
+          cadenceNote: MAAS_CADENCE_NOTES.geoglows,
+          legendGroup: 'geoglows_ensemble',
+          borderColor: 'rgba(0, 158, 115, 0.30)',
+          backgroundColor: 'rgba(0, 158, 115, 0.45)',
+          borderWidth: 1.2,
+          borderDash: [],
+          pointStyle: 'triangle',
+          pointRadius: 1.8,
+          pointHoverRadius: 3.5,
+          pointBackgroundColor: 'rgba(0, 158, 115, 0.48)',
+          pointBorderColor: 'rgba(0, 158, 115, 0.48)',
+          pointBorderWidth: 0,
+          pointHitRadius: 3,
+          fill: false,
+          tension: 0,
+          spanGaps: true,
+          legendHidden: !isFirst,
+          tooltipHidden: !isFirst || rangeEnabled,
+          order: 3
+        });
+      });
+      return validMembers.length > 0;
+    }
+
+    // Plots the GEOGLOWS ECMWF full ensemble range (`Min–Max` shaded envelope) when the "+ Range" sub-option is active.
+    function appendMaaSGeoglowsRangeDatasets(datasets, ggSeries, activeIndices, unit = 'm³/s') {
+      if (!ggSeries || !Array.isArray(activeIndices) || !activeIndices.length) return false;
+      const hasValues = (arr) => Array.isArray(arr) && arr.some(maasIsFiniteVal);
+      const cadenceLabel = ggSeries.cadence || MAAS_MODELS.geoglows.cadenceLabel;
+      const [minSlice, maxSlice] = computeMaaSGlofasFullRangeBounds(ggSeries, activeIndices);
+      if (!hasValues(minSlice) || !hasValues(maxSlice)) return false;
+
+      datasets.push({
+        label: 'GEOGLOWS Ensemble Min',
+        data: minSlice,
+        unit,
+        legendGroup: 'geoglows_range',
+        legendHidden: true,
+        tooltipHidden: true,
+        borderColor: 'rgba(0, 158, 115, 0.50)',
+        backgroundColor: 'rgba(0, 158, 115, 0.50)',
+        borderWidth: 1.2,
+        borderDash: [2, 3],
+        pointStyle: 'triangle',
+        pointRadius: 1.8,
+        pointHoverRadius: 3.5,
+        pointBackgroundColor: '#ffffff',
+        pointBorderColor: 'rgba(0, 158, 115, 0.70)',
+        pointBorderWidth: 1.1,
+        pointHitRadius: 2,
+        fill: false,
+        tension: 0,
+        spanGaps: true,
+        order: 4
+      });
+      datasets.push({
+        label: `GEOGLOWS ECMWF Full Range (Min–Max, ${cadenceLabel})`,
+        data: maxSlice,
+        bandLow: minSlice,
+        bandHigh: maxSlice,
+        unit,
+        cadenceNote: MAAS_CADENCE_NOTES.geoglows,
+        legendGroup: 'geoglows_range',
+        borderColor: 'rgba(0, 158, 115, 0.55)',
+        backgroundColor: 'rgba(0, 158, 115, 0.16)',
+        borderWidth: 1.2,
+        borderDash: [2, 3],
+        pointStyle: 'triangle',
+        pointRadius: 1.8,
+        pointHoverRadius: 3.5,
+        pointBackgroundColor: '#ffffff',
+        pointBorderColor: 'rgba(0, 158, 115, 0.70)',
+        pointBorderWidth: 1.1,
+        pointHitRadius: 2,
+        fill: '-1',
+        tension: 0,
+        spanGaps: true,
+        order: 4
+      });
+      return true;
+    }
+
     // Draws all selected MaaS forecast traces (`GloFAS` reference series, `GloFAS + Ensemble` 50 members,
-    // `GloFAS + Range` Min–Max envelope, `FloodHub`, and `GEOGLOWS`) at their native prediction timestamps.
+    // `GloFAS + Range` Min–Max envelope, `FloodHub`, and `GEOGLOWS` reference/ensemble/range) at their native prediction timestamps.
     function renderMaaSForecast() {
       initMaasCharts();
       if (maasChart) {
@@ -13639,13 +14533,16 @@
       } else {
         const activeKeys = MAAS_MODEL_ORDER.filter(k => selectedMaaSModels.has(k));
         const onlyFloodhubStagePossible = activeKeys.length === 1 && activeKeys[0] === 'floodhub' &&
-          !maasGlofasEnsembleEnabled && !maasGlofasRangeEnabled;
+          !maasGlofasEnsembleEnabled && !maasGlofasRangeEnabled &&
+          !maasGeoglowsEnsembleEnabled && !maasGeoglowsRangeEnabled;
         const usable = [];
         const skipped = [];
         const loading = [];
         for (const k of activeKeys) {
           const s = (timeline.series || {})[k];
-          const traceArr = (k === 'glofas' && s) ? maasGlofasReferenceTrace(s) : (s && s.central);
+          const traceArr = (k === 'glofas' && s)
+            ? maasGlofasReferenceTrace(s)
+            : ((k === 'geoglows' && s) ? maasGeoglowsReferenceTrace(s) : (s && s.central));
           const hasModelEntry = data.models && data.models[k];
           if (!hasModelEntry && maasForecastFullPending) {
             loading.push(`${MAAS_MODELS[k].shortName} (loading…)`);
@@ -13692,8 +14589,36 @@
             glRangeUsable = true;
           }
         }
+        const ggSeries = (timeline.series || {}).geoglows;
+        const hasGgEntry = data.models && data.models.geoglows;
+        let ggEnsUsable = false;
+        if (maasGeoglowsEnsembleEnabled) {
+          const hasGgMembersData = ggSeries && Object.values(ggSeries.members || {}).some(hasValues);
+          if (!hasGgEntry && maasForecastFullPending) {
+            if (!selectedMaaSModels.has('geoglows')) loading.push('GEOGLOWS Ensemble (loading…)');
+          } else if (!hasGgMembersData) {
+            skipped.push('GEOGLOWS Ensemble (no member data)');
+          } else {
+            ggEnsUsable = true;
+          }
+        }
+        let ggRangeUsable = false;
+        if (maasGeoglowsRangeEnabled) {
+          const allIdxs = allDates.map((_, i) => i);
+          const [fullGgMin, fullGgMax] = ggSeries ? computeMaaSGlofasFullRangeBounds(ggSeries, allIdxs) : [null, null];
+          const hasGgRangeData = hasValues(fullGgMin) && hasValues(fullGgMax);
+          if (!hasGgEntry && maasForecastFullPending) {
+            if (!selectedMaaSModels.has('geoglows') && !maasGeoglowsEnsembleEnabled) {
+              loading.push('GEOGLOWS Range (loading…)');
+            }
+          } else if (!hasGgRangeData) {
+            skipped.push('GEOGLOWS Range (no min/max data)');
+          } else {
+            ggRangeUsable = true;
+          }
+        }
 
-        if ((!usable.length && !glEnsUsable && !glRangeUsable) || !allDates.length) {
+        if ((!usable.length && !glEnsUsable && !glRangeUsable && !ggEnsUsable && !ggRangeUsable) || !allDates.length) {
           if (loading.length) {
             note = `Loading forecast for ${loading.join(', ')}…`;
           } else {
@@ -13703,12 +14628,21 @@
           const unit = isStage ? 'm' : 'm³/s';
           const rangeArrays = usable.map(k => {
             const s = timeline.series[k];
-            return k === 'glofas' ? maasGlofasReferenceTrace(s) : s.central;
+            if (k === 'glofas') return maasGlofasReferenceTrace(s);
+            if (k === 'geoglows') return maasGeoglowsReferenceTrace(s);
+            return s.central;
           });
           if ((glEnsUsable || glRangeUsable) && glSeries) {
             if (Array.isArray(glSeries.min)) rangeArrays.push(glSeries.min);
             if (Array.isArray(glSeries.max)) rangeArrays.push(glSeries.max);
             for (const mArr of Object.values(glSeries.members || {})) {
+              if (Array.isArray(mArr)) rangeArrays.push(mArr);
+            }
+          }
+          if ((ggEnsUsable || ggRangeUsable) && ggSeries) {
+            if (Array.isArray(ggSeries.min)) rangeArrays.push(ggSeries.min);
+            if (Array.isArray(ggSeries.max)) rangeArrays.push(ggSeries.max);
+            for (const mArr of Object.values(ggSeries.members || {})) {
               if (Array.isArray(mArr)) rangeArrays.push(mArr);
             }
           }
@@ -13720,16 +14654,27 @@
           if (glEnsUsable && glSeries) {
             appendMaaSGlofasEnsembleDatasets(datasets, glSeries, activeIndices, unit, glRangeUsable);
           }
+          if (ggRangeUsable && ggSeries) {
+            appendMaaSGeoglowsRangeDatasets(datasets, ggSeries, activeIndices, unit);
+          }
+          if (ggEnsUsable && ggSeries) {
+            appendMaaSGeoglowsEnsembleDatasets(datasets, ggSeries, activeIndices, unit, ggRangeUsable);
+          }
           for (const k of usable) {
             const m = MAAS_MODELS[k];
             const s = timeline.series[k];
-            const rawTrace = k === 'glofas' ? maasGlofasReferenceTrace(s) : s.central;
+            const rawTrace = k === 'glofas'
+              ? maasGlofasReferenceTrace(s)
+              : (k === 'geoglows' ? maasGeoglowsReferenceTrace(s) : s.central);
             const slicedSeries = maasPickIndices(rawTrace, activeIndices);
             const cadenceLabel = (s && s.cadence) || m.cadenceLabel;
-            const refLabel = (MAAS_GLOFAS_REFERENCES[maasGlofasReference] || MAAS_GLOFAS_REFERENCES.control).label;
+            const glRefLabel = (MAAS_GLOFAS_REFERENCES[maasGlofasReference] || MAAS_GLOFAS_REFERENCES.control).label;
+            const ggRefLabel = (MAAS_GEOGLOWS_REFERENCES[maasGeoglowsReference] || MAAS_GEOGLOWS_REFERENCES.median).label;
             const traceLabel = k === 'glofas'
-              ? `${m.name} ${refLabel} (${m.streamMap}, ${cadenceLabel})`
-              : `${m.name} (${m.streamMap}, ${cadenceLabel})`;
+              ? `${m.name} ${glRefLabel} (${m.streamMap}, ${cadenceLabel})`
+              : (k === 'geoglows'
+                ? `${m.name} ${ggRefLabel} (${m.streamMap}, ${cadenceLabel})`
+                : `${m.name} (${m.streamMap}, ${cadenceLabel})`);
             datasets.push({
               label: traceLabel,
               data: slicedSeries,
@@ -13754,11 +14699,12 @@
           }
           const activeProviders = new Set(usable);
           if (glEnsUsable || glRangeUsable) activeProviders.add('glofas');
+          if (ggEnsUsable || ggRangeUsable) activeProviders.add('geoglows');
           const providerList = MAAS_MODEL_ORDER.filter(k => activeProviders.has(k));
           if (maasChart) {
-            maasChart.$returnPeriodThresholds = providerList.length === 1
-              ? maasModelThresholds(data, providerList[0]).map(t => Object.assign({}, t, { unit }))
-              : [];
+            maasChart.$returnPeriodThresholds = providerList.flatMap(k =>
+              maasModelThresholds(data, k).map(t => Object.assign({}, t, { unit }))
+            );
           }
           const reachNote = maasSnappedReachSummary(data, providerList);
           const agreementNote = (providerList.length >= 2 && data.flood_summary && data.flood_summary.agreement)
@@ -13802,10 +14748,15 @@
       if (fcList) {
         fcList.addEventListener('change', (e) => {
           const refSelect = e.target.closest('[data-maas-glofas-reference]');
-          if (refSelect) setMaaSGlofasReference(refSelect.value);
+          if (refSelect) {
+            setMaaSGlofasReference(refSelect.value);
+            return;
+          }
+          const ggRefSelect = e.target.closest('[data-maas-geoglows-reference]');
+          if (ggRefSelect) setMaaSGeoglowsReference(ggRefSelect.value);
         });
         fcList.addEventListener('click', (e) => {
-          if (e.target.closest('[data-maas-glofas-reference]')) return; // native <select> handles its own clicks
+          if (e.target.closest('[data-maas-glofas-reference]') || e.target.closest('[data-maas-geoglows-reference]')) return; // native <select> handles its own clicks
           const ensBtn = e.target.closest('[data-maas-glofas-ensemble]');
           if (ensBtn) {
             toggleMaaSGlofasEnsemble();
@@ -13814,6 +14765,16 @@
           const rangeBtn = e.target.closest('[data-maas-glofas-range]');
           if (rangeBtn) {
             toggleMaaSGlofasRange();
+            return;
+          }
+          const ggEnsBtn = e.target.closest('[data-maas-geoglows-ensemble]');
+          if (ggEnsBtn) {
+            toggleMaaSGeoglowsEnsemble();
+            return;
+          }
+          const ggRangeBtn = e.target.closest('[data-maas-geoglows-range]');
+          if (ggRangeBtn) {
+            toggleMaaSGeoglowsRange();
             return;
           }
           const btn = e.target.closest('[data-maas-forecast-model]');
@@ -13828,9 +14789,15 @@
       if (closeBtn) closeBtn.addEventListener('click', closeMaaSForecastView);
     }
 
-    // Global ESC key listener to close the MaaS forecast view when open
+    // Global ESC key listener to cancel active dot relocation or close the MaaS forecast view when open
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && currentActiveTabId === 'tab-maas' && currentMaaSView === 'forecast') {
+        if (activeMaaSMovingModel) {
+          activeMaaSMovingModel = null;
+          updateMaaSMapNetworkCaption();
+          if (currentMaaSForecastData) updateMaaSSnappedReachMarkers(currentMaaSForecastData);
+          return;
+        }
         closeMaaSForecastView();
       }
     });
