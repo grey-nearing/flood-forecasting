@@ -3,7 +3,7 @@
 `maas` is a standalone Python package for querying, harmonizing, and evaluating operational flood forecasts, historical reanalysis, spatial river reaches, and return-period thresholds across three global and continental flood forecasting systems:
 
 1. **Google FloodHub** (`maas.floodhub.FloodHubClient`) — Gauge- and site-level AI streamflow forecasts and warning severity levels (`NORMAL`, `WARNING`, `DANGER`, `EXTREME`) via `https://floodforecasting.googleapis.com/v1`.
-2. **Copernicus GloFAS v4** (`maas.glofas.GloFASClient`) — 51-member ECMWF-forced LISFLOOD global $0.05^\circ$ river discharge ensembles (`p10`, `p25`, `median`, `p75`, `p90`) via the Open-Meteo Flood API (`https://flood-api.open-meteo.com/v1/flood`) and ECMWF CEMS Zarr stores (`s3://geoglows-v2/glofas-v4/`).
+2. **Copernicus GloFAS v4** (`maas.glofas.GloFASClient`) — ECMWF-forced LISFLOOD global $0.05^\circ$ river discharge forecasts including the deterministic control run (`discharge_deterministic`), summary statistics (`mean`, `median`, `min`, `max`, `p25`, `p75`), and all 50 perturbed ensemble member trajectories (`ensemble_members`: `member01`..`member50` via `ensemble=true`) from the Open-Meteo Flood API (`https://flood-api.open-meteo.com/v1/flood`) and ECMWF CEMS Zarr stores (`s3://geoglows-v2/glofas-v4/`).
 3. **GEOGLOWS ECMWF v2** (`maas.geoglows.GeoGLOWSClient`) — Reach-level vector streamflow forecasts on ~6.8M global TDX-Hydro / HydroRIVERS river reaches (`LINKNO`) via the GEOGLOWS REST API (`https://geoglows.ecmwf.int/api/v2`) and AWS S3 retrospective Zarr archives (`s3://geoglows-v2/retrospective.zarr`).
 
 ---

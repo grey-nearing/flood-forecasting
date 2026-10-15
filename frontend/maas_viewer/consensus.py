@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import statistics
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from maas.config import MAAS_MODEL_NAMES, parse_finite_float
@@ -210,37 +212,71 @@ def build_flood_summary(
 
 _ISO_DATE_LEN: int = 10
 _ISO_MINUTE_LEN: int = 16
-_ISO_SECOND_LEN: int = 19
 
 
-def _normalize_timestamp(raw_time: object) -> str | None:
-    """Normalize a UTC date or datetime string to `'YYYY-MM-DDTHH:MM:SSZ'`."""
-    s = str(raw_time or '').strip()
-    if len(s) == _ISO_DATE_LEN:
-        return f'{s}T00:00:00Z'
-    if len(s) >= _ISO_SECOND_LEN:
-        return f"{s[:_ISO_SECOND_LEN].replace(' ', 'T')}Z"
-    if len(s) == _ISO_MINUTE_LEN:
-        return f"{s.replace(' ', 'T')}:00Z"
-    return None
+def _normalize_timestamp(raw_time: object) -> str:
+    """Validate and normalize a UTC timestamp to `'YYYY-MM-DDTHH:MM:SSZ'`."""
+    if not isinstance(raw_time, str):
+        raise TypeError(f'Expected ISO-8601 timestamp string, got {raw_time!r}')
+    cleaned = raw_time.strip()
+    if (
+        len(cleaned) < _ISO_DATE_LEN
+        or cleaned[4] != '-'
+        or cleaned[7] != '-'
+        or (len(cleaned) != _ISO_DATE_LEN and len(cleaned) < _ISO_MINUTE_LEN)
+        or (len(cleaned) > _ISO_DATE_LEN and ':' not in cleaned[_ISO_DATE_LEN:])
+    ):
+        raise ValueError(f'Invalid ISO-8601 timestamp {raw_time!r}')
+    parsed = datetime.fromisoformat(cleaned)
+    if parsed.tzinfo is not None and parsed.utcoffset() != timedelta(0):
+        raise ValueError(
+            f'Non-UTC timestamp offset is not supported: {raw_time!r}'
+        )
+    return parsed.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _infer_cadence_label(timestamps: Sequence[str]) -> str:
+    """Infer a cadence label (`'daily'`, `'3-hourly'`, etc.) from timestamps."""
+    sorted_ts = sorted(set(timestamps))
+    if len(sorted_ts) >= 2:  # noqa: PLR2004
+        epochs = [
+            datetime.fromisoformat(ts).replace(tzinfo=UTC).timestamp()
+            for ts in sorted_ts
+        ]
+        diffs_hours = [
+            (epochs[i + 1] - epochs[i]) / 3600.0
+            for i in range(len(epochs) - 1)
+            if epochs[i + 1] > epochs[i]
+        ]
+        if diffs_hours:
+            median_h = statistics.median(diffs_hours)
+            if abs(median_h - 24.0) < 0.5:  # noqa: PLR2004
+                return 'daily'
+            if abs(median_h - 3.0) < 0.25:  # noqa: PLR2004
+                return '3-hourly'
+            if abs(median_h - 1.0) < 0.1:  # noqa: PLR2004
+                return 'hourly'
+            return f'{median_h:g}-hourly' if median_h < 24.0 else 'daily'  # noqa: PLR2004
+    if any(not ts.endswith('T00:00:00Z') for ts in sorted_ts):
+        return '3-hourly'
+    return 'daily'
 
 
 def _timestamp_series(
     records: Sequence[Mapping[str, Any]] | None,
     key: str,
-    fallback_key: str | None = None,
 ) -> dict[str, float]:
     """Extract `{YYYY-MM-DDTHH:MM:SSZ: value}` at native model cadence."""
     out: dict[str, float] = {}
-    for r in records or ():
-        if not isinstance(r, Mapping):
-            continue
-        v = parse_finite_float(r.get(key))
-        if v is None and fallback_key is not None:
-            v = parse_finite_float(r.get(fallback_key))
-        ts = _normalize_timestamp(r.get('time'))
-        if ts is not None and v is not None:
-            out[ts] = round(v, 2)
+    for record in records or ():
+        if not isinstance(record, Mapping):
+            raise TypeError(
+                f'Expected mapping record in forecast data, got {record!r}'
+            )
+        timestamp = _normalize_timestamp(record.get('time'))
+        val = parse_finite_float(record.get(key))
+        if val is not None:
+            out[timestamp] = round(val, 2)
     return out
 
 
@@ -255,22 +291,29 @@ def _align_glofas_members(
     if not isinstance(raw_members, Mapping) or not raw_members:
         return {}
     raw_records = gl_fc.get('data') or ()
-    raw_times = [
-        _normalize_timestamp(r.get('time'))
-        for r in raw_records
-        if isinstance(r, Mapping)
-    ]
+    raw_times: list[str] = []
+    for record in raw_records:
+        if not isinstance(record, Mapping):
+            raise TypeError(
+                f'Expected mapping record in GloFAS data, got {record!r}'
+            )
+        raw_times.append(_normalize_timestamp(record.get('time')))
     aligned_members: dict[str, list[float | None]] = {}
-    for mk, mvals in sorted(raw_members.items()):
-        if not isinstance(mvals, Sequence) or isinstance(mvals, (str, bytes)):
-            continue
-        mseries: dict[str, float] = {}
-        for t_str, mv in zip(raw_times, mvals, strict=False):
-            fval = parse_finite_float(mv)
-            if t_str is not None and fval is not None:
-                mseries[t_str] = fval
-        if mseries:
-            aligned_members[str(mk)] = align_daily_series(mseries, dates)
+    for member_key, member_vals in sorted(raw_members.items()):
+        if not isinstance(member_vals, Sequence) or isinstance(
+            member_vals, (str, bytes)
+        ):
+            raise TypeError(
+                f'Expected sequence for ensemble member {member_key!r}'
+            )
+        member_series: dict[str, float] = {}
+        for timestamp, raw_val in zip(raw_times, member_vals, strict=True):
+            finite_val = parse_finite_float(raw_val)
+            if finite_val is not None:
+                member_series[timestamp] = finite_val
+        aligned_members[str(member_key)] = align_daily_series(
+            member_series, dates
+        )
     return aligned_members
 
 
@@ -291,15 +334,12 @@ def build_aligned_timeline(
         _timestamp_series(
             (gl_fc or {}).get('data'),
             'discharge_deterministic',
-            'discharge_median',
         )
         if gl_fc
         else {}
     )
     gl_daily = (
-        _timestamp_series(
-            (gl_fc or {}).get('data'), 'discharge_median', 'discharge_mean'
-        )
+        _timestamp_series((gl_fc or {}).get('data'), 'discharge_median')
         if gl_fc
         else {}
     )
@@ -329,7 +369,7 @@ def build_aligned_timeline(
         else {}
     )
     gg_daily = (
-        _timestamp_series((gg_fc or {}).get('data'), 'flow_med', 'flow_avg')
+        _timestamp_series((gg_fc or {}).get('data'), 'flow_med')
         if gg_fc
         else {}
     )
@@ -353,9 +393,16 @@ def build_aligned_timeline(
         if gg_fc
         else {}
     )
-    dates = sorted(
-        set(fh_daily) | set(gl_det_d) | set(gl_daily) | set(gg_daily)
+    gl_ts = (
+        set(gl_det_d)
+        | set(gl_daily)
+        | set(gl_mean_d)
+        | set(gl_p25_d)
+        | set(gl_p75_d)
+        | set(gl_max_d)
+        | set(gl_min_d)
     )
+    dates = sorted(set(fh_daily) | gl_ts | set(gg_daily))
     timeline_series: dict[str, Any] = {}
     if 'floodhub' in models and fh_daily:
         fh_aligned = align_daily_series(fh_daily, dates)
@@ -364,11 +411,11 @@ def build_aligned_timeline(
             'discharge': fh_aligned,
             'unit': 'm³/s' if fh_is_q else 'm',
             'axis': 'discharge' if fh_is_q else 'stage',
-            'cadence': 'daily',
+            'cadence': _infer_cadence_label(tuple(fh_daily)),
         }
-    if 'glofas' in models and (gl_daily or gl_det_d):
-        gl_det_aligned = align_daily_series(gl_det_d or gl_daily, dates)
-        gl_med_aligned = align_daily_series(gl_daily or gl_det_d, dates)
+    if 'glofas' in models and gl_ts:
+        gl_det_aligned = align_daily_series(gl_det_d, dates)
+        gl_med_aligned = align_daily_series(gl_daily, dates)
         timeline_series['glofas'] = {
             'central': gl_det_aligned,
             'deterministic': gl_det_aligned,
@@ -379,7 +426,7 @@ def build_aligned_timeline(
             'max': align_daily_series(gl_max_d, dates),
             'min': align_daily_series(gl_min_d, dates),
             'members': _align_glofas_members(gl_fc, dates),
-            'cadence': 'daily',
+            'cadence': _infer_cadence_label(tuple(gl_ts)),
         }
     if 'geoglows' in models and gg_daily:
         gg_aligned = align_daily_series(gg_daily, dates)
@@ -390,7 +437,7 @@ def build_aligned_timeline(
             'p75': align_daily_series(gg_p75_d, dates),
             'max': align_daily_series(gg_max_d, dates),
             'min': align_daily_series(gg_min_d, dates),
-            'cadence': '3-hourly',
+            'cadence': _infer_cadence_label(tuple(gg_daily)),
         }
     return {
         'dates': dates,

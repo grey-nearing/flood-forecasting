@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -45,6 +46,7 @@ from maas.geoglows import (
     parse_geoglows_return_periods_payload,
 )
 from maas.glofas import (
+    GloFASClient,
     compute_glofas_reanalysis_return_periods,
     parse_glofas_forecast_response,
 )
@@ -215,6 +217,66 @@ class TestGloFASAndGeoGLOWSProviders:
         assert parsed['ensemble_members']['member01'][2] == pytest.approx(
             4600.0
         )
+
+        # Verify GloFASClient.fetch_forecast passes ensemble='true'
+        mock_session = mock.MagicMock()
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = raw_glofas
+        mock_session.get.return_value = mock_resp
+        client = GloFASClient(session=mock_session)
+        fetched = client.fetch_forecast(38.627, -90.199, forecast_days=15)
+        assert fetched['status'] == 'live'
+        call_kwargs = mock_session.get.call_args.kwargs
+        assert call_kwargs['params']['ensemble'] == 'true'
+        assert 'river_discharge' in call_kwargs['params']['daily']
+
+        # Verify null in river_discharge stays None (never median)
+        raw_null_det = {
+            'daily': {
+                **raw_glofas['daily'],
+                'river_discharge': [4050.0, None, 4850.0],
+                'river_discharge_member01': [3900.0, None, 4600.0],
+            }
+        }
+        parsed_null = parse_glofas_forecast_response(
+            raw_null_det, 38.627, -90.199
+        )
+        assert parsed_null['data'][1]['discharge_deterministic'] is None
+        assert parsed_null['data'][1]['discharge_median'] == pytest.approx(
+            4500.0
+        )
+        assert parsed_null['ensemble_members']['member01'][1] is None
+
+        # Verify missing river_discharge raises KeyError
+        missing_det = {
+            'daily': {
+                k: v
+                for k, v in raw_glofas['daily'].items()
+                if k != 'river_discharge'
+            }
+        }
+        with pytest.raises(KeyError, match='river_discharge'):
+            parse_glofas_forecast_response(missing_det, 38.627, -90.199)
+
+        # Verify mismatched member length raises ValueError
+        bad_len_member = {
+            'daily': {
+                **raw_glofas['daily'],
+                'river_discharge_member01': [3900.0, 4200.0],
+            }
+        }
+        with pytest.raises(ValueError, match='Length mismatch'):
+            parse_glofas_forecast_response(bad_len_member, 38.627, -90.199)
+
+        # Verify non-sequence member raises TypeError
+        bad_type_member = {
+            'daily': {
+                **raw_glofas['daily'],
+                'river_discharge_member01': 'invalid',
+            }
+        }
+        with pytest.raises(TypeError, match='Expected sequence'):
+            parse_glofas_forecast_response(bad_type_member, 38.627, -90.199)
 
         # Reanalysis annual maxima across 12 years (>= 300 days/year)
         times: list[str] = []

@@ -61,6 +61,29 @@ def _extract_rounded_or_none(
     return round(val, ndigits) if val is not None else None
 
 
+def _validate_daily_sequence(
+    daily: Mapping[str, Any],
+    key: str,
+    expected_len: int | None = None,
+) -> Sequence[Any]:
+    """Validate `daily[key]` exists, is a sequence, and has `expected_len`."""
+    if key not in daily:
+        raise KeyError(
+            f'Missing required key {key!r} in GloFAS daily forecast payload'
+        )
+    seq = daily[key]
+    if not isinstance(seq, Sequence) or isinstance(seq, (str, bytes)):
+        raise TypeError(
+            f'Expected sequence for {key!r} in GloFAS daily forecast payload'
+        )
+    if expected_len is not None and len(seq) != expected_len:
+        raise ValueError(
+            f'Length mismatch for {key!r}: '
+            f'expected {expected_len}, got {len(seq)}'
+        )
+    return seq
+
+
 def parse_glofas_forecast_response(
     payload: Mapping[str, Any] | None,
     lat: float,
@@ -80,43 +103,26 @@ def parse_glofas_forecast_response(
         payload.get('daily'), Mapping
     ):
         daily = payload['daily']
-        for required_key in (
-            'time',
-            'river_discharge_mean',
-            'river_discharge_median',
-            'river_discharge_max',
-            'river_discharge_min',
-            'river_discharge_p25',
-            'river_discharge_p75',
-        ):
-            if required_key not in daily:
-                raise KeyError(
-                    f'Missing required key {required_key!r} '
-                    'in GloFAS daily forecast payload'
-                )
-        times = daily['time']
-        raw_det = daily.get('river_discharge')
-        has_det_col = isinstance(raw_det, Sequence) and not isinstance(
-            raw_det, (str, bytes)
+        times = _validate_daily_sequence(daily, 'time')
+        n_steps = len(times)
+        dets = _validate_daily_sequence(daily, 'river_discharge', n_steps)
+        means = _validate_daily_sequence(daily, 'river_discharge_mean', n_steps)
+        meds = _validate_daily_sequence(
+            daily, 'river_discharge_median', n_steps
         )
-        dets: Sequence[Any] = raw_det if has_det_col else ()
-        means = daily['river_discharge_mean']
-        meds = daily['river_discharge_median']
-        maxs = daily['river_discharge_max']
-        mins = daily['river_discharge_min']
-        p25s = daily['river_discharge_p25']
-        p75s = daily['river_discharge_p75']
+        maxs = _validate_daily_sequence(daily, 'river_discharge_max', n_steps)
+        mins = _validate_daily_sequence(daily, 'river_discharge_min', n_steps)
+        p25s = _validate_daily_sequence(daily, 'river_discharge_p25', n_steps)
+        p75s = _validate_daily_sequence(daily, 'river_discharge_p75', n_steps)
         for i, raw_t in enumerate(times):
-            med_val = _extract_rounded_or_none(meds, i)
-            det_val = (
-                _extract_rounded_or_none(dets, i) if has_det_col else med_val
-            )
             records.append(
                 {
                     'time': str(raw_t),
-                    'discharge_deterministic': det_val,
+                    'discharge_deterministic': _extract_rounded_or_none(
+                        dets, i
+                    ),
                     'discharge_mean': _extract_rounded_or_none(means, i),
-                    'discharge_median': med_val,
+                    'discharge_median': _extract_rounded_or_none(meds, i),
                     'discharge_max': _extract_rounded_or_none(maxs, i),
                     'discharge_min': _extract_rounded_or_none(mins, i),
                     'discharge_p25': _extract_rounded_or_none(p25s, i),
@@ -127,12 +133,11 @@ def parse_glofas_forecast_response(
             k for k in daily if str(k).startswith('river_discharge_member')
         )
         for mk in member_keys:
-            seq = daily.get(mk)
-            if isinstance(seq, Sequence) and not isinstance(seq, (str, bytes)):
-                short_key = str(mk).replace('river_discharge_', '')
-                ensemble_members[short_key] = [
-                    _extract_rounded_or_none(seq, i) for i in range(len(times))
-                ]
+            seq = _validate_daily_sequence(daily, str(mk), n_steps)
+            short_key = str(mk).replace('river_discharge_', '')
+            ensemble_members[short_key] = [
+                _extract_rounded_or_none(seq, i) for i in range(n_steps)
+            ]
     has_live = len(records) > 0
     return {
         'model': 'copernicus_glofas',
@@ -321,9 +326,7 @@ class GloFASClient:
     ) -> dict[str, Any] | None:
         """Fetch GloFAS v4 historical reanalysis and compute return periods."""
         eff_end_year = (
-            end_year
-            if end_year is not None
-            else datetime.now(UTC).year - 1
+            end_year if end_year is not None else datetime.now(UTC).year - 1
         )
         params = {
             'latitude': lat,
