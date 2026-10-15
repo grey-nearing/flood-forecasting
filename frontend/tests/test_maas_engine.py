@@ -77,6 +77,7 @@ from maas.thresholds import (
 from multimet.catchment_delineation import RES_DEG, TILE_CELLS
 
 _HTTP_OK = 200
+_HTTP_BAD_REQUEST = 400
 _POLYGON_RING_LEN = 5
 _SOUTH_D8 = 4
 _WEST_D8 = 16
@@ -719,7 +720,7 @@ class TestMaaSContracts(unittest.TestCase):
 
         geoglows_unavail = {'status': 'unavailable', 'data': []}
         summary = reach_exceedance_summary(
-            forecast('live', 'discharge_median', 0.2),
+            forecast('live', 'discharge_deterministic', 0.2),
             rps,
             geoglows_unavail,
             rps,
@@ -727,6 +728,8 @@ class TestMaaSContracts(unittest.TestCase):
         assert summary['governing_model'] == 'glofas'
         assert summary['rank'] == 0
         assert summary['excluded_models'] == []
+        assert summary['glofas_reference'] == 'control'
+        assert summary['per_model']['glofas']['reference'] == 'control'
 
     def test_floodhub_client_skips_nan_and_returns_unavailable(self) -> None:
         """Verify FloodHubClient skips NaN issues and never fabricates data."""
@@ -980,6 +983,46 @@ class TestMaaSServerEndpoints(unittest.TestCase):
             'glofas',
             'geoglows',
         ]
+
+    def test_api_maas_forecast_glofas_reference_query_param(self) -> None:
+        """Verify `glofas_reference` switches the GloFAS series end-to-end."""
+        expected_first = {'control': 2250.0, 'median': 2200.0, 'mean': 2250.0}
+        for ref, first_value in expected_first.items():
+            status, data = self._get(
+                '/api/maas/forecast?lat=32.756&lon=-117.252&models=glofas'
+                f'&glofas_reference={ref}'
+            )
+            assert status == _HTTP_OK
+            assert data['glofas_reference']['key'] == ref
+            gl_tl = data['timeline']['series']['glofas']
+            assert gl_tl['reference'] == ref
+            assert gl_tl['central'][0] == pytest.approx(first_value)
+            gl_row = next(
+                r for r in data['consensus'] if r['model'] == 'glofas'
+            )
+            assert gl_row['reference'] == ref
+            assert data['reach_exceedance']['glofas_reference'] == ref
+            # The consensus peak equals the maximum of the plotted central line.
+            central_max = max(v for v in gl_tl['central'] if v is not None)
+            assert gl_row['peak_flow'] == pytest.approx(central_max)
+            assert data['reach_exceedance']['per_model']['glofas'][
+                'peak_flow'
+            ] == pytest.approx(central_max)
+
+        status_default, data_default = self._get(
+            '/api/maas/forecast?lat=32.756&lon=-117.252&models=glofas'
+        )
+        assert status_default == _HTTP_OK
+        assert data_default['glofas_reference']['key'] == 'control'
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            self._get(
+                '/api/maas/forecast?lat=32.756&lon=-117.252&models=glofas'
+                '&glofas_reference=p75'
+            )
+        assert exc_info.value.code == _HTTP_BAD_REQUEST
+        error_payload = json.loads(exc_info.value.read().decode('utf-8'))
+        assert 'glofas_reference' in error_payload['error']
 
     def test_consensus_timeline_strict_validation_and_no_fallback(self) -> None:
         """Verify timeline alignment never imputes and validates inputs."""

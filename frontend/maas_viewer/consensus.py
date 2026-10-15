@@ -23,6 +23,12 @@ from typing import Any
 
 from maas.config import MAAS_MODEL_NAMES, parse_finite_float
 from maas.fetcher import align_daily_series, daily_series, window_peak
+from maas.glofas import (
+    DEFAULT_GLOFAS_REFERENCE,
+    GLOFAS_REFERENCE_FIELDS,
+    glofas_reference_field,
+    normalize_glofas_reference,
+)
 from maas.thresholds import (
     EXCEEDANCE_CLASSES,
     RISK_RANK,
@@ -108,21 +114,26 @@ def reach_exceedance_summary(
     glofas_rp: dict[str, Any] | None,
     geoglows_fc: dict[str, Any] | None,
     geoglows_rp: dict[str, Any] | None,
+    *,
+    glofas_reference: str = DEFAULT_GLOFAS_REFERENCE,
 ) -> dict[str, Any]:
-    """Compute forecast-peak return-period exceedance of the reach."""
+    """Compute forecast-peak return-period exceedance of the reach.
+
+    The GloFAS peak is evaluated on the native series selected by
+    `glofas_reference` (`'control'`, `'median'`, or `'mean'`); GEOGLOWS always
+    uses `flow_med`. The selected GloFAS reference is echoed in
+    `per_model['glofas']['reference']`.
+    """
+    gl_reference = normalize_glofas_reference(glofas_reference)
+    gl_field = glofas_reference_field(gl_reference)
     per_model: dict[str, Any] = {}
-    for key, fc, rps, value_keys in (
-        (
-            'glofas',
-            glofas_fc,
-            glofas_rp,
-            ('discharge_median', 'discharge_mean'),
-        ),
-        ('geoglows', geoglows_fc, geoglows_rp, ('flow_med',)),
+    for key, fc, rps, value_key in (
+        ('glofas', glofas_fc, glofas_rp, gl_field),
+        ('geoglows', geoglows_fc, geoglows_rp, 'flow_med'),
     ):
         if not fc or not fc.get('data'):
             continue
-        peak, when = window_peak(daily_series(fc.get('data'), *value_keys))
+        peak, when = window_peak(daily_series(fc.get('data'), value_key))
         cls = classify_exceedance(peak, rps)
         per_model[key] = {
             'peak_flow': peak,
@@ -132,6 +143,9 @@ def reach_exceedance_summary(
             'return_period_yrs': estimate_return_period_years(peak, rps or {}),
             'thresholds_status': (rps or {}).get('status'),
         }
+        if key == 'glofas':
+            per_model[key]['reference'] = gl_reference
+            per_model[key]['reference_field'] = gl_field
     if not per_model:
         out = dict(EXCEEDANCE_CLASSES[0])
         out.update(
@@ -144,6 +158,7 @@ def reach_exceedance_summary(
                 'per_model': {},
                 'excluded_models': [],
                 'unit': 'm³/s',
+                'glofas_reference': gl_reference,
             }
         )
         return out
@@ -155,6 +170,7 @@ def reach_exceedance_summary(
             'per_model': per_model,
             'excluded_models': [],
             'unit': 'm³/s',
+            'glofas_reference': gl_reference,
         }
     )
     return out
@@ -317,57 +333,37 @@ def _align_glofas_members(
     return aligned_members
 
 
-def build_aligned_timeline(
+def build_aligned_timeline(  # noqa: PLR0913
     models: list[str],
     fh_fc: dict[str, Any] | None,
     fh_is_q: bool,  # noqa: FBT001
     gl_fc: dict[str, Any] | None,
     gg_fc: dict[str, Any] | None,
+    *,
+    glofas_reference: str = DEFAULT_GLOFAS_REFERENCE,
 ) -> dict[str, Any]:
-    """Build a timestamp-aligned timeline at each model's native cadence."""
+    """Build a timestamp-aligned timeline at each model's native cadence.
+
+    The GloFAS entry always serializes all three native reference series
+    (`deterministic`, `median`, `mean`) plus the ensemble statistics and
+    members; `central` is the series selected by `glofas_reference` and
+    `reference` echoes that choice.
+    """
+    gl_reference = normalize_glofas_reference(glofas_reference)
     fh_daily = (
         _timestamp_series((fh_fc or {}).get('data'), 'discharge')
         if (fh_fc and fh_fc.get('data'))
         else {}
     )
-    gl_det_d = (
-        _timestamp_series(
-            (gl_fc or {}).get('data'),
-            'discharge_deterministic',
-        )
-        if gl_fc
-        else {}
-    )
-    gl_daily = (
-        _timestamp_series((gl_fc or {}).get('data'), 'discharge_median')
-        if gl_fc
-        else {}
-    )
-    gl_mean_d = (
-        _timestamp_series((gl_fc or {}).get('data'), 'discharge_mean')
-        if gl_fc
-        else {}
-    )
-    gl_p25_d = (
-        _timestamp_series((gl_fc or {}).get('data'), 'discharge_p25')
-        if gl_fc
-        else {}
-    )
-    gl_p75_d = (
-        _timestamp_series((gl_fc or {}).get('data'), 'discharge_p75')
-        if gl_fc
-        else {}
-    )
-    gl_max_d = (
-        _timestamp_series((gl_fc or {}).get('data'), 'discharge_max')
-        if gl_fc
-        else {}
-    )
-    gl_min_d = (
-        _timestamp_series((gl_fc or {}).get('data'), 'discharge_min')
-        if gl_fc
-        else {}
-    )
+    gl_records = (gl_fc or {}).get('data') if gl_fc else None
+    gl_native = {
+        ref_key: _timestamp_series(gl_records, field) if gl_fc else {}
+        for ref_key, field in GLOFAS_REFERENCE_FIELDS.items()
+    }
+    gl_p25_d = _timestamp_series(gl_records, 'discharge_p25') if gl_fc else {}
+    gl_p75_d = _timestamp_series(gl_records, 'discharge_p75') if gl_fc else {}
+    gl_max_d = _timestamp_series(gl_records, 'discharge_max') if gl_fc else {}
+    gl_min_d = _timestamp_series(gl_records, 'discharge_min') if gl_fc else {}
     gg_daily = (
         _timestamp_series((gg_fc or {}).get('data'), 'flow_med')
         if gg_fc
@@ -393,15 +389,10 @@ def build_aligned_timeline(
         if gg_fc
         else {}
     )
-    gl_ts = (
-        set(gl_det_d)
-        | set(gl_daily)
-        | set(gl_mean_d)
-        | set(gl_p25_d)
-        | set(gl_p75_d)
-        | set(gl_max_d)
-        | set(gl_min_d)
-    )
+    gl_ts: set[str] = set()
+    for native in gl_native.values():
+        gl_ts |= set(native)
+    gl_ts |= set(gl_p25_d) | set(gl_p75_d) | set(gl_max_d) | set(gl_min_d)
     dates = sorted(set(fh_daily) | gl_ts | set(gg_daily))
     timeline_series: dict[str, Any] = {}
     if 'floodhub' in models and fh_daily:
@@ -414,13 +405,16 @@ def build_aligned_timeline(
             'cadence': _infer_cadence_label(tuple(fh_daily)),
         }
     if 'glofas' in models and gl_ts:
-        gl_det_aligned = align_daily_series(gl_det_d, dates)
-        gl_med_aligned = align_daily_series(gl_daily, dates)
+        gl_aligned = {
+            ref_key: align_daily_series(native, dates)
+            for ref_key, native in gl_native.items()
+        }
         timeline_series['glofas'] = {
-            'central': gl_det_aligned,
-            'deterministic': gl_det_aligned,
-            'median': gl_med_aligned,
-            'mean': align_daily_series(gl_mean_d, dates),
+            'central': gl_aligned[gl_reference],
+            'reference': gl_reference,
+            'deterministic': gl_aligned['control'],
+            'median': gl_aligned['median'],
+            'mean': gl_aligned['mean'],
             'p25': align_daily_series(gl_p25_d, dates),
             'p75': align_daily_series(gl_p75_d, dates),
             'max': align_daily_series(gl_max_d, dates),

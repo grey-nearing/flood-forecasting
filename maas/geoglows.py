@@ -305,16 +305,16 @@ def extract_geoglows_zarr_series(
                 f'Missing river ID coordinate in {zarr_path}; '
                 f'available: {list(ds.coords)}'
             )
-        rivids = ds[riv_dim].to_numpy(dtype=np.int64)
+        rivids = np.asarray(ds[riv_dim].to_numpy(), dtype=np.int64)
         matches = np.flatnonzero(rivids == int(river_id))
         if len(matches) == 0:
             raise KeyError(f'river_id {river_id} not found in {zarr_path}')
         sub = ds[var_name].isel({riv_dim: int(matches[0])})
         times = sub['time'].to_numpy()
-        vals = sub.to_numpy(dtype=float)
+        vals = np.asarray(sub.to_numpy(), dtype=float)
 
     records: list[dict[str, Any]] = []
-    for t, v in zip(times.ravel(), vals.ravel(), strict=False):
+    for t, v in zip(times.ravel(), vals.ravel(), strict=True):
         t_str = str(np.datetime_as_string(t, unit='s')) + 'Z'
         fval = float(v)
         records.append(

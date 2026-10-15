@@ -101,6 +101,7 @@ from frontend.weather_engine import (
 )
 from frontend.weather_sources import list_weather_sources
 from frontend.weather_sync import run_sync_subprocess
+from maas.glofas import DEFAULT_GLOFAS_REFERENCE, GLOFAS_REFERENCE_FIELDS
 from utils.file_paths import (
     DEFAULT_LOCAL_SERVER_URL,
     HISTORICAL_MASTER_ZARR_NAME,
@@ -934,6 +935,19 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         requested_models = [
             m.strip().lower() for m in models_str.split(',') if m.strip()
         ]
+        raw_reference = query.get('glofas_reference', [''])[0]
+        glofas_reference = (
+            raw_reference.strip().lower()
+            if raw_reference.strip()
+            else DEFAULT_GLOFAS_REFERENCE
+        )
+        if glofas_reference not in GLOFAS_REFERENCE_FIELDS:
+            self._send_error(
+                'Invalid glofas_reference; expected one of '
+                f'{sorted(GLOFAS_REFERENCE_FIELDS)}',
+                status=400,
+            )
+            return
         data = get_unified_maas_forecast(
             lat,
             lon,
@@ -944,6 +958,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             upstream_area_km2=upstream_area_km2,
             area_min_km2=area_min_km2,
             network=network,
+            glofas_reference=glofas_reference,
         )
         self._send_json(data)
 

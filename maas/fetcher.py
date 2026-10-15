@@ -21,12 +21,15 @@ without any UI presentation, color-coding, or map-corridor rendering logic.
 
 import concurrent.futures
 import json
+import math
+import re
 import sqlite3
 import threading
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -46,14 +49,16 @@ from maas.geoglows import (
     extract_geoglows_zarr_series,
 )
 from maas.glofas import (
+    DEFAULT_GLOFAS_REFERENCE,
     GloFASClient,
+    describe_glofas_reference,
     extract_glofas_zarr_series,
+    glofas_reference_field,
 )
 from maas.networks import (
     FLOODHUB_PYRAMID_LOD,
     GEOGLOWS_LOD,
     GLOFAS_LOD,
-    MAX_CORRIDOR_SNAP_KM,
     glofas_cell_center,
     is_geoglows_river_id,
     load_geoglows_lookup,
@@ -74,9 +79,17 @@ from maas.thresholds import (
     thresholds_from_return_periods,
 )
 
+_ISO_DATE_LEN: int = 10
+_ISO_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+_SQLITE_TIMEOUT_S: float = 5.0
+
 
 class SQLiteCache:
-    """Thread-safe persistent SQLite key-value JSON cache with explicit `db_path`."""
+    """Thread-safe persistent SQLite key-value JSON cache (explicit `db_path`).
+
+    `table_name` is validated as a Python identifier in `__init__`, so the
+    SQL statements below can only ever interpolate a plain identifier.
+    """
 
     def __init__(
         self, db_path: Path | str, table_name: str = 'flood_cache'
@@ -98,7 +111,9 @@ class SQLiteCache:
             if self._initialized and self.db_path.exists():
                 return
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            with closing(sqlite3.connect(str(self.db_path), timeout=5)) as conn:
+            with closing(
+                sqlite3.connect(str(self.db_path), timeout=_SQLITE_TIMEOUT_S)
+            ) as conn:
                 conn.execute(
                     f'CREATE TABLE IF NOT EXISTS {self.table_name} ('
                     'cache_key TEXT PRIMARY KEY, payload TEXT, created_at REAL)'
@@ -107,13 +122,19 @@ class SQLiteCache:
             self._initialized = True
 
     def get(self, cache_key: str, max_age_s: float) -> dict[str, Any] | None:
-        """Read a JSON payload from SQLite if `db_path` exists and is fresher than `max_age_s`."""
+        """Read a JSON payload if the cache file exists and is fresh enough.
+
+        Returns `None` when `db_path` does not exist, the key is missing, or
+        the entry is older than `max_age_s` seconds.
+        """
         if not self.db_path.exists():
             return None
         self._ensure_initialized()
-        with closing(sqlite3.connect(str(self.db_path), timeout=5)) as conn:
+        with closing(
+            sqlite3.connect(str(self.db_path), timeout=_SQLITE_TIMEOUT_S)
+        ) as conn:
             row = conn.execute(
-                f'SELECT payload, created_at FROM {self.table_name} '
+                f'SELECT payload, created_at FROM {self.table_name} '  # noqa: S608
                 'WHERE cache_key = ?',
                 (cache_key,),
             ).fetchone()
@@ -125,32 +146,91 @@ class SQLiteCache:
     def put(self, cache_key: str, payload: Mapping[str, Any]) -> None:
         """Persist a JSON-serializable payload in the SQLite cache."""
         self._ensure_initialized()
-        with closing(sqlite3.connect(str(self.db_path), timeout=5)) as conn:
+        with closing(
+            sqlite3.connect(str(self.db_path), timeout=_SQLITE_TIMEOUT_S)
+        ) as conn:
             conn.execute(
-                f'INSERT OR REPLACE INTO {self.table_name} '
+                f'INSERT OR REPLACE INTO {self.table_name} '  # noqa: S608
                 '(cache_key, payload, created_at) VALUES (?, ?, ?)',
                 (cache_key, json.dumps(dict(payload)), time.time()),
             )
             conn.commit()
 
 
+def _record_day(record: Mapping[str, Any]) -> str:
+    """Return the `YYYY-MM-DD` day of a record's `time` field, validated."""
+    if 'time' not in record:
+        raise KeyError(f'Forecast record is missing a `time` field: {record!r}')
+    raw_time = record['time']
+    if not isinstance(raw_time, str):
+        raise TypeError(
+            f'Forecast record `time` must be an ISO-8601 string, '
+            f'got {raw_time!r}'
+        )
+    text = raw_time.strip()
+    day = text[:_ISO_DATE_LEN]
+    if not _ISO_DATE_RE.match(day) or (
+        len(text) > _ISO_DATE_LEN and text[_ISO_DATE_LEN] not in ('T', ' ')
+    ):
+        raise ValueError(
+            f'Forecast record `time` is not an ISO-8601 date/timestamp: '
+            f'{raw_time!r}'
+        )
+    # Rejects impossible calendar dates (e.g. month 13) with a ValueError.
+    date.fromisoformat(day)
+    return day
+
+
+def _record_value(record: Mapping[str, Any], key: str) -> float | None:
+    """Return the finite float at `record[key]`, or `None` when it is missing.
+
+    `None`, `NaN`, and `±Inf` all mean "no value" and yield `None`. Any
+    non-numeric type (including `bool` and numeric strings) raises
+    `TypeError`, because provider parsers always emit numbers or `None`.
+    """
+    if key not in record:
+        raise KeyError(f'Forecast record is missing field {key!r}: {record!r}')
+    raw = record[key]
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, Real):
+        raise TypeError(
+            f'Forecast record field {key!r} must be numeric or None, '
+            f'got {raw!r}'
+        )
+    value = float(raw)
+    return value if math.isfinite(value) else None
+
+
 def daily_series(
     records: Sequence[Mapping[str, Any]] | None,
     key: str,
-    fallback_key: str | None = None,
 ) -> dict[str, float]:
-    """Aggregate a (sub-)daily record sequence into daily means `{YYYY-MM-DD: value}`."""
+    """Aggregate (sub-)daily records into daily means `{YYYY-MM-DD: value}`.
+
+    Each record must carry an ISO-8601 `time` (`YYYY-MM-DD` or a UTC
+    timestamp starting with that date) and a numeric-or-`None` field `key`.
+    Missing values (`None`/`NaN`) are skipped, never imputed; days with no
+    finite value are absent from the result.
+
+    Raises:
+        KeyError: If a record lacks `time` or `key`.
+        TypeError: If `time` is not a string or the value is non-numeric.
+        ValueError: If `time` is not a valid ISO-8601 date/timestamp.
+    """
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
-    for r in records or ():
-        v = parse_finite_float(r.get(key))
-        if v is None and fallback_key:
-            v = parse_finite_float(r.get(fallback_key))
-        t = str(r.get('time', ''))[:10]
-        if v is None or len(t) != 10:
+    for record in records or ():
+        if not isinstance(record, Mapping):
+            raise TypeError(
+                f'Expected a mapping record in forecast data, got {record!r}'
+            )
+        day = _record_day(record)
+        value = _record_value(record, key)
+        if value is None:
             continue
-        sums[t] = sums.get(t, 0.0) + v
-        counts[t] = counts.get(t, 0) + 1
+        sums[day] = sums.get(day, 0.0) + value
+        counts[day] = counts.get(day, 0) + 1
     return {t: sums[t] / counts[t] for t in sorted(sums)}
 
 
@@ -159,7 +239,10 @@ def align_daily_series(
     dates: Sequence[str],
     ndigits: int = 2,
 ) -> list[float | None]:
-    """Align a `{timestamp_or_date: value}` mapping onto a common `dates` list (`None` for missing entries)."""
+    """Align a `{timestamp_or_date: value}` mapping onto a common `dates` list.
+
+    Entries missing from `daily` become `None` (never filled).
+    """
     return [round(daily[d], ndigits) if d in daily else None for d in dates]
 
 
@@ -167,7 +250,12 @@ def window_peak(
     daily: Mapping[str, float],
     today_str: str | None = None,
 ) -> tuple[float | None, str | None]:
-    """Return peak `(value, date)` over `today_str` and later (or full series if none)."""
+    """Return the peak `(value, date)` on or after `today_str`.
+
+    Falls back to the full series only when no entry is on or after
+    `today_str` (defaults to today, UTC). Returns `(None, None)` for an
+    empty series.
+    """
     today = (
         today_str
         if today_str is not None
@@ -244,55 +332,7 @@ def _get_cached_geoglows_lookup(attrs_path: Path) -> tuple[Any, Any] | None:
         return lookup
 
 
-def _resolve_pyramid_path(
-    config: MaaSConfig, subdir: str, filename: str
-) -> Path:
-    path = config.river_networks_dir / subdir / filename
-    return path if path.exists() else config.cache_dir / subdir / filename
-
-
-def _infer_probe_upstream_area(  # noqa: PLR0913, PLR0917
-    lat: float,
-    lon: float,
-    network: str | None,
-    floodhub_net: Mapping[str, Any] | None,
-    geoglows_net: Mapping[str, Any] | None,
-    glofas_net: Mapping[str, Any] | None,
-) -> float | None:
-    """Infer upstream area from nearby in-memory pyramids when omitted."""
-    snap_by_net = {
-        'floodhub': lambda: snap_floodhub_reach_from_network(
-            floodhub_net, lat, lon, None
-        ),
-        'geoglows': lambda: snap_geoglows_reach_from_network(
-            geoglows_net, lat, lon, None
-        ),
-        'glofas': lambda: snap_glofas_cell_from_network(
-            glofas_net, lat, lon, None
-        ),
-    }
-    order = [
-        network if network in snap_by_net else 'glofas',
-        'floodhub',
-        'geoglows',
-        'glofas',
-    ]
-    seen: set[str] = set()
-    for net_key in order:
-        if net_key in seen:
-            continue
-        seen.add(net_key)
-        inferred = snap_by_net[net_key]()
-        if not inferred:
-            continue
-        offset_km = float(inferred['offset_km'])
-        area_val = parse_finite_float(inferred['upstream_area_km2'])
-        if offset_km <= MAX_CORRIDOR_SNAP_KM and area_val and area_val > 0.0:
-            return area_val
-    return None
-
-
-def resolve_reaches(  # noqa: PLR0913
+def resolve_reaches(  # noqa: C901, PLR0913
     lat: float,
     lon: float,
     config: MaaSConfig,
@@ -311,12 +351,13 @@ def resolve_reaches(  # noqa: PLR0913
         config: Explicit `MaaSConfig` providing `river_networks_dir` and
             `cache_dir`.
         upstream_area_km2: Optional target upstream drainage area in
-            $\\text{km}^2$ for cross-network reach matching.
+            $\text{km}^2$ for cross-network reach matching.
         area_min_km2: Optional minimum upstream drainage area along a merged
             river line.
-        network: Optional source network identifier (`'floodhub'`, `'glofas'`,
-            `'geoglows'`).
-        river_id: Optional GEOGLOWS 9-digit `LINKNO` or HydroRIVERS `HYRIV_ID`.
+        network: Optional source network identifier (`'floodhub'`,
+            `'glofas'`, `'geoglows'`).
+        river_id: Optional GEOGLOWS 9-digit `LINKNO` or HydroRIVERS
+            `HYRIV_ID`.
         gauge_id: Optional FloodHub gauge identifier.
 
     Returns:
@@ -330,31 +371,56 @@ def resolve_reaches(  # noqa: PLR0913
     up_area = parse_finite_float(upstream_area_km2)
     min_area = parse_finite_float(area_min_km2)
 
-    glofas_npz = _resolve_pyramid_path(
-        config, 'glofas_v4', 'glofas_network_v1.npz'
+    glofas_npz = (
+        config.river_networks_dir / 'glofas_v4' / 'glofas_network_v1.npz'
     )
+    if not glofas_npz.exists():
+        glofas_npz = config.cache_dir / 'glofas_v4' / 'glofas_network_v1.npz'
     glofas_net = _get_cached_glofas_pyramid(glofas_npz)
 
-    floodhub_npz = _resolve_pyramid_path(
-        config, 'glofas_v4', 'floodhub_network_v1.npz'
+    floodhub_npz = (
+        config.river_networks_dir / 'glofas_v4' / 'floodhub_network_v1.npz'
     )
+    if not floodhub_npz.exists():
+        floodhub_npz = (
+            config.cache_dir / 'glofas_v4' / 'floodhub_network_v1.npz'
+        )
     floodhub_net = _get_cached_floodhub_pyramid(floodhub_npz)
 
-    geoglows_npz = _resolve_pyramid_path(
-        config, 'geoglows_v2', 'geoglows_network_v1.npz'
-    )
+    geoglows_dir = config.river_networks_dir / 'geoglows_v2'
+    if (
+        not (geoglows_dir / 'global_streams_simplified.gpkg').exists()
+        and not (geoglows_dir / 'geoglows_network_v1.npz').exists()
+    ):
+        geoglows_dir = config.cache_dir / 'geoglows_v2'
+    geoglows_npz = geoglows_dir / 'geoglows_network_v1.npz'
     geoglows_net = _get_cached_geoglows_pyramid(geoglows_npz)
-    gpkg_path = _resolve_pyramid_path(
-        config, 'geoglows_v2', 'global_streams_simplified.gpkg'
-    )
-    attrs_path = _resolve_pyramid_path(
-        config, 'geoglows_v2', 'geoglows_attrs_v1.npz'
-    )
+    gpkg_path = geoglows_dir / 'global_streams_simplified.gpkg'
+    attrs_path = geoglows_dir / 'geoglows_attrs_v1.npz'
 
     if up_area is None or up_area <= 0.0:
-        up_area = _infer_probe_upstream_area(
-            lat, lon, network, floodhub_net, geoglows_net, glofas_net
-        )
+        # Infer the upstream area from the clicked network first, then from
+        # the remaining networks in a fixed order.
+        area_snappers = {
+            'floodhub': lambda: snap_floodhub_reach_from_network(
+                floodhub_net, lat, lon, None
+            ),
+            'geoglows': lambda: snap_geoglows_reach_from_network(
+                geoglows_net, lat, lon, None
+            ),
+            'glofas': lambda: snap_glofas_cell_from_network(
+                glofas_net, lat, lon, None
+            ),
+        }
+        first = network if network in area_snappers else 'glofas'
+        order = [first] + [k for k in area_snappers if k != first]
+        for net_key in order:
+            inferred = area_snappers[net_key]()
+            if inferred and parse_finite_float(
+                inferred.get('upstream_area_km2')
+            ):
+                up_area = float(inferred['upstream_area_km2'])
+                break
 
     cross_snap: dict[str, Any] | None = None
     if up_area is not None and up_area > 0.0:
@@ -475,7 +541,10 @@ def fetch_gauges(
     page_size: int = 100,
     include_non_verified: bool = True,
 ) -> list[dict[str, Any]]:
-    """Fetch Google FloodHub gauge metadata inside `(min_lat, min_lon, max_lat, max_lon)`."""
+    """Fetch FloodHub gauge metadata inside a bounding box.
+
+    `bbox` is `(min_lat, min_lon, max_lat, max_lon)` in decimal degrees.
+    """
     min_lat, min_lon, max_lat, max_lon = bbox
     client = FloodHubClient(
         api_key=config.floodhub_api_key,
@@ -504,7 +573,108 @@ def fetch_gauges(
     )
 
 
-def fetch_historical(
+def _records_to_series(records: Sequence[Mapping[str, Any]]) -> pd.Series:
+    """Build a daily `discharge_m3s` series from `time`/`discharge` rows."""
+    idx = pd.to_datetime([r['time'] for r in records])
+    vals = [float(r['discharge']) for r in records]
+    return pd.Series(vals, index=idx, name='discharge_m3s', dtype=float)
+
+
+def _glofas_historical_series(  # noqa: PLR0913
+    config: MaaSConfig,
+    lat: float,
+    lon: float,
+    *,
+    zarr_path: Path | None,
+    end_year: int | None,
+    step_index: int | None,
+    member_index: int | None,
+) -> pd.Series:
+    """GloFAS v4 reanalysis series from a local archive or Open-Meteo."""
+    if zarr_path is not None:
+        return _records_to_series(
+            extract_glofas_zarr_series(
+                zarr_path,
+                lat,
+                lon,
+                step_index=step_index,
+                member_index=member_index,
+            )
+        )
+    client = GloFASClient(
+        base_url=config.glofas_base_url,
+        timeout_s=config.http_timeout_s,
+    )
+    eff_end_year = (
+        end_year if end_year is not None else datetime.now(UTC).year - 1
+    )
+    params = {
+        'latitude': lat,
+        'longitude': lon,
+        'daily': 'river_discharge',
+        'start_date': '1984-01-01',
+        'end_date': f'{eff_end_year}-12-31',
+    }
+    resp = client.session.get(
+        client.base_url, params=params, timeout=client.timeout_s
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    daily = payload.get('daily') if isinstance(payload, Mapping) else {}
+    times = daily.get('time') or [] if isinstance(daily, Mapping) else []
+    values = (
+        daily.get('river_discharge') or [] if isinstance(daily, Mapping) else []
+    )
+    idx = pd.to_datetime([str(t)[:_ISO_DATE_LEN] for t in times])
+    vals = [
+        v if (v := parse_finite_float(x)) is not None else float('nan')
+        for x in values
+    ]
+    return pd.Series(vals, index=idx, name='discharge_m3s', dtype=float)
+
+
+def _geoglows_historical_series(
+    config: MaaSConfig,
+    rid: int,
+    *,
+    zarr_path: Path | None,
+) -> pd.Series:
+    """GEOGLOWS v2 retrospective series from a local archive or the REST API."""
+    if zarr_path is not None:
+        return _records_to_series(extract_geoglows_zarr_series(zarr_path, rid))
+    client = GeoGLOWSClient(
+        base_url=config.geoglows_base_url,
+        timeout_s=max(config.http_timeout_s, 30.0),
+        cache_dir=config.cache_dir,
+    )
+    url = f'{client.base_url}/retrospectivedaily/{rid}'
+    resp = client.session.get(
+        url, params={'format': 'json'}, timeout=client.timeout_s
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    times = (
+        payload.get('datetime') or [] if isinstance(payload, Mapping) else []
+    )
+    raw_vals = payload.get(str(rid)) if isinstance(payload, Mapping) else None
+    if not isinstance(raw_vals, list) and isinstance(payload, Mapping):
+        raw_vals = next(
+            (
+                v
+                for k, v in payload.items()
+                if k not in ('datetime', 'metadata') and isinstance(v, list)
+            ),
+            [],
+        )
+    idx = pd.to_datetime([str(t)[:_ISO_DATE_LEN] for t in times])
+    vals = [
+        v if (v := parse_finite_float(x)) is not None else float('nan')
+        for x in (raw_vals or [])
+    ]
+    return pd.Series(vals, index=idx, name='discharge_m3s', dtype=float)
+
+
+def fetch_historical(  # noqa: PLR0913
     config: MaaSConfig,
     provider: str,
     *,
@@ -513,20 +683,28 @@ def fetch_historical(
     lon: float | None = None,
     zarr_path: Path | None = None,
     end_year: int | None = None,
+    step_index: int | None = None,
+    member_index: int | None = None,
 ) -> pd.Series:
-    """Fetch a historical daily discharge `pd.Series` (indexed by `pd.DatetimeIndex`).
+    r"""Fetch a historical daily discharge `pd.Series` (`pd.DatetimeIndex`).
 
     Args:
         config: Explicit `MaaSConfig`.
         provider: Either `'glofas'` or `'geoglows'`.
-        reach_id: 9-digit GEOGLOWS `LINKNO` (required when `provider='geoglows'`).
+        reach_id: 9-digit GEOGLOWS `LINKNO` (required when
+            `provider='geoglows'`).
         lat: Latitude in decimal degrees (required when `provider='glofas'`).
         lon: Longitude in decimal degrees (required when `provider='glofas'`).
         zarr_path: Optional local Zarr/NetCDF archive path.
         end_year: Optional last calendar year for GloFAS reanalysis queries.
+        step_index: Positional lead-time index when a local GloFAS archive
+            has a `step` dimension (see `extract_glofas_zarr_series`).
+        member_index: Positional ensemble-member index when a local GloFAS
+            archive has a `number` dimension.
 
     Returns:
-        Daily streamflow `pd.Series` in $\\text{m}^3/\\text{s}$ indexed by `pd.DatetimeIndex`.
+        Daily streamflow `pd.Series` in $\text{m}^3/\text{s}$ indexed by
+        `pd.DatetimeIndex`.
     """
     prov = provider.strip().lower()
     if prov == 'glofas':
@@ -534,96 +712,89 @@ def fetch_historical(
             raise ValueError(
                 "`fetch_historical` for 'glofas' requires `lat` and `lon`."
             )
-        if zarr_path is not None:
-            records = extract_glofas_zarr_series(zarr_path, lat, lon)
-            idx = pd.to_datetime([r['time'] for r in records])
-            vals = [float(r['discharge']) for r in records]
-            return pd.Series(vals, index=idx, name='discharge_m3s', dtype=float)
-        client = GloFASClient(
-            base_url=config.glofas_base_url,
-            timeout_s=config.http_timeout_s,
+        return _glofas_historical_series(
+            config,
+            lat,
+            lon,
+            zarr_path=zarr_path,
+            end_year=end_year,
+            step_index=step_index,
+            member_index=member_index,
         )
-        eff_end_year = (
-            end_year if end_year is not None else datetime.now(UTC).year - 1
-        )
-        params = {
-            'latitude': lat,
-            'longitude': lon,
-            'daily': 'river_discharge',
-            'start_date': '1984-01-01',
-            'end_date': f'{eff_end_year}-12-31',
-        }
-        resp = client.session.get(
-            client.base_url, params=params, timeout=client.timeout_s
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        daily = payload.get('daily') if isinstance(payload, Mapping) else {}
-        times = daily.get('time') or [] if isinstance(daily, Mapping) else []
-        values = (
-            daily.get('river_discharge') or []
-            if isinstance(daily, Mapping)
-            else []
-        )
-        idx = pd.to_datetime([str(t)[:10] for t in times])
-        vals = [
-            v if (v := parse_finite_float(x)) is not None else float('nan')
-            for x in values
-        ]
-        return pd.Series(vals, index=idx, name='discharge_m3s', dtype=float)
 
     if prov == 'geoglows':
         rid = parse_int(reach_id)
         if rid is None or not is_geoglows_river_id(rid):
             raise ValueError(
-                "`fetch_historical` for 'geoglows' requires a 9-digit `reach_id`."
+                "`fetch_historical` for 'geoglows' requires a 9-digit "
+                '`reach_id`.'
             )
-        if zarr_path is not None:
-            records = extract_geoglows_zarr_series(zarr_path, rid)
-            idx = pd.to_datetime([r['time'] for r in records])
-            vals = [float(r['discharge']) for r in records]
-            return pd.Series(vals, index=idx, name='discharge_m3s', dtype=float)
-        client = GeoGLOWSClient(
-            base_url=config.geoglows_base_url,
-            timeout_s=max(config.http_timeout_s, 30.0),
-            cache_dir=config.cache_dir,
-        )
-        url = f'{client.base_url}/retrospectivedaily/{rid}'
-        resp = client.session.get(
-            url, params={'format': 'json'}, timeout=client.timeout_s
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        times = (
-            payload.get('datetime') or []
-            if isinstance(payload, Mapping)
-            else []
-        )
-        raw_vals = (
-            payload.get(str(rid)) if isinstance(payload, Mapping) else None
-        )
-        if not isinstance(raw_vals, list) and isinstance(payload, Mapping):
-            raw_vals = next(
-                (
-                    v
-                    for k, v in payload.items()
-                    if k not in ('datetime', 'metadata') and isinstance(v, list)
-                ),
-                [],
-            )
-        idx = pd.to_datetime([str(t)[:10] for t in times])
-        vals = [
-            v if (v := parse_finite_float(x)) is not None else float('nan')
-            for x in (raw_vals or [])
-        ]
-        return pd.Series(vals, index=idx, name='discharge_m3s', dtype=float)
+        return _geoglows_historical_series(config, rid, zarr_path=zarr_path)
 
     raise ValueError(
-        f"Unsupported historical provider {provider!r}; expected 'glofas' or 'geoglows'."
+        f'Unsupported historical provider {provider!r}; '
+        "expected 'glofas' or 'geoglows'."
     )
 
 
-def fetch_return_periods(
+_GLOFAS_RP_CACHE_MAX_AGE_S: float = 90.0 * 86400.0
+_GEOGLOWS_RP_CACHE_MAX_AGE_S: float = 180.0 * 86400.0
+
+
+def _local_return_periods(
+    historical_series: pd.Series | Sequence[float],
+    method: str,
+    return_periods: Sequence[float],
+) -> dict[str, Any] | None:
+    """Compute return periods locally from a supplied historical record."""
+    method_key = method.strip().lower()
+    is_hydro = isinstance(historical_series, pd.Series) and isinstance(
+        historical_series.index, pd.DatetimeIndex
+    )
+    if method_key == 'gema':
+        return compute_return_periods(
+            historical_series,
+            return_periods=return_periods,
+            is_daily_hydrograph=is_hydro,
+        )
+    if method_key == 'weibull':
+        return compute_empirical_weibull_return_periods(
+            historical_series,
+            return_periods=return_periods,
+            is_daily_hydrograph=is_hydro,
+        )
+    if method_key in ('gumbel', 'ev1'):
+        if is_hydro:
+            assert isinstance(historical_series, pd.Series)
+            times = [t.strftime('%Y-%m-%d') for t in historical_series.index]
+            peaks = extract_annual_maxima(
+                times, historical_series.to_numpy(dtype=float)
+            )
+        else:
+            peaks = [
+                float(x)
+                for x in historical_series
+                if parse_finite_float(x) is not None
+            ]
+        rps = compute_gumbel_return_periods(
+            peaks,
+            return_periods=[int(t) for t in return_periods],
+        )
+        if rps is None:
+            return None
+        return {
+            **rps,
+            'years_of_record': len(peaks),
+            'method': 'EV1 (Gumbel, method of moments)',
+            'unit': 'm³/s',
+        }
+    raise ValueError(
+        f'Unsupported return period method {method!r}; '
+        "expected 'gema', 'weibull', or 'gumbel'."
+    )
+
+
+def fetch_return_periods(  # noqa: C901, PLR0913
     config: MaaSConfig,
     provider: str,
     *,
@@ -635,60 +806,18 @@ def fetch_return_periods(
     return_periods: Sequence[float] = CANONICAL_RETURN_PERIODS,
     use_cache: bool = True,
 ) -> dict[str, Any] | None:
-    """Compute or fetch return-period discharge thresholds (`[2, 5, 10, 20, 50, 100]` yr).
+    """Compute or fetch return-period discharge thresholds.
 
-    When `historical_series` is supplied directly, computes thresholds locally
-    via `maas.thresholds` (`'gema'` for USGS Bulletin 17C EMA + MGBT,
+    Canonical return periods are `[2, 5, 10, 20, 50, 100]` years. When
+    `historical_series` is supplied directly, computes thresholds locally via
+    `maas.thresholds` (`'gema'` for USGS Bulletin 17C EMA + MGBT,
     `'weibull'` for empirical Weibull log-linear, or `'gumbel'` for EV1).
-    Otherwise queries and caches the provider's reanalysis/retrospective record.
+    Otherwise queries and caches the provider's reanalysis/retrospective
+    record.
     """
     method_key = method.strip().lower()
     if historical_series is not None:
-        is_hydro = isinstance(historical_series, pd.Series) and isinstance(
-            historical_series.index, pd.DatetimeIndex
-        )
-        if method_key == 'gema':
-            return compute_return_periods(
-                historical_series,
-                return_periods=return_periods,
-                is_daily_hydrograph=is_hydro,
-            )
-        if method_key == 'weibull':
-            return compute_empirical_weibull_return_periods(
-                historical_series,
-                return_periods=return_periods,
-                is_daily_hydrograph=is_hydro,
-            )
-        if method_key in ('gumbel', 'ev1'):
-            if is_hydro:
-                assert isinstance(historical_series, pd.Series)
-                times = [
-                    t.strftime('%Y-%m-%d') for t in historical_series.index
-                ]
-                peaks = extract_annual_maxima(
-                    times, historical_series.to_numpy(dtype=float)
-                )
-            else:
-                peaks = [
-                    float(x)
-                    for x in historical_series
-                    if parse_finite_float(x) is not None
-                ]
-            rps = compute_gumbel_return_periods(
-                peaks,
-                return_periods=[int(t) for t in return_periods],
-            )
-            if rps is None:
-                return None
-            return {
-                **rps,
-                'years_of_record': len(peaks),
-                'method': 'EV1 (Gumbel, method of moments)',
-                'unit': 'm³/s',
-            }
-        raise ValueError(
-            f"Unsupported return period method {method!r}; expected 'gema', 'weibull', or 'gumbel'."
-        )
+        return _local_return_periods(historical_series, method, return_periods)
 
     cache = SQLiteCache(
         config.cache_dir / 'maas_flood_cache.sqlite', table_name='flood_cache'
@@ -702,7 +831,7 @@ def fetch_return_periods(
         cell_lat, cell_lon = glofas_cell_center(lat, lon)
         rp_key = f'glofas_rp_{method_key}_{cell_lat:.3f}_{cell_lon:.3f}'
         if use_cache:
-            cached = cache.get(rp_key, max_age_s=90 * 86400)
+            cached = cache.get(rp_key, max_age_s=_GLOFAS_RP_CACHE_MAX_AGE_S)
             if cached is not None:
                 return cached
         client = GloFASClient(
@@ -718,11 +847,12 @@ def fetch_return_periods(
         rid = parse_int(reach_id)
         if rid is None or not is_geoglows_river_id(rid):
             raise ValueError(
-                "`fetch_return_periods` for 'geoglows' requires a 9-digit `reach_id`."
+                "`fetch_return_periods` for 'geoglows' requires a 9-digit "
+                '`reach_id`.'
             )
         rp_key = f'geoglows_rp_{rid}'
         if use_cache:
-            cached = cache.get(rp_key, max_age_s=180 * 86400)
+            cached = cache.get(rp_key, max_age_s=_GEOGLOWS_RP_CACHE_MAX_AGE_S)
             if cached is not None:
                 return cached
         client = GeoGLOWSClient(
@@ -740,11 +870,22 @@ def fetch_return_periods(
         return rp
 
     raise ValueError(
-        f"Unsupported return-period provider {provider!r}; expected 'glofas' or 'geoglows'."
+        f'Unsupported return-period provider {provider!r}; '
+        "expected 'glofas' or 'geoglows'."
     )
 
 
-def fetch_forecasts(
+def _central_series_and_peak(
+    forecast: Mapping[str, Any],
+    key: str,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Daily-mean series of `forecast['data'][key]` and its forecast peak."""
+    series = daily_series(forecast.get('data'), key)
+    peak_value, peak_date = window_peak(series)
+    return series, {'peak_flow': peak_value, 'peak_date': peak_date}
+
+
+def fetch_forecasts(  # noqa: PLR0913
     config: MaaSConfig,
     lat: float,
     lon: float,
@@ -755,16 +896,36 @@ def fetch_forecasts(
     river_id: int | None = None,
     reach_id: str | None = None,
     forecast_days: int = 15,
+    glofas_reference: str = DEFAULT_GLOFAS_REFERENCE,
 ) -> dict[str, Any]:
     """Fetch and time-align multi-model discharge forecasts at `(lat, lon)`.
 
     Returns a pure data dictionary with per-provider forecast payloads, daily
     mean series (`daily`), peak discharge (`peaks`), date-aligned series
-    (`aligned_dates`, `aligned_series`), and a tidy `pd.DataFrame` (`dataframe`).
+    (`aligned_dates`, `aligned_series`), a tidy `pd.DataFrame`
+    (`dataframe`), and the GloFAS reference series descriptor
+    (`glofas_reference`).
+
+    Args:
+        config: Explicit `MaaSConfig`.
+        lat: Latitude in decimal degrees.
+        lon: Longitude in decimal degrees.
+        models: Provider identifiers to query (alias of `requested_models`).
+        requested_models: Provider identifiers to query.
+        gauge_id: Optional FloodHub gauge identifier.
+        river_id: Optional 9-digit GEOGLOWS `LINKNO`.
+        reach_id: Optional HydroRIVERS reach identifier (echoed back).
+        forecast_days: GloFAS forecast horizon in days.
+        glofas_reference: Native GloFAS series used for the GloFAS daily
+            series and peak: `'control'` (unperturbed control run),
+            `'median'` (ensemble median), or `'mean'` (ensemble mean).
+            GEOGLOWS always uses `flow_med`; FloodHub uses `discharge`.
     """
     req_models = normalize_requested_models(
         models if models is not None else requested_models
     )
+    gl_reference = describe_glofas_reference(glofas_reference)
+    gl_field = glofas_reference_field(glofas_reference)
     models_out: dict[str, dict[str, Any]] = {}
     daily_central: dict[str, dict[str, float]] = {}
     peaks: dict[str, dict[str, Any]] = {}
@@ -787,10 +948,9 @@ def fetch_forecasts(
             }
         models_out['floodhub'] = fh_fc
         if fh_fc.get('data'):
-            d_series = daily_series(fh_fc.get('data'), 'discharge')
-            daily_central['floodhub'] = d_series
-            pk_val, pk_date = window_peak(d_series)
-            peaks['floodhub'] = {'peak_flow': pk_val, 'peak_date': pk_date}
+            daily_central['floodhub'], peaks['floodhub'] = (
+                _central_series_and_peak(fh_fc, 'discharge')
+            )
 
     if 'glofas' in req_models:
         gl_client = GloFASClient(
@@ -800,12 +960,10 @@ def fetch_forecasts(
         gl_fc = gl_client.fetch_forecast(lat, lon, forecast_days=forecast_days)
         models_out['glofas'] = gl_fc
         if gl_fc.get('data'):
-            d_series = daily_series(
-                gl_fc.get('data'), 'discharge_median', 'discharge_mean'
+            daily_central['glofas'], peaks['glofas'] = _central_series_and_peak(
+                gl_fc, gl_field
             )
-            daily_central['glofas'] = d_series
-            pk_val, pk_date = window_peak(d_series)
-            peaks['glofas'] = {'peak_flow': pk_val, 'peak_date': pk_date}
+            peaks['glofas']['reference'] = gl_reference['key']
 
     if 'geoglows' in req_models:
         gg_client = GeoGLOWSClient(
@@ -830,10 +988,9 @@ def fetch_forecasts(
             }
         models_out['geoglows'] = gg_fc
         if gg_fc.get('data'):
-            d_series = daily_series(gg_fc.get('data'), 'flow_med', 'flow_avg')
-            daily_central['geoglows'] = d_series
-            pk_val, pk_date = window_peak(d_series)
-            peaks['geoglows'] = {'peak_flow': pk_val, 'peak_date': pk_date}
+            daily_central['geoglows'], peaks['geoglows'] = (
+                _central_series_and_peak(gg_fc, 'flow_med')
+            )
 
     dates = sorted({d for col in daily_central.values() for d in col})
     aligned = {
@@ -854,6 +1011,7 @@ def fetch_forecasts(
             'reach_id': reach_id,
         },
         'models': models_out,
+        'glofas_reference': gl_reference,
         'daily': daily_central,
         'peaks': peaks,
         'aligned_dates': dates,
@@ -863,10 +1021,16 @@ def fetch_forecasts(
 
 
 class MaaSDataFetcher:
-    """Pure backend data fetcher for multi-model flood forecasts and return periods."""
+    """Pure backend fetcher for multi-model flood forecasts and return periods.
+
+    The multi-model bundle returned by `fetch_forecasts` carries the raw
+    provider payloads; the GloFAS payload includes all three native reference
+    series per record (`discharge_deterministic`, `discharge_median`,
+    `discharge_mean`) so callers choose the reference explicitly.
+    """
 
     def __init__(self, config: MaaSConfig) -> None:
-        """Initialize provider clients and SQLite caches from an explicit `MaaSConfig`."""
+        """Initialize provider clients and SQLite caches from a `MaaSConfig`."""
         if not isinstance(config, MaaSConfig):
             raise TypeError(
                 'MaaSDataFetcher requires an explicit `MaaSConfig`.'
@@ -900,15 +1064,15 @@ class MaaSDataFetcher:
         self,
         lat: float,
         lon: float,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ANN401
     ) -> dict[str, Any]:
-        """Resolve and snap `(lat, lon)` across all three model river networks."""
+        """Resolve and snap `(lat, lon)` across all three river networks."""
         return resolve_reaches(lat, lon, self.config, **kwargs)
 
     def fetch_gauges(
         self,
         bbox: tuple[float, float, float, float],
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ANN401
     ) -> list[dict[str, Any]]:
         """Fetch FloodHub gauge stations within `bbox`."""
         return fetch_gauges(self.config, bbox, **kwargs)
@@ -916,7 +1080,7 @@ class MaaSDataFetcher:
     def fetch_historical(
         self,
         provider: str,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ANN401
     ) -> pd.Series:
         """Fetch historical daily discharge `pd.Series` for `provider`."""
         return fetch_historical(self.config, provider, **kwargs)
@@ -924,12 +1088,12 @@ class MaaSDataFetcher:
     def fetch_return_periods(
         self,
         provider: str,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ANN401
     ) -> dict[str, Any] | None:
-        """Compute or fetch `[2, 5, 10, 20, 50, 100]`-yr return period thresholds."""
+        """Compute or fetch `[2, 5, 10, 20, 50, 100]`-yr return periods."""
         return fetch_return_periods(self.config, provider, **kwargs)
 
-    def fetch_forecasts(
+    def fetch_forecasts(  # noqa: C901, PLR0913, PLR0915, PLR0917
         self,
         lat: float,
         lon: float,
@@ -943,7 +1107,11 @@ class MaaSDataFetcher:
         area_min_km2: float | str | None = None,
         network: str | None = None,
     ) -> dict[str, Any]:
-        """Fetch a pure multi-model data bundle (forecasts, return periods, and reaches)."""
+        """Fetch a pure multi-model bundle (forecasts, return periods, reaches).
+
+        Provider requests run concurrently; this orchestrator intentionally
+        keeps the three provider tasks as closures over the resolved reaches.
+        """
         t0 = time.time()
         req_models = normalize_requested_models(
             requested_models if requested_models is not None else models
@@ -965,10 +1133,8 @@ class MaaSDataFetcher:
         gl_query_lon = (
             float(gl_snap.get('query_lon', gl_snap['lon'])) if gl_snap else lon
         )
-        fh_lat_cand = reaches['floodhub'].get('lat')
-        fh_lon_cand = reaches['floodhub'].get('lon')
-        fh_lat = float(fh_lat_cand) if fh_lat_cand is not None else lat
-        fh_lon = float(fh_lon_cand) if fh_lon_cand is not None else lon
+        fh_lat = float(gl_snap['lat']) if gl_snap else lat
+        fh_lon = float(gl_snap['lon']) if gl_snap else lon
         eff_river_id = reaches['geoglows'].get('river_id') or (
             parse_int(river_id) if is_geoglows_river_id(river_id) else None
         )
@@ -1064,7 +1230,7 @@ class MaaSDataFetcher:
                     gl_rp = fut_rp.result()
             return gl_fc, gl_rp
 
-        def _task_geoglows() -> tuple[
+        def _task_geoglows() -> tuple[  # noqa: C901
             dict[str, Any] | None, dict[str, Any] | None, int | None
         ]:
             if 'geoglows' not in req_models:
@@ -1195,25 +1361,16 @@ class MaaSDataFetcher:
                 'unit': 'm³/s',
             }
 
-        fh_loc = (fh_fc or {}).get('gauge_location') or {}
         reaches['floodhub'] = {
             **reaches['floodhub'],
             'gauge_id': eff_gauge_id,
-            'lat': (
-                fh_loc.get('lat')
-                if fh_loc.get('lat') is not None
-                else reaches['floodhub'].get('lat')
-            ),
-            'lon': (
-                fh_loc.get('lon')
-                if fh_loc.get('lon') is not None
-                else reaches['floodhub'].get('lon')
-            ),
-            'distance_km': (
-                (fh_fc or {}).get('distance_km')
-                if (fh_fc or {}).get('distance_km') is not None
-                else reaches['floodhub'].get('offset_km')
-            ),
+            'lat': ((fh_fc or {}).get('gauge_location') or {}).get('lat')
+            or reaches['floodhub'].get('lat'),
+            'lon': ((fh_fc or {}).get('gauge_location') or {}).get('lon')
+            or reaches['floodhub'].get('lon'),
+            'distance_km': (fh_fc or {}).get('distance_km')
+            if (fh_fc or {}).get('distance_km') is not None
+            else reaches['floodhub'].get('offset_km'),
             'status': (fh_fc or {}).get('status'),
         }
         reaches['geoglows'] = {
@@ -1262,9 +1419,9 @@ class MaaSDataFetcher:
 MaaSEngine = MaaSDataFetcher
 
 __all__ = [
+    'RETURN_PERIOD_YEARS',
     'MaaSDataFetcher',
     'MaaSEngine',
-    'RETURN_PERIOD_YEARS',
     'SQLiteCache',
     'align_daily_series',
     'daily_series',

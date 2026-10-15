@@ -12125,6 +12125,16 @@
     const selectedMaaSModels = new Set(['glofas']); // 0..3 deterministic/central models plotted in the forecast view
     let maasGlofasEnsembleEnabled = false; // Forecast-view-only sub-option under GloFAS for the 50 actual ensemble member traces
     let maasGlofasRangeEnabled = false; // Forecast-view-only sub-option under GloFAS for the full Min–Max ensemble range
+    // Native GloFAS v4 reference series used for BOTH the GloFAS hydrograph line and the backend
+    // consensus / return-period exceedance (`/api/maas/forecast?glofas_reference=...`).
+    const MAAS_GLOFAS_REFERENCES = {
+      control: { label: 'Control (Unperturbed)', field: 'deterministic' },
+      median: { label: 'Ensemble Median', field: 'median' },
+      mean: { label: 'Ensemble Mean', field: 'mean' }
+    };
+    let maasGlofasReference = 'control';
+    // Daily-mean series (FloodHub, GloFAS `dis24`) are drawn at 00:00 UTC; GEOGLOWS points are instantaneous 3-hourly values.
+    const MAAS_CADENCE_NOTES = { floodhub: 'daily mean', glofas: 'daily mean', geoglows: '3-hourly instantaneous' };
     let currentMaaSView = 'map'; // 'map' | 'forecast'
     let currentMaaSProbe = null; // { lat, lon, gaugeId, riverId, label, meta } of the selected reach
     let currentMaaSForecastData = null; // /api/maas/forecast payload for currentMaaSProbe
@@ -12289,6 +12299,7 @@
 
     function maasGlofasForecastGroupHtml(isDetSelected, isEnsSelected, isRangeSelected) {
       const m = MAAS_MODELS.glofas;
+      const refMeta = MAAS_GLOFAS_REFERENCES[maasGlofasReference] || MAAS_GLOFAS_REFERENCES.control;
       const detCls = isDetSelected
         ? 'bg-[#e8f0fe] text-[#174ea6] font-medium'
         : 'bg-[#f8f9fa] text-[#5f6368] hover:bg-[#f1f3f4]';
@@ -12301,13 +12312,22 @@
       const groupBorder = (isDetSelected || isEnsSelected || isRangeSelected)
         ? 'border-[#d2e3fc] shadow-[0_1px_2px_rgba(26,115,232,0.08)]'
         : 'border-[#dadce0]';
+      const refOptions = Object.keys(MAAS_GLOFAS_REFERENCES).map(key =>
+        `<option value="${key}"${key === maasGlofasReference ? ' selected' : ''}>${maasEscapeHtml(MAAS_GLOFAS_REFERENCES[key].label)}</option>`
+      ).join('');
       return `<div id="maasGlofasForecastGroup" class="inline-flex items-stretch rounded-lg border overflow-hidden transition ${groupBorder}" role="group" aria-label="Copernicus GloFAS forecast options">
-        <button type="button" data-maas-forecast-model="glofas" role="checkbox" aria-checked="${isDetSelected}" aria-label="Copernicus GloFAS deterministic control trace" title="Copernicus GloFAS deterministic control trace (${maasEscapeHtml(m.streamMap)})" class="flex items-center gap-1.5 text-xs px-2.5 py-1.5 transition ${detCls}">
+        <button type="button" data-maas-forecast-model="glofas" role="checkbox" aria-checked="${isDetSelected}" aria-label="Copernicus GloFAS reference trace (${maasEscapeHtml(refMeta.label)})" title="Copernicus GloFAS reference trace: ${maasEscapeHtml(refMeta.label)} (${maasEscapeHtml(m.streamMap)})" class="flex items-center gap-1.5 text-xs px-2.5 py-1.5 transition ${detCls}">
           <span class="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center flex-shrink-0" style="border-color:${isDetSelected ? m.color : '#80868b'}">
             ${isDetSelected ? `<span class="w-1.5 h-1.5 rounded-full" style="background:${m.color}"></span>` : ''}
           </span>
           <span class="truncate">${maasEscapeHtml(m.shortName)}</span>
         </button>
+        <label class="flex items-center gap-1 text-[11px] px-2 py-1.5 border-l border-[#dadce0] bg-[#f8f9fa] text-[#5f6368]" title="Native GloFAS series used for the GloFAS hydrograph line, the consensus peak, and the return-period exceedance">
+          <span class="whitespace-nowrap">GloFAS Reference:</span>
+          <select id="maasGlofasReferenceSelect" data-maas-glofas-reference="select" aria-label="GloFAS reference series" class="text-[11px] bg-white border border-[#dadce0] rounded px-1 py-0.5 text-[#202124] focus:outline-none focus:border-[#1a73e8]">
+            ${refOptions}
+          </select>
+        </label>
         <button type="button" id="maasGlofasEnsembleBtn" data-maas-glofas-ensemble="toggle" role="checkbox" aria-checked="${isEnsSelected}" aria-label="Copernicus GloFAS 50-member ensemble traces" title="Plot all 50 Copernicus GloFAS ensemble member trajectories (Forecast View only)" class="flex items-center gap-1 text-[11px] px-2 py-1.5 border-l border-[#dadce0] transition ${ensCls}">
           <span class="w-3 h-3 rounded border flex items-center justify-center flex-shrink-0" style="border-color:${isEnsSelected ? m.color : '#80868b'};background:${isEnsSelected ? m.color : 'transparent'}">
             ${isEnsSelected ? '<span class="text-white text-[9px] leading-none font-bold">✓</span>' : ''}
@@ -12330,11 +12350,13 @@
           ? '[data-maas-glofas-ensemble]'
           : activeEl.hasAttribute('data-maas-glofas-range')
             ? '[data-maas-glofas-range]'
-            : activeEl.hasAttribute('data-maas-forecast-model')
-              ? `[data-maas-forecast-model="${activeEl.getAttribute('data-maas-forecast-model')}"]`
-              : activeEl.hasAttribute('data-maas-map-model')
-                ? `[data-maas-map-model="${activeEl.getAttribute('data-maas-map-model')}"]`
-                : null)
+            : activeEl.hasAttribute('data-maas-glofas-reference')
+              ? '[data-maas-glofas-reference]'
+              : activeEl.hasAttribute('data-maas-forecast-model')
+                ? `[data-maas-forecast-model="${activeEl.getAttribute('data-maas-forecast-model')}"]`
+                : activeEl.hasAttribute('data-maas-map-model')
+                  ? `[data-maas-map-model="${activeEl.getAttribute('data-maas-map-model')}"]`
+                  : null)
         : null;
       const mapList = document.getElementById('maasMapMultiModelList');
       if (mapList) {
@@ -12413,6 +12435,20 @@
       }
       renderMaaSMultiModelLists();
       if (currentMaaSView === 'forecast') renderMaaSForecast();
+    }
+
+    // Switches the native GloFAS reference series (Control / Ensemble Median / Ensemble Mean). The hydrograph
+    // line switches immediately from the serialized timeline; the consensus / exceedance payload is refetched
+    // with `glofas_reference=<key>` so both views always describe the same series.
+    function setMaaSGlofasReference(key) {
+      if (!MAAS_GLOFAS_REFERENCES[key] || key === maasGlofasReference) return;
+      maasGlofasReference = key;
+      renderMaaSMultiModelLists();
+      if (currentMaaSView === 'forecast') renderMaaSForecast();
+      if (currentMaaSProbe) {
+        const p = currentMaaSProbe;
+        fetchMaaSForecast(p.lat, p.lon, p.gaugeId, p.riverId, p.meta, true);
+      }
     }
 
     function toggleMaaSMapModel(key) {
@@ -12919,6 +12955,7 @@
       if (meta && meta.upstreamAreaKm2) url += `&upstream_area_km2=${encodeURIComponent(meta.upstreamAreaKm2)}`;
       if (meta && meta.areaMinKm2) url += `&area_min_km2=${encodeURIComponent(meta.areaMinKm2)}`;
       if (meta && meta.network) url += `&network=${encodeURIComponent(meta.network)}`;
+      url += `&glofas_reference=${encodeURIComponent(maasGlofasReference)}`;
       try {
         const activeFetchModels = new Set(selectedMaaSModels);
         if (maasGlofasEnsembleEnabled || maasGlofasRangeEnabled) activeFetchModels.add('glofas');
@@ -13113,7 +13150,9 @@
                   const value = (ds.bandLow && ds.bandHigh)
                     ? `${fmt(ds.bandLow[ctx.dataIndex])}–${fmt(ds.bandHigh[ctx.dataIndex])}`
                     : (ds.bandLow ? `${fmt(ds.bandLow[ctx.dataIndex])}–${fmt(ctx.parsed.y)}` : fmt(ctx.parsed.y));
-                  return `${ds.label}: ${value} ${ds.unit}`;
+                  // Clarify daily-mean (00:00 UTC) vs instantaneous 3-hourly values when models with different cadences overlap.
+                  const cadenceNote = ds.cadenceNote ? ` · ${ds.cadenceNote}` : '';
+                  return `${ds.label}: ${value} ${ds.unit}${cadenceNote}`;
                 }
               }
             }
@@ -13262,6 +13301,7 @@
           bandLow: (isFirst && !rangeEnabled) ? minSlice : null,
           bandHigh: (isFirst && !rangeEnabled) ? maxSlice : null,
           unit,
+          cadenceNote: MAAS_CADENCE_NOTES.glofas,
           legendGroup: 'glofas_ensemble',
           borderColor: 'rgba(213, 94, 0, 0.34)',
           backgroundColor: 'rgba(213, 94, 0, 0.50)',
@@ -13323,6 +13363,7 @@
         bandLow: minSlice,
         bandHigh: maxSlice,
         unit,
+        cadenceNote: MAAS_CADENCE_NOTES.glofas,
         legendGroup: 'glofas_range',
         borderColor: 'rgba(213, 94, 0, 0.55)',
         backgroundColor: 'rgba(213, 94, 0, 0.16)',
@@ -13343,7 +13384,14 @@
       return true;
     }
 
-    // Draws all selected MaaS forecast traces (`GloFAS` deterministic, `GloFAS + Ensemble` 50 members,
+    // Returns the aligned GloFAS series for the active reference selection (`deterministic` / `median` / `mean`).
+    function maasGlofasReferenceTrace(glSeries) {
+      if (!glSeries) return null;
+      const refMeta = MAAS_GLOFAS_REFERENCES[maasGlofasReference] || MAAS_GLOFAS_REFERENCES.control;
+      return Array.isArray(glSeries[refMeta.field]) ? glSeries[refMeta.field] : null;
+    }
+
+    // Draws all selected MaaS forecast traces (`GloFAS` reference series, `GloFAS + Ensemble` 50 members,
     // `GloFAS + Range` Min–Max envelope, `FloodHub`, and `GEOGLOWS`) at their native prediction timestamps.
     function renderMaaSForecast() {
       initMaasCharts();
@@ -13370,7 +13418,7 @@
         const loading = [];
         for (const k of activeKeys) {
           const s = (timeline.series || {})[k];
-          const traceArr = (k === 'glofas' && s) ? s.deterministic : (s && s.central);
+          const traceArr = (k === 'glofas' && s) ? maasGlofasReferenceTrace(s) : (s && s.central);
           const hasModelEntry = data.models && data.models[k];
           if (!hasModelEntry && maasForecastFullPending) {
             loading.push(`${MAAS_MODELS[k].shortName} (loading…)`);
@@ -13428,7 +13476,7 @@
           const unit = isStage ? 'm' : 'm³/s';
           const rangeArrays = usable.map(k => {
             const s = timeline.series[k];
-            return k === 'glofas' ? s.deterministic : s.central;
+            return k === 'glofas' ? maasGlofasReferenceTrace(s) : s.central;
           });
           if ((glEnsUsable || glRangeUsable) && glSeries) {
             if (Array.isArray(glSeries.min)) rangeArrays.push(glSeries.min);
@@ -13448,16 +13496,18 @@
           for (const k of usable) {
             const m = MAAS_MODELS[k];
             const s = timeline.series[k];
-            const rawTrace = k === 'glofas' ? s.deterministic : s.central;
+            const rawTrace = k === 'glofas' ? maasGlofasReferenceTrace(s) : s.central;
             const slicedSeries = maasPickIndices(rawTrace, activeIndices);
             const cadenceLabel = (s && s.cadence) || m.cadenceLabel;
+            const refLabel = (MAAS_GLOFAS_REFERENCES[maasGlofasReference] || MAAS_GLOFAS_REFERENCES.control).label;
             const traceLabel = k === 'glofas'
-              ? `${m.name} Deterministic (${m.streamMap}, ${cadenceLabel})`
+              ? `${m.name} ${refLabel} (${m.streamMap}, ${cadenceLabel})`
               : `${m.name} (${m.streamMap}, ${cadenceLabel})`;
             datasets.push({
               label: traceLabel,
               data: slicedSeries,
               unit,
+              cadenceNote: MAAS_CADENCE_NOTES[k] || null,
               borderColor: m.color,
               backgroundColor: m.color,
               borderWidth: 2.8,
@@ -13523,7 +13573,12 @@
       }
       const fcList = document.getElementById('maasForecastMultiModelList');
       if (fcList) {
+        fcList.addEventListener('change', (e) => {
+          const refSelect = e.target.closest('[data-maas-glofas-reference]');
+          if (refSelect) setMaaSGlofasReference(refSelect.value);
+        });
         fcList.addEventListener('click', (e) => {
+          if (e.target.closest('[data-maas-glofas-reference]')) return; // native <select> handles its own clicks
           const ensBtn = e.target.closest('[data-maas-glofas-ensemble]');
           if (ensBtn) {
             toggleMaaSGlofasEnsemble();

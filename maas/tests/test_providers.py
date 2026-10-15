@@ -16,12 +16,15 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest import mock
 
 import numpy as np
+import pandas as pd
 import pytest
+import xarray as xr
 
 from maas.config import (
     convert_discharge_units,
@@ -40,6 +43,7 @@ from maas.floodhub import (
 )
 from maas.geoglows import (
     _resolve_geoglows_cache_file,
+    extract_geoglows_zarr_series,
     lookup_cached_geoglows_return_periods,
     parse_geoglows_forecast_response,
     parse_geoglows_retrospective_response,
@@ -401,3 +405,33 @@ class TestGloFASAndGeoGLOWSProviders:
         assert cached['return_period_2'] == pytest.approx(1800.0)
         assert cached['return_period_20'] > cached['return_period_5']
         assert cached['return_period_100'] > cached['return_period_25']
+
+    def test_extract_geoglows_zarr_series_reads_reach_and_keeps_nan(
+        self, tmp_path: Path
+    ) -> None:
+        """Verify local GEOGLOWS Zarr extraction selects a reach by `rivid`."""
+        times = pd.date_range('2021-01-01', periods=_THREE_POINTS, freq='D')
+        qout = np.array(
+            [[10.0, 20.0, 30.0], [100.0, np.nan, 300.0]], dtype=np.float32
+        ).T
+        ds = xr.Dataset(
+            {'Qout': (('time', 'rivid'), qout)},
+            coords={
+                'time': times,
+                'rivid': np.array([111, _RIVER_ID], dtype=np.int64),
+            },
+        )
+        ds.to_zarr(tmp_path / 'geoglows.zarr', mode='w')
+        records = extract_geoglows_zarr_series(
+            tmp_path / 'geoglows.zarr', _RIVER_ID
+        )
+        assert [r['time'] for r in records] == [
+            '2021-01-01T00:00:00Z',
+            '2021-01-02T00:00:00Z',
+            '2021-01-03T00:00:00Z',
+        ]
+        assert records[0]['discharge'] == pytest.approx(100.0)
+        assert math.isnan(records[1]['discharge'])
+        assert records[2]['discharge'] == pytest.approx(300.0)
+        with pytest.raises(KeyError, match='river_id 999 not found'):
+            extract_geoglows_zarr_series(tmp_path / 'geoglows.zarr', 999)

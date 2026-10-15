@@ -49,6 +49,81 @@ GLOFAS_DAILY_VARIABLES = (
     'river_discharge_p75'
 )
 
+# Native GloFAS v4 summary series supplied by Open-Meteo `/v1/flood`, keyed by
+# the short reference name used in `glofas_reference` API/query parameters.
+# Each maps to the per-record field name written by
+# `parse_glofas_forecast_response`.
+GLOFAS_REFERENCE_FIELDS: dict[str, str] = {
+    'control': 'discharge_deterministic',
+    'median': 'discharge_median',
+    'mean': 'discharge_mean',
+}
+GLOFAS_REFERENCE_LABELS: dict[str, str] = {
+    'control': 'Control (Unperturbed)',
+    'median': 'Ensemble Median',
+    'mean': 'Ensemble Mean',
+}
+DEFAULT_GLOFAS_REFERENCE: str = 'control'
+
+
+def normalize_glofas_reference(reference: str | None) -> str:
+    """Validate a GloFAS reference-series name.
+
+    Accepted names are `'control'`, `'median'`, and `'mean'`.
+
+    Args:
+        reference: Requested reference name (case-insensitive). `None` selects
+            `DEFAULT_GLOFAS_REFERENCE`.
+
+    Returns:
+        The canonical lower-case reference key.
+
+    Raises:
+        TypeError: If `reference` is not a string.
+        ValueError: If `reference` is not one of `GLOFAS_REFERENCE_FIELDS`.
+    """
+    if reference is None:
+        return DEFAULT_GLOFAS_REFERENCE
+    if not isinstance(reference, str):
+        raise TypeError(
+            f'`glofas_reference` must be a string, got {type(reference)!r}'
+        )
+    key = reference.strip().lower()
+    if key not in GLOFAS_REFERENCE_FIELDS:
+        raise ValueError(
+            f'Unsupported GloFAS reference series {reference!r}; expected one '
+            f'of {sorted(GLOFAS_REFERENCE_FIELDS)}.'
+        )
+    return key
+
+
+def glofas_reference_field(reference: str | None) -> str:
+    """Return the per-record field name for a GloFAS reference series."""
+    return GLOFAS_REFERENCE_FIELDS[normalize_glofas_reference(reference)]
+
+
+def describe_glofas_reference(reference: str | None) -> dict[str, Any]:
+    """Describe the selected GloFAS reference series for API payloads.
+
+    Returns:
+        Dictionary with the canonical `key`, the per-record `field`, a short
+        human-readable `label`, and the list of all available `options`.
+    """
+    key = normalize_glofas_reference(reference)
+    return {
+        'key': key,
+        'field': GLOFAS_REFERENCE_FIELDS[key],
+        'label': GLOFAS_REFERENCE_LABELS[key],
+        'options': [
+            {
+                'key': opt,
+                'field': GLOFAS_REFERENCE_FIELDS[opt],
+                'label': GLOFAS_REFERENCE_LABELS[opt],
+            }
+            for opt in GLOFAS_REFERENCE_FIELDS
+        ],
+    }
+
 
 def _extract_rounded_or_none(
     seq: Sequence[Any],
@@ -219,16 +294,87 @@ def compute_glofas_reanalysis_return_periods(
     }
 
 
-def extract_glofas_zarr_series(
+def _select_glofas_point_series(
+    da: xr.DataArray,
+    *,
+    step_index: int | None,
+    member_index: int | None,
+    zarr_path: Path,
+) -> xr.DataArray:
+    """Reduce a point-sliced GloFAS array to a strictly 1-D `time` series.
+
+    Optional forecast lead-time (`step`) and ensemble member (`number`)
+    dimensions must be resolved by an explicit index; they are never selected
+    or averaged implicitly.
+
+    Raises:
+        ValueError: If `step` / `number` is present without an explicit index,
+            if an index is out of range, if `time` is missing, or if any other
+            dimension remains after selection.
+    """
+    dims = tuple(str(d) for d in da.dims)
+    if 'time' not in dims:
+        raise ValueError(
+            f'GloFAS archive {zarr_path} has no `time` dimension on the '
+            f'point series; found dims {dims}.'
+        )
+    for dim_name, arg_name, what, index in (
+        ('step', 'step_index', 'lead time', step_index),
+        ('number', 'member_index', 'ensemble member', member_index),
+    ):
+        if dim_name not in dims:
+            continue
+        size = int(da.sizes[dim_name])
+        if index is None:
+            raise ValueError(
+                f'GloFAS archive {zarr_path} has a `{dim_name}` dimension of '
+                f'size {size}; pass an explicit `{arg_name}` to select one '
+                f'{what}.'
+            )
+        if not 0 <= index < size:
+            raise ValueError(
+                f'`{arg_name}`={index} is out of range for the `{dim_name}` '
+                f'dimension of {zarr_path} (size {size}).'
+            )
+        da = da.isel({dim_name: index})
+    remaining = tuple(str(d) for d in da.dims)
+    if remaining != ('time',):
+        raise ValueError(
+            f'Unexpected dimensions {remaining} on GloFAS point series in '
+            f'{zarr_path}; expected exactly ("time",).'
+        )
+    return da
+
+
+def extract_glofas_zarr_series(  # noqa: PLR0913
     zarr_path: Path,
     lat: float,
     lon: float,
     var_name: str = 'dis24',
+    *,
+    step_index: int | None = None,
+    member_index: int | None = None,
 ) -> list[dict[str, Any]]:
     """Extract a point discharge series from a local GloFAS Zarr/NetCDF archive.
 
     Snaps `(lat, lon)` to the 0.05° LISFLOOD cell center and preserves `NaN`
-    for any missing timestep.
+    for any missing timestep. Archives that carry a forecast lead-time
+    dimension (`step`) or an ensemble member dimension (`number`) require an
+    explicit `step_index` / `member_index`; any other extra dimension raises
+    `ValueError`.
+
+    Args:
+        zarr_path: Local `.zarr` directory or NetCDF file.
+        lat: Latitude in decimal degrees.
+        lon: Longitude in decimal degrees.
+        var_name: Discharge variable name (default `'dis24'`).
+        step_index: Positional index along `step` when that dimension exists.
+        member_index: Positional index along `number` when that dimension
+            exists.
+
+    Returns:
+        List of records with a ``time`` (``YYYY-MM-DD``) and a ``discharge``
+        in m³/s (``NaN`` for missing timesteps).
     """
     if not zarr_path.exists():
         raise FileNotFoundError(f'GloFAS archive not found: {zarr_path}')
@@ -251,8 +397,8 @@ def extract_glofas_zarr_series(
                 f'Missing latitude/longitude coordinates in {zarr_path}: '
                 f'{list(ds.coords)}'
             )
-        lats = ds[lat_coord].to_numpy(dtype=float)
-        lons = ds[lon_coord].to_numpy(dtype=float)
+        lats = np.asarray(ds[lat_coord].to_numpy(), dtype=float)
+        lons = np.asarray(ds[lon_coord].to_numpy(), dtype=float)
         lat_idx = int(np.argmin(np.abs(lats - cell_lat)))
         lon_idx = int(np.argmin(np.abs(lons - cell_lon)))
         if (
@@ -263,12 +409,17 @@ def extract_glofas_zarr_series(
                 f'Cell ({cell_lat}, {cell_lon}) is outside archive domain '
                 f'in {zarr_path}.'
             )
-        sub = ds[var_name].isel({lat_coord: lat_idx, lon_coord: lon_idx})
+        sub = _select_glofas_point_series(
+            ds[var_name].isel({lat_coord: lat_idx, lon_coord: lon_idx}),
+            step_index=step_index,
+            member_index=member_index,
+            zarr_path=zarr_path,
+        )
         times = sub['time'].to_numpy()
-        vals = sub.to_numpy(dtype=float)
+        vals = np.asarray(sub.to_numpy(), dtype=float)
 
     records: list[dict[str, Any]] = []
-    for t, v in zip(times.ravel(), vals.ravel(), strict=False):
+    for t, v in zip(times.ravel(), vals.ravel(), strict=True):
         t_str = str(np.datetime_as_string(t, unit='D'))
         fval = float(v)
         records.append(
@@ -347,9 +498,15 @@ class GloFASClient:
 
 
 __all__ = [
+    'DEFAULT_GLOFAS_REFERENCE',
     'GLOFAS_DAILY_VARIABLES',
+    'GLOFAS_REFERENCE_FIELDS',
+    'GLOFAS_REFERENCE_LABELS',
     'GloFASClient',
     'compute_glofas_reanalysis_return_periods',
+    'describe_glofas_reference',
     'extract_glofas_zarr_series',
+    'glofas_reference_field',
+    'normalize_glofas_reference',
     'parse_glofas_forecast_response',
 ]
