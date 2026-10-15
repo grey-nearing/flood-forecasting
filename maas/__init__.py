@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Models-as-a-Service (`maas`) multi-model operational flood data-fetching package.
+"""Models-as-a-Service (`maas`) multi-model flood data-fetching package.
 
 Provides unified clients, spatial river-network indexing, upstream-area reach
 snapping, return-period threshold calculators, and multi-model forecast
@@ -101,7 +101,9 @@ from maas.networks import (
     query_hydrorivers_reaches,
     resolve_cross_network_click,
     save_network_pyramid,
+    snap_floodhub_reach_from_network,
     snap_geoglows_reach_from_gpkg,
+    snap_geoglows_reach_from_network,
     snap_glofas_cell_from_network,
     trace_main_stem_chain,
 )
@@ -207,7 +209,9 @@ __all__ = [
     'resolve_reaches',
     'save_network_pyramid',
     'scaled_index_flood_return_periods',
+    'snap_floodhub_reach_from_network',
     'snap_geoglows_reach_from_gpkg',
+    'snap_geoglows_reach_from_network',
     'snap_glofas_cell_from_network',
     'thresholds_from_return_periods',
     'trace_main_stem_chain',

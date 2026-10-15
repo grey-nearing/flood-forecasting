@@ -3,7 +3,7 @@
 `maas` is a standalone Python package for querying, harmonizing, and evaluating operational flood forecasts, historical reanalysis, spatial river reaches, and return-period thresholds across three global and continental flood forecasting systems:
 
 1. **Google FloodHub** (`maas.floodhub.FloodHubClient`) — Gauge- and site-level AI streamflow forecasts and warning severity levels (`NORMAL`, `WARNING`, `DANGER`, `EXTREME`) via `https://floodforecasting.googleapis.com/v1`.
-2. **Copernicus GloFAS v4** (`maas.glofas.GloFASClient`) — 51-member ECMWF-forced LISFLOOD global $0.05^\circ$ river discharge ensembles (`p10`, `p25`, `median`, `p75`, `p90`) via the Open-Meteo Flood API (`https://flood-api.open-meteo.com/v1/flood`) and ECMWF CEMS Zarr stores (`s3://geoglows-v2/glofas-v4/`).
+2. **Copernicus GloFAS v4** (`maas.glofas.GloFASClient`) — ECMWF-forced LISFLOOD global $0.05^\circ$ river discharge forecasts including the deterministic control run (`discharge_deterministic`), summary statistics (`mean`, `median`, `min`, `max`, `p25`, `p75`), and all 50 perturbed ensemble member trajectories (`ensemble_members`: `member01`..`member50` via `ensemble=true`) from the Open-Meteo Flood API (`https://flood-api.open-meteo.com/v1/flood`) and ECMWF CEMS Zarr stores (`s3://geoglows-v2/glofas-v4/`).
 3. **GEOGLOWS ECMWF v2** (`maas.geoglows.GeoGLOWSClient`) — Reach-level vector streamflow forecasts on ~6.8M global TDX-Hydro / HydroRIVERS river reaches (`LINKNO`) via the GEOGLOWS REST API (`https://geoglows.ecmwf.int/api/v2`) and AWS S3 retrospective Zarr archives (`s3://geoglows-v2/retrospective.zarr`).
 
 ---
@@ -46,9 +46,9 @@ All return-period exceedance calculations map discharge $Q$ ($\text{m}^3/\text{s
   $$K_T = -\frac{\sqrt{6}}{\pi}\left(\gamma + \ln\left(-\ln\left(1 - \frac{1}{T}\right)\right)\right), \qquad Q_T = \mu_{\text{AMS}} + K_T \, \sigma_{\text{AMS}}$$
 
 ### 2. Cross-Network Upstream-Area Reach Snapping (`maas/networks.py`)
-Because vector reaches (`GEOGLOWS LINKNO`, `HydroRIVERS HYRIV_ID`) and Eulerian raster cells (`GloFAS` $0.05^\circ$) frequently diverge by $1\text{--}5\text{ km}$ near river confluences, nearest-distance snapping alone can jump from a main stem ($A \sim 10^5\text{ km}^2$) onto a minor tributary ($A \sim 10^1\text{ km}^2$). `resolve_cross_network_click` minimizes a joint distance-and-scale objective:
+Because vector reaches (`GEOGLOWS LINKNO`, `HydroRIVERS HYRIV_ID`) and Eulerian raster cells (`GloFAS` $0.05^\circ$) frequently diverge by $1\text{--}5\text{ km}$ near river confluences, nearest-distance snapping alone can jump from a main stem ($A \sim 10^5\text{ km}^2$) onto a minor tributary ($A \sim 10^1\text{ km}^2$). `resolve_cross_network_click` snaps across all three providers (`snap_floodhub_reach_from_network`, `snap_glofas_cell_from_network`, and `snap_geoglows_reach_from_network`) using pre-built in-memory spatial pyramids (`floodhub_network_v1.npz`, `glofas_network_v1.npz`, `geoglows_network_v1.npz`) by minimizing a joint distance-and-scale objective:
 $$J(i) = \frac{d_i}{R_{\max}} + \lambda \left|\log_{10}\!\left(\frac{\max(A_i, 1)}{\max(A_{\text{ref}}, 1)}\right)\right|$$
-so that all three providers lock onto the same hydrological river order across networks.
+with distant-candidate ($> 15\text{ km}$, $> 8\times$ area mismatch) and extreme-tributary ($> 50\times$ area mismatch) rejection guards so that all three providers lock onto the same hydrological river order across networks.
 
 ---
 

@@ -50,14 +50,17 @@ from maas.glofas import (
     extract_glofas_zarr_series,
 )
 from maas.networks import (
+    FLOODHUB_PYRAMID_LOD,
     GEOGLOWS_LOD,
     GLOFAS_LOD,
+    MAX_CORRIDOR_SNAP_KM,
     glofas_cell_center,
     is_geoglows_river_id,
     load_geoglows_lookup,
     load_network_pyramid,
     pyramid_signature,
     resolve_cross_network_click,
+    snap_floodhub_reach_from_network,
     snap_geoglows_reach_from_gpkg,
     snap_geoglows_reach_from_network,
     snap_glofas_cell_from_network,
@@ -75,7 +78,9 @@ from maas.thresholds import (
 class SQLiteCache:
     """Thread-safe persistent SQLite key-value JSON cache with explicit `db_path`."""
 
-    def __init__(self, db_path: Path | str, table_name: str = 'flood_cache') -> None:
+    def __init__(
+        self, db_path: Path | str, table_name: str = 'flood_cache'
+    ) -> None:
         """Initialize the SQLite cache bound to `db_path` and `table_name`."""
         if db_path is None or str(db_path).strip() == '':
             raise ValueError('SQLiteCache requires a non-empty `db_path`.')
@@ -112,11 +117,7 @@ class SQLiteCache:
                 'WHERE cache_key = ?',
                 (cache_key,),
             ).fetchone()
-        if (
-            row
-            and row[0]
-            and (time.time() - float(row[1] or 0.0)) <= max_age_s
-        ):
+        if row and row[0] and (time.time() - float(row[1] or 0.0)) <= max_age_s:
             payload = json.loads(row[0])
             return payload if isinstance(payload, dict) else None
         return None
@@ -158,7 +159,7 @@ def align_daily_series(
     dates: Sequence[str],
     ndigits: int = 2,
 ) -> list[float | None]:
-    """Align a `{YYYY-MM-DD: value}` mapping onto a common `dates` list (`None` for missing dates)."""
+    """Align a `{timestamp_or_date: value}` mapping onto a common `dates` list (`None` for missing entries)."""
     return [round(daily[d], ndigits) if d in daily else None for d in dates]
 
 
@@ -184,6 +185,21 @@ def window_peak(
 _PYRAMID_MEM_CACHE: dict[str, dict[str, Any]] = {}
 _LOOKUP_MEM_CACHE: dict[str, tuple[Any, Any]] = {}
 _MEM_CACHE_LOCK = threading.Lock()
+
+
+def _get_cached_floodhub_pyramid(floodhub_npz: Path) -> dict[str, Any] | None:
+    key = str(floodhub_npz)
+    if key in _PYRAMID_MEM_CACHE:
+        return _PYRAMID_MEM_CACHE[key]
+    with _MEM_CACHE_LOCK:
+        if key in _PYRAMID_MEM_CACHE:
+            return _PYRAMID_MEM_CACHE[key]
+        net = load_network_pyramid(
+            floodhub_npz, pyramid_signature(FLOODHUB_PYRAMID_LOD)
+        )
+        if net is not None:
+            _PYRAMID_MEM_CACHE[key] = net
+        return net
 
 
 def _get_cached_glofas_pyramid(glofas_npz: Path) -> dict[str, Any] | None:
@@ -228,7 +244,55 @@ def _get_cached_geoglows_lookup(attrs_path: Path) -> tuple[Any, Any] | None:
         return lookup
 
 
-def resolve_reaches(
+def _resolve_pyramid_path(
+    config: MaaSConfig, subdir: str, filename: str
+) -> Path:
+    path = config.river_networks_dir / subdir / filename
+    return path if path.exists() else config.cache_dir / subdir / filename
+
+
+def _infer_probe_upstream_area(  # noqa: PLR0913, PLR0917
+    lat: float,
+    lon: float,
+    network: str | None,
+    floodhub_net: Mapping[str, Any] | None,
+    geoglows_net: Mapping[str, Any] | None,
+    glofas_net: Mapping[str, Any] | None,
+) -> float | None:
+    """Infer upstream area from nearby in-memory pyramids when omitted."""
+    snap_by_net = {
+        'floodhub': lambda: snap_floodhub_reach_from_network(
+            floodhub_net, lat, lon, None
+        ),
+        'geoglows': lambda: snap_geoglows_reach_from_network(
+            geoglows_net, lat, lon, None
+        ),
+        'glofas': lambda: snap_glofas_cell_from_network(
+            glofas_net, lat, lon, None
+        ),
+    }
+    order = [
+        network if network in snap_by_net else 'glofas',
+        'floodhub',
+        'geoglows',
+        'glofas',
+    ]
+    seen: set[str] = set()
+    for net_key in order:
+        if net_key in seen:
+            continue
+        seen.add(net_key)
+        inferred = snap_by_net[net_key]()
+        if not inferred:
+            continue
+        offset_km = float(inferred['offset_km'])
+        area_val = parse_finite_float(inferred['upstream_area_km2'])
+        if offset_km <= MAX_CORRIDOR_SNAP_KM and area_val and area_val > 0.0:
+            return area_val
+    return None
+
+
+def resolve_reaches(  # noqa: PLR0913
     lat: float,
     lon: float,
     config: MaaSConfig,
@@ -239,15 +303,17 @@ def resolve_reaches(
     river_id: int | str | None = None,
     gauge_id: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve and snap a geographic coordinate across all three model river networks.
+    r"""Resolve and snap a coordinate across all three model river networks.
 
     Args:
         lat: Latitude in decimal degrees.
         lon: Longitude in decimal degrees.
-        config: Explicit `MaaSConfig` providing `river_networks_dir` and `cache_dir`.
-        upstream_area_km2: Optional target upstream drainage area in $\\text{km}^2$
-            for cross-network reach matching.
-        area_min_km2: Optional minimum upstream drainage area along a merged river line.
+        config: Explicit `MaaSConfig` providing `river_networks_dir` and
+            `cache_dir`.
+        upstream_area_km2: Optional target upstream drainage area in
+            $\\text{km}^2$ for cross-network reach matching.
+        area_min_km2: Optional minimum upstream drainage area along a merged
+            river line.
         network: Optional source network identifier (`'floodhub'`, `'glofas'`,
             `'geoglows'`).
         river_id: Optional GEOGLOWS 9-digit `LINKNO` or HydroRIVERS `HYRIV_ID`.
@@ -258,33 +324,46 @@ def resolve_reaches(
         `floodhub`, `glofas`, and `geoglows`.
     """
     gl_lat, gl_lon = glofas_cell_center(lat, lon)
-    eff_river_id = parse_int(river_id) if is_geoglows_river_id(river_id) else None
+    eff_river_id = (
+        parse_int(river_id) if is_geoglows_river_id(river_id) else None
+    )
     up_area = parse_finite_float(upstream_area_km2)
     min_area = parse_finite_float(area_min_km2)
 
+    glofas_npz = _resolve_pyramid_path(
+        config, 'glofas_v4', 'glofas_network_v1.npz'
+    )
+    glofas_net = _get_cached_glofas_pyramid(glofas_npz)
+
+    floodhub_npz = _resolve_pyramid_path(
+        config, 'glofas_v4', 'floodhub_network_v1.npz'
+    )
+    floodhub_net = _get_cached_floodhub_pyramid(floodhub_npz)
+
+    geoglows_npz = _resolve_pyramid_path(
+        config, 'geoglows_v2', 'geoglows_network_v1.npz'
+    )
+    geoglows_net = _get_cached_geoglows_pyramid(geoglows_npz)
+    gpkg_path = _resolve_pyramid_path(
+        config, 'geoglows_v2', 'global_streams_simplified.gpkg'
+    )
+    attrs_path = _resolve_pyramid_path(
+        config, 'geoglows_v2', 'geoglows_attrs_v1.npz'
+    )
+
+    if up_area is None or up_area <= 0.0:
+        up_area = _infer_probe_upstream_area(
+            lat, lon, network, floodhub_net, geoglows_net, glofas_net
+        )
+
     cross_snap: dict[str, Any] | None = None
     if up_area is not None and up_area > 0.0:
-        glofas_npz = (
-            config.river_networks_dir / 'glofas_v4' / 'glofas_network_v1.npz'
-        )
-        if not glofas_npz.exists():
-            glofas_npz = (
-                config.cache_dir / 'glofas_v4' / 'glofas_network_v1.npz'
-            )
-        glofas_net = _get_cached_glofas_pyramid(glofas_npz)
-
-        geoglows_dir = config.river_networks_dir / 'geoglows_v2'
-        if not (geoglows_dir / 'global_streams_simplified.gpkg').exists() and not (
-            geoglows_dir / 'geoglows_network_v1.npz'
-        ).exists():
-            geoglows_dir = config.cache_dir / 'geoglows_v2'
-        geoglows_npz = geoglows_dir / 'geoglows_network_v1.npz'
-        geoglows_net = _get_cached_geoglows_pyramid(geoglows_npz)
-        gpkg_path = geoglows_dir / 'global_streams_simplified.gpkg'
-        attrs_path = geoglows_dir / 'geoglows_attrs_v1.npz'
 
         def _snap_geoglows(
-            qlat: float, qlon: float, area: float, **kw: Any
+            qlat: float,
+            qlon: float,
+            area: float,
+            **kw: Any,  # noqa: ANN401
         ) -> dict[str, Any] | None:
             snapped = snap_geoglows_reach_from_network(
                 geoglows_net, qlat, qlon, area, **kw
@@ -303,12 +382,20 @@ def resolve_reaches(
             lon,
             upstream_area_km2=up_area,
             snap_glofas_fn=lambda qlat, qlon, area, **kw: (
-                snap_glofas_cell_from_network(glofas_net, qlat, qlon, area, **kw)
+                snap_glofas_cell_from_network(
+                    glofas_net, qlat, qlon, area, **kw
+                )
             ),
             snap_geoglows_fn=_snap_geoglows,
             area_min_km2=min_area,
             network=network,
             river_id=river_id,
+            snap_floodhub_fn=lambda qlat, qlon, area, **kw: (
+                snap_floodhub_reach_from_network(
+                    floodhub_net, qlat, qlon, area, **kw
+                )
+            ),
+            gauge_id=gauge_id,
         )
         if cross_snap:
             if cross_snap.get('glofas'):
@@ -316,6 +403,30 @@ def resolve_reaches(
                 gl_lon = float(cross_snap['glofas']['lon'])
             if cross_snap.get('geoglows'):
                 eff_river_id = int(cross_snap['geoglows']['river_id'])
+
+    fh_snap = (cross_snap or {}).get('floodhub') or {}
+    is_merged_fh_line = (
+        network == 'floodhub'
+        and min_area is not None
+        and up_area is not None
+        and min_area < up_area
+    )
+    resolved_gauge_id = (
+        fh_snap.get('gauge_id')
+        if (not gauge_id or is_merged_fh_line) and fh_snap.get('gauge_id')
+        else gauge_id
+    )
+    resolved_fh_reach_id = (
+        fh_snap.get('river_id')
+        if (not river_id or is_geoglows_river_id(river_id) or is_merged_fh_line)
+        and fh_snap.get('river_id')
+        else (
+            str(river_id)
+            if river_id and not is_geoglows_river_id(river_id)
+            else None
+        )
+    )
+    gg_snap = (cross_snap or {}).get('geoglows') or {}
 
     return {
         'probe': {
@@ -326,18 +437,21 @@ def resolve_reaches(
             or up_area,
         },
         'floodhub': {
-            'gauge_id': gauge_id,
-            'reach_id': str(river_id)
-            if river_id and not is_geoglows_river_id(river_id)
-            else None,
+            'gauge_id': resolved_gauge_id,
+            'reach_id': resolved_fh_reach_id,
+            'lat': fh_snap.get('lat'),
+            'lon': fh_snap.get('lon'),
+            'upstream_area_km2': fh_snap.get('upstream_area_km2'),
+            'offset_km': fh_snap.get('offset_km'),
+            'snap': cross_snap.get('floodhub') if cross_snap else None,
         },
         'glofas': {
             'cell_center_lat': gl_lat,
             'cell_center_lon': gl_lon,
             'resolution_deg': GLOFAS_RES_DEG,
-            'upstream_area_km2': (
-                (cross_snap or {}).get('glofas') or {}
-            ).get('upstream_area_km2'),
+            'upstream_area_km2': ((cross_snap or {}).get('glofas') or {}).get(
+                'upstream_area_km2'
+            ),
             'offset_cells': ((cross_snap or {}).get('glofas') or {}).get(
                 'offset_cells'
             ),
@@ -345,12 +459,10 @@ def resolve_reaches(
         },
         'geoglows': {
             'river_id': eff_river_id,
-            'upstream_area_km2': (
-                (cross_snap or {}).get('geoglows') or {}
-            ).get('upstream_area_km2'),
-            'offset_km': ((cross_snap or {}).get('geoglows') or {}).get(
-                'offset_km'
-            ),
+            'lat': gg_snap.get('lat'),
+            'lon': gg_snap.get('lon'),
+            'upstream_area_km2': gg_snap.get('upstream_area_km2'),
+            'offset_km': gg_snap.get('offset_km'),
             'snap': cross_snap.get('geoglows') if cross_snap else None,
         },
     }
@@ -756,7 +868,9 @@ class MaaSDataFetcher:
     def __init__(self, config: MaaSConfig) -> None:
         """Initialize provider clients and SQLite caches from an explicit `MaaSConfig`."""
         if not isinstance(config, MaaSConfig):
-            raise TypeError('MaaSDataFetcher requires an explicit `MaaSConfig`.')
+            raise TypeError(
+                'MaaSDataFetcher requires an explicit `MaaSConfig`.'
+            )
         self.config = config
         self.floodhub = FloodHubClient(
             api_key=config.floodhub_api_key,
@@ -846,21 +960,19 @@ class MaaSDataFetcher:
         )
         gl_snap = reaches['glofas'].get('snap')
         gl_query_lat = (
-            float(gl_snap.get('query_lat', gl_snap['lat']))
-            if gl_snap
-            else lat
+            float(gl_snap.get('query_lat', gl_snap['lat'])) if gl_snap else lat
         )
         gl_query_lon = (
-            float(gl_snap.get('query_lon', gl_snap['lon']))
-            if gl_snap
-            else lon
+            float(gl_snap.get('query_lon', gl_snap['lon'])) if gl_snap else lon
         )
-        fh_lat = float(gl_snap['lat']) if gl_snap else lat
-        fh_lon = float(gl_snap['lon']) if gl_snap else lon
+        fh_lat_cand = reaches['floodhub'].get('lat')
+        fh_lon_cand = reaches['floodhub'].get('lon')
+        fh_lat = float(fh_lat_cand) if fh_lat_cand is not None else lat
+        fh_lon = float(fh_lon_cand) if fh_lon_cand is not None else lon
         eff_river_id = reaches['geoglows'].get('river_id') or (
             parse_int(river_id) if is_geoglows_river_id(river_id) else None
         )
-        eff_gauge_id = gauge_id
+        eff_gauge_id = reaches['floodhub'].get('gauge_id') or gauge_id
 
         def _task_floodhub() -> tuple[dict[str, Any] | None, str | None]:
             if (
@@ -882,7 +994,10 @@ class MaaSDataFetcher:
             fh_cache_key = f'floodhub_fc_{gid}'
             if is_live_fh:
                 cached_fh = self.flood_cache.get(fh_cache_key, max_age_s=1800)
-                if isinstance(cached_fh, dict) and cached_fh.get('status') == 'live':
+                if (
+                    isinstance(cached_fh, dict)
+                    and cached_fh.get('status') == 'live'
+                ):
                     return cached_fh, gid
             fc = self.floodhub.fetch_forecast(gid)
             enriched = self.floodhub.enrich_forecast_status(
@@ -897,12 +1012,14 @@ class MaaSDataFetcher:
                 self.flood_cache.put(fh_cache_key, enriched)
             return enriched, gid
 
-        def _task_glofas() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        def _task_glofas() -> tuple[
+            dict[str, Any] | None, dict[str, Any] | None
+        ]:
             if 'glofas' not in req_models:
                 return None, None
             cell_lat, cell_lon = glofas_cell_center(gl_query_lat, gl_query_lon)
             rp_key = f'glofas_rp_{cell_lat:.3f}_{cell_lon:.3f}'
-            fc_key = f'glofas_fc_{cell_lat:.3f}_{cell_lon:.3f}'
+            fc_key = f'glofas_fc_v2_{cell_lat:.3f}_{cell_lon:.3f}'
             is_live_gl = not hasattr(self.glofas.fetch_forecast, '_mock_name')
             gl_rp = self.flood_cache.get(rp_key, max_age_s=90 * 86400)
             gl_fc_cached = (
@@ -928,7 +1045,10 @@ class MaaSDataFetcher:
                 res_rp = self.glofas.fetch_reanalysis_return_periods(
                     gl_query_lat, gl_query_lon
                 )
-                if res_rp is not None and res_rp.get('source') != 'unit_test_rp':
+                if (
+                    res_rp is not None
+                    and res_rp.get('source') != 'unit_test_rp'
+                ):
                     self.flood_cache.put(rp_key, res_rp)
                 return res_rp
 
@@ -1075,12 +1195,25 @@ class MaaSDataFetcher:
                 'unit': 'm³/s',
             }
 
+        fh_loc = (fh_fc or {}).get('gauge_location') or {}
         reaches['floodhub'] = {
             **reaches['floodhub'],
             'gauge_id': eff_gauge_id,
-            'lat': ((fh_fc or {}).get('gauge_location') or {}).get('lat'),
-            'lon': ((fh_fc or {}).get('gauge_location') or {}).get('lon'),
-            'distance_km': (fh_fc or {}).get('distance_km'),
+            'lat': (
+                fh_loc.get('lat')
+                if fh_loc.get('lat') is not None
+                else reaches['floodhub'].get('lat')
+            ),
+            'lon': (
+                fh_loc.get('lon')
+                if fh_loc.get('lon') is not None
+                else reaches['floodhub'].get('lon')
+            ),
+            'distance_km': (
+                (fh_fc or {}).get('distance_km')
+                if (fh_fc or {}).get('distance_km') is not None
+                else reaches['floodhub'].get('offset_km')
+            ),
             'status': (fh_fc or {}).get('status'),
         }
         reaches['geoglows'] = {
