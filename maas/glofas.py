@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Copernicus GloFAS v4 Open-Meteo/CDS/Zarr extractor and LISFLOOD grid snapper."""
+"""Copernicus GloFAS v4 Open-Meteo/CDS/Zarr extractor and grid snapper."""
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -37,6 +37,8 @@ from maas.thresholds import (
     extract_annual_maxima,
 )
 
+_MIN_REANALYSIS_YEARS: int = 8
+
 GLOFAS_DAILY_VARIABLES = (
     'river_discharge,'
     'river_discharge_mean,'
@@ -59,44 +61,66 @@ def _extract_rounded_or_none(
     return round(val, ndigits) if val is not None else None
 
 
+def _validate_daily_sequence(
+    daily: Mapping[str, Any],
+    key: str,
+    expected_len: int | None = None,
+) -> Sequence[Any]:
+    """Validate `daily[key]` exists, is a sequence, and has `expected_len`."""
+    if key not in daily:
+        raise KeyError(
+            f'Missing required key {key!r} in GloFAS daily forecast payload'
+        )
+    seq = daily[key]
+    if not isinstance(seq, Sequence) or isinstance(seq, (str, bytes)):
+        raise TypeError(
+            f'Expected sequence for {key!r} in GloFAS daily forecast payload'
+        )
+    if expected_len is not None and len(seq) != expected_len:
+        raise ValueError(
+            f'Length mismatch for {key!r}: '
+            f'expected {expected_len}, got {len(seq)}'
+        )
+    return seq
+
+
 def parse_glofas_forecast_response(
     payload: Mapping[str, Any] | None,
     lat: float,
     lon: float,
 ) -> dict[str, Any]:
-    """Parse an Open-Meteo `/v1/flood` JSON payload into normalized GloFAS records.
+    """Parse an Open-Meteo `/v1/flood` JSON payload into GloFAS records.
 
     Missing values are preserved as `None` (never replaced with `0.0`).
+    Extracts the deterministic control trace (`discharge_deterministic` from
+    `river_discharge`), summary statistics (`mean`, `median`, `min`, `max`,
+    `p25`, `p75`), and any individual perturbed ensemble members
+    (`river_discharge_member01`..`river_discharge_member50`).
     """
     records: list[dict[str, Any]] = []
+    ensemble_members: dict[str, list[float | None]] = {}
     if isinstance(payload, Mapping) and isinstance(
         payload.get('daily'), Mapping
     ):
         daily = payload['daily']
-        for required_key in (
-            'time',
-            'river_discharge_mean',
-            'river_discharge_median',
-            'river_discharge_max',
-            'river_discharge_min',
-            'river_discharge_p25',
-            'river_discharge_p75',
-        ):
-            if required_key not in daily:
-                raise KeyError(
-                    f'Missing required key {required_key!r} in GloFAS daily forecast payload'
-                )
-        times = daily['time']
-        means = daily['river_discharge_mean']
-        meds = daily['river_discharge_median']
-        maxs = daily['river_discharge_max']
-        mins = daily['river_discharge_min']
-        p25s = daily['river_discharge_p25']
-        p75s = daily['river_discharge_p75']
+        times = _validate_daily_sequence(daily, 'time')
+        n_steps = len(times)
+        dets = _validate_daily_sequence(daily, 'river_discharge', n_steps)
+        means = _validate_daily_sequence(daily, 'river_discharge_mean', n_steps)
+        meds = _validate_daily_sequence(
+            daily, 'river_discharge_median', n_steps
+        )
+        maxs = _validate_daily_sequence(daily, 'river_discharge_max', n_steps)
+        mins = _validate_daily_sequence(daily, 'river_discharge_min', n_steps)
+        p25s = _validate_daily_sequence(daily, 'river_discharge_p25', n_steps)
+        p75s = _validate_daily_sequence(daily, 'river_discharge_p75', n_steps)
         for i, raw_t in enumerate(times):
             records.append(
                 {
                     'time': str(raw_t),
+                    'discharge_deterministic': _extract_rounded_or_none(
+                        dets, i
+                    ),
                     'discharge_mean': _extract_rounded_or_none(means, i),
                     'discharge_median': _extract_rounded_or_none(meds, i),
                     'discharge_max': _extract_rounded_or_none(maxs, i),
@@ -105,6 +129,15 @@ def parse_glofas_forecast_response(
                     'discharge_p75': _extract_rounded_or_none(p75s, i),
                 }
             )
+        member_keys = sorted(
+            k for k in daily if str(k).startswith('river_discharge_member')
+        )
+        for mk in member_keys:
+            seq = _validate_daily_sequence(daily, str(mk), n_steps)
+            short_key = str(mk).replace('river_discharge_', '')
+            ensemble_members[short_key] = [
+                _extract_rounded_or_none(seq, i) for i in range(n_steps)
+            ]
     has_live = len(records) > 0
     return {
         'model': 'copernicus_glofas',
@@ -114,6 +147,7 @@ def parse_glofas_forecast_response(
         'lon': lon,
         'unit': 'CUBIC_METERS_PER_SECOND',
         'data': records,
+        'ensemble_members': ensemble_members,
     }
 
 
@@ -131,7 +165,7 @@ def compute_glofas_reanalysis_return_periods(
     times = daily.get('time') or []
     values = daily.get('river_discharge') or []
     annual_max = extract_annual_maxima(times, values)
-    if len(annual_max) < 8:
+    if len(annual_max) < _MIN_REANALYSIS_YEARS:
         return None
 
     method_key = method.strip().lower()
@@ -157,7 +191,8 @@ def compute_glofas_reanalysis_return_periods(
         )
     else:
         raise ValueError(
-            f"Unsupported return period method {method!r}. Expected 'gumbel', 'gema', or 'weibull'."
+            f'Unsupported return period method {method!r}. '
+            "Expected 'gumbel', 'gema', or 'weibull'."
         )
 
     valid = [
@@ -206,13 +241,15 @@ def extract_glofas_zarr_series(
     with open_fn(zarr_path) as ds:
         if var_name not in ds:
             raise KeyError(
-                f'Variable {var_name!r} not found in {zarr_path}; available: {list(ds.data_vars)}'
+                f'Variable {var_name!r} not found in {zarr_path}; '
+                f'available: {list(ds.data_vars)}'
             )
         lat_coord = 'latitude' if 'latitude' in ds.coords else 'lat'
         lon_coord = 'longitude' if 'longitude' in ds.coords else 'lon'
         if lat_coord not in ds.coords or lon_coord not in ds.coords:
             raise KeyError(
-                f'Missing latitude/longitude coordinates in {zarr_path}: {list(ds.coords)}'
+                f'Missing latitude/longitude coordinates in {zarr_path}: '
+                f'{list(ds.coords)}'
             )
         lats = ds[lat_coord].to_numpy(dtype=float)
         lons = ds[lon_coord].to_numpy(dtype=float)
@@ -223,7 +260,8 @@ def extract_glofas_zarr_series(
             or abs(float(lons[lon_idx]) - cell_lon) > GLOFAS_RES_DEG
         ):
             raise ValueError(
-                f'Cell ({cell_lat}, {cell_lon}) is outside archive domain in {zarr_path}.'
+                f'Cell ({cell_lat}, {cell_lon}) is outside archive domain '
+                f'in {zarr_path}.'
             )
         sub = ds[var_name].isel({lat_coord: lat_idx, lon_coord: lon_idx})
         times = sub['time'].to_numpy()
@@ -245,7 +283,7 @@ def extract_glofas_zarr_series(
 
 
 class GloFASClient:
-    """Client for Copernicus GloFAS v4 forecasts and reanalysis via Open-Meteo."""
+    """Client for Copernicus GloFAS v4 forecasts and reanalysis."""
 
     def __init__(
         self,
@@ -253,6 +291,7 @@ class GloFASClient:
         timeout_s: float = 10.0,
         session: requests.Session | None = None,
     ) -> None:
+        """Initialize the GloFAS HTTP client."""
         self.base_url = base_url
         self.timeout_s = timeout_s
         self.session = session if session is not None else requests.Session()
@@ -263,11 +302,12 @@ class GloFASClient:
         lon: float,
         forecast_days: int = 15,
     ) -> dict[str, Any]:
-        """Fetch 15-day GloFAS ensemble forecast statistics."""
+        """Fetch 15-day GloFAS deterministic and 50-member ensemble forecast."""
         params = {
             'latitude': lat,
             'longitude': lon,
             'daily': GLOFAS_DAILY_VARIABLES,
+            'ensemble': 'true',
             'forecast_days': forecast_days,
         }
         resp = self.session.get(
@@ -286,9 +326,7 @@ class GloFASClient:
     ) -> dict[str, Any] | None:
         """Fetch GloFAS v4 historical reanalysis and compute return periods."""
         eff_end_year = (
-            end_year
-            if end_year is not None
-            else datetime.now(UTC).year - 1
+            end_year if end_year is not None else datetime.now(UTC).year - 1
         )
         params = {
             'latitude': lat,

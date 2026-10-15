@@ -160,7 +160,7 @@ def align_daily_series(
     dates: Sequence[str],
     ndigits: int = 2,
 ) -> list[float | None]:
-    """Align a `{YYYY-MM-DD: value}` mapping onto a common `dates` list (`None` for missing dates)."""
+    """Align a `{timestamp_or_date: value}` mapping onto a common `dates` list (`None` for missing entries)."""
     return [round(daily[d], ndigits) if d in daily else None for d in dates]
 
 
@@ -975,7 +975,7 @@ class MaaSDataFetcher:
                 return None, None
             cell_lat, cell_lon = glofas_cell_center(gl_query_lat, gl_query_lon)
             rp_key = f'glofas_rp_{cell_lat:.3f}_{cell_lon:.3f}'
-            fc_key = f'glofas_fc_{cell_lat:.3f}_{cell_lon:.3f}'
+            fc_key = f'glofas_fc_v2_{cell_lat:.3f}_{cell_lon:.3f}'
             is_live_gl = not hasattr(self.glofas.fetch_forecast, '_mock_name')
             gl_rp = self.flood_cache.get(rp_key, max_age_s=90 * 86400)
             gl_fc_cached = (

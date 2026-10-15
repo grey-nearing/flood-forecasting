@@ -53,6 +53,7 @@ from frontend.maas_viewer import (
     build_consensus_row,
     reach_exceedance_summary,
 )
+from frontend.maas_viewer.consensus import build_aligned_timeline
 from frontend.river_indexer import reset_river_indexer_caches
 from frontend.server import EarthkitHydroHandler
 from maas.config import (
@@ -341,22 +342,36 @@ def _fake_requests_get(
                     'river_discharge_p75': [
                         2500.0 + 110.0 * d for d in range(15)
                     ],
+                    'river_discharge_member01': [
+                        1800.0 + 80.0 * d for d in range(15)
+                    ],
+                    'river_discharge_member02': [
+                        2900.0 + 130.0 * d for d in range(15)
+                    ],
                 }
             }
     elif '/getriverid' in url:
         payload = {'river_id': 720010511}
     elif '/forecaststats/' in url:
+        base_day = today.replace(hour=0, minute=0, second=0, microsecond=0)
+        steps = 15 * 8
+        extra_ts = (base_day + timedelta(hours=1)).strftime(
+            '%Y-%m-%dT%H:%M:%S+00:00'
+        )
+        datetimes = [
+            (base_day + timedelta(hours=3 * s)).strftime(
+                '%Y-%m-%dT%H:%M:%S+00:00'
+            )
+            for s in range(steps)
+        ] + [extra_ts]
         payload = {
-            'datetime': [
-                (today + timedelta(days=d)).strftime('%Y-%m-%dT00:00:00Z')
-                for d in range(15)
-            ],
-            'flow_med': [2100.0 + 95.0 * d for d in range(15)],
-            'flow_avg': [2150.0 + 95.0 * d for d in range(15)],
-            'flow_min': [1750.0 + 70.0 * d for d in range(15)],
-            'flow_25p': [1950.0 + 85.0 * d for d in range(15)],
-            'flow_75p': [2400.0 + 105.0 * d for d in range(15)],
-            'flow_max': [2750.0 + 120.0 * d for d in range(15)],
+            'datetime': datetimes,
+            'flow_med': [2100.0 + 12.0 * s for s in range(steps)] + [''],
+            'flow_avg': [2150.0 + 12.0 * s for s in range(steps)] + [''],
+            'flow_min': [1750.0 + 9.0 * s for s in range(steps)] + [''],
+            'flow_25p': [1950.0 + 10.5 * s for s in range(steps)] + [''],
+            'flow_75p': [2400.0 + 13.0 * s for s in range(steps)] + [''],
+            'flow_max': [2750.0 + 15.0 * s for s in range(steps)] + [''],
         }
     elif '/returnperiods/' in url:
         payload = {
@@ -919,6 +934,43 @@ class TestMaaSServerEndpoints(unittest.TestCase):
             'geoglows',
         ]
         assert 'glofas' in data['timeline']['series']
+        tl_dates = data['timeline']['dates']
+        gl_tl = data['timeline']['series']['glofas']
+        assert gl_tl['cadence'] == 'daily'
+        assert 'deterministic' in gl_tl
+        assert 'median' in gl_tl
+        assert 'members' in gl_tl
+        assert set(gl_tl['members']) == {'member01', 'member02'}
+        expected_glofas_days = 15
+        expected_geoglows_steps = 120
+        expected_floodhub_days = 7
+        assert (
+            sum(v is not None for v in gl_tl['deterministic'])
+            == expected_glofas_days
+        )
+        assert gl_tl['deterministic'][0] == pytest.approx(2250.0)
+        assert gl_tl['median'][0] == pytest.approx(2200.0)
+        assert gl_tl['members']['member01'][0] == pytest.approx(1800.0)
+        assert gl_tl['members']['member02'][0] == pytest.approx(2900.0)
+        gg_tl = data['timeline']['series']['geoglows']
+        assert gg_tl['cadence'] == '3-hourly'
+        assert (
+            sum(v is not None for v in gg_tl['central'])
+            == expected_geoglows_steps
+        )
+        assert gg_tl['central'][0] == pytest.approx(2100.0)
+        fh_tl = data['timeline']['series']['floodhub']
+        assert fh_tl['cadence'] == 'daily'
+        assert (
+            sum(v is not None for v in fh_tl['central'])
+            == expected_floodhub_days
+        )
+        assert fh_tl['central'][0] == pytest.approx(1950.0)
+        for idx, ts in enumerate(tl_dates):
+            if not ts.endswith('T00:00:00Z'):
+                assert gl_tl['deterministic'][idx] is None
+                assert fh_tl['central'][idx] is None
+                assert gg_tl['central'][idx] is not None
 
         status_sub, data_sub = self._get(
             '/api/maas/forecast?lat=32.756&lon=-117.252&models=glofas,geoglows'
@@ -928,6 +980,72 @@ class TestMaaSServerEndpoints(unittest.TestCase):
             'glofas',
             'geoglows',
         ]
+
+    def test_consensus_timeline_strict_validation_and_no_fallback(self) -> None:
+        """Verify timeline alignment never imputes and validates inputs."""
+        gl_fc = {
+            'status': 'live',
+            'data': [
+                {
+                    'time': '2026-04-01',
+                    'discharge_deterministic': None,
+                    'discharge_median': 9.0,
+                    'discharge_mean': 9.5,
+                    'discharge_p25': 8.0,
+                    'discharge_p75': 11.0,
+                    'discharge_min': 7.0,
+                    'discharge_max': 12.0,
+                },
+                {
+                    'time': '2026-04-02',
+                    'discharge_deterministic': 10.5,
+                    'discharge_median': 10.0,
+                    'discharge_mean': 10.2,
+                    'discharge_p25': 9.0,
+                    'discharge_p75': 11.5,
+                    'discharge_min': 8.0,
+                    'discharge_max': 13.0,
+                },
+            ],
+            'ensemble_members': {
+                'member01': [7.0, 8.0],
+                'member02': [None, None],
+            },
+        }
+        tl = build_aligned_timeline(
+            ['glofas'], None, fh_is_q=True, gl_fc=gl_fc, gg_fc=None
+        )
+        gl_s = tl['series']['glofas']
+        assert gl_s['deterministic'] == [None, 10.5]
+        assert gl_s['median'] == [9.0, 10.0]
+        assert set(gl_s['members']) == {'member01', 'member02'}
+        assert gl_s['members']['member02'] == [None, None]
+
+        # Mismatched member length must raise ValueError
+        bad_len_fc = {
+            **gl_fc,
+            'ensemble_members': {'member01': [7.0]},
+        }
+        with pytest.raises(ValueError, match='zip'):
+            build_aligned_timeline(
+                ['glofas'], None, fh_is_q=True, gl_fc=bad_len_fc, gg_fc=None
+            )
+
+        # Non-UTC offset or malformed timestamp must raise an error
+        for bad_time in (
+            '2026-10-15T03:00:00+02:00',
+            '2026-10-15T03',
+            'not a date at all!!',
+            1760497200,
+        ):
+            bad_ts_fc = {
+                'status': 'live',
+                'data': [{**gl_fc['data'][0], 'time': bad_time}],
+            }
+            with pytest.raises((ValueError, TypeError), match='timestamp'):
+                build_aligned_timeline(
+                    ['glofas'], None, fh_is_q=True, gl_fc=bad_ts_fc, gg_fc=None
+                )
 
     def test_api_maas_network_telescoping_all_models(self) -> None:
         """Verify GET /api/maas/network returns features for all 3 models."""
@@ -971,15 +1089,15 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         )
         assert status_no_area == _HTTP_OK
         reaches_no_area = data_no_area.get('reaches') or {}
-        assert (
-            reaches_no_area.get('floodhub') or {}
-        ).get('gauge_id') == 'hybas_4120012340'
+        assert (reaches_no_area.get('floodhub') or {}).get(
+            'gauge_id'
+        ) == 'hybas_4120012340'
         assert (
             (reaches_no_area.get('glofas') or {}).get('upstream_area_km2') or 0
         ) > _MIN_CROSS_NETWORK_AREA_KM2
 
     def test_maas_multi_hydrofabric_ui_controls_present(self) -> None:
-        """Verify multi-hydrofabric map toggle and marker hooks in UI."""
+        """Verify multi-hydrofabric toggle and GloFAS ensemble hooks in UI."""
         html_path = (
             Path(__file__).resolve().parents[1] / 'static' / 'index.html'
         )
@@ -988,6 +1106,12 @@ class TestMaaSServerEndpoints(unittest.TestCase):
         assert 'toggleMaaSMapModel' in html_text
         assert 'updateMaaSSnappedReachMarkers' in html_text
         assert 'maasModelSubLayers' in html_text
+        assert 'maasGlofasEnsembleEnabled' in html_text
+        assert 'toggleMaaSGlofasEnsemble' in html_text
+        assert 'appendMaaSGlofasEnsembleDatasets' in html_text
+        assert 'maasGlofasRangeEnabled' in html_text
+        assert 'toggleMaaSGlofasRange' in html_text
+        assert 'appendMaaSGlofasRangeDatasets' in html_text
 
     def test_live_network_status_coloring(self) -> None:
         """Verify live flow percentile bins and exceedance rank coloring."""

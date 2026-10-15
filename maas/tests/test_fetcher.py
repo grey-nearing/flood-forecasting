@@ -78,12 +78,15 @@ class TestMaaSDataFetcher:
         glofas_fc_payload = {
             'daily': {
                 'time': ['2026-04-01', '2026-04-02'],
+                'river_discharge': [2250.0, 2650.0],
                 'river_discharge_median': [2200.0, 2600.0],
                 'river_discharge_mean': [2200.0, 2600.0],
                 'river_discharge_min': [1800.0, 2100.0],
                 'river_discharge_p25': [2000.0, 2350.0],
                 'river_discharge_p75': [2500.0, 2900.0],
                 'river_discharge_max': [2900.0, 3400.0],
+                'river_discharge_member01': [1800.0, 2100.0],
+                'river_discharge_member02': [2900.0, 3400.0],
             }
         }
         geoglows_fc_payload = {
@@ -208,6 +211,7 @@ class TestMaaSDataFetcher:
         mock_fc_resp.json.return_value = {
             'daily': {
                 'time': ['2026-04-01'],
+                'river_discharge': [1520.0],
                 'river_discharge_median': [1500.0],
                 'river_discharge_mean': [1500.0],
                 'river_discharge_min': [1200.0],
