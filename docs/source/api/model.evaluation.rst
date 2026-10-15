@@ -7,6 +7,7 @@ Submodules
 .. toctree::
    :maxdepth: 4
 
+   model.evaluation.assimilation
    model.evaluation.evaluate
    model.evaluation.metrics
    model.evaluation.plots

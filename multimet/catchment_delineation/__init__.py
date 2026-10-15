@@ -15,6 +15,7 @@
 """Catchment Delineation Package.
 
 Scientific watershed delineation and hydrography package supporting:
+
 - Multi-DEM 90m D8 flow-direction rasters (HydroSHEDS 90m and MERIT-Hydro 90m
   up to 90°N) with seamless cross-tile boundary routing.
 - Vector river network querying and pour-point snapping (HydroRIVERS v1.0 and

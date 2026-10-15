@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ruff: noqa: C901, E501, FBT003, PLR0912, PLR0913, PLR0915, PLR0917, PLR2004, PTH123, S108, S603, T201
+# ruff: noqa: C901, E501, FBT003, PLR0912, PLR0913, PLR0915, PLR0917, PLR2004, PTH123, S603, T201
 
 """End-to-end Caravan benchmark comparing Python `return_periods` vs. USGS R & Fortran.
 
@@ -852,7 +852,7 @@ def run_live_python_benchmark(
     if streamflow_zarr.exists():
         ds_sf = xr.open_zarr(streamflow_zarr, consolidated=False)
         sf_basins = {
-            str(b).rstrip('\x00'): b for b in ds_sf['basin'].values
+            str(b).rstrip('\x00'): b for b in ds_sf['basin'].to_numpy()
         }
         area_map: dict[str, float] = {}
         if dataset_parquet is not None:
@@ -948,7 +948,7 @@ def run_live_python_benchmark(
                         'status': 'INSUFFICIENT_YEARS',
                         'valid_10yr': False,
                         'fit_failed': False,
-                        'n_years': int(len(ann_max_mm)),
+                        'n_years': len(ann_max_mm),
                         'klow_mm': np.nan,
                         'klow_cfs': np.nan,
                         'klow_exact_match': False,
@@ -998,7 +998,7 @@ def run_live_python_benchmark(
                     'status': 'FIT_FAILED' if fit_failed else 'OK',
                     'valid_10yr': True,
                     'fit_failed': fit_failed,
-                    'n_years': int(len(ann_max_mm)),
+                    'n_years': len(ann_max_mm),
                     'klow_mm': int(mgbt_mm.klow),
                     'klow_cfs': int(mgbt_cfs.klow),
                     'klow_exact_match': bool(mgbt_mm.klow == mgbt_cfs.klow),
@@ -1049,7 +1049,7 @@ def run_live_python_benchmark(
                     'status': 'FIT_FAILED' if fit_failed else 'OK',
                     'valid_10yr': True,
                     'fit_failed': fit_failed,
-                    'n_years': int(len(ann_max_mm)),
+                    'n_years': len(ann_max_mm),
                     'klow_mm': int(mgbt_mm.klow),
                     'klow_cfs': int(mgbt_cfs.klow),
                     'klow_exact_match': bool(mgbt_mm.klow == mgbt_cfs.klow),

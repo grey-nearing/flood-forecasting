@@ -7,6 +7,7 @@ Submodules
 .. toctree::
    :maxdepth: 4
 
+   model.utils.assimilationconfig
    model.utils.cmal_deterministic
    model.utils.config
    model.utils.configutils

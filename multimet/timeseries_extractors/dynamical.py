@@ -16,12 +16,12 @@
 
 Supports historical and real-time extraction directly from dynamical.org
 Icechunk stores without requiring an intermediate global gridded Zarr archive:
-  - ``GFSExtractor`` (``noaa-gfs-forecast``, deterministic 0.25-deg, 9 vars)
-  - ``GEFSExtractor`` (``noaa-gefs-forecast-35-day``, 31-member 0.25-deg, 9 vars x 7 stats)
-  - ``IFSEnsExtractor`` (``ecmwf-ifs-ens-forecast-15-day-0-25-degree``, 51-member 0.25-deg, 8 vars x 7 stats)
-  - ``AIFSExtractor`` (``ecmwf-aifs-single-forecast``, deterministic 0.25-deg, 8 vars)
-  - ``AIFSEnsExtractor`` (``ecmwf-aifs-ens-forecast``, 51-member 0.25-deg, 8 vars x 7 stats)
-  - ``DynamicalIMERGExtractor`` (``nasa-imerg-analysis-early``, 0.1-deg half-hourly analysis)
+- ``GFSExtractor`` (``noaa-gfs-forecast``, deterministic 0.25-deg, 9 vars)
+- ``GEFSExtractor`` (``noaa-gefs-forecast-35-day``, 31-member 0.25-deg, 9 vars x 7 stats)
+- ``IFSEnsExtractor`` (``ecmwf-ifs-ens-forecast-15-day-0-25-degree``, 51-member 0.25-deg, 8 vars x 7 stats)
+- ``AIFSExtractor`` (``ecmwf-aifs-single-forecast``, deterministic 0.25-deg, 8 vars)
+- ``AIFSEnsExtractor`` (``ecmwf-aifs-ens-forecast``, 51-member 0.25-deg, 8 vars x 7 stats)
+- ``DynamicalIMERGExtractor`` (``nasa-imerg-analysis-early``, 0.1-deg half-hourly analysis)
 
 Uses active-chunk spatial slicing and compressed CSR sparse matrix reduction so
 only spatial Zarr chunks intersecting target catchment polygons are fetched over

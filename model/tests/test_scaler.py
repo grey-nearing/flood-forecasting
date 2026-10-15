@@ -14,7 +14,6 @@
 
 """Unit tests for Scaler."""
 
-import os
 from pathlib import Path
 
 import dask
@@ -30,12 +29,13 @@ from model.datautils.scaler import (
     _calc_types,
 )
 
+
 # --- Fixtures for Test Data and Scaler Instances ---
 
 
 @pytest.fixture
-def sample_dataset_basic():
-    """Provides a basic dataset for calculation and scaling."""
+def sample_dataset_basic() -> xr.Dataset:
+    """Provide a basic dataset for calculation and scaling."""
     data = {
         'temp': (
             ('date', 'basin'),
@@ -54,7 +54,7 @@ def sample_dataset_basic():
 
 
 @pytest.fixture
-def sample_dataset_with_constant_var():
+def sample_dataset_with_constant_var() -> xr.Dataset:
     """Dataset with a constant variable for testing zero scale."""
     data = {
         'constant_val': (('x', 'y'), np.array([[5.0, 5.0], [5.0, 5.0]])),
@@ -68,20 +68,21 @@ def sample_dataset_with_constant_var():
 
 
 @pytest.fixture
-def tmp_scaler_dir(tmp_path):
-    """Provides a temporary directory for scaler file operations."""
+def tmp_scaler_dir(tmp_path: Path) -> Path:
+    """Provide a temporary directory for scaler file operations."""
     return tmp_path / 'scaler_data'
 
 
 @pytest.fixture
-def scaler_instance_calculated(tmp_scaler_dir, sample_dataset_basic):
-    """Provides a Scaler instance with calculated stats (no zero scales)."""
-    scaler = Scaler(
+def scaler_instance_calculated(
+    tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Provide a Scaler instance with calculated stats (no zero scales)."""
+    return Scaler(
         scaler_dir=tmp_scaler_dir,
         calculate_scaler=True,
         dataset=sample_dataset_basic,
     )
-    return scaler
 
 
 # --- Test Helper Functions (_get_center, _get_scale) ---
@@ -105,59 +106,79 @@ def _get_scale(da: xr.DataArray, a_type: str) -> float:
     return _calc_types_wrapper(da, a_type, 1.0)
 
 
-def test_get_center_none():
+@pytest.mark.unit
+def test_get_center_none() -> None:
+    """Get center none."""
     da = xr.DataArray(np.array([1, 2, 3]))
     assert _get_center(da, 'none') == 0.0
 
 
-def test_get_center_mean():
+@pytest.mark.unit
+def test_get_center_mean() -> None:
+    """Get center mean."""
     da = xr.DataArray(np.array([1, 2, 3]))
     np.testing.assert_allclose(_get_center(da, 'mean'), 2.0)
 
 
-def test_get_center_median():
+@pytest.mark.unit
+def test_get_center_median() -> None:
+    """Get center median."""
     da = xr.DataArray(np.array([1, 5, 2]))
     np.testing.assert_allclose(_get_center(da, 'median'), 2.0)
 
 
-def test_get_center_min():
+@pytest.mark.unit
+def test_get_center_min() -> None:
+    """Get center min."""
     da = xr.DataArray(np.array([1, 5, 2]))
     np.testing.assert_allclose(_get_center(da, 'min'), 1.0)
 
 
-def test_get_center_unknown_type():
+@pytest.mark.unit
+def test_get_center_unknown_type() -> None:
+    """Get center unknown type."""
     da = xr.DataArray(np.array([1, 2, 3]))
-    with pytest.raises(ValueError, match='Unknown method'):
+    with pytest.raises(ValueError, match=r'Unknown method'):
         _get_center(da, 'invalid_type')
 
 
-def test_get_scale_none():
+@pytest.mark.unit
+def test_get_scale_none() -> None:
+    """Get scale none."""
     da = xr.DataArray(np.array([1, 2, 3]))
     assert _get_scale(da, 'none') == 1.0
 
 
-def test_get_scale_std():
+@pytest.mark.unit
+def test_get_scale_std() -> None:
+    """Get scale std."""
     da = xr.DataArray(np.array([1, 2, 3]))
     np.testing.assert_allclose(_get_scale(da, 'std'), np.std([1, 2, 3]))
 
 
-def test_get_scale_minmax():
+@pytest.mark.unit
+def test_get_scale_minmax() -> None:
+    """Get scale minmax."""
     da = xr.DataArray(np.array([1, 5, 2]))
     np.testing.assert_allclose(_get_scale(da, 'minmax'), 4.0)
 
 
-def test_get_scale_unknown_type():
+@pytest.mark.unit
+def test_get_scale_unknown_type() -> None:
+    """Get scale unknown type."""
     da = xr.DataArray(np.array([1, 2, 3]))
-    with pytest.raises(ValueError, match='Unknown method'):
+    with pytest.raises(ValueError, match=r'Unknown method'):
         _get_scale(da, 'invalid_type')
 
 
 # --- Test Scaler.__init__ ---
 
 
+@pytest.mark.unit
 def test_scaler_init_calculate_with_dataset(
-    tmp_scaler_dir, sample_dataset_basic
-):
+    tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler init calculate with dataset."""
     scaler = Scaler(
         scaler_dir=tmp_scaler_dir,
         calculate_scaler=True,
@@ -177,19 +198,24 @@ def test_scaler_init_calculate_with_dataset(
     }
 
 
-def test_scaler_init_calculate_no_dataset(tmp_scaler_dir):
+@pytest.mark.unit
+def test_scaler_init_calculate_no_dataset(tmp_scaler_dir: Path) -> None:
+    """Scaler init calculate no dataset."""
     scaler = Scaler(
         scaler_dir=tmp_scaler_dir, calculate_scaler=True, dataset=None
     )
     assert scaler.scaler is None
 
 
+@pytest.mark.unit
 def test_scaler_init_load_with_dataset_raises_error(
-    tmp_scaler_dir, sample_dataset_basic
-):
+    tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler init load with dataset raises error."""
     with pytest.raises(
         ValueError,
-        match='Do not pass a dataset if you are loading a pre-calculated scaler.',
+        match=(r'Do not pass a dataset if you are loading a '
+               r'pre-calculated scaler.'),
     ):
         Scaler(
             scaler_dir=tmp_scaler_dir,
@@ -201,9 +227,11 @@ def test_scaler_init_load_with_dataset_raises_error(
 # --- Test Scaler.calculate ---
 
 
+@pytest.mark.unit
 def test_scaler_calculate_parameters_correctness(
-    tmp_scaler_dir, sample_dataset_basic
-):
+    tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler calculate parameters correctness."""
     scaler = Scaler(
         scaler_dir=tmp_scaler_dir, calculate_scaler=True, dataset=None
     )
@@ -260,9 +288,11 @@ def test_scaler_calculate_parameters_correctness(
     )
 
 
+@pytest.mark.unit
 def test_scaler_calculate_custom_normalization(
-    tmp_scaler_dir, sample_dataset_basic
-):
+    tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler calculate custom normalization."""
     custom_norm = {
         'temp': {'centering': 'min', 'scaling': 'minmax'},
         'pressure': {'centering': 'median', 'scaling': 'none'},
@@ -318,10 +348,12 @@ def test_scaler_calculate_custom_normalization(
     )
 
 
-# --- MODIFIED TEST for `check_zero_scale` being called by `calculate` ---
+# --- Test check_zero_scale during calculate ---
+@pytest.mark.unit
 def test_scaler_scale_raises_error_for_zero_scale(
-    tmp_scaler_dir, sample_dataset_with_constant_var
-):
+    tmp_scaler_dir: Path, sample_dataset_with_constant_var: xr.Dataset
+) -> None:
+    """Scaler scale raises error for zero scale."""
     # `constant_val` has a standard deviation of 0.0.
     # The scale method should now raise a ValueError due to check_zero_scale().
     scaler = Scaler(
@@ -330,13 +362,15 @@ def test_scaler_scale_raises_error_for_zero_scale(
     scaler.calculate(sample_dataset_with_constant_var)
     scaler.scaler = scaler.scaler.compute()
     with pytest.raises(
-        ValueError, match='Zero scale values found for features:'
+        ValueError, match=r'Zero scale values found for features:'
     ):
         scaler.check_zero_scale()
 
 
-# --- NEW TEST: Direct test of check_zero_scale ---
-def test_check_zero_scale_method_raises_error(tmp_scaler_dir):
+# --- Test check_zero_scale ---
+@pytest.mark.unit
+def test_check_zero_scale_method_raises_error(tmp_scaler_dir: Path) -> None:
+    """Check zero scale method raises error."""
     scaler = Scaler(
         scaler_dir=tmp_scaler_dir, calculate_scaler=True, dataset=None
     )
@@ -352,12 +386,16 @@ def test_check_zero_scale_method_raises_error(tmp_scaler_dir):
         coords={'parameter': ['center', 'scale', 'mean', 'std']},
     )
     with pytest.raises(
-        ValueError, match='Zero scale values found for features:'
+        ValueError, match=r'Zero scale values found for features:'
     ):
         scaler.check_zero_scale()
 
 
-def test_check_zero_scale_method_no_error_for_nonzero(tmp_scaler_dir):
+@pytest.mark.unit
+def test_check_zero_scale_method_no_error_for_nonzero(
+    tmp_scaler_dir: Path
+) -> None:
+    """Check zero scale method no error for nonzero."""
     scaler = Scaler(
         scaler_dir=tmp_scaler_dir, calculate_scaler=True, dataset=None
     )
@@ -370,20 +408,17 @@ def test_check_zero_scale_method_no_error_for_nonzero(tmp_scaler_dir):
         coords={'parameter': ['center', 'scale', 'mean', 'std']},
     )
     # Should not raise an error
-    try:
-        scaler.check_zero_scale()
-    except ValueError:
-        pytest.fail(
-            '`check_zero_scale` raised ValueError unexpectedly for non-zero scale values.'
-        )
+    scaler.check_zero_scale()
 
 
 # --- Test Scaler.scale ---
 
 
+@pytest.mark.unit
 def test_scaler_scale_basic_functionality(
-    scaler_instance_calculated, sample_dataset_basic
-):
+    scaler_instance_calculated: Scaler, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler scale basic functionality."""
     [scaler_instance_calculated.scaler] = dask.compute(
         scaler_instance_calculated.scaler
     )
@@ -407,9 +442,11 @@ def test_scaler_scale_basic_functionality(
     )
 
 
+@pytest.mark.unit
 def test_scaler_scale_new_dataset(
-    scaler_instance_calculated, sample_dataset_basic
-):
+    scaler_instance_calculated: Scaler, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler scale new dataset."""
     new_ds = sample_dataset_basic * 2.0
     scaled_ds = scaler_instance_calculated.scale(new_ds)
 
@@ -430,13 +467,15 @@ def test_scaler_scale_new_dataset(
     )
 
 
+@pytest.mark.unit
 def test_scaler_scale_raises_error_for_missing_features(
-    scaler_instance_calculated,
-):
+    scaler_instance_calculated: Scaler,
+) -> None:
+    """Scaler scale raises error for missing features."""
     ds_with_extra = xr.Dataset({'extra_var': (('x',), [1, 2])})
     with pytest.raises(
         ValueError,
-        match='Requesting to scale variables that are not part of the scaler:',
+        match=r'Requesting to scale variables that are not part of the scaler:',
     ):
         scaler_instance_calculated.scale(ds_with_extra)
 
@@ -444,9 +483,11 @@ def test_scaler_scale_raises_error_for_missing_features(
 # --- Test Scaler.unscale ---
 
 
+@pytest.mark.unit
 def test_scaler_unscale_basic_functionality(
-    scaler_instance_calculated, sample_dataset_basic
-):
+    scaler_instance_calculated: Scaler, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler unscale basic functionality."""
     scaled_ds = scaler_instance_calculated.scale(sample_dataset_basic)
     unscaled_ds = scaler_instance_calculated.unscale(scaled_ds)
 
@@ -471,9 +512,11 @@ def test_scaler_unscale_basic_functionality(
     )
 
 
+@pytest.mark.unit
 def test_scaler_unscale_new_dataset(
-    scaler_instance_calculated, sample_dataset_basic
-):
+    scaler_instance_calculated: Scaler, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler unscale new dataset."""
     new_ds = sample_dataset_basic * 2.0
     scaled_ds = scaler_instance_calculated.scale(new_ds)
     unscaled_ds = scaler_instance_calculated.unscale(scaled_ds)
@@ -487,13 +530,16 @@ def test_scaler_unscale_new_dataset(
     )
 
 
+@pytest.mark.unit
 def test_scaler_unscale_raises_error_for_missing_features(
-    scaler_instance_calculated,
-):
+    scaler_instance_calculated: Scaler,
+) -> None:
+    """Scaler unscale raises error for missing features."""
     ds_with_extra = xr.Dataset({'extra_var': (('x',), [1, 2])})
     with pytest.raises(
         ValueError,
-        match='Requesting to unscale variables that are not part of the scaler:',
+        match=(r'Requesting to unscale variables that are not part '
+               r'of the scaler:'),
     ):
         scaler_instance_calculated.unscale(ds_with_extra)
 
@@ -501,9 +547,13 @@ def test_scaler_unscale_raises_error_for_missing_features(
 # --- Test Scaler.save and Scaler.load ---
 
 
+@pytest.mark.unit
 def test_scaler_save_and_load(
-    tmp_scaler_dir, scaler_instance_calculated, sample_dataset_basic
-):
+    tmp_scaler_dir: Path,
+    scaler_instance_calculated: Scaler,
+    sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler save and load."""
     scaler_instance_calculated.scaler = (
         scaler_instance_calculated.scaler.compute()
     )
@@ -534,21 +584,29 @@ def test_scaler_save_and_load(
     )
 
 
-def test_scaler_save_raises_error_if_not_calculated(tmp_scaler_dir):
+@pytest.mark.unit
+def test_scaler_save_raises_error_if_not_calculated(
+    tmp_scaler_dir: Path
+) -> None:
+    """Scaler save raises error if not calculated."""
     scaler = Scaler(
         scaler_dir=tmp_scaler_dir, calculate_scaler=True, dataset=None
     )
     with pytest.raises(
         ValueError,
-        match='You are trying to save a scaler that has not been computed.',
+        match=r'You are trying to save a scaler that has not been computed.',
     ):
         scaler.save()
 
 
-# --- NEW TESTS: `check_zero_scale` interaction with `load` ---
+# --- Test check_zero_scale during load ---
 
 
-def test_scaler_load_from_file_raises_error_for_zero_scale(tmp_scaler_dir):
+@pytest.mark.unit
+def test_scaler_load_from_file_raises_error_for_zero_scale(
+    tmp_scaler_dir: Path
+) -> None:
+    """Scaler load from file raises error for zero scale."""
     scaler_file_path = tmp_scaler_dir / SCALER_FILE_NAME
     # Create a dummy scaler file with zero scale value
     zero_scale_ds = xr.Dataset(
@@ -557,24 +615,26 @@ def test_scaler_load_from_file_raises_error_for_zero_scale(tmp_scaler_dir):
         },  # scale is 0
         coords={'parameter': ['center', 'scale', 'mean', 'std']},
     )
-    os.makedirs(tmp_scaler_dir, exist_ok=True)
+    tmp_scaler_dir.mkdir(parents=True, exist_ok=True)
     zero_scale_ds.to_zarr(scaler_file_path, mode='w')
     zero_scale_ds.close()
 
     # Now try to load this scaler and expect a ValueError
     with pytest.raises(
-        ValueError, match='Zero scale values found for features:'
+        ValueError, match=r'Zero scale values found for features:'
     ):
         Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
 
 
+@pytest.mark.unit
 def test_scaler_load_missing_zarr_raises_file_not_found(
-    tmp_scaler_dir, sample_dataset_basic
-):
-    os.makedirs(tmp_scaler_dir, exist_ok=True)
-    # Even if a legacy scaler.nc file is present, Scaler must require scaler.zarr
+    tmp_scaler_dir: Path, sample_dataset_basic: xr.Dataset
+) -> None:
+    """Scaler load missing zarr raises file not found."""
+    tmp_scaler_dir.mkdir(parents=True, exist_ok=True)
+    # Legacy scaler.nc file is ignored, Scaler must require scaler.zarr
     sample_dataset_basic.to_netcdf(tmp_scaler_dir / 'scaler.nc')
-    with pytest.raises(FileNotFoundError, match='Scaler file not found at'):
+    with pytest.raises(FileNotFoundError, match=r'Scaler file not found at'):
         Scaler(scaler_dir=tmp_scaler_dir, calculate_scaler=False, dataset=None)
 
 
@@ -606,6 +666,7 @@ def _scaler_with_bad_parameter(parameter: str, value: float) -> xr.Dataset:
 
 
 @pytest.mark.parametrize(('parameter', 'value'), _NON_FINITE_CASES)
+@pytest.mark.unit
 def test_check_zero_scale_raises_for_non_finite_parameter(
     tmp_scaler_dir: Path, parameter: str, value: float
 ) -> None:
@@ -620,6 +681,7 @@ def test_check_zero_scale_raises_for_non_finite_parameter(
 
 
 @pytest.mark.parametrize(('parameter', 'value'), _NON_FINITE_CASES)
+@pytest.mark.unit
 def test_scaler_load_raises_for_non_finite_parameter(
     tmp_scaler_dir: Path, parameter: str, value: float
 ) -> None:
@@ -657,6 +719,7 @@ def _dataset_with_probe_feature(values: np.ndarray) -> xr.Dataset:
         ),
     ],
 )
+@pytest.mark.unit
 def test_scaler_calculate_rejects_non_finite_statistics(
     tmp_scaler_dir: Path, probe_values: np.ndarray
 ) -> None:
@@ -672,6 +735,7 @@ def test_scaler_calculate_rejects_non_finite_statistics(
     assert str(exc_info.value).endswith("['probe', 'probe_obs', 'probe_sim'].")
 
 
+@pytest.mark.unit
 def test_scaler_calculate_accepts_partially_missing_feature(
     tmp_scaler_dir: Path,
 ) -> None:
