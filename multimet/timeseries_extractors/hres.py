@@ -424,7 +424,7 @@ def _fetch_open_data_day_grids(  # noqa: C901, PLR0912, PLR0913, PLR0915, PLR091
 
     lead_days = sorted(steps_by_day.keys())
     boundary_steps = {d: max(steps_by_day[d]) for d in lead_days}
-    boundary_step_set = set(boundary_steps.to_numpy()())
+    boundary_step_set = set(boundary_steps.values())
 
     grib_paths: list[str] = []
     starts: list[int] = []
