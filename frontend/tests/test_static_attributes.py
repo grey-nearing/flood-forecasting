@@ -580,18 +580,10 @@ if __name__ == '__main__':
     unittest.main()
 
 
-
-
 @pytest.mark.unit
 def test_gcs_era5_climate_uri_forwarding() -> None:
-    """Verify that gs:// URIs are preserved in resolved_gdb and resolved_era5."""
-    import os
-    from unittest import mock
-
-    import frontend.static_attributes as sa
-    from frontend.static_attributes import get_attributes_extractor
-
-    sa._extractor_instance = None
+    """Verify gs:// URIs are preserved in resolved_gdb and resolved_era5."""
+    reset_attributes_extractor()
     with (
         mock.patch(
             'frontend.static_attributes.StaticAttributesExtractor'
@@ -609,3 +601,50 @@ def test_gcs_era5_climate_uri_forwarding() -> None:
         kwargs = mock_ext.call_args.kwargs
         assert kwargs['gdb_path'] == 'gs://bucket/gdb'
         assert kwargs['era5_cache_dir'] == 'gs://bucket/era5'
+
+
+@pytest.mark.unit
+def test_resolve_app_static_extractor_paths_rejects_incomplete_era5_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify path resolution ignores 10-column legacy ERA5 cache files."""
+    monkeypatch.delenv('ERA5_CLIMATE_CACHE_DIR', raising=False)
+    stale_dir = tmp_path / 'stale_era5'
+    stale_dir.mkdir(parents=True, exist_ok=True)
+    (stale_dir / 'na_climate_indices.txt').write_text(
+        json.dumps({'gauge_id': 'hybas_712000001', 'p_mean': 3.5}) + '\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(
+        _static_attributes, 'OPENHYDRONET_ERA5_CLIMATE_CACHE_DIR', stale_dir
+    )
+    monkeypatch.setattr(
+        _static_attributes, 'SHARED_HYDROATLAS_DIR', tmp_path / 'shared'
+    )
+
+    paths_stale = resolve_app_static_extractor_paths()
+    assert paths_stale['era5_cache_dir'] is None
+
+    complete_row = {
+        'gauge_id': 'hybas_712000001',
+        'p_mean': 3.5,
+        'pet_mean': 2.1,
+        'pet_mean_ERA5_LAND': 2.4,
+        'aridity': 0.6,
+        'aridity_ERA5_LAND': 0.68,
+        'frac_snow': 0.1,
+        'moisture_index': 0.4,
+        'moisture_index_ERA5_LAND': 0.32,
+        'seasonality': 0.25,
+        'seasonality_ERA5_LAND': 0.28,
+        'high_prec_freq': 12.0,
+        'high_prec_dur': 1.3,
+        'low_prec_freq': 180.0,
+        'low_prec_dur': 4.2,
+    }
+    (stale_dir / 'na_climate_indices.txt').write_text(
+        json.dumps(complete_row) + '\n',
+        encoding='utf-8',
+    )
+    paths_complete = resolve_app_static_extractor_paths()
+    assert paths_complete['era5_cache_dir'] == stale_dir

@@ -2598,14 +2598,21 @@ def _load_static_attributes_for_basin(
             catchment_id,
         )
 
+    csv_row = _read_profile_csv_attributes(
+        [
+            pm.get_caravan_attributes_dir(username),
+            pm.get_attributes_dir(username),
+        ],
+        catchment_id,
+    )
     if row is None:
-        row = _read_profile_csv_attributes(
-            [
-                pm.get_caravan_attributes_dir(username),
-                pm.get_attributes_dir(username),
-            ],
-            catchment_id,
-        )
+        row = csv_row
+    elif csv_row is not None:
+        merged = row.to_dict()
+        for k, v in csv_row.items():
+            if pd.notna(v):
+                merged[k] = v
+        row = pd.Series(merged)
 
     if row is None:
         raise KeyError(
