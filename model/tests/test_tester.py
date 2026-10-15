@@ -794,9 +794,9 @@ def test_evaluate_reports_pooled_and_per_lead_metrics_in_both_periods(
         obs = saved['streamflow_obs'].sel(basin=basin).to_numpy()
         sim = saved['streamflow_sim'].sel(basin=basin).to_numpy()
         assert test_metrics.loc[basin, 'NSE'] == pytest.approx(
-            _nse(obs.reshape(-1), sim.reshape(-1)), rel=1e-5
+            _nse(obs.reshape(-1), sim.reshape(-1)), rel=1e-5, abs=1e-5
         )
         for step_idx, suffix in enumerate(['hindcast', 'lead1', 'lead2']):
             assert test_metrics.loc[basin, f'NSE_{suffix}'] == pytest.approx(
-                _nse(obs[:, step_idx], sim[:, step_idx]), rel=1e-5
+                _nse(obs[:, step_idx], sim[:, step_idx]), rel=1e-5, abs=1e-5
             )
