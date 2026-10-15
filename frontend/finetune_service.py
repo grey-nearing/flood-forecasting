@@ -117,6 +117,18 @@ _LEAD_COL_RE = re.compile(
 _LEAD_LIKE_PREFIX_RE = re.compile(
     r'^(?:lead|t\+|d\+|day|\+|-?\d)', re.IGNORECASE
 )
+_CATCHMENT_PREFIX_STRIP_RE = re.compile(
+    r'^catchment_(?:hydroatlas|merit(?:_hydro)?)_[^\s—-]+\s*[—-]\s*',
+    re.IGNORECASE,
+)
+_CATCHMENT_ID_PREFIX_RE = re.compile(
+    r'^catchment_(?:hydroatlas|merit_hydro|merit)_',
+    re.IGNORECASE,
+)
+_AUTO_WRAPPER_NAME_RE = re.compile(
+    r'^(?:Delineated Catchment|Uploaded Watershed)\s*\((catchment_.*)\)$',
+    re.IGNORECASE,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -686,7 +698,7 @@ def upload_finetune_csv(
     area_km2 = (
         _validate_finite_float(raw_area, 'area_km2', strictly_positive=True)
         if raw_area is not None
-        else None
+        else _resolve_basin_area_km2(username, basin_id)
     )
     raw_lead = options.get('target_lead_time', 7)
     target_lead_time = _validate_positive_int(
@@ -965,6 +977,105 @@ def _load_profile_static_attributes_for_basin(
             for csv_path in sorted(csv_dir.glob('*.csv')):
                 found.update(_read_statics_csv_for_basin(csv_path, basin_id))
     return found
+
+
+def clean_basin_display_name(
+    raw_name: object,
+    reach_attrs: object,
+    basin_id: str,
+) -> str:
+    """Return a clean human-readable basin name without internal prefixes."""
+    if isinstance(raw_name, str) and raw_name.strip():
+        stripped = _CATCHMENT_PREFIX_STRIP_RE.sub('', raw_name.strip()).strip()
+        if stripped and not _AUTO_WRAPPER_NAME_RE.match(stripped):
+            return _CATCHMENT_ID_PREFIX_RE.sub('', stripped)
+    if isinstance(reach_attrs, dict):
+        river_name = reach_attrs.get('river_name')
+        if isinstance(river_name, str) and river_name.strip():
+            return river_name.strip()
+    clean_id = _CATCHMENT_ID_PREFIX_RE.sub('', str(basin_id or '').strip())
+    return clean_id or str(basin_id)
+
+
+def _extract_polygon_area_km2(props: dict[str, object]) -> float | None:
+    for key in ('area_km2', 'area', 'AREA', 'SUB_AREA', 'upstream_area_km2'):
+        val = props.get(key)
+        if isinstance(val, (int, float, np.number)) and not isinstance(
+            val, bool
+        ):
+            fval = float(val)
+            if math.isfinite(fval) and fval > 0.0:
+                return round(fval, 2)
+    reach_attrs = props.get('reach_attributes')
+    if isinstance(reach_attrs, dict):
+        r_area = reach_attrs.get('upstream_area_km2')
+        if isinstance(r_area, (int, float, np.number)) and not isinstance(
+            r_area, bool
+        ):
+            fval = float(r_area)
+            if math.isfinite(fval) and fval > 0.0:
+                return round(fval, 2)
+    return None
+
+
+def list_user_clipped_basins(username: str) -> list[dict[str, object]]:
+    """Return clipped/delineated watersheds in the user's account."""
+    pm = get_profile_manager()
+    features = pm.load_watersheds(username)
+    basins: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for feat in features:
+        if not isinstance(feat, dict):
+            continue
+        raw_props = feat.get('properties')
+        props = raw_props if isinstance(raw_props, dict) else {}
+        cid = str(props.get('catchment_id') or feat.get('id') or '').strip()
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        area_km2 = _extract_polygon_area_km2(props)
+        if area_km2 is None:
+            static_attrs = _load_profile_static_attributes_for_basin(
+                username, cid
+            )
+            stat_area = static_attrs.get('area')
+            if (
+                stat_area is not None
+                and math.isfinite(stat_area)
+                and stat_area > 0.0
+            ):
+                area_km2 = round(float(stat_area), 2)
+        clean_name = clean_basin_display_name(
+            props.get('name'),
+            props.get('reach_attributes'),
+            cid,
+        )
+        basins.append(
+            {
+                'basin_id': cid,
+                'name': clean_name,
+                'area_km2': area_km2,
+                'source': str(props.get('source') or 'delineated'),
+            }
+        )
+    return basins
+
+
+def _resolve_basin_area_km2(username: str, basin_id: str) -> float | None:
+    """Resolve drainage area in km² from clipped polygons or static attrs."""
+    clean_id = (basin_id or '').strip()
+    if not clean_id:
+        return None
+    for b in list_user_clipped_basins(username):
+        if b['basin_id'] == clean_id and isinstance(
+            b.get('area_km2'), (int, float)
+        ):
+            return float(b['area_km2'])
+    static_attrs = _load_profile_static_attributes_for_basin(username, clean_id)
+    stat_area = static_attrs.get('area')
+    if stat_area is not None and math.isfinite(stat_area) and stat_area > 0.0:
+        return round(float(stat_area), 2)
+    return None
 
 
 def _prepare_finetune_zarr_stores(
@@ -1390,6 +1501,32 @@ def get_finetune_workspace_status(
     if selected_model is None:
         raise FileNotFoundError(f'Unknown model_id: {model_id}')
 
+    user_basins = list_user_clipped_basins(username)
+    clean_basin_id = (basin_id or '').strip()
+    if (
+        not clean_basin_id or clean_basin_id == 'custom_basin_01'
+    ) and user_basins:
+        clean_basin_id = str(user_basins[0]['basin_id'])
+    if not clean_basin_id:
+        clean_basin_id = 'custom_basin_01'
+    basin_id = clean_basin_id
+
+    matched_basin = next(
+        (b for b in user_basins if b['basin_id'] == basin_id),
+        None,
+    )
+    basin_name = (
+        str(matched_basin['name'])
+        if matched_basin is not None
+        else clean_basin_display_name(None, None, basin_id)
+    )
+    basin_area_km2 = (
+        float(matched_basin['area_km2'])
+        if matched_basin is not None
+        and isinstance(matched_basin.get('area_km2'), (int, float))
+        else _resolve_basin_area_km2(username, basin_id)
+    )
+
     data_root = _basin_data_root(username, basin_id)
     meta_path = data_root / 'upload_meta.json'
     upload_meta = (
@@ -1464,6 +1601,9 @@ def get_finetune_workspace_status(
 
     return {
         'basin_id': basin_id,
+        'basin_name': basin_name,
+        'basin_area_km2': basin_area_km2,
+        'user_basins': user_basins,
         'model_id': selected_model['model_id'],
         'selected_model': selected_model,
         'models': models,

@@ -41,7 +41,7 @@ Supported operational modes
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 import dataclasses
 import glob
 import logging
@@ -789,6 +789,7 @@ class RealtimeForcingFetcher:
       id_column: Optional[str] = None,
       overwrite: bool = False,
       weights_cache: Optional[str] = None,
+      progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
   ) -> RealtimeFetchResult:
     """Fetches real-time meteorological forcings and writes/appends to Zarr stores.
 
@@ -863,7 +864,16 @@ class RealtimeForcingFetcher:
     overall_start = ref_dt
     overall_end = ref_dt
 
-    for prod_name in target_prods:
+    if progress_callback is not None:
+      progress_callback({
+          "event": "init",
+          "products": list(target_prods),
+          "reference_date": ref_dt.strftime("%Y-%m-%d"),
+          "mode": mode.lower().strip(),
+          "basins": list(basin_ids),
+      })
+
+    for prod_idx, prod_name in enumerate(target_prods):
       prod_enum = Product[prod_name]
 
       start_dt, end_dt = self.plan_product_window(
@@ -880,6 +890,18 @@ class RealtimeForcingFetcher:
       product_windows[prod_name] = (start_dt, end_dt)
       overall_start = min(overall_start, start_dt)
       overall_end = max(overall_end, end_dt)
+      window_days = max(1, int((end_dt - start_dt).days) + 1)
+
+      if progress_callback is not None:
+        progress_callback({
+            "event": "product_start",
+            "product": prod_name,
+            "product_index": prod_idx,
+            "total_products": len(target_prods),
+            "start_date": start_dt.strftime("%Y-%m-%d"),
+            "end_date": end_dt.strftime("%Y-%m-%d"),
+            "window_days": window_days,
+        })
 
       logger.info(
           "[%s] Fetching %s from %s to %s (reference_date=%s)...",
@@ -919,6 +941,14 @@ class RealtimeForcingFetcher:
           weights_matrix=loaded_weights,
       )
 
+      if progress_callback is not None:
+        progress_callback({
+            "event": "product_writing",
+            "product": prod_name,
+            "product_index": prod_idx,
+            "total_products": len(target_prods),
+        })
+
       store_path = self.writer.write_or_append(
           ds,
           prod_enum,
@@ -929,6 +959,25 @@ class RealtimeForcingFetcher:
       self.writer.consolidate_metadata(prod_enum)
       stores[prod_name] = store_path
       logger.info("Updated %s Zarr store at %s", prod_name, store_path)
+
+      if progress_callback is not None:
+        progress_callback({
+            "event": "product_complete",
+            "product": prod_name,
+            "product_index": prod_idx,
+            "total_products": len(target_prods),
+            "store_path": str(store_path),
+            "start_date": start_dt.strftime("%Y-%m-%d"),
+            "end_date": end_dt.strftime("%Y-%m-%d"),
+        })
+
+    if progress_callback is not None:
+      progress_callback({
+          "event": "complete",
+          "products": list(target_prods),
+          "stores": dict(stores),
+          "elapsed_seconds": time.time() - t_start,
+      })
 
     return RealtimeFetchResult(
         stores=stores,
@@ -969,6 +1018,7 @@ def fetch_realtime_multimet(
     hres_fs: Optional[Any] = None,
     dynamical_loaders: Optional[Mapping[str, DynamicalDataLoader]] = None,
     include_ensemble_members: bool = False,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> RealtimeFetchResult:
   """Convenience entry point to fetch Cold-Start or Hot-Start real-time forcings.
 
@@ -1035,6 +1085,7 @@ def fetch_realtime_multimet(
       id_column=id_column,
       overwrite=overwrite,
       weights_cache=weights_cache,
+      progress_callback=progress_callback,
   )
 
 

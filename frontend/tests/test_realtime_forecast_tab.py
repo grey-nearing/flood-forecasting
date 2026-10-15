@@ -584,7 +584,6 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'fcNowcastProductSelect',
             'fcForecastProductSelect',
             'fcForecastVariableSelect',
-            'fcLeadTimeSummaryTable',
             'fcHydroCatchmentTabs',
             'whatIfHyetographCanvas',
             'masterHydrographCanvas',
@@ -598,6 +597,10 @@ class RealtimeForecastTabTest(unittest.TestCase):
         ]
         for dom_id in required_ids:
             assert f'id="{dom_id}"' in html, f'Missing DOM ID: {dom_id}'
+
+        assert 'id="fcLeadTimeInspectorContainer"' not in html
+        assert 'id="fcLeadTimeSummaryTable"' not in html
+        assert 'Drag forecast bars/points to edit' not in html
 
         for expected_token in [
             'for="fcBasinSelect"',
@@ -1273,6 +1276,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'FC_NOWCAST_PRECIP_PALETTE',
             'FC_FORECAST_PRECIP_PALETTE',
             'FC_FORECAST_TEMP_PALETTE',
+            'getCrossStitchedBarPattern(pal.bg, pal.border)',
             'minBarLength: 7',
             'fcWhatIfDragHandlePlugin',
             'initWhatIfChartDragging',
@@ -1529,6 +1533,454 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert rps['return_period_10'] == pytest.approx(95.0)
         assert rps['return_period_25'] == pytest.approx(180.5)
         assert 'return_period_5' not in rps
+
+    def test_realtime_fetch_progress_endpoint_and_ui_indicators(self) -> None:
+        """Verify live per-product fetch progress tracking and UI bindings."""
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir,
+            basin_id=TEST_BASIN,
+            issue_date_str='2026-03-30',
+        )
+        realtime_forecast_service._init_user_fetch_progress(  # noqa: SLF001
+            user_key=self.test_user,
+            target_ids=[TEST_BASIN],
+            norm_mode='coldstart',
+            requested_products=['HRES', 'IMERG', 'CPC'],
+            spinup_days=365,
+        )
+        realtime_forecast_service._handle_fetch_progress_event(  # noqa: SLF001
+            self.test_user,
+            {
+                'event': 'product_start',
+                'product': 'HRES',
+                'product_index': 0,
+                'total_products': 3,
+                'start_date': '2025-03-30',
+                'end_date': '2026-03-30',
+                'window_days': 366,
+            },
+        )
+        realtime_forecast_service._handle_fetch_progress_event(  # noqa: SLF001
+            self.test_user,
+            {
+                'event': 'bar_step',
+                'source': 'tqdm',
+                'current': 183,
+                'total': 366,
+                'unit': 'init_date',
+                'desc': 'HRES OpenData',
+                'rate': 4.5,
+                'eta_seconds': 40.7,
+                'bar_id': 101,
+            },
+        )
+
+        code, prog_res = self._request(
+            'GET',
+            f'/api/forecast/fetch-progress?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code == HTTP_OK
+        assert prog_res['active'] is True
+        assert prog_res['current_product'] == 'HRES'
+        assert prog_res['products']['HRES']['status'] == 'downloading'
+        assert prog_res['products']['HRES']['current'] == 183  # noqa: PLR2004
+        assert prog_res['products']['HRES']['total'] == 366  # noqa: PLR2004
+        assert prog_res['products']['HRES']['percent'] == pytest.approx(50.0)
+        assert prog_res['products']['IMERG']['status'] == 'queued'
+        assert prog_res['products_disk_status']['HRES']['ready_on_disk'] is True
+
+        realtime_forecast_service._handle_fetch_progress_event(  # noqa: SLF001
+            self.test_user,
+            {
+                'event': 'product_complete',
+                'product': 'HRES',
+                'product_index': 0,
+                'total_products': 3,
+            },
+        )
+        realtime_forecast_service._handle_fetch_progress_event(  # noqa: SLF001
+            self.test_user,
+            {'event': 'complete'},
+        )
+        code, done_res = self._request(
+            'GET',
+            f'/api/forecast/fetch-progress?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code == HTTP_OK
+        assert done_res['active'] is False
+        assert done_res['status'] == 'completed'
+        assert done_res['overall_percent'] == pytest.approx(100.0)
+
+        html_path = (
+            Path(__file__).resolve().parent.parent / 'static' / 'index.html'
+        )
+        html = html_path.read_text(encoding='utf-8')
+        for token in (
+            'id="fcProdStatusBadge_HRES"',
+            'id="fcProdProgressBar_IMERG"',
+            'id="fcProdProgressBar_CPC"',
+            'id="fcLiveFetchBanner"',
+            'renderForecastFetchProgressUI',
+            'pollForecastFetchProgressOnce',
+            'id="fcRunProgressBox"',
+            'id="fcRunOverallBarFill"',
+            'id="fcRunBasinsProgressList"',
+            'renderForecastRunProgressUI',
+            'pollForecastRunProgressOnce',
+        ):
+            assert token in html
+
+        # Verify per-basin model run progress tracking and endpoint
+        realtime_forecast_service._init_user_run_progress(  # noqa: SLF001
+            user_key=self.test_user,
+            target_ids=[TEST_BASIN, TEST_BASIN_2],
+            norm_mode='coldstart',
+            model_id=SYNTHETIC_MODEL_ID,
+            issue_date_str='2026-03-30',
+        )
+        realtime_forecast_service._update_user_run_progress_step(  # noqa: SLF001
+            self.test_user,
+            event='basin_start',
+            basin_id=TEST_BASIN,
+            basin_index=0,
+        )
+        code, run_prog = self._request(
+            'GET',
+            f'/api/forecast/run-progress?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code == HTTP_OK
+        assert run_prog['active'] is True
+        assert run_prog['current_basin'] == TEST_BASIN
+        assert run_prog['basins'][TEST_BASIN]['status'] == 'running'
+        assert run_prog['basins'][TEST_BASIN_2]['status'] == 'queued'
+
+        realtime_forecast_service._update_user_run_progress_step(  # noqa: SLF001
+            self.test_user,
+            event='basin_complete',
+            basin_id=TEST_BASIN,
+            basin_index=0,
+            basin_elapsed=0.45,
+            peak_discharge_cms=42.5,
+            peak_date='2026-04-01',
+        )
+        code, run_prog_mid = self._request(
+            'GET',
+            f'/api/forecast/run-progress?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code == HTTP_OK
+        assert run_prog_mid['completed_basins_count'] == 1
+        assert run_prog_mid['overall_percent'] == pytest.approx(50.0)
+        assert run_prog_mid['basins'][TEST_BASIN]['status'] == 'completed'
+
+    def test_data_assimilation_nudging_postprocessing_and_ui_controls(
+        self,
+    ) -> None:
+        """Verify AR(1) nudging with persistence (Post-Processing) and expandable DA UI."""
+        # 1. Direct mathematical verification of Karan's Eq. (6):
+        # Q_hat_PP(t_anchor + k) = max(0, Q_hat_base(t_anchor + k) + alpha * rho^k * e_anchor)
+        issue_date = '2026-03-30'
+        hindcast_tail = [
+            {'date': '2026-03-28', 'discharge_cms': 10.0},
+            {'date': '2026-03-29', 'discharge_cms': 12.0},
+            {'date': '2026-03-30', 'discharge_cms': 15.0},
+        ]
+        forecast_series = [
+            {'date': '2026-03-30', 'lead_day': 0, 'discharge_cms': 15.0},
+            {'date': '2026-03-31', 'lead_day': 1, 'discharge_cms': 20.0},
+            {'date': '2026-04-01', 'lead_day': 2, 'discharge_cms': 18.0},
+            {'date': '2026-04-02', 'lead_day': 3, 'discharge_cms': 14.0},
+        ]
+        obs_series = [
+            {'date': '2026-03-28', 'discharge_cms': 20.0},
+            {'date': '2026-03-29', 'discharge_cms': 22.0},
+            {'date': '2026-03-30', 'discharge_cms': 35.0},  # residual at t0 = +20.0 cms
+        ]
+
+        res = realtime_forecast_service.compute_nudging_postprocessing(
+            forecast_series=forecast_series,
+            hindcast_series=hindcast_tail,
+            observed_series=obs_series,
+            issue_date=issue_date,
+            rho=0.65,
+            alpha=1.0,
+            window_days=1,
+        )
+        assert res['applied'] is True
+        assert res['anchor_date'] == '2026-03-30'
+        assert res['residual_cms'] == pytest.approx(20.0)
+        nudged = {pt['date']: pt for pt in res['nudged_series']}
+        # k=0: 15.0 + 1.0 * (0.65^0) * 20.0 = 35.0 (exact match to gauge at t0 when alpha=1)
+        assert nudged['2026-03-30']['discharge_cms'] == pytest.approx(35.0)
+        # k=1: 20.0 + 1.0 * (0.65^1) * 20.0 = 33.0
+        assert nudged['2026-03-31']['discharge_cms'] == pytest.approx(33.0)
+        # k=2: 18.0 + 1.0 * (0.65^2) * 20.0 = 18.0 + 8.45 = 26.45
+        assert nudged['2026-04-01']['discharge_cms'] == pytest.approx(26.45)
+
+        # Verify window_days=3 averages the 3 pre-issue residuals: (10 + 10 + 20) / 3 = 13.333
+        res_w3 = realtime_forecast_service.compute_nudging_postprocessing(
+            forecast_series=forecast_series,
+            hindcast_series=hindcast_tail,
+            observed_series=obs_series,
+            issue_date=issue_date,
+            rho=0.5,
+            alpha=0.5,
+            window_days=3,
+        )
+        assert res_w3['residual_cms'] == pytest.approx(40.0 / 3.0, abs=1e-2)
+        nudged_w3 = {pt['date']: pt for pt in res_w3['nudged_series']}
+        assert nudged_w3['2026-03-30']['discharge_cms'] == pytest.approx(
+            15.0 + 0.5 * (40.0 / 3.0), abs=1e-2
+        )
+
+        # Verify non-negativity clamp when residual is strongly negative
+        obs_low = [{'date': '2026-03-30', 'discharge_cms': 0.5}]
+        res_clamp = realtime_forecast_service.compute_nudging_postprocessing(
+            forecast_series=[
+                {'date': '2026-03-30', 'lead_day': 0, 'discharge_cms': 25.0},
+                {'date': '2026-03-31', 'lead_day': 1, 'discharge_cms': 5.0},
+            ],
+            hindcast_series=hindcast_tail,
+            observed_series=obs_low,
+            issue_date=issue_date,
+            rho=0.9,
+            alpha=1.0,
+            window_days=1,
+        )
+        nudged_clamp = {pt['date']: pt for pt in res_clamp['nudged_series']}
+        assert nudged_clamp['2026-03-31']['discharge_cms'] == 0.0
+
+        # 2. Verify /api/forecast/assimilate HTTP endpoint with uploaded observations
+        csv_text = (
+            'date,streamflow_cms\n'
+            '2026-03-28,25.0\n'
+            '2026-03-29,30.0\n'
+            '2026-03-30,27.0\n'
+        )
+        code, up_res = self._request(
+            'POST',
+            '/api/forecast/upload-streamflow',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'filename': 'gauge_obs.csv',
+                'csv_content': csv_text,
+            },
+        )
+        assert code == HTTP_OK
+        assert up_res['status'] == 'success'
+
+        code, da_res = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'method': 'nudging',
+                'rho': 0.65,
+                'alpha': 1.0,
+                'window_days': 1,
+                'issue_date': '2026-03-30',
+                'forecast_series': forecast_series,
+                'hindcast_series': hindcast_tail,
+            },
+        )
+        assert code == HTTP_OK
+        assert da_res['status'] == 'success'
+        assert da_res['method'] == 'nudging'
+        assert da_res['applied'] is True
+        assert da_res['anchor_date'] == '2026-03-30'
+        assert da_res['residual_cms'] == pytest.approx(12.0, abs=1e-2)
+        nudged_api = {pt['date']: pt for pt in da_res['nudged_series']}
+        assert nudged_api['2026-03-30']['discharge_cms'] == pytest.approx(
+            27.0, abs=1e-2
+        )
+
+        # 3. Verify real Variational (4D-Var Embedding) Data Assimilation via /api/forecast/assimilate
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir, TEST_BASIN, '2026-03-30'
+        )
+        var_csv_lines = ['date,streamflow_cms']
+        for day in range(20, 30):
+            var_csv_lines.append(f'2026-03-{day:02d},{35.0 + (day - 20) * 1.5:.1f}')
+        code, up_var_res = self._request(
+            'POST',
+            '/api/forecast/upload-streamflow',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'filename': 'gauge_obs_window.csv',
+                'csv_content': '\n'.join(var_csv_lines) + '\n',
+            },
+        )
+        assert code == HTTP_OK
+        assert up_var_res['status'] == 'success'
+
+        code, var_res = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'method': 'variational',
+                'issue_date': '2026-03-30',
+                'window_days': 10,
+                'regularization_weight': 0.15,
+                'initial_learning_rate': 0.03,
+                'epochs': 20,
+                'loss': 'MSE',
+                'assimilation_components': [
+                    'static_embedding',
+                    'hindcast_embedding',
+                ],
+                'model_run_dir': str(self.model_run_dir),
+            },
+        )
+        assert code == HTTP_OK
+        assert var_res['status'] == 'success'
+        assert var_res['method'] == 'variational'
+        assert var_res['applied'] is True
+        assert var_res['n_valid_obs'] == 10
+        assert var_res['prior_window_rmse_cms'] is not None
+        assert var_res['assimilated_window_rmse_cms'] is not None
+        assert (
+            var_res['assimilated_window_rmse_cms']
+            < var_res['prior_window_rmse_cms']
+        )
+        assert var_res['component_shifts']['static_embedding'] > 0.0
+        assert var_res['component_shifts']['hindcast_embedding'] > 0.0
+        assert len(var_res['forecast']) == SYNTHETIC_LEAD_TIME_DAYS
+        assert len(var_res['hindcast_tail']) > 0
+        assert len(var_res['nudged_series']) == len(
+            var_res['hindcast_tail']
+        ) + len(var_res['forecast'])
+
+        # 4. Verify expandable DA menu and interactive visual controls in index.html
+        html_path = (
+            Path(__file__).resolve().parent.parent / 'static' / 'index.html'
+        )
+        html = html_path.read_text(encoding='utf-8')
+        for token in (
+            'id="fcDaSection"',
+            'id="fcDaToggleHeaderBtn"',
+            'id="fcDaCollapsibleBody"',
+            'id="fcDaMethodNudgingBtn"',
+            'id="fcDaMethodVariationalBtn"',
+            'id="fcDaCurveCanvas"',
+            'id="fcDaVariationalPanel"',
+            'id="fcDaVarCanvas"',
+            'fc-da-var-comp-chip',
+            'fc-da-var-loss-chip',
+            'id="fcDaVarRunBtn"',
+            'id="fcDaVarResetBtn"',
+            'id="fcDaActiveToggleBtn"',
+            'updateDaControlsUI',
+            'initDaCurveCanvasDragging',
+            'renderDaCurveCanvas',
+            'renderDaVariationalCanvas',
+            'runVariationalAssimilationForBasin',
+            'computeBasinNudgedHydrograph',
+            'initHydrographNudgingDrag',
+            'NUDGED FORECAST',
+            'VARIATIONAL DA (4D-VAR',
+        ):
+            assert token in html
+
+    def test_daily_forecast_persistence_and_ttl_expiration(self) -> None:
+        """Daily forecasts persist across browser refresh and auto-expire after TTL."""
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir, TEST_BASIN, '2026-03-30'
+        )
+        # 1. Before running the model, cached_forecast is None
+        code, st_initial = self._request(
+            'GET',
+            f'/api/forecast/status?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code == HTTP_OK
+        assert st_initial['cached_forecast'] is None
+        assert st_initial['forecast_cache_ttl_seconds'] == 4 * 3600
+
+        # 2. Run Cold-Start daily forecast
+        code, run_res = self._request(
+            'POST',
+            '/api/forecast/run-model',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'mode': 'coldstart',
+                'model_run_dir': str(self.model_run_dir),
+            },
+        )
+        assert code == HTTP_OK
+        assert run_res['status'] == 'success'
+        assert len(run_res['forecast']) == SYNTHETIC_LEAD_TIME_DAYS
+        assert len(run_res['hindcast_tail']) > 0
+
+        # 3. Simulate browser refresh: GET /api/forecast/status returns cached_forecast
+        code, st_after = self._request(
+            'GET',
+            f'/api/forecast/status?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code == HTTP_OK
+        cached = st_after['cached_forecast']
+        assert cached is not None
+        assert cached['catchment_id'] == TEST_BASIN
+        assert len(cached['forecast']) == SYNTHETIC_LEAD_TIME_DAYS
+        assert len(cached['hindcast_tail']) == len(run_res['hindcast_tail'])
+        assert cached['cached_at_unix'] > 0
+        assert cached['expires_at_unix'] > cached['cached_at_unix']
+        assert st_after['cached_forecasts_by_id'][TEST_BASIN] is not None
+
+        # 4. Run Hot-Start and verify hindcast_tail from Cold-Start is preserved in cache
+        code, hot_res = self._request(
+            'POST',
+            '/api/forecast/run-model',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'mode': 'hotstart',
+                'model_run_dir': str(self.model_run_dir),
+            },
+        )
+        assert code == HTTP_OK
+        assert hot_res['status'] == 'success'
+        code, st_hot = self._request(
+            'GET',
+            f'/api/forecast/status?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code == HTTP_OK
+        assert st_hot['cached_forecast'] is not None
+        assert len(st_hot['cached_forecast']['hindcast_tail']) == len(
+            run_res['hindcast_tail']
+        )
+
+        # 5. Simulate TTL expiration after 4+ hours: cache file is auto-deleted and returns None
+        cache_path = realtime_forecast_service.get_daily_forecast_cache_path(
+            self.test_user, TEST_BASIN, run_res['model_id']
+        )
+        assert cache_path.exists()
+        raw_cache = json.loads(cache_path.read_text(encoding='utf-8'))
+        raw_cache['cached_at_unix'] = time.time() - (4 * 3600 + 60)
+        cache_path.write_text(json.dumps(raw_cache), encoding='utf-8')
+
+        expired_load = realtime_forecast_service.load_cached_daily_forecast(
+            self.test_user, TEST_BASIN, run_res['model_id']
+        )
+        assert expired_load is None
+        assert not cache_path.exists()
+
+        # 6. Verify frontend localStorage persistence & 4-hour TTL pruning helpers in index.html
+        html_path = (
+            Path(__file__).resolve().parent.parent / 'static' / 'index.html'
+        )
+        html = html_path.read_text(encoding='utf-8')
+        for token in (
+            'FC_DAILY_FORECAST_TTL_MS = 4 * 60 * 60 * 1000',
+            'savePersistedForecastsToStorage',
+            'restorePersistedForecastsFromStorage',
+            'pruneExpiredDailyForecasts',
+            'cached_forecasts_by_id',
+        ):
+            assert token in html
 
 
 if __name__ == '__main__':

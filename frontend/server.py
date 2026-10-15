@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import gzip
+import io
 import json
 import logging
 import math
@@ -27,6 +28,7 @@ import re
 import threading
 import urllib.parse
 import urllib.request
+import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
@@ -68,8 +70,11 @@ from frontend.profile_manager import (
 from frontend.realtime_forecast_service import (
     clear_realtime_streamflow_csv,
     fetch_realtime_for_basin,
+    get_realtime_fetch_progress,
+    get_realtime_run_progress,
     inspect_realtime_stores_for_basin,
     is_valid_issue_date_str,
+    run_data_assimilation_for_basin,
     run_hydrological_model_for_basin,
     upload_realtime_streamflow_csv,
     validate_streamflow_csv_request,
@@ -506,12 +511,17 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/maas/reaches': self._get_maas_reaches,
             '/api/maas/return-periods': self._get_maas_return_periods,
             '/api/forecast/status': self._get_forecast_status,
+            '/api/forecast/fetch-progress': self._get_forecast_fetch_progress,
+            '/api/forecast/run-progress': self._get_forecast_run_progress,
             '/api/finetune/models': self._get_finetune_models,
             '/api/finetune/status': self._get_finetune_status,
             '/api/archives': self._get_archives,
             '/api/attributes/csv': self._get_attributes_csv,
             '/api/archives/caravan_hydroatlas_attributes.csv': (
                 self._get_attributes_csv
+            ),
+            '/api/streamflow/usgs_test/download': (
+                self._get_usgs_test_streamflow_download
             ),
             '/': self._get_index_html,
             '/index.html': self._get_index_html,
@@ -1155,6 +1165,76 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         )
         self._send_json(payload)
 
+    def _get_forecast_fetch_progress(
+        self, query: dict[str, list[str]]
+    ) -> None:
+        user = self._get_request_username()
+        pm = get_profile_manager()
+        catchment_id = (
+            query.get('catchment_id', [''])[0].strip()
+            or query.get('basin_id', [''])[0].strip()
+            or None
+        )
+        raw_cids = query.get('catchment_ids', []) + query.get('basin_ids', [])
+        catchment_ids = [
+            part.strip()
+            for item in raw_cids
+            if item
+            for part in str(item).split(',')
+            if part.strip()
+        ]
+        if not catchment_id and catchment_ids:
+            catchment_id = catchment_ids[0]
+        if not catchment_id:
+            ws = pm.load_watersheds(user)
+            if ws:
+                catchment_id = str(
+                    ws[0].get('properties', {}).get('catchment_id')
+                    or ws[0].get('id')
+                    or ''
+                )
+        payload = get_realtime_fetch_progress(
+            username=user,
+            catchment_id=catchment_id or None,
+            catchment_ids=catchment_ids or None,
+        )
+        self._send_json(payload)
+
+    def _get_forecast_run_progress(
+        self, query: dict[str, list[str]]
+    ) -> None:
+        user = self._get_request_username()
+        pm = get_profile_manager()
+        catchment_id = (
+            query.get('catchment_id', [''])[0].strip()
+            or query.get('basin_id', [''])[0].strip()
+            or None
+        )
+        raw_cids = query.get('catchment_ids', []) + query.get('basin_ids', [])
+        catchment_ids = [
+            part.strip()
+            for item in raw_cids
+            if item
+            for part in str(item).split(',')
+            if part.strip()
+        ]
+        if not catchment_id and catchment_ids:
+            catchment_id = catchment_ids[0]
+        if not catchment_id:
+            ws = pm.load_watersheds(user)
+            if ws:
+                catchment_id = str(
+                    ws[0].get('properties', {}).get('catchment_id')
+                    or ws[0].get('id')
+                    or ''
+                )
+        payload = get_realtime_run_progress(
+            username=user,
+            catchment_id=catchment_id or None,
+            catchment_ids=catchment_ids or None,
+        )
+        self._send_json(payload)
+
     def _get_archives(self, _query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
         pm = get_profile_manager()
@@ -1375,6 +1455,132 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _get_usgs_test_streamflow_download(
+        self, query: dict[str, list[str]]
+    ) -> None:
+        target = query.get('target', ['all'])[0].strip()
+        days_raw = query.get('days', ['all'])[0].strip().lower()
+        schema = query.get('schema', ['standard'])[0].strip().lower()
+        base_dir = STATIC_DIR / 'usgs_realtime_streamflow'
+
+        basin_files: dict[str, tuple[str, str]] = {
+            '02151500': (
+                'usgs_02151500_broad_river_nc.csv',
+                'catchment_hydroatlas_HYRIV_70689198_35212_81698',
+            ),
+            '03455000': (
+                'usgs_03455000_french_broad_river_tn.csv',
+                'catchment_hydroatlas_HYRIV_70669100_35981_83157',
+            ),
+            '03114500': (
+                'usgs_03114500_middle_island_creek_wv.csv',
+                'catchment_hydroatlas_HYRIV_70582588_39475_80998',
+            ),
+            '03201000': (
+                'usgs_03201000_pocatalico_river_wv.csv',
+                'catchment_hydroatlas_POINT_38526_81631_38525_81630',
+            ),
+            '03115400': (
+                'usgs_03115400_little_muskingum_river_oh.csv',
+                'catchment_hydroatlas_POINT_39563_81203_39565_81200',
+            ),
+            '02140991': (
+                'usgs_02140991_johns_river_nc.csv',
+                'catchment_hydroatlas_POINT_35833_81711_35832_81713',
+            ),
+        }
+
+        def _format_single_csv(site_no: str) -> tuple[str, str]:
+            fname, cid = basin_files[site_no]
+            fpath = base_dir / fname
+            lines = fpath.read_text(encoding='utf-8').splitlines()
+            rows = [ln.split(',') for ln in lines[1:] if ln.strip()]
+            if days_raw != 'all' and days_raw.isdigit():
+                n_days = int(days_raw)
+                rows = rows[-n_days:]
+            suffix = '' if days_raw == 'all' else f'_last_{days_raw}d'
+            out_name = fname.replace('.csv', f'{suffix}.csv')
+            if schema == 'single':
+                body = ['date,discharge_cms'] + [
+                    f'{r[1]},{r[2]}' for r in rows if len(r) >= 3
+                ]
+            else:
+                body = ['basin,date,streamflow'] + [
+                    f'{cid},{r[1]},{r[2]}' for r in rows if len(r) >= 3
+                ]
+            return out_name, '\n'.join(body) + '\n'
+
+        def _format_combined_csv() -> tuple[str, str]:
+            suffix = '' if days_raw == 'all' else f'_last_{days_raw}d'
+            out_name = f'usgs_all_basins_streamflow{suffix}.csv'
+            if schema == 'single':
+                body = ['basin_id,usgs_site_no,date,discharge_cms']
+            else:
+                body = ['basin,date,streamflow']
+            for site_no, (fname, cid) in basin_files.items():
+                fpath = base_dir / fname
+                lines = fpath.read_text(encoding='utf-8').splitlines()
+                rows = [ln.split(',') for ln in lines[1:] if ln.strip()]
+                if days_raw != 'all' and days_raw.isdigit():
+                    rows = rows[-int(days_raw) :]
+                for r in rows:
+                    if len(r) < 3:
+                        continue
+                    if schema == 'single':
+                        body.append(f'{cid},{site_no},{r[1]},{r[2]}')
+                    else:
+                        body.append(f'{cid},{r[1]},{r[2]}')
+            return out_name, '\n'.join(body) + '\n'
+
+        if target == 'zip':
+            buf = io.BytesIO()
+            suffix = '' if days_raw == 'all' else f'_last_{days_raw}d'
+            zip_name = f'usgs_realtime_streamflow_test_basins{suffix}.zip'
+            with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                comb_name, comb_csv = _format_combined_csv()
+                zf.writestr(comb_name, comb_csv)
+                for site_no in basin_files:
+                    b_name, b_csv = _format_single_csv(site_no)
+                    zf.writestr(b_name, b_csv)
+            payload = buf.getvalue()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/zip')
+            self.send_header(
+                'Content-Disposition',
+                f'attachment; filename="{zip_name}"',
+            )
+            self.send_header('Content-Length', str(len(payload)))
+            self._send_cors_headers(include_methods=False)
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if target in ('all', 'usgs_all_basins_streamflow.csv'):
+            out_name, csv_text = _format_combined_csv()
+        else:
+            matched_site = target if target in basin_files else None
+            if matched_site is None:
+                for site_no, (fname, cid) in basin_files.items():
+                    if target in (fname, cid):
+                        matched_site = site_no
+                        break
+            if matched_site is None:
+                self._send_error(f"Unknown basin target '{target}'", status=404)
+                return
+            out_name, csv_text = _format_single_csv(matched_site)
+
+        payload = csv_text.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/csv; charset=utf-8')
+        self.send_header(
+            'Content-Disposition',
+            f'attachment; filename="{out_name}"',
+        )
+        self.send_header('Content-Length', str(len(payload)))
+        self._send_cors_headers(include_methods=False)
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _get_dem_tile(self, path: str) -> None:
         parts = path.removeprefix('/api/tiles/dem/').split('/')
         if len(parts) != 3 or not parts[2].endswith('.png'):  # noqa: PLR2004
@@ -1395,7 +1601,12 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             self._send_error('Not Found', status=404)
             return
         content = index_path.read_bytes()
-        self._set_cors_headers(200, 'text/html; charset=utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(content)))
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+        self._send_cors_headers(include_methods=False)
+        self.end_headers()
         self.wfile.write(content)
 
     def _get_static_asset(self, path: str) -> None:
@@ -1406,9 +1617,28 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             and file_path.is_file()
             and file_path.is_relative_to(STATIC_DIR.resolve())
         ):
+            content = file_path.read_bytes()
             mime, _ = mimetypes.guess_type(str(file_path))
+            suffix = file_path.suffix.lower()
+            if suffix in ('.csv', '.zip'):
+                content_type = (
+                    'text/csv; charset=utf-8'
+                    if suffix == '.csv'
+                    else (mime or 'application/zip')
+                )
+                self.send_response(200)
+                self.send_header('Content-Type', content_type)
+                self.send_header(
+                    'Content-Disposition',
+                    f'attachment; filename="{file_path.name}"',
+                )
+                self.send_header('Content-Length', str(len(content)))
+                self._send_cors_headers(include_methods=False)
+                self.end_headers()
+                self.wfile.write(content)
+                return
             self._set_cors_headers(200, mime or 'application/octet-stream')
-            self.wfile.write(file_path.read_bytes())
+            self.wfile.write(content)
             return
         self._send_error('Not Found', status=404)
 
@@ -1449,6 +1679,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/forecast/clear-streamflow': (
                 self._post_forecast_clear_streamflow
             ),
+            '/api/forecast/assimilate': self._post_forecast_assimilate,
             '/api/finetune/upload-csv': self._post_finetune_upload_csv,
             '/api/finetune/clear-data': self._post_finetune_clear_data,
             '/api/finetune/run': self._post_finetune_run,
@@ -2604,13 +2835,140 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         )
         self._send_json(payload)
 
+    def _post_forecast_assimilate(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        catchment_id = data.get('catchment_id') or data.get('basin_id')
+        cid_str = str(catchment_id or '').strip()
+        if not cid_str:
+            self._send_error('catchment_id is required', status=400)
+            return
+        method = str(data.get('method') or 'nudging').strip()
+        rho = _parse_float(data.get('rho'))
+        alpha = _parse_float(data.get('alpha'))
+        window_days = _parse_int(
+            data.get('window_days') or data.get('assimilation_window')
+        )
+        reg_weight = _parse_float(
+            data.get('regularization_weight')
+            if data.get('regularization_weight') is not None
+            else data.get('bg_weight')
+        )
+        lr = _parse_float(
+            data.get('initial_learning_rate')
+            if data.get('initial_learning_rate') is not None
+            else data.get('learning_rate')
+        )
+        epochs = _parse_int(data.get('epochs'))
+        loss = str(data.get('loss') or 'MSE').strip()
+        assimilation_components = data.get('assimilation_components')
+        clip_norm = _parse_float(data.get('clip_gradient_norm'))
+        tolerance = _parse_float(data.get('early_stopping_tolerance'))
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        ).strip()
+        model_run_dir = data.get('model_run_dir')
+        issue_date = data.get('issue_date')
+        forecast_series = data.get('forecast') or data.get('forecast_series')
+        hindcast_series = data.get('hindcast_tail') or data.get(
+            'hindcast_series'
+        )
+        observed_series = data.get('observed_streamflow') or data.get(
+            'observed_series'
+        )
+        is_var = method.lower().replace('-', '_') in (
+            'variational',
+            'embedding',
+            'latent_variational',
+            '4dvar',
+            '4d_var',
+        )
+        default_win = 14 if is_var else 1
+        try:
+            payload = run_data_assimilation_for_basin(
+                username=user,
+                catchment_id=cid_str,
+                method=method,
+                rho=0.65 if rho is None else rho,
+                alpha=1.0 if alpha is None else alpha,
+                window_days=(
+                    default_win if window_days is None else window_days
+                ),
+                issue_date=str(issue_date).strip() if issue_date else None,
+                forecast_series=(
+                    forecast_series
+                    if isinstance(forecast_series, list)
+                    else None
+                ),
+                hindcast_series=(
+                    hindcast_series
+                    if isinstance(hindcast_series, list)
+                    else None
+                ),
+                observed_series=(
+                    observed_series
+                    if isinstance(observed_series, list)
+                    else None
+                ),
+                regularization_weight=(
+                    0.5 if reg_weight is None else reg_weight
+                ),
+                initial_learning_rate=0.01 if lr is None else lr,
+                epochs=30 if epochs is None else epochs,
+                loss=loss,
+                assimilation_components=assimilation_components,
+                clip_gradient_norm=1.0 if clip_norm is None else clip_norm,
+                early_stopping_tolerance=(
+                    0.05 if tolerance is None else tolerance
+                ),
+                model_id=model_id,
+                model_run_dir=model_run_dir,
+                precip_overrides=(
+                    data.get('precip_overrides')
+                    if isinstance(data.get('precip_overrides'), dict)
+                    else None
+                ),
+                temp_overrides=(
+                    data.get('temp_overrides')
+                    if isinstance(data.get('temp_overrides'), dict)
+                    else None
+                ),
+                product_overrides=(
+                    data.get('product_overrides')
+                    if isinstance(data.get('product_overrides'), dict)
+                    else None
+                ),
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            self._send_error(str(exc), status=400)
+            return
+        self._send_json(payload)
+
+    def _resolve_finetune_basin_id(
+        self, user: str, raw_basin_id: object
+    ) -> str:
+        basin_id = str(raw_basin_id or '').strip()
+        if not basin_id:
+            ws = get_profile_manager().load_watersheds(user)
+            if ws:
+                basin_id = str(
+                    ws[0].get('properties', {}).get('catchment_id')
+                    or ws[0].get('id')
+                    or ''
+                ).strip()
+        return basin_id
+
     def _post_finetune_upload_csv(self, data: dict[str, Any]) -> None:
         user = self._get_request_username(data)
-        basin_id = str(
-            data.get('basin_id')
-            or data.get('catchment_id')
-            or 'custom_basin_01'
-        ).strip()
+        basin_id = self._resolve_finetune_basin_id(
+            user, data.get('basin_id') or data.get('catchment_id')
+        )
+        if not basin_id:
+            self._send_error(
+                'No clipped watershed found in account. Please delineate or '
+                'upload a catchment polygon first.',
+                status=400,
+            )
+            return
         data_type = str(data.get('data_type') or '').strip()
         csv_content = str(data.get('csv_content') or data.get('csv') or '')
         if not data_type or not csv_content.strip():
@@ -2652,11 +3010,12 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
 
     def _post_finetune_clear_data(self, data: dict[str, Any]) -> None:
         user = self._get_request_username(data)
-        basin_id = str(
-            data.get('basin_id')
-            or data.get('catchment_id')
-            or 'custom_basin_01'
-        ).strip()
+        basin_id = self._resolve_finetune_basin_id(
+            user, data.get('basin_id') or data.get('catchment_id')
+        )
+        if not basin_id:
+            self._send_error('basin_id is required.', status=400)
+            return
         model_id = str(
             data.get('model_id') or 'google-floodhub-settings-110-epochs'
         )
@@ -2675,11 +3034,16 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
 
     def _post_finetune_run(self, data: dict[str, Any]) -> None:
         user = self._get_request_username(data)
-        basin_id = str(
-            data.get('basin_id')
-            or data.get('catchment_id')
-            or 'custom_basin_01'
-        ).strip()
+        basin_id = self._resolve_finetune_basin_id(
+            user, data.get('basin_id') or data.get('catchment_id')
+        )
+        if not basin_id:
+            self._send_error(
+                'No clipped watershed found in account. Please delineate or '
+                'upload a catchment polygon first.',
+                status=400,
+            )
+            return
         model_id = str(
             data.get('model_id') or 'google-floodhub-settings-110-epochs'
         ).strip()
@@ -2706,11 +3070,12 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
 
     def _post_finetune_reset(self, data: dict[str, Any]) -> None:
         user = self._get_request_username(data)
-        basin_id = str(
-            data.get('basin_id')
-            or data.get('catchment_id')
-            or 'custom_basin_01'
-        ).strip()
+        basin_id = self._resolve_finetune_basin_id(
+            user, data.get('basin_id') or data.get('catchment_id')
+        )
+        if not basin_id:
+            self._send_error('basin_id is required.', status=400)
+            return
         model_id = str(
             data.get('model_id') or 'google-floodhub-settings-110-epochs'
         ).strip()

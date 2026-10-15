@@ -308,6 +308,7 @@ class FineTuningDOMTests(unittest.TestCase):
         assert 'tab-training' in inspector.by_id
         assert 'tab-finetuning' in inspector.by_id
         assert 'ftLoadSampleDataBtn' not in inspector.by_id
+        assert 'ftBasinIdInput' not in inspector.by_id
 
         required_ft_ids = [
             'ftModelSelect',
@@ -459,24 +460,68 @@ class FineTuneServiceUnitTests(unittest.TestCase):
         with pytest.raises(ValueError, match='area_km2'):
             finetune_service.upload_finetune_csv(
                 TEST_USER,
-                TEST_BASIN,
+                'unknown_basin_without_polygon_area',
                 'streamflow',
                 valid_csv,
                 units='m3/s',
             )
 
-        res = finetune_service.upload_finetune_csv(
+        res_auto_area = finetune_service.upload_finetune_csv(
             username=TEST_USER,
             basin_id=TEST_BASIN,
             data_type='streamflow',
             csv_content=valid_csv,
-            filename='q_m3s.csv',
+            filename='q_m3s_auto.csv',
             units='m3/s',
-            area_km2=573.6,
         )
-        assert res['units'] == 'mm/day'
+        assert res_auto_area['units'] == 'mm/day'
+        assert res_auto_area['area_km2'] == pytest.approx(573.6)
         expected_mm_d = 11.0 * 86.4 / 573.6
-        assert res['mean_val'] == pytest.approx(expected_mm_d, abs=1e-3)
+        assert res_auto_area['mean_val'] == pytest.approx(
+            expected_mm_d, abs=1e-3
+        )
+
+    def test_clipped_user_basins_clean_names_and_auto_area(self) -> None:
+        """Verify clipped basins strip catchment_hydroatlas_* and have area."""
+        pm = profile_manager.get_profile_manager()
+        hydroatlas_cid = 'catchment_hydroatlas_HYRIV_70689198_35212_81698'
+        named_feat = {
+            'type': 'Feature',
+            'id': hydroatlas_cid,
+            'properties': {
+                'catchment_id': hydroatlas_cid,
+                'name': 'Broad River near Boiling Springs, NC (USGS 02151500)',
+                'area_km2': 2249.8,
+                'source': 'delineated',
+            },
+            'geometry': TEST_WATERSHED_FEATURE['geometry'],
+        }
+        pm.save_watersheds(
+            [named_feat, TEST_WATERSHED_FEATURE], username=TEST_USER
+        )
+
+        clipped = finetune_service.list_user_clipped_basins(TEST_USER)
+        assert len(clipped) == MIN_EXPECTED_MODELS
+        assert clipped[0]['basin_id'] == hydroatlas_cid
+        assert (
+            clipped[0]['name']
+            == 'Broad River near Boiling Springs, NC (USGS 02151500)'
+        )
+        assert 'catchment_hydroatlas_' not in str(clipped[0]['name'])
+        assert clipped[0]['area_km2'] == pytest.approx(2249.8)
+
+        ws = finetune_service.get_finetune_workspace_status(
+            username=TEST_USER,
+            basin_id='',
+            model_id=SYNTH_MODEL_ID,
+        )
+        assert ws['basin_id'] == hydroatlas_cid
+        assert (
+            ws['basin_name']
+            == 'Broad River near Boiling Springs, NC (USGS 02151500)'
+        )
+        assert ws['basin_area_km2'] == pytest.approx(2249.8)
+        assert len(ws['user_basins']) == MIN_EXPECTED_MODELS
 
     def test_list_finetune_models_and_strict_model_id_resolution(self) -> None:
         """Verify model inventory and strict FileNotFoundError on unknown id."""
