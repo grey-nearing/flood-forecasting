@@ -801,7 +801,9 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         self,
     ) -> None:
         """Verify DemTileServer lazy-loads overview grids and clears cache."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
+        with tempfile.TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as tmp_dir:
             base_dir = Path(tmp_dir)
             tiles_dir = base_dir / 'tiles'
             tiles_dir.mkdir(parents=True, exist_ok=True)
