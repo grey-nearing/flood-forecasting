@@ -832,3 +832,115 @@ def test_find_product_zarr_path_multi_directory_and_cloud_fallback(
         match="Zarr store for product 'NONEXISTENT' not found in",
     ):
         _find_product_zarr_path([global_dir, local_dir], 'NONEXISTENT')
+
+
+@pytest.mark.integration
+def test_local_static_attributes_finetune_and_zero_init(
+    tmp_path: Path,
+) -> None:
+    """Verify local_static_attributes zero-init, scaler extension, and FT."""
+    paths = _create_synthetic_datasets(tmp_path)
+    # Create a separate local static attributes Zarr store
+    basins = ['camels_01013500', 'camels_01022500']
+    local_attr_ds = xr.Dataset(
+        {
+            'soil_depth': ('basin', np.array([1.5, 2.8], dtype=np.float32)),
+            'geol_porosity': (
+                'basin',
+                np.array([0.12, 0.25], dtype=np.float32),
+            ),
+        },
+        coords={'basin': basins},
+    )
+    local_attr_path = tmp_path / 'data' / 'local_attributes.zarr'
+    local_attr_ds.to_zarr(local_attr_path, mode='w')
+
+    pretrain_cfg = _make_base_pretrain_cfg(tmp_path, paths)
+    pretrain_cfg['compile'] = False
+    pretrain_cfg_path = tmp_path / 'pretrain_static.yml'
+    pretrain_cfg_path.write_text(yaml.safe_dump(pretrain_cfg))
+
+    start_run(Config(pretrain_cfg_path), gpu=-1)
+    base_run_dir = next((tmp_path / 'runs').glob('pretrain_global*'))
+    base_ckpt = torch.load(
+        base_run_dir / 'model_epoch001.pt', weights_only=True
+    )
+
+    # 1. Verify zero-initialization of the final Linear layer in
+    # local_static_embeddings_fc preserves global static embedding at epoch 0
+    ft_cfg = {
+        'experiment_name': 'ft_local_static',
+        'base_run_dir': str(base_run_dir),
+        'run_dir': str(tmp_path / 'runs'),
+        'compile': False,
+        'epochs': 2,
+        'save_weights_every': 1,
+        'initial_learning_rate': 0.01,
+        'train_basin_file': str(paths['single_basin_file']),
+        'validation_basin_file': str(paths['single_basin_file']),
+        'test_basin_file': str(paths['single_basin_file']),
+        'statics_data_dir': [
+            str(paths['attr_path']),
+            str(local_attr_path),
+        ],
+        'local_static_attributes': {
+            'local_survey': ['soil_depth', 'geol_porosity'],
+        },
+        'finetune_modules': {
+            'local_static_embeddings_fc': ['local_survey'],
+            'head': True,
+        },
+    }
+    ft_cfg_path = tmp_path / 'finetune_static.yml'
+    ft_cfg_path.write_text(yaml.safe_dump(ft_cfg))
+
+    finetune(ft_cfg_path, gpu=-1)
+    ft_dir = next((tmp_path / 'runs').glob('ft_local_static*'))
+    ft_ckpt_ep1 = torch.load(ft_dir / 'model_epoch001.pt', weights_only=True)
+    ft_ckpt_ep2 = torch.load(ft_dir / 'model_epoch002.pt', weights_only=True)
+
+    # Verify scaler extended with multi-basin stats even for single-basin FT
+    ft_scaler = xr.open_zarr(ft_dir / SCALER_ZARR_NAME).load()
+    for var in ('soil_depth', 'geol_porosity'):
+        assert var in ft_scaler.data_vars
+        np.testing.assert_allclose(
+            float(ft_scaler[var].sel(parameter='center').values),
+            float(np.nanmean(local_attr_ds[var].values)),
+            rtol=1e-5,
+        )
+        np.testing.assert_allclose(
+            float(ft_scaler[var].sel(parameter='scale').values),
+            float(np.nanstd(local_attr_ds[var].values)),
+            rtol=1e-5,
+        )
+
+    # Pretrained global static embedding and LSTMs remain frozen;
+    # local_static_embeddings_fc.local_survey and head update
+    assert torch.equal(
+        base_ckpt['static_embedding_fc.net.0.weight'],
+        ft_ckpt_ep2['static_embedding_fc.net.0.weight'],
+    )
+    assert torch.equal(
+        base_ckpt['hindcast_lstm.weight_ih_l0'],
+        ft_ckpt_ep2['hindcast_lstm.weight_ih_l0'],
+    )
+    local_static_key = (
+        'local_static_embeddings_fc.local_survey.net.0.weight'
+    )
+    assert torch.isfinite(ft_ckpt_ep2[local_static_key]).all()
+    assert not torch.allclose(
+        ft_ckpt_ep1[local_static_key], ft_ckpt_ep2[local_static_key]
+    )
+
+    eval_run(
+        Config(ft_dir / 'config.yml'),
+        run_dir=ft_dir,
+        period='test',
+        epoch=2,
+        gpu=-1,
+    )
+    metrics_file = ft_dir / 'test' / 'model_epoch002' / 'test_metrics.csv'
+    assert metrics_file.exists()
+    metrics_df = pd.read_csv(metrics_file)
+    assert np.isfinite(metrics_df['NSE']).all()
+

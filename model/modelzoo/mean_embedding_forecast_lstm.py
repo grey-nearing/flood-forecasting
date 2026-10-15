@@ -89,6 +89,7 @@ class MeanEmbeddingForecastLSTM(BaseModel):
     # Specify submodules of the model that can later be used for finetuning. Names must match class attributes.
     module_parts = [
         'static_embedding_fc',
+        'local_static_embeddings_fc',
         'hindcast_embeddings_fc',
         'forecast_embeddings_fc',
         'shared_embeddings_fc',
@@ -98,6 +99,7 @@ class MeanEmbeddingForecastLSTM(BaseModel):
     ]
 
     dynamic_embedding_modules: ClassVar[tuple[str, ...]] = (
+        'local_static_embeddings_fc',
         'hindcast_embeddings_fc',
         'forecast_embeddings_fc',
         'shared_embeddings_fc',
@@ -125,6 +127,18 @@ class MeanEmbeddingForecastLSTM(BaseModel):
         self.static_embedding_fc = self._create_fc(
             embedding_spec=self.config_data.statics_embedding,
             input_size=len(self.config_data.static_attributes),
+        )
+        # Optional parallel local static attribute embedding networks
+        self.local_static_embeddings_fc = nn.ModuleDict(
+            {
+                name: self._create_local_static_fc(
+                    embedding_spec=self.config_data.statics_embedding,
+                    input_size=len(
+                        self.config_data.local_static_inputs_grouped[name]
+                    ),
+                )
+                for name in self.config_data.local_static_inputs_grouped
+            }
         )
 
         # Preserve config order so initialization is independent of hash seeds.
@@ -225,6 +239,28 @@ class MeanEmbeddingForecastLSTM(BaseModel):
             dropout=dropout,
             xavier_init=FC_XAVIER in self.cfg.weight_init_opts,
         )
+
+    def _create_local_static_fc(
+        self, embedding_spec: EmbeddingSpec, input_size: int
+    ) -> FC:
+        """Create a local static FC network with a zero-initialized output layer.
+
+        Zero-initializing the final linear layer ensures that a newly attached
+        local static embedding outputs zeros at step 0, preserving the
+        pretrained global static embedding prior before fine-tuning updates.
+        """
+        fc = self._create_fc(
+            embedding_spec=embedding_spec, input_size=input_size
+        )
+        last_linear: nn.Linear | None = None
+        for module in fc.modules():
+            if isinstance(module, nn.Linear):
+                last_linear = module
+        if last_linear is not None:
+            nn.init.zeros_(last_linear.weight)
+            if last_linear.bias is not None:
+                nn.init.zeros_(last_linear.bias)
+        return fc
 
     def forward(
         self,
@@ -635,7 +671,17 @@ class MeanEmbeddingForecastLSTM(BaseModel):
     def _calc_static_embedding(
         self, forward_data: 'ForwardData'
     ) -> torch.Tensor:
-        return self.static_embedding_fc(forward_data.static_features)
+        global_emb = self.static_embedding_fc(forward_data.static_features)
+        if not self.local_static_embeddings_fc:
+            return global_emb
+        embeddings = [global_emb]
+        for name, fc in self.local_static_embeddings_fc.items():
+            local_data = forward_data.local_static_features[name]
+            nan_mask = torch.isnan(local_data).any(dim=-1, keepdim=True)
+            local_clean = local_data.masked_fill(nan_mask, 0.0)
+            local_emb = fc(local_clean).masked_fill(nan_mask, float('nan'))
+            embeddings.append(local_emb)
+        return self._masked_mean(embeddings)
 
     def _calc_dynamic_embedding(
         self,
@@ -719,6 +765,11 @@ class ConfigData:
 
         hindcast_inputs_grouped = group_features_list(cfg.hindcast_inputs)
         forecast_inputs_grouped = group_features_list(cfg.forecast_inputs)
+        local_static_inputs_grouped = (
+            group_features_list(cfg.local_static_attributes)
+            if cfg.local_static_attributes
+            else {}
+        )
         shared_groups = [
             e for e in hindcast_inputs_grouped if e in forecast_inputs_grouped
         ]
@@ -735,6 +786,7 @@ class ConfigData:
             hindcast_embedding=hindcast_embedding,
             forecast_embedding=forecast_embedding,
             static_attributes=tuple(cfg.static_attributes),
+            local_static_inputs_grouped=local_static_inputs_grouped,
             hindcast_inputs_grouped=hindcast_inputs_grouped,
             forecast_inputs_grouped=forecast_inputs_grouped,
             shared_groups=shared_groups,
@@ -748,6 +800,9 @@ class ConfigData:
     hindcast_inputs_grouped: dict[str, list[str]]
     forecast_inputs_grouped: dict[str, list[str]]
     shared_groups: list[str]
+    local_static_inputs_grouped: dict[str, list[str]] = dataclasses.field(
+        default_factory=dict
+    )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -758,8 +813,25 @@ class ForwardData:
         data: dict[str, torch.Tensor | dict[str, torch.Tensor]],
         config_data: ConfigData,
     ) -> 'ForwardData':
+        local_static_features: dict[str, torch.Tensor] = {}
+        if config_data.local_static_inputs_grouped:
+            raw_local_statics = data.get('x_s_local')
+            if not isinstance(raw_local_statics, dict):
+                msg = (
+                    "Data dictionary is missing 'x_s_local' required by "
+                    'configured local_static_attributes '
+                    f'{list(config_data.local_static_inputs_grouped)}.'
+                )
+                raise KeyError(msg)
+            local_static_features = {
+                name: _concat_tensors_from_dict(
+                    raw_local_statics, keys=features
+                )
+                for name, features in config_data.local_static_inputs_grouped.items()
+            }
         return ForwardData(
             static_features=data['x_s'],
+            local_static_features=local_static_features,
             hindcast_features={
                 name: _concat_tensors_from_dict(
                     data['x_d_hindcast'], keys=features
@@ -777,6 +849,9 @@ class ForwardData:
     static_features: torch.Tensor
     hindcast_features: dict[str, torch.Tensor]
     forecast_features: dict[str, torch.Tensor]
+    local_static_features: dict[str, torch.Tensor] = dataclasses.field(
+        default_factory=dict
+    )
 
 
 def _concat_tensors_from_dict(

@@ -123,7 +123,7 @@ Data settings
 
 -  ``dataset``: Dataset class to use (currently ``multimet`` is built-in, and custom classes can be registered via :py:func:`model.datasetzoo.register_dataset`).
 -  ``data_dir``: Root directory of the dataset.
--  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir``: Directory overrides for static attributes (containing ``attributes.zarr``), dynamic forcings, and target streamflow data (containing ``streamflow.zarr``). ``dynamics_data_dir`` can also be a list of per-product root directories or cloud paths (for example, ``[gs://caravan-multimet/v1.1, /path/to/local_weather_zarrs]``); a list ``dynamics_data_dir`` cannot contain a single unified ``.zarr`` store, and every local directory in the list must exist on disk. The loader checks local directories first for each ``<PRODUCT>/timeseries.zarr`` store (where ``<PRODUCT>`` is the canonical uppercase product name and feature names start with the lowercase ``<product>_<band>`` prefix; data variables must be ``float32``, ``date`` daily ``datetime64[ns]``, and forecast ``lead_time`` 1-indexed ``timedelta64[ns]`` starting at ``1 day``) before falling back to cloud paths.
+-  ``statics_data_dir``, ``dynamics_data_dir``, ``targets_data_dir``: Directory overrides for static attributes (containing ``attributes.zarr``), dynamic forcings, and target streamflow data (containing ``streamflow.zarr``). ``statics_data_dir`` can also be a list of directories or ``.zarr`` stores (for example, ``[/path/to/global_caravan, /path/to/local_attributes.zarr]``) whose static variables are merged across stores. ``dynamics_data_dir`` can also be a list of per-product root directories or cloud paths (for example, ``[gs://caravan-multimet/v1.1, /path/to/local_weather_zarrs]``); a list ``dynamics_data_dir`` cannot contain a single unified ``.zarr`` store, and every local directory in the list must exist on disk. The loader checks local directories first for each ``<PRODUCT>/timeseries.zarr`` store (where ``<PRODUCT>`` is the canonical uppercase product name and feature names start with the lowercase ``<product>_<band>`` prefix; data variables must be ``float32``, ``date`` daily ``datetime64[ns]``, and forecast ``lead_time`` 1-indexed ``timedelta64[ns]`` starting at ``1 day``) before falling back to cloud paths.
 -  ``hindcast_inputs``: Nested dictionary mapping meteorological product names to lists of dynamic input variables used during the historical hindcast period.
 -  ``forecast_inputs``: Nested dictionary mapping meteorological forecast product names to lists of dynamic input variables used during the forecast rollout period.
 -  ``union_mapping``: Optional dictionary mapping primary dynamic features (keys) to fallback features (values) used to fill missing (``NaN``) timestamps, for example ``{cpc_precipitation: era5land_total_precipitation}``.
@@ -169,6 +169,7 @@ Data settings
 
 -  ``target_variables``: List of target variables to predict (e.g., ``[streamflow]``).
 -  ``static_attributes``: List of static catchment attributes to use.
+-  ``local_static_attributes``: Optional list of local static catchment attributes or dictionary mapping group names to lists of local static attributes (for example, ``{local_static: [soil_depth, geol_porosity]}``). Each group is embedded via its own ``local_static_embeddings_fc`` network (with a zero-initialized final linear layer) and combined with the pre-trained ``static_embedding_fc`` output via masked mean.
 -  ``seq_length``: Hindcast sequence length (in timesteps) for forecast models.
 -  ``lead_time``: Forecast lead time (integer). See `Temporal alignment of forecasts`_ below.
 -  ``predict_last_n``: Number of time steps (counted backwards from the end of the combined sequence) used for loss and evaluation calculation.
@@ -211,9 +212,9 @@ Ignored if ``mode != finetune``
 -  ``base_run_dir``: Path to the pre-trained model run directory containing ``config.yml``, ``scaler.zarr``, and ``model_epochXXX.pt``.
 -  ``finetune_modules``: List or dictionary of model submodule names (``module_parts``) to train during fine-tuning. Only parts listed here are updated; all other weights remain frozen.
 
-   -  For ``mean_embedding_forecast_lstm``: ``static_embedding_fc``, ``hindcast_embeddings_fc``, ``forecast_embeddings_fc``, ``shared_embeddings_fc``, ``hindcast_lstm``, ``forecast_lstm``, ``head``.
+   -  For ``mean_embedding_forecast_lstm``: ``static_embedding_fc``, ``local_static_embeddings_fc``, ``hindcast_embeddings_fc``, ``forecast_embeddings_fc``, ``shared_embeddings_fc``, ``hindcast_lstm``, ``forecast_lstm``, ``head``.
    -  For ``handoff_forecast_lstm``: ``statics_embedding_net``, ``hindcast_embedding_net``, ``forecast_embedding_net``, ``hindcast_lstm``, ``forecast_lstm``, ``handoff_net``, ``hindcast_head``, ``forecast_head``.
-   -  **Fine-tuning specific product embeddings (dictionary syntax):** For ``mean_embedding_forecast_lstm``, you can pass a dictionary to train only specific product keys inside ``hindcast_embeddings_fc``, ``forecast_embeddings_fc``, or ``shared_embeddings_fc`` while also training whole modules (set to ``true``):
+   -  **Fine-tuning specific product embeddings (dictionary syntax):** For ``mean_embedding_forecast_lstm``, you can pass a dictionary to train only specific product keys inside ``hindcast_embeddings_fc``, ``forecast_embeddings_fc``, ``shared_embeddings_fc``, or ``local_static_embeddings_fc`` while also training whole modules (set to ``true``):
 
       .. code-block:: yaml
 
