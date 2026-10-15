@@ -1322,6 +1322,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         routes = {
             '/api/delineate': self._post_delineate,
             '/api/watersheds/delete': self._post_watersheds_delete,
+            '/api/watersheds/rename': self._post_watersheds_rename,
             '/api/watersheds/clear': self._post_watersheds_clear,
             '/api/profile/login': self._post_profile_login,
             '/api/profile/create': self._post_profile_create,
@@ -1448,6 +1449,32 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 'remaining_count': len(new_feats),
             }
         )
+
+    def _post_watersheds_rename(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        pm = get_profile_manager()
+        catchment_id = data.get('catchment_id')
+        new_name = data.get('name')
+
+        if not catchment_id or not new_name or not str(new_name).strip():
+            self._send_error('Missing catchment_id or valid name', status=400)
+            return
+
+        updated_feature = pm.rename_watershed(
+            str(catchment_id),
+            str(new_name).strip(),
+            username=user,
+        )
+
+        if updated_feature is not None:
+            self._send_json(
+                {
+                    'status': 'renamed',
+                    'feature': sanitize_for_json(updated_feature),
+                }
+            )
+        else:
+            self._send_error('Catchment not found', status=404)
 
     def _post_watersheds_clear(self, data: dict[str, Any]) -> None:
         user = self._get_request_username(data)

@@ -26,6 +26,7 @@ from unittest import mock
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyogrio
 import pytest
 from shapely.geometry import box
 
@@ -33,6 +34,7 @@ import frontend.static_attributes as _static_attributes
 from frontend.static_attributes import (
     DEFAULT_GCS_ERA5_CLIMATE_URI,
     DEFAULT_GCS_HYDROATLAS_URI,
+    UnsupportedHydroATLASLevelError,
     build_attribute_card_payload,
     build_map_layer_geojson,
     build_schema_payload,
@@ -43,7 +45,10 @@ from frontend.static_attributes import (
     sanitize_for_json,
     zoom_to_hydroatlas_level,
 )
-from multimet.static_extractor import CatchmentAttributes
+from multimet.static_extractor import (
+    CatchmentAttributes,
+    StaticAttributesExtractor,
+)
 
 _EXPECTED_SUBBASIN_COUNT = 2
 _EXPECTED_MIN_SCHEMA_ATTRS = 10
@@ -440,6 +445,89 @@ class StaticAttributesAdapterTest(unittest.TestCase):
                         card_mixed['flat_attributes']
                         == card_gcs['flat_attributes']
                     )
+
+    def test_telescoping_multilevel_openfilegdb_and_level_validation(
+        self,
+    ) -> None:
+        """Verify OpenFileGDB multi-level discovery and telescoping layers."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            gdb_path = Path(tmp_dir) / 'BasinATLAS_v10.gdb'
+            layer_opts = {'TARGET_ARCGIS_VERSION': 'ARCGIS_PRO_3_2_OR_LATER'}
+            gdf_l4 = gpd.GeoDataFrame(
+                {
+                    'HYBAS_ID': [4000001],
+                    'NEXT_DOWN': [0],
+                    'SUB_AREA': [5000.0],
+                    'UP_AREA': [5000.0],
+                    'ele_mt_sav': [1800.0],
+                    'pre_mm_syr': [750.0],
+                },
+                geometry=[box(-107.0, 39.0, -105.0, 41.0)],
+                crs='EPSG:4326',
+            )
+            gdf_l12 = gpd.GeoDataFrame(
+                {
+                    'HYBAS_ID': [1200001, 1200002],
+                    'NEXT_DOWN': [1200002, 0],
+                    'SUB_AREA': [100.0, 120.0],
+                    'UP_AREA': [100.0, 220.0],
+                    'ele_mt_sav': [1750.0, 1850.0],
+                    'pre_mm_syr': [720.0, 780.0],
+                },
+                geometry=[
+                    box(-106.5, 39.5, -106.0, 40.0),
+                    box(-106.0, 39.5, -105.5, 40.0),
+                ],
+                crs='EPSG:4326',
+            )
+            pyogrio.write_dataframe(
+                gdf_l4,
+                gdb_path,
+                layer='BasinATLAS_v10_lev04',
+                driver='OpenFileGDB',
+                layer_options=layer_opts,
+            )
+            pyogrio.write_dataframe(
+                gdf_l12,
+                gdb_path,
+                layer='BasinATLAS_v10_lev12',
+                driver='OpenFileGDB',
+                append=True,
+                layer_options=layer_opts,
+            )
+
+            extractor = StaticAttributesExtractor(gdb_path=gdb_path)
+            assert extractor.available_levels == (4, 12)
+
+            fc_z2 = build_map_layer_geojson(
+                extractor,
+                (-108.0, 38.0, -104.0, 42.0),
+                zoom=2,
+                attribute='ele_mt_sav',
+            )
+            assert fc_z2['properties']['level'] == 4  # noqa: PLR2004
+            assert fc_z2['properties']['count'] == 1
+            assert fc_z2['features'][0]['properties']['HYBAS_ID'] == 4000001  # noqa: PLR2004
+
+            fc_z10 = build_map_layer_geojson(
+                extractor,
+                (-108.0, 38.0, -104.0, 42.0),
+                zoom=10,
+                attribute='ele_mt_sav',
+            )
+            assert fc_z10['properties']['level'] == 12  # noqa: PLR2004
+            assert fc_z10['properties']['count'] == _EXPECTED_SUBBASIN_COUNT
+
+            with pytest.raises(UnsupportedHydroATLASLevelError):
+                extractor.read_subbasins(
+                    (-108.0, 38.0, -104.0, 42.0),
+                    level=True,  # type: ignore[arg-type]
+                )
+            with pytest.raises(UnsupportedHydroATLASLevelError):
+                extractor.read_subbasins(
+                    (-108.0, 38.0, -104.0, 42.0),
+                    level=7,
+                )
 
 
 if __name__ == '__main__':

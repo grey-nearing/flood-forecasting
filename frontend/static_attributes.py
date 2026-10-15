@@ -53,8 +53,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MAX_MAP_FEATURES: int = 800
+MAX_MAP_FEATURES: int = 2500
 _FINEST_HYDROATLAS_LEVEL: int = 12
+_ERA5_MIN_TARGET_LEVEL: int = 10
 
 ZOOM_TO_LEVEL: dict[int, int] = {
     0: 4,
@@ -465,7 +466,11 @@ def build_map_layer_geojson(
     )
 
     defn = get_attribute_definition(attribute)
-    if defn and defn.source == 'era5_climate':
+    if (
+        defn
+        and defn.source == 'era5_climate'
+        and target_level >= _ERA5_MIN_TARGET_LEVEL
+    ):
         target_level = _FINEST_HYDROATLAS_LEVEL
 
     label = defn.name if defn else attribute

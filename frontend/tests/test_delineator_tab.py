@@ -589,6 +589,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         for endpoint in (
             '/api/profile/save_watersheds',
             '/api/watersheds/delete',
+            '/api/watersheds/rename',
             '/api/watersheds/clear',
             '/api/delineate',
         ):
@@ -670,6 +671,69 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         assert (
             pm.get_catchment_shapes_dir(user_b) / f'{cid_b}.geojson'
         ).exists()
+
+    def test_delineation_mode_click_regression(self) -> None:
+        """Verify river click requires `isDelineationMode` to be enabled."""
+        assert (
+            "if (currentActiveTabId === 'tab-delineation' && isDelineationMode)"
+            in self.html_text
+        )
+        assert (
+            "if (currentActiveTabId === 'tab-delineation' || isDelineationMode)"
+            not in self.html_text
+        )
+        assert 'setDelineationMode(false);' in self.html_text
+
+    def test_catchment_rename(self) -> None:
+        """Verify `/api/watersheds/rename` persists across profile reloads."""
+        assert 'renameSelectedBtn' in self.dom.by_id
+        assert 'promptRenameWatershed' in self.html_text
+        assert 'rename-btn' in self.html_text
+
+        test_user = 'test_rename_user'
+        self.addCleanup(lambda: self._post('/api/profile/logout', {}))
+        self._post(
+            '/api/profile/login',
+            {
+                'username': test_user,
+                'email': 'rename@example.com',
+                'create_if_missing': True,
+            },
+        )
+        delin_status, feat = self._post(
+            '/api/delineate',
+            {
+                'dataset': 'hydroatlas',
+                'dem_id': 'hydrosheds_90m',
+                'latitude': 39.6828,
+                'longitude': -88.7729,
+                'username': test_user,
+            },
+        )
+        assert delin_status == _HTTP_OK
+        cid = feat['properties']['catchment_id']
+
+        new_name = 'Custom Renamed Watershed'
+        ren_status, ren_data = self._post(
+            '/api/watersheds/rename',
+            {
+                'catchment_id': cid,
+                'name': new_name,
+                'username': test_user,
+            },
+        )
+        assert ren_status == _HTTP_OK
+        assert ren_data['status'] == 'renamed'
+        assert ren_data['feature']['properties']['name'] == new_name
+
+        pm = get_profile_manager()
+        loaded = pm.load_watersheds(test_user)
+        renamed_feat = next(
+            (f for f in loaded if f['properties'].get('catchment_id') == cid),
+            None,
+        )
+        assert renamed_feat is not None
+        assert renamed_feat['properties']['name'] == new_name
 
 
 if __name__ == '__main__':

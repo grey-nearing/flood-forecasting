@@ -449,6 +449,20 @@ class HydroRiverNetwork:
                 source=src_str,
             )
 
+        z4_feats = self._query_z4_pyramid(bbox, int(order_threshold))
+        if z4_feats is not None:
+            source_label = (
+                'MERIT-Basins z4 pyramid (in-memory, simplified geometry)'
+                if self.is_merit
+                else 'HydroATLAS z4 pyramid (in-memory, simplified geometry)'
+            )
+            return self._build_collection(
+                z4_feats,
+                zoom,
+                min_stream_order_applied=order_threshold,
+                source=source_label,
+            )
+
         return {
             'type': 'FeatureCollection',
             'properties': {

@@ -555,7 +555,12 @@
         <div id="catchmentCard" class="hidden space-y-2.5 text-xs">
           <div class="flex justify-between items-center bg-white/95 p-2.5 rounded-lg border border-[#dadce0]">
             <span class="text-[#5f6368]">Selected Basin:</span>
-            <span id="cardId" class="font-mono text-[#1a73e8] font-medium truncate max-w-[170px]" title="Catchment ID">---</span>
+            <div class="flex items-center gap-1.5 flex-1 ml-2 justify-end overflow-hidden">
+              <span id="cardId" class="font-mono text-[#1a73e8] font-medium truncate" title="Catchment Name/ID">---</span>
+              <button id="renameSelectedBtn" type="button" class="text-[#5f6368] hover:text-[#1a73e8] flex-shrink-0" title="Rename basin">
+                <i data-lucide="pencil" class="w-3 h-3"></i>
+              </button>
+            </div>
           </div>
           <div class="bg-white/95 p-2 rounded-lg border border-[#dadce0] space-y-1">
             <div class="flex justify-between items-center">
@@ -3725,7 +3730,7 @@
       });
 
       // Initialize Legend, Delineation Mode, Weather Sources, Profile & River Fetch
-      setDelineationMode(true);
+      setDelineationMode(false);
       updateLegend(document.getElementById('datasetSelect').value);
       initWeatherSources();
       initProfileEventListeners();
@@ -3844,6 +3849,16 @@
 
     async function doFetchAndRenderRivers() {
       if (!map) return;
+      if (riverLayerGroup && currentActiveTabId === 'tab-delineation' && !map.hasLayer(riverLayerGroup)) {
+        riverLayerGroup.addTo(map);
+      }
+      const containerEl = map.getContainer ? map.getContainer() : null;
+      if (containerEl && containerEl.clientWidth > 0 && containerEl.clientHeight > 0) {
+        const curSize = map.getSize();
+        if (!curSize || curSize.x === 0 || curSize.y === 0) {
+          map.invalidateSize();
+        }
+      }
       if (riverFetchController) {
         riverFetchController.abort();
       }
@@ -3888,6 +3903,10 @@
 
     // Render River Reaches with Google FloodHub Hydrography Palette & Metadata
     function renderRiverVectors(geojson) {
+      if (!riverLayerGroup) return;
+      if (map && currentActiveTabId === 'tab-delineation' && !map.hasLayer(riverLayerGroup)) {
+        riverLayerGroup.addTo(map);
+      }
       riverLayerGroup.clearLayers();
       const count = (geojson.features || []).length;
       const dataset = (geojson.properties && geojson.properties.dataset) || document.getElementById('datasetSelect').value;
@@ -3971,7 +3990,7 @@
               probeMaaSPoint(e.latlng.lat, e.latlng.lng, null, props.reach_id || props.HYRIV_ID, props.river_name || props.NAME || (`Reach #${props.reach_id || props.HYRIV_ID || ''}`));
               return;
             }
-            if (currentActiveTabId === 'tab-delineation' || isDelineationMode) {
+            if (currentActiveTabId === 'tab-delineation' && isDelineationMode) {
               L.DomEvent.stopPropagation(e);
               if (!isDelineating) {
                 const pt = (typeof maasSnapToFeature === 'function')
@@ -4137,7 +4156,7 @@
       // Update Sidebar Selected Basin Card
       document.getElementById('noCatchmentNotice').classList.add('hidden');
       document.getElementById('catchmentCard').classList.remove('hidden');
-      document.getElementById('cardId').innerText = props.catchment_id;
+      document.getElementById('cardId').innerText = props.name || props.catchment_id;
       document.getElementById('cardId').title = props.catchment_id;
       document.getElementById('cardMethod').innerText = props.delineation_method || (props.source === 'delineated' ? 'DEM Delineated' : 'User GeoJSON');
       document.getElementById('cardUnits').innerText = props.upstream_cells_count
@@ -4334,6 +4353,9 @@
             </div>
           </div>
           <div class="flex items-center gap-1 flex-shrink-0">
+            <button type="button" class="rename-btn text-[#5f6368] hover:text-[#1a73e8] p-1 text-[10px] bg-[#f8f9fa] hover:bg-[#e8f0fe] border border-[#dadce0] rounded transition" title="Rename Basin">
+              <i data-lucide="pencil" class="w-3 h-3"></i>
+            </button>
             <button type="button" class="focus-btn text-[#5f6368] hover:text-[#1a73e8] p-1 text-[10px] bg-[#f8f9fa] hover:bg-[#e8f0fe] border border-[#dadce0] rounded transition" title="Zoom to Basin">
               <i data-lucide="zoom-in" class="w-3 h-3"></i>
             </button>
@@ -4347,6 +4369,9 @@
           if (e.target.closest('.del-btn')) {
             e.stopPropagation();
             removeWatershed(cid);
+          } else if (e.target.closest('.rename-btn')) {
+            e.stopPropagation();
+            promptRenameWatershed(cid);
           } else if (e.target.closest('.focus-btn')) {
             e.stopPropagation();
             selectWatershed(cid, true);
@@ -4362,6 +4387,66 @@
       if (typeof syncActiveCatchmentWeather === 'function') syncActiveCatchmentWeather();
       lucide.createIcons();
     }
+
+    async function promptRenameWatershed(cid) {
+      const feat = activeWatersheds.find(f => String((f && f.properties && f.properties.catchment_id) || (f && f.id) || '').trim() === String(cid));
+      if (!feat) return;
+      const currentName = feat.properties.name || cid;
+      const newName = prompt('Enter a new name for this basin:', currentName);
+      if (newName === null) return;
+      const trimmed = newName.trim();
+      if (!trimmed) {
+        alert('Name cannot be empty.');
+        return;
+      }
+
+      try {
+        const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+        const resp = await fetch('/api/watersheds/rename', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Profile': targetUser
+          },
+          body: JSON.stringify({ catchment_id: cid, name: trimmed, username: targetUser })
+        });
+        if (!resp.ok) {
+          throw new Error('Failed to rename watershed on backend.');
+        }
+
+        // Update in memory
+        feat.properties.name = trimmed;
+
+        // Refresh UI
+        renderWatershedsList();
+        if (activeCatchmentId === cid) {
+          selectWatershed(cid, false);
+        }
+        updateExtractionButtonsState();
+        updateActiveBasinHeader();
+
+        if (typeof renderGeoCatchmentSelector === 'function') renderGeoCatchmentSelector();
+        if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();
+        if (typeof refreshFineTuningTab === 'function') refreshFineTuningTab();
+
+        // Refresh tooltip/popup on map
+        if (watershedLayersMap[cid]) {
+          watershedLayersMap[cid].bindTooltip(trimmed, { permanent: false, direction: 'top' });
+        }
+        if (outletMarkersMap[cid]) {
+          outletMarkersMap[cid].bindPopup(`<b>${trimmed}</b>`);
+        }
+      } catch (err) {
+        console.error('Rename error:', err);
+        alert('An error occurred while renaming the basin.');
+      }
+    }
+
+    document.getElementById('renameSelectedBtn').addEventListener('click', () => {
+      if (activeCatchmentId) {
+        promptRenameWatershed(activeCatchmentId);
+      }
+    });
 
 
     // Dynamic Historical & Attribute Buttons Label & Scope Synchronizer

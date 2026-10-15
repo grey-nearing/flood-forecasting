@@ -145,6 +145,32 @@ class DemTileServer:
         )
         self.max_cache_size = max_cache_size
 
+    def _get_global_30s(self) -> GlobalElevationGrid | None:
+        """Return the 30s global overview grid, loading if newly available."""
+        if self._global_30s is None and GLOBAL_DEM_30S_NPY.is_file():
+            self._global_30s = GlobalElevationGrid(
+                GLOBAL_DEM_30S_NPY,
+                res_deg=RES_30S_DEG,
+                top_lat=GLOBAL_TOP_LAT,
+                bottom_lat=GLOBAL_BOTTOM_LAT,
+                left_lon=GLOBAL_LEFT_LON,
+                right_lon=GLOBAL_RIGHT_LON,
+            )
+        return self._global_30s
+
+    def _get_global_15s(self) -> GlobalElevationGrid | None:
+        """Return the 15s global overview grid, loading if newly available."""
+        if self._global_15s is None and GLOBAL_DEM_15S_NPY.is_file():
+            self._global_15s = GlobalElevationGrid(
+                GLOBAL_DEM_15S_NPY,
+                res_deg=RES_15S_DEG,
+                top_lat=GLOBAL_TOP_LAT,
+                bottom_lat=GLOBAL_BOTTOM_LAT,
+                left_lon=GLOBAL_LEFT_LON,
+                right_lon=GLOBAL_RIGHT_LON,
+            )
+        return self._global_15s
+
     def get_elevation_tile(
         self,
         lat_top: int,
@@ -162,24 +188,27 @@ class DemTileServer:
         zoom: int = 10,
     ) -> np.ndarray:
         """Sample elevation across 30s (`z<=6`), 15s (`z<=9`), and 3s grids."""
-        if zoom <= _COARSE_OVERVIEW_MAX_ZOOM and self._global_30s is not None:
-            return self._global_30s.sample(lats, lons)
+        global_30s = self._get_global_30s()
+        global_15s = self._get_global_15s()
+
+        if zoom <= _COARSE_OVERVIEW_MAX_ZOOM and global_30s is not None:
+            return global_30s.sample(lats, lons)
 
         if zoom <= _MEDIUM_OVERVIEW_MAX_ZOOM:
-            if self._global_15s is not None:
-                return self._global_15s.sample(lats, lons)
-            if self._global_30s is not None:
-                return self._global_30s.sample(lats, lons)
+            if global_15s is not None:
+                return global_15s.sample(lats, lons)
+            if global_30s is not None:
+                return global_30s.sample(lats, lons)
 
         elev = self._elevation_tiles.sample(lats, lons, strict=False)
 
         missing = np.isnan(elev)
         if np.any(missing):
-            if self._global_15s is not None:
-                fallback = self._global_15s.sample(lats, lons)
+            if global_15s is not None:
+                fallback = global_15s.sample(lats, lons)
                 elev = np.where(missing, fallback, elev)
-            elif self._global_30s is not None:
-                fallback = self._global_30s.sample(lats, lons)
+            elif global_30s is not None:
+                fallback = global_30s.sample(lats, lons)
                 elev = np.where(missing, fallback, elev)
 
         return elev

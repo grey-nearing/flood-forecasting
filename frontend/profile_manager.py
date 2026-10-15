@@ -850,6 +850,39 @@ class ProfileManager:
         self.sync_catchment_artifacts(features, username=user)
         return True
 
+    def rename_watershed(
+        self,
+        catchment_id: str,
+        new_name: str,
+        username: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Rename a delineated watershed in memory and on disk.
+
+        Args:
+            catchment_id: The ID of the watershed to rename.
+            new_name: The new name for the watershed.
+            username: Target username, or active profile if None.
+
+        Returns:
+            The updated feature dictionary, or None if not found.
+        """
+        features = self.load_watersheds(username=username)
+        updated_feature = None
+        for idx, feat in enumerate(features):
+            if _extract_basin_id(feat, idx) == catchment_id:
+                if 'properties' not in feat or not isinstance(
+                    feat['properties'], dict
+                ):
+                    feat['properties'] = {}
+                feat['properties']['name'] = new_name
+                updated_feature = feat
+                break
+
+        if updated_feature is not None:
+            self.save_watersheds(features, username=username)
+
+        return updated_feature
+
     def save_settings(
         self,
         settings: dict[str, Any],
