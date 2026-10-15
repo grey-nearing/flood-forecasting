@@ -35,6 +35,7 @@ from multimet.static_extractor import (
     get_attribute_definition,
     to_physical_units,
 )
+from multimet.static_extractor.climate import is_complete_climate_indices_file
 from multimet.static_extractor.config import (
     DEFAULT_GCS_ERA5_CLIMATE_URI,
     DEFAULT_GCS_GRIDDED_ERA5_URI,
@@ -110,7 +111,11 @@ def resolve_app_static_extractor_paths() -> dict[str, Any]:
     resolved_gdb: Path | str | None = None
     env_gdb = os.environ.get('HYDROATLAS_GDB_PATH', '').strip()
     if env_gdb:
-        resolved_gdb = env_gdb if str(env_gdb).startswith(('gs://', 'gcs://')) else Path(env_gdb)
+        resolved_gdb = (
+            env_gdb
+            if str(env_gdb).startswith(('gs://', 'gcs://'))
+            else Path(env_gdb)
+        )
     else:
         gdb_candidates = (
             OPENHYDRONET_HYDROATLAS_CACHE_DIR / BASIN_ATLAS_GDB_NAME,
@@ -136,14 +141,21 @@ def resolve_app_static_extractor_paths() -> dict[str, Any]:
     resolved_era5: Path | str | None = None
     env_era5 = os.environ.get('ERA5_CLIMATE_CACHE_DIR', '').strip()
     if env_era5:
-        resolved_era5 = env_era5 if str(env_era5).startswith(('gs://', 'gcs://')) else Path(env_era5)
+        resolved_era5 = (
+            env_era5
+            if str(env_era5).startswith(('gs://', 'gcs://'))
+            else Path(env_era5)
+        )
     else:
         era5_candidates = (
             OPENHYDRONET_ERA5_CLIMATE_CACHE_DIR,
             SHARED_HYDROATLAS_DIR / 'era5_climate',
         )
         for cand in era5_candidates:
-            if cand.is_dir() and any(cand.glob('*_climate_indices.txt')):
+            if cand.is_dir() and any(
+                is_complete_climate_indices_file(p)
+                for p in cand.glob('*_climate_indices.txt')
+            ):
                 resolved_era5 = cand
                 break
 

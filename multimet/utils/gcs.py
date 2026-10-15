@@ -60,18 +60,9 @@ def strip_gcs_prefix(gcs_uri: str) -> str:
 
 def gcs_path_exists(gcs_uri: str) -> bool:
   """Checks if a GCS URI exists or contains any objects."""
-  normalized = normalize_gcs_path(gcs_uri)
-  if shutil.which("gcloud"):
-    res = subprocess.run(
-        ["gcloud", "storage", "ls", normalized],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return res.returncode == 0
-
   import gcsfs
 
+  normalized = normalize_gcs_path(gcs_uri)
   fs = gcsfs.GCSFileSystem()
   clean_uri = strip_gcs_prefix(normalized).rstrip("/")
   return bool(fs.exists(clean_uri))
@@ -104,7 +95,7 @@ def download_file_from_gcs(
   Args:
     source_uri: GCS URI of the source file.
     dest_path: Local file path where the downloaded file will be saved.
-    timeout: Subprocess timeout in seconds when using gcloud storage.
+    timeout: Request timeout in seconds.
 
   Returns:
     Path to the downloaded local file.
@@ -113,24 +104,12 @@ def download_file_from_gcs(
     raise ValueError("source_uri must be explicitly provided.")
   if not dest_path:
     raise ValueError("dest_path must be explicitly provided.")
+  del timeout
 
   normalized_src = normalize_gcs_path(source_uri)
   target_file = Path(dest_path)
   target_file.parent.mkdir(parents=True, exist_ok=True)
   tmp_file = target_file.with_name(f".{target_file.name}.tmp.{os.getpid()}")
-
-  if shutil.which("gcloud"):
-    cmd = ["gcloud", "storage", "cp", normalized_src, str(tmp_file)]
-    res = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, check=False
-    )
-    if res.returncode == 0 and tmp_file.exists() and tmp_file.stat().st_size > 0:
-      os.replace(tmp_file, target_file)
-      return target_file
-    tmp_file.unlink(missing_ok=True)
-    raise FileNotFoundError(
-        f"Failed to download {normalized_src} to {target_file}: {res.stderr.strip()}"
-    )
 
   import gcsfs
 
@@ -158,7 +137,7 @@ def download_directory_from_gcs(
   Args:
     source_uri: GCS URI of the source directory.
     dest_dir: Local directory path where the directory will be saved.
-    timeout: Subprocess timeout in seconds when using gcloud storage.
+    timeout: Request timeout in seconds.
 
   Returns:
     Path to the local directory.
@@ -167,21 +146,11 @@ def download_directory_from_gcs(
     raise ValueError("source_uri must be explicitly provided.")
   if not dest_dir:
     raise ValueError("dest_dir must be explicitly provided.")
+  del timeout
 
   normalized_src = normalize_gcs_path(source_uri)
   dest_path = Path(dest_dir)
   dest_path.parent.mkdir(parents=True, exist_ok=True)
-
-  if shutil.which("gcloud"):
-    cmd = ["gcloud", "storage", "cp", "-r", normalized_src, str(dest_path.parent)]
-    res = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, check=False
-    )
-    if res.returncode == 0 and dest_path.exists():
-      return dest_path
-    raise RuntimeError(
-        f"Failed to download {normalized_src} to {dest_path}: {res.stderr.strip()}"
-    )
 
   import gcsfs
 
@@ -240,19 +209,6 @@ def sync_gcs_directory(gcs_uri: str, local_dest: Union[str, Path]) -> Path:
   gcs_uri_clean = normalized_uri if normalized_uri.endswith("/") else normalized_uri + "/"
   logger.debug("Syncing %s to local directory %s...", gcs_uri_clean, dest_path)
 
-  if shutil.which("gcloud"):
-    res = subprocess.run(
-        ["gcloud", "storage", "rsync", "-r", gcs_uri_clean, str(dest_path)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if res.returncode == 0:
-      return dest_path
-    raise RuntimeError(
-        f"Failed to sync GCS URI {gcs_uri} to {dest_path}: {res.stderr.strip()}"
-    )
-
   import gcsfs
 
   fs = gcsfs.GCSFileSystem()
@@ -283,24 +239,6 @@ def upload_to_gcs(local_path: Union[str, Path], gcs_dest_uri: str) -> None:
   )
   logger.debug("Uploading %s to %s...", local_p, target_uri)
 
-  if shutil.which("gcloud"):
-    cmd = (
-        ["gcloud", "storage", "cp", str(local_p), target_uri]
-        if local_p.is_file()
-        else ["gcloud", "storage", "rsync", "-r", str(local_p), gcs_dest_clean]
-    )
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if res.returncode == 0:
-      logger.debug(
-          "Successfully uploaded %s to %s via gcloud storage.",
-          local_p.name,
-          target_uri,
-      )
-      return
-    raise RuntimeError(
-        f"Failed to upload {local_p} to {target_uri}: {res.stderr.strip()}"
-    )
-
   import gcsfs
 
   fs = gcsfs.GCSFileSystem()
@@ -326,19 +264,6 @@ def upload_file_to_gcs(local_path: Union[str, Path], gcs_uri: str) -> None:
     raise FileNotFoundError(f"Local file {local_p} not found for GCS upload.")
 
   normalized_uri = normalize_gcs_path(gcs_uri)
-  if shutil.which("gcloud"):
-    res = subprocess.run(
-        ["gcloud", "storage", "cp", str(local_p), normalized_uri],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if res.returncode == 0:
-      return
-    raise RuntimeError(
-        f"Failed to upload {local_p} to {normalized_uri}: {res.stderr.strip()}"
-    )
-
   import gcsfs
 
   fs = gcsfs.GCSFileSystem()
@@ -348,18 +273,16 @@ def upload_file_to_gcs(local_path: Union[str, Path], gcs_uri: str) -> None:
 @functools.lru_cache(maxsize=1)
 def _gcloud_default_project() -> Optional[str]:
   """Queries gcloud CLI once per process for the default project."""
-  if not shutil.which("gcloud"):
+  gcloud_bin = shutil.which("gcloud")
+  if not gcloud_bin:
     return None
-  try:
-    res = subprocess.run(
-        ["gcloud", "config", "get-value", "project"],
-        capture_output=True,
-        text=True,
-        timeout=2.0,
-        check=False,
-    )
-  except (subprocess.TimeoutExpired, OSError):
-    return None
+  res = subprocess.run(
+      [gcloud_bin, "config", "get-value", "project"],
+      capture_output=True,
+      text=True,
+      timeout=5.0,
+      check=False,
+  )
   if res.returncode == 0:
     proj = res.stdout.strip()
     if proj and proj != "(unset)":

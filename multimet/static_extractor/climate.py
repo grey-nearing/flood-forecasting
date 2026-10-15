@@ -65,6 +65,7 @@ __all__ = [
     "compute_climate_metrics_from_dataframe",
     "depth_to_mm",
     "expand_caravan_climate_aliases",
+    "is_complete_climate_indices_file",
     "normalize_era5_pet_sign",
     "pressure_to_kpa",
     "temp_to_celsius",
@@ -89,6 +90,22 @@ CARAVAN_CLIMATE_ALIASES: Mapping[str, str] = MappingProxyType({
 CARAVAN_CLIMATE_STORED_KEYS: Tuple[str, ...] = tuple(
     k for k in CARAVAN_CLIMATE_COLUMNS if k not in CARAVAN_CLIMATE_ALIASES
 )
+
+
+def is_complete_climate_indices_file(txt_path: Path) -> bool:
+  """Returns whether ``txt_path`` is a non-empty JSONL file containing all Caravan climate stored keys."""
+  if not txt_path.is_file() or txt_path.stat().st_size == 0:
+    return False
+  with open(txt_path, "r", encoding="utf-8") as f:
+    for raw_line in f:
+      line = raw_line.strip()
+      if not line:
+        continue
+      first_record = json.loads(line)
+      return isinstance(first_record, dict) and all(
+          k in first_record for k in CARAVAN_CLIMATE_STORED_KEYS
+      )
+  return False
 
 
 def expand_caravan_climate_aliases(values: Mapping[str, Any]) -> Dict[str, Any]:
@@ -603,7 +620,13 @@ class ERA5ClimateLoader:
       raise ValueError("cache_dir is not configured for local disk storage.")
     txt_path = self.cache_dir / f"{continent_code}_climate_indices.txt"
     if txt_path.exists() and txt_path.stat().st_size > 0:
-      return txt_path
+      if not self.gcs_source_uri or is_complete_climate_indices_file(txt_path):
+        return txt_path
+      logger.info(
+          "Refreshing incomplete local ERA5 climate indices at %s from %s...",
+          txt_path,
+          self.gcs_source_uri,
+      )
 
     if not self.gcs_source_uri:
       raise FileNotFoundError(
@@ -669,7 +692,14 @@ class ERA5ClimateLoader:
       if self.no_download:
         if self.cache_dir is not None:
           local_txt = self.cache_dir / f"{continent_code}_climate_indices.txt"
-          if local_txt.exists() and local_txt.stat().st_size > 0:
+          if (
+              local_txt.exists()
+              and local_txt.stat().st_size > 0
+              and (
+                  not self.gcs_source_uri
+                  or is_complete_climate_indices_file(local_txt)
+              )
+          ):
             with open(local_txt, "r", encoding="utf-8") as f:
               self._parse_climate_lines(f, continent_code)
             return

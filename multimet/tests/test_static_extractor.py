@@ -2320,3 +2320,74 @@ def test_gs_uri_preservation(tmp_path) -> None:
         assert ext.era5_loader is not None
         assert ext.gcs_era5_climate_uri == 'gs://my-bucket/era5'
         assert ext.era5_loader.gcs_source_uri == 'gs://my-bucket/era5'
+
+
+@pytest.mark.unit
+def test_incomplete_cached_climate_table_refreshes_from_gcs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Verify ERA5ClimateLoader refreshes a stale 10-column local file from GCS via gcsfs."""
+    import gcsfs
+    from multimet.static_extractor.climate import (
+        ERA5ClimateLoader,
+        is_complete_climate_indices_file,
+    )
+    from multimet.utils.gcs import download_file_from_gcs, gcs_path_exists
+
+    stale_record = {
+        'gauge_id': 'hybas_712000001',
+        'p_mean': 4.0,
+        'pet_mean': 1.5,
+        'aridity': 0.375,
+        'frac_snow': 0.1,
+        'moisture_index': 0.625,
+        'seasonality': 0.2,
+        'high_prec_freq': 0.05,
+        'high_prec_dur': 1.2,
+        'low_prec_freq': 0.6,
+        'low_prec_dur': 3.5,
+    }
+    complete_record = {
+        **stale_record,
+        'pet_mean_ERA5_LAND': 3.1,
+        'aridity_ERA5_LAND': 0.775,
+        'moisture_index_ERA5_LAND': 0.225,
+        'seasonality_ERA5_LAND': 0.18,
+    }
+    remote_bytes = (json.dumps(complete_record) + '\n').encode('utf-8')
+    remote_key = 'test-bucket/era5_climate/na_climate_indices.txt'
+
+    class FakeGCS:
+        def exists(self, path: str) -> bool:
+            return path.replace('gs://', '').rstrip('/') == remote_key
+
+        def get(self, rpath: str, lpath: str, **_kwargs) -> None:
+            if not self.exists(rpath):
+                raise FileNotFoundError(rpath)
+            Path(lpath).write_bytes(remote_bytes)
+
+    monkeypatch.setattr(gcsfs, 'GCSFileSystem', FakeGCS)
+
+    assert gcs_path_exists(f'gs://{remote_key}') is True
+    assert gcs_path_exists('gs://test-bucket/era5_climate/missing.txt') is False
+
+    cache_dir = tmp_path / 'era5_cache'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    local_na = cache_dir / 'na_climate_indices.txt'
+    local_na.write_text(json.dumps(stale_record) + '\n', encoding='utf-8')
+    assert is_complete_climate_indices_file(local_na) is False
+
+    loader = ERA5ClimateLoader(
+        cache_dir=cache_dir,
+        gcs_source_uri='gs://test-bucket/era5_climate',
+        no_download=False,
+    )
+    metrics = loader.get_indices_for_subbasins([712000001], [100.0])
+    assert is_complete_climate_indices_file(local_na) is True
+    assert np.isclose(metrics['pet_mean_ERA5_LAND'], 3.1)
+    assert np.isclose(metrics['aridity_ERA5_LAND'], 0.775)
+
+    dl_dest = tmp_path / 'direct_dl.txt'
+    download_file_from_gcs(f'gs://{remote_key}', dl_dest)
+    assert is_complete_climate_indices_file(dl_dest) is True
+

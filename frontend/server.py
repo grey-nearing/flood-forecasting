@@ -1593,9 +1593,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         existing_feats = pm.load_watersheds(user)
         has_match = any(
             str(
-                f.get('properties', {}).get('catchment_id')
-                or f.get('id')
-                or ''
+                f.get('properties', {}).get('catchment_id') or f.get('id') or ''
             )
             == clean_id
             for f in existing_feats
@@ -2462,6 +2460,12 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         csv_path = attr_dir / 'caravan_hydroatlas_attributes.csv'
         all_results = list(existing_by_id.values()) or new_results
         extractor.export_caravan_csv(all_results, csv_path)
+        caravan_csv_dir = pm.get_caravan_attributes_dir(user)
+        caravan_csv_dir.mkdir(parents=True, exist_ok=True)
+        extractor.export_caravan_csv(
+            all_results,
+            caravan_csv_dir / 'caravan_hydroatlas_attributes.csv',
+        )
 
         master_zarr = pm.get_historical_dir(user) / HISTORICAL_MASTER_ZARR_NAME
         if master_zarr.exists():
