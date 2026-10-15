@@ -232,6 +232,11 @@ _VARIABLE_DESCRIPTORS: tuple[tuple[str, str, str, str, str], ...] = (
 )
 
 _MODEL_CACHE: dict[str, dict[str, Any]] = {}
+_ZARR_META_CACHE: dict[tuple[str, int, int, int, int], dict[str, Any]] = {}
+_ZARR_WINDOW_CACHE: dict[
+    tuple[tuple[str, int, int, int, int], str, str, int], xr.Dataset
+] = {}
+_MAX_ZARR_CACHE_ENTRIES = 64
 
 
 @dataclasses.dataclass(frozen=True)
@@ -900,6 +905,92 @@ def _discover_zarr_stores(username: str | None) -> dict[str, Path]:
     return stores
 
 
+def _zarr_store_mtime_key(
+    store_path: Path,
+) -> tuple[str, int, int, int, int]:
+    """Return a fast mtime cache key for ``store_path``."""
+    resolved = str(store_path.resolve())
+    try:
+        root_mtime = store_path.stat().st_mtime_ns
+    except OSError:
+        return (resolved, 0, 0, 0, 0)
+    meta_mtime = 0
+    for marker in ('.zmetadata', '.zgroup', 'zarr.json'):
+        p = store_path / marker
+        if p.exists():
+            meta_mtime = max(meta_mtime, p.stat().st_mtime_ns)
+    date_mtime = 0
+    for rel in ('date', 'date/.zarray', 'date/0'):
+        p = store_path / rel
+        if p.exists():
+            date_mtime = max(date_mtime, p.stat().st_mtime_ns)
+    basin_mtime = 0
+    for rel in ('basin', 'basin/.zarray', 'basin/0'):
+        p = store_path / rel
+        if p.exists():
+            basin_mtime = max(basin_mtime, p.stat().st_mtime_ns)
+    return (resolved, root_mtime, meta_mtime, date_mtime, basin_mtime)
+
+
+def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
+    """Return cached basin list and issue date map for ``store_path``."""
+    mkey = _zarr_store_mtime_key(store_path)
+    cached = _ZARR_META_CACHE.get(mkey)
+    if cached is not None:
+        return cached
+    ds = xr.open_zarr(store_path, consolidated=False)
+    basins = (
+        [str(b) for b in ds.coords['basin'].to_numpy()]
+        if 'basin' in ds.coords
+        else []
+    )
+    entry: dict[str, Any] = {
+        'basins': basins,
+        'lower_map': {b.lower(): b for b in basins},
+        'latest_issue_by_basin': {},
+    }
+    if len(_ZARR_META_CACHE) >= _MAX_ZARR_CACHE_ENTRIES:
+        _ZARR_META_CACHE.pop(next(iter(_ZARR_META_CACHE)))
+    _ZARR_META_CACHE[mkey] = entry
+    return entry
+
+
+def _open_cached_zarr_window(
+    store_path: Path,
+    nowcast_dates: pd.DatetimeIndex,
+    t0: pd.Timestamp,
+) -> xr.Dataset:
+    """Return an in-memory Zarr Dataset sliced to ``nowcast_dates`` + ``t0``."""
+    mkey = _zarr_store_mtime_key(store_path)
+    nc_start = _format_date_str(nowcast_dates[0]) if len(nowcast_dates) else ''
+    t0_str = _format_date_str(t0)
+    wkey = (mkey, nc_start, t0_str, len(nowcast_dates))
+    cached = _ZARR_WINDOW_CACHE.get(wkey)
+    if cached is not None:
+        return cached
+    ds = xr.open_zarr(store_path, consolidated=False)
+    drop_vars = [
+        v for v in ds.data_vars if str(v).endswith('_missing_fraction')
+    ]
+    if drop_vars:
+        ds = ds.drop_vars(drop_vars)
+    if 'date' in ds.coords:
+        store_dates = pd.to_datetime(ds['date'].to_numpy()).floor('D')
+        target_dates = set(pd.to_datetime(nowcast_dates).floor('D')) | {t0}
+        keep_idx = [i for i, d in enumerate(store_dates) if d in target_dates]
+        ds_win = (
+            ds.isel(date=keep_idx).load()
+            if keep_idx
+            else ds.isel(date=slice(0, 0)).load()
+        )
+    else:
+        ds_win = ds.load()
+    if len(_ZARR_WINDOW_CACHE) >= _MAX_ZARR_CACHE_ENTRIES:
+        _ZARR_WINDOW_CACHE.pop(next(iter(_ZARR_WINDOW_CACHE)))
+    _ZARR_WINDOW_CACHE[wkey] = ds_win
+    return ds_win
+
+
 def _find_basin_key_in_ds(ds: xr.Dataset, catchment_id: str) -> str | None:
     """Match ``catchment_id`` against ``basin`` coordinate without guessing."""
     if 'basin' not in ds.coords:
@@ -913,33 +1004,24 @@ def _find_basin_key_in_ds(ds: xr.Dataset, catchment_id: str) -> str | None:
     return None
 
 
-def _extract_latest_issue_from_store(
-    store_path: Path, catchment_id: str
+def _resolve_basin_latest_issue(
+    sub: xr.Dataset,
+    precip_var: str | None,
 ) -> pd.Timestamp | None:
-    """Return latest valid issue date for ``catchment_id`` in ``store_path``."""
-    if not _is_valid_zarr_store(store_path):
-        return None
-    ds = xr.open_zarr(store_path, consolidated=False)
-    bkey = _find_basin_key_in_ds(ds, catchment_id)
-    if bkey is None or 'date' not in ds.coords:
-        return None
-    sub = ds.sel(basin=bkey)
-    precip_vars = [
-        v
-        for v in sub.data_vars
-        if 'precipitation' in str(v) or str(v).endswith('_precip')
-    ]
-    if precip_vars and 'lead_time' in sub.dims:
-        da = sub[precip_vars[0]]
+    """Resolve the latest valid forecast issue date for a single-basin slice."""
+    if precip_var and 'lead_time' in sub.dims:
+        da = sub[precip_var]
         if da.shape[-1] >= _MIN_FORECAST_LEAD_STEPS:
-            tail_da = da.isel(date=slice(-14, None))
+            tail_da = da.isel(date=slice(-_DEFAULT_LOOKBACK_DAYS, None))
             fc_vals = tail_da.isel(lead_time=slice(1, None)).to_numpy()
-            valid_fc_mask = (~np.isnan(fc_vals)).any(axis=-1)
-            valid_dates = tail_da['date'].to_numpy()[valid_fc_mask]
-            if len(valid_dates) == 0 and da.shape[0] > 14:
+            valid_dates = tail_da['date'].to_numpy()[
+                (~np.isnan(fc_vals)).any(axis=-1)
+            ]
+            if len(valid_dates) == 0 and da.shape[0] > _DEFAULT_LOOKBACK_DAYS:
                 fc_vals = da.isel(lead_time=slice(1, None)).to_numpy()
-                valid_fc_mask = (~np.isnan(fc_vals)).any(axis=-1)
-                valid_dates = sub['date'].to_numpy()[valid_fc_mask]
+                valid_dates = sub['date'].to_numpy()[
+                    (~np.isnan(fc_vals)).any(axis=-1)
+                ]
             if len(valid_dates) > 0:
                 return (
                     pd.Timestamp(valid_dates[-1]).floor('D').tz_localize(None)
@@ -948,6 +1030,55 @@ def _extract_latest_issue_from_store(
     if len(dates) > 0:
         return pd.Timestamp(dates[-1]).floor('D').tz_localize(None)
     return None
+
+
+def _extract_latest_issue_from_store(
+    store_path: Path, catchment_id: str
+) -> pd.Timestamp | None:
+    """Return latest valid issue date for ``catchment_id`` in ``store_path``."""
+    if not _is_valid_zarr_store(store_path):
+        return None
+    meta = _get_cached_store_meta(store_path)
+    bkey = (
+        catchment_id
+        if catchment_id in meta['basins']
+        else meta['lower_map'].get(catchment_id.lower())
+    )
+    if bkey is None:
+        return None
+    latest_map: dict[str, pd.Timestamp | None] = meta['latest_issue_by_basin']
+    if bkey in latest_map:
+        return latest_map[bkey]
+    ds = xr.open_zarr(store_path, consolidated=False)
+    if 'date' not in ds.coords:
+        latest_map[bkey] = None
+        return None
+    precip_var = next(
+        (
+            str(v)
+            for v in ds.data_vars
+            if 'precipitation' in str(v) or str(v).endswith('_precip')
+        ),
+        None,
+    )
+    tail_ds = ds.isel(date=slice(-_DEFAULT_LOOKBACK_DAYS, None))
+    if precip_var:
+        tail_ds = tail_ds[[precip_var]].load()
+    for bk in meta['basins']:
+        if bk not in latest_map:
+            res_ts = _resolve_basin_latest_issue(
+                tail_ds.sel(basin=bk) if precip_var else ds.sel(basin=bk),
+                precip_var,
+            )
+            if (
+                res_ts is None
+                and ds.sizes.get('date', 0) > _DEFAULT_LOOKBACK_DAYS
+            ):
+                res_ts = _resolve_basin_latest_issue(
+                    ds.sel(basin=bk), precip_var
+                )
+            latest_map[bk] = res_ts
+    return latest_map.get(bkey)
 
 
 def resolve_issue_date(
@@ -1345,10 +1476,15 @@ def extract_multi_stream_precipitation_series(
     for prod_name, store_path in stores.items():
         if not _is_valid_zarr_store(store_path):
             continue
-        ds = xr.open_zarr(store_path, consolidated=False)
-        bkey = _find_basin_key_in_ds(ds, catchment_id)
+        meta = _get_cached_store_meta(store_path)
+        bkey = (
+            catchment_id
+            if catchment_id in meta['basins']
+            else meta['lower_map'].get(catchment_id.lower())
+        )
         if bkey is None:
             continue
+        ds = _open_cached_zarr_window(store_path, nowcast_dates, t0)
         sub = ds.sel(basin=bkey)
         all_vars = [
             str(v)
@@ -1417,10 +1553,8 @@ def _collect_basins_with_realtime_data(
     for store_path in stores.values():
         if not _is_valid_zarr_store(store_path):
             continue
-        ds = xr.open_zarr(store_path, consolidated=False)
-        if 'basin' in ds.coords:
-            for b in ds.coords['basin'].to_numpy():
-                present.add(str(b).lower())
+        meta = _get_cached_store_meta(store_path)
+        present.update(meta['lower_map'].keys())
     return present
 
 
@@ -1428,11 +1562,12 @@ def _basin_has_realtime_data(
     stores: dict[str, Path], catchment_id: str
 ) -> bool:
     """Return True if any valid Zarr store contains ``catchment_id``."""
+    cid_low = catchment_id.lower()
     for store_path in stores.values():
         if not _is_valid_zarr_store(store_path):
             continue
-        ds = xr.open_zarr(store_path, consolidated=False)
-        if _find_basin_key_in_ds(ds, catchment_id) is not None:
+        meta = _get_cached_store_meta(store_path)
+        if cid_low in meta['lower_map']:
             return True
     return False
 

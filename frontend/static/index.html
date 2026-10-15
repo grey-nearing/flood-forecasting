@@ -3712,6 +3712,7 @@
         if (typeof fcWhatIfCounterByBasin !== 'undefined') fcWhatIfCounterByBasin = {};
         if (typeof fcLastModelResult !== 'undefined') fcLastModelResult = null;
         if (typeof fcStatusData !== 'undefined') fcStatusData = null;
+        if (typeof fcStatusDataByBasin !== 'undefined') fcStatusDataByBasin = {};
         if (typeof geoKnownCatchmentIds !== 'undefined' && geoKnownCatchmentIds) geoKnownCatchmentIds.clear();
         if (typeof geoCheckedCatchmentIds !== 'undefined' && geoCheckedCatchmentIds) geoCheckedCatchmentIds.clear();
         if (typeof extractedAttributesById !== 'undefined') extractedAttributesById = {};
@@ -4545,7 +4546,8 @@
 
     // Select a specific watershed
     function selectWatershed(catchmentId, zoomTo = false) {
-      const feat = activeWatersheds.find(f => f.properties.catchment_id === catchmentId);
+      const targetCid = String(catchmentId || '').trim();
+      const feat = activeWatersheds.find(f => String((f && f.properties && f.properties.catchment_id) || (f && f.id) || '').trim() === targetCid);
       if (!feat) return;
 
       activeCatchmentId = catchmentId;
@@ -9194,6 +9196,8 @@
     let masterHydroChart = null;
     let fcCurrentMode = 'coldstart'; // 'coldstart' | 'hotstart'
     let fcStatusData = null;
+    let fcStatusDataByBasin = {};
+    let fcStatusRequestSeq = 0;
     let fcLastModelResult = null;
     let fcModelResultsByBasin = {};
     let fcHydroOverlayAll = false;
@@ -10303,8 +10307,11 @@
         masterHydroChart.resize();
       }
 
+      const prevSeq = fcStatusRequestSeq;
       syncForecastTabBasin();
-      refreshForecastTabStatus();
+      if (fcStatusRequestSeq === prevSeq) {
+        refreshForecastTabStatus();
+      }
     }
 
     function setForecastMode(mode) {
@@ -11514,6 +11521,7 @@
     async function refreshForecastTabStatus() {
       const basinId = getActiveForecastBasinId();
       const selectedIds = getSelectedForecastCatchmentIds();
+      const reqSeq = ++fcStatusRequestSeq;
       updateForecastControlsUI();
       updateWhatIfControlsUI();
       if (!basinId) {
@@ -11525,6 +11533,22 @@
         return;
       }
 
+      if (fcStatusDataByBasin[basinId]) {
+        fcStatusData = fcStatusDataByBasin[basinId];
+        renderForecastCatchmentChecklist();
+        populateProductDropdowns();
+        updateForecastControlsUI();
+        updateWhatIfControlsUI();
+        updateStreamflowCsvStatusUI();
+        renderForcingChart();
+        renderHydrographChart(fcModelResultsByBasin[basinId] || null);
+      } else {
+        const subtitleEl = document.getElementById('fcForcingSubtitle');
+        if (subtitleEl) {
+          subtitleEl.innerText = `Loading real-time input forcing for ${basinId}...`;
+        }
+      }
+
       try {
         const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
         const cidsParam = selectedIds.length > 0 ? `&catchment_ids=${encodeURIComponent(selectedIds.join(','))}` : '';
@@ -11533,10 +11557,14 @@
         });
         const data = await res.json();
         if (res.ok && data.status === 'success') {
-          fcStatusData = data;
+          fcStatusDataByBasin[basinId] = data;
           if (Array.isArray(data.observed_streamflow)) {
             fcObservedStreamflowByBasin[basinId] = data.observed_streamflow;
           }
+          if (reqSeq !== fcStatusRequestSeq && getActiveForecastBasinId() !== basinId) {
+            return;
+          }
+          fcStatusData = data;
           renderForecastCatchmentChecklist();
           populateProductDropdowns();
           updateForecastControlsUI();
@@ -11601,17 +11629,20 @@
       }
       if (basinSel) {
         basinSel.addEventListener('change', (e) => {
-          const newId = e.target.value;
+          const newId = String(e.target.value || '').trim();
+          if (!newId) return;
           fcHydroOverlayAll = false;
-          if (newId && typeof selectWatershed === 'function') {
+          activeCatchmentId = newId;
+          const prevSeq = fcStatusRequestSeq;
+          if (typeof selectWatershed === 'function') {
             selectWatershed(newId);
-          } else {
-            activeCatchmentId = newId;
-            syncForecastTabBasin();
           }
-          updateWhatIfControlsUI();
-          updateStreamflowCsvStatusUI();
-          renderHydrographChart(fcModelResultsByBasin[newId] || null);
+          if (fcStatusRequestSeq === prevSeq) {
+            syncForecastTabBasin();
+            if (fcStatusRequestSeq === prevSeq) {
+              refreshForecastTabStatus();
+            }
+          }
         });
       }
 
@@ -11793,6 +11824,10 @@
             }
 
             fcStatusData = data;
+            fcStatusDataByBasin = {};
+            if (data.catchment_id) {
+              fcStatusDataByBasin[data.catchment_id] = data;
+            }
             renderForecastCatchmentChecklist();
             populateProductDropdowns();
             renderForcingChart();
@@ -11873,6 +11908,16 @@
             }
             if (data.post_run_status) {
               fcStatusData = data.post_run_status;
+              if (data.post_run_status.catchment_id) {
+                fcStatusDataByBasin[data.post_run_status.catchment_id] = data.post_run_status;
+              }
+              if (data.post_run_status.catchments_status) {
+                Object.values(fcStatusDataByBasin).forEach(st => {
+                  if (st && st.catchments_status) {
+                    Object.assign(st.catchments_status, data.post_run_status.catchments_status);
+                  }
+                });
+              }
             }
             renderForecastCatchmentChecklist();
             renderForcingChart();
