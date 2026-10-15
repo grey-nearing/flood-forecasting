@@ -450,16 +450,21 @@ class StaticAttributesAdapterTest(unittest.TestCase):
         self,
     ) -> None:
         """Verify OpenFileGDB multi-level discovery and telescoping layers."""
+        expected_l4_level = 4
+        expected_l12_level = 12
+        expected_l4_hybas_id = 4000001
+        expected_l4_elev_m = 1800.0
         with tempfile.TemporaryDirectory() as tmp_dir:
-            gdb_path = Path(tmp_dir) / 'BasinATLAS_v10.gdb'
+            root = Path(tmp_dir)
+            gdb_path = root / 'BasinATLAS_v10.gdb'
             layer_opts = {'TARGET_ARCGIS_VERSION': 'ARCGIS_PRO_3_2_OR_LATER'}
             gdf_l4 = gpd.GeoDataFrame(
                 {
-                    'HYBAS_ID': [4000001],
+                    'HYBAS_ID': [expected_l4_hybas_id],
                     'NEXT_DOWN': [0],
                     'SUB_AREA': [5000.0],
                     'UP_AREA': [5000.0],
-                    'ele_mt_sav': [1800.0],
+                    'ele_mt_sav': [expected_l4_elev_m],
                     'pre_mm_syr': [750.0],
                 },
                 geometry=[box(-107.0, 39.0, -105.0, 41.0)],
@@ -487,6 +492,12 @@ class StaticAttributesAdapterTest(unittest.TestCase):
                 driver='OpenFileGDB',
                 layer_options=layer_opts,
             )
+            with pytest.raises(
+                ValueError,
+                match=r'Required HydroATLAS layer.*not found',
+            ):
+                StaticAttributesExtractor(gdb_path=gdb_path)
+
             pyogrio.write_dataframe(
                 gdf_l12,
                 gdb_path,
@@ -497,7 +508,10 @@ class StaticAttributesAdapterTest(unittest.TestCase):
             )
 
             extractor = StaticAttributesExtractor(gdb_path=gdb_path)
-            assert extractor.available_levels == (4, 12)
+            assert extractor.available_levels == (
+                expected_l4_level,
+                expected_l12_level,
+            )
 
             fc_z2 = build_map_layer_geojson(
                 extractor,
@@ -505,9 +519,17 @@ class StaticAttributesAdapterTest(unittest.TestCase):
                 zoom=2,
                 attribute='ele_mt_sav',
             )
-            assert fc_z2['properties']['level'] == 4  # noqa: PLR2004
+            assert fc_z2['properties']['level'] == expected_l4_level
             assert fc_z2['properties']['count'] == 1
-            assert fc_z2['features'][0]['properties']['HYBAS_ID'] == 4000001  # noqa: PLR2004
+            assert (
+                fc_z2['features'][0]['properties']['HYBAS_ID']
+                == expected_l4_hybas_id
+            )
+            assert (
+                fc_z2['features'][0]['properties']['value']
+                == expected_l4_elev_m
+            )
+            assert fc_z2['properties']['min_value'] == expected_l4_elev_m
 
             fc_z10 = build_map_layer_geojson(
                 extractor,
@@ -515,8 +537,21 @@ class StaticAttributesAdapterTest(unittest.TestCase):
                 zoom=10,
                 attribute='ele_mt_sav',
             )
-            assert fc_z10['properties']['level'] == 12  # noqa: PLR2004
+            assert fc_z10['properties']['level'] == expected_l12_level
             assert fc_z10['properties']['count'] == _EXPECTED_SUBBASIN_COUNT
+
+            # Explicit coarse level for era5_climate attribute must fail fast
+            with pytest.raises(
+                UnsupportedHydroATLASLevelError,
+                match='only available at HydroATLAS level 12',
+            ):
+                build_map_layer_geojson(
+                    extractor,
+                    (-108.0, 38.0, -104.0, 42.0),
+                    zoom=2,
+                    attribute='p_mean',
+                    level=expected_l4_level,
+                )
 
             with pytest.raises(UnsupportedHydroATLASLevelError):
                 extractor.read_subbasins(
@@ -527,6 +562,17 @@ class StaticAttributesAdapterTest(unittest.TestCase):
                 extractor.read_subbasins(
                     (-108.0, 38.0, -104.0, 42.0),
                     level=7,
+                )
+
+            # Single-level GeoParquet exposes only (12,) and rejects level 4
+            pq_path = root / 'single_level.parquet'
+            gdf_l12.to_parquet(pq_path)
+            pq_extractor = StaticAttributesExtractor(gdb_path=pq_path)
+            assert pq_extractor.available_levels == (expected_l12_level,)
+            with pytest.raises(UnsupportedHydroATLASLevelError):
+                pq_extractor.read_subbasins(
+                    (-108.0, 38.0, -104.0, 42.0),
+                    level=expected_l4_level,
                 )
 
 

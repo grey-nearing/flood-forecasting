@@ -52,7 +52,10 @@ from frontend.maas_engine import (
     get_unified_maas_forecast,
 )
 from frontend.maas_networks import get_model_network
-from frontend.profile_manager import get_profile_manager
+from frontend.profile_manager import (
+    get_profile_manager,
+    is_valid_watershed_name,
+)
 from frontend.realtime_forecast_service import (
     fetch_realtime_for_basin,
     inspect_realtime_stores_for_basin,
@@ -1387,6 +1390,9 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 ef.get('properties', {}).get('catchment_id') or ef.get('id')
             )
             if ef_id == str(catchment_id):
+                existing_name = (ef.get('properties') or {}).get('name')
+                if isinstance(existing_name, str) and existing_name.strip():
+                    geojson['properties']['name'] = existing_name.strip()
                 existing_feats[i] = geojson
                 updated = True
                 break
@@ -1456,25 +1462,45 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         catchment_id = data.get('catchment_id')
         new_name = data.get('name')
 
-        if not catchment_id or not new_name or not str(new_name).strip():
-            self._send_error('Missing catchment_id or valid name', status=400)
+        if (
+            not isinstance(catchment_id, str)
+            or not catchment_id.strip()
+            or not is_valid_watershed_name(new_name)
+        ):
+            self._send_error(
+                'Missing catchment_id or valid name (1-120 printable chars)',
+                status=400,
+            )
+            return
+
+        clean_id = catchment_id.strip()
+        clean_name = str(new_name).strip()
+
+        existing_feats = pm.load_watersheds(user)
+        has_match = any(
+            str(
+                f.get('properties', {}).get('catchment_id')
+                or f.get('id')
+                or ''
+            )
+            == clean_id
+            for f in existing_feats
+        )
+        if not has_match:
+            self._send_error('Catchment not found', status=404)
             return
 
         updated_feature = pm.rename_watershed(
-            str(catchment_id),
-            str(new_name).strip(),
+            clean_id,
+            clean_name,
             username=user,
         )
-
-        if updated_feature is not None:
-            self._send_json(
-                {
-                    'status': 'renamed',
-                    'feature': sanitize_for_json(updated_feature),
-                }
-            )
-        else:
-            self._send_error('Catchment not found', status=404)
+        self._send_json(
+            {
+                'status': 'renamed',
+                'feature': sanitize_for_json(updated_feature),
+            }
+        )
 
     def _post_watersheds_clear(self, data: dict[str, Any]) -> None:
         user = self._get_request_username(data)

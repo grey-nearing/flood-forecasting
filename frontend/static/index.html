@@ -3675,7 +3675,8 @@
 
       // Keyboard Shortcut: 'D' to toggle, 'Escape' to exit
       document.addEventListener('keydown', (e) => {
-        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA')) return;
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
+        if (currentActiveTabId !== 'tab-delineation' || e.ctrlKey || e.metaKey || e.altKey) return;
         if (e.key === 'd' || e.key === 'D') {
           setDelineationMode(!isDelineationMode);
         } else if (e.key === 'Escape' && isDelineationMode) {
@@ -3849,16 +3850,6 @@
 
     async function doFetchAndRenderRivers() {
       if (!map) return;
-      if (riverLayerGroup && currentActiveTabId === 'tab-delineation' && !map.hasLayer(riverLayerGroup)) {
-        riverLayerGroup.addTo(map);
-      }
-      const containerEl = map.getContainer ? map.getContainer() : null;
-      if (containerEl && containerEl.clientWidth > 0 && containerEl.clientHeight > 0) {
-        const curSize = map.getSize();
-        if (!curSize || curSize.x === 0 || curSize.y === 0) {
-          map.invalidateSize();
-        }
-      }
       if (riverFetchController) {
         riverFetchController.abort();
       }
@@ -3904,9 +3895,6 @@
     // Render River Reaches with Google FloodHub Hydrography Palette & Metadata
     function renderRiverVectors(geojson) {
       if (!riverLayerGroup) return;
-      if (map && currentActiveTabId === 'tab-delineation' && !map.hasLayer(riverLayerGroup)) {
-        riverLayerGroup.addTo(map);
-      }
       riverLayerGroup.clearLayers();
       const count = (geojson.features || []).length;
       const dataset = (geojson.properties && geojson.properties.dataset) || document.getElementById('datasetSelect').value;
@@ -3993,7 +3981,7 @@
             if (currentActiveTabId === 'tab-delineation' && isDelineationMode) {
               L.DomEvent.stopPropagation(e);
               if (!isDelineating) {
-                const pt = (typeof maasSnapToFeature === 'function')
+                const pt = (!props.simplified && typeof maasSnapToFeature === 'function')
                   ? maasSnapToFeature(feature, e.latlng)
                   : { lat: e.latlng.lat, lon: e.latlng.lng };
                 delineateBasin(pt.lat, pt.lon, document.getElementById('datasetSelect').value);
@@ -4004,6 +3992,15 @@
       });
 
       riverLayerGroup.addLayer(layer);
+    }
+
+    function escapeHtml(val) {
+      return String(val ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     // Add or Update a Watershed in the Unified Registry
@@ -4053,8 +4050,8 @@
         onEachFeature: (f, layer) => {
           layer.bindTooltip(`
             <div class="text-[#202124] text-xs p-1">
-              <b class="${isDelineated ? 'text-[#1a73e8]' : 'text-[#1e8e3e]'}">${props.name}</b><br/>
-              <span class="text-[#5f6368] font-mono text-[10px]">ID: ${props.catchment_id}</span><br/>
+              <b class="${isDelineated ? 'text-[#1a73e8]' : 'text-[#1e8e3e]'}">${escapeHtml(props.name)}</b><br/>
+              <span class="text-[#5f6368] font-mono text-[10px]">ID: ${escapeHtml(props.catchment_id)}</span><br/>
               <span class="text-[#5f6368]">Source:</span> <span class="font-semibold">${isDelineated ? 'Auto-Delineated' : 'Uploaded GeoJSON'}</span><br/>
               <span class="text-[#5f6368]">Area:</span> <b>${props.area_km2 ? props.area_km2.toLocaleString() : '—'} km²</b>
             </div>
@@ -4081,7 +4078,7 @@
           });
 
           layer.on('click', (e) => {
-            if (isDelineationMode) {
+            if (currentActiveTabId === 'tab-delineation' && isDelineationMode) {
               L.DomEvent.stopPropagation(e);
               if (!isDelineating) {
                 delineateBasin(e.latlng.lat, e.latlng.lng, document.getElementById('datasetSelect').value);
@@ -4112,12 +4109,12 @@
 
         marker.bindPopup(`
           <div class="text-[#202124] text-xs p-1 space-y-1">
-            <div class="font-bold ${isDelineated ? 'text-[#1a73e8]' : 'text-[#1e8e3e]'}">${props.name}</div>
-            <div class="font-mono text-[10px] text-[#5f6368]">ID: ${props.catchment_id}</div>
+            <div class="font-bold ${isDelineated ? 'text-[#1a73e8]' : 'text-[#1e8e3e]'}">${escapeHtml(props.name)}</div>
+            <div class="font-mono text-[10px] text-[#5f6368]">ID: ${escapeHtml(props.catchment_id)}</div>
             <div><b>Outlet:</b> ${outlet.latitude.toFixed(4)}°N, ${outlet.longitude.toFixed(4)}°E</div>
             <div><b>Area:</b> ${props.area_km2 ? props.area_km2.toLocaleString() : '—'} km²</div>
             <div class="pt-1 border-t border-[#dadce0]">
-              <button type="button" class="text-[#d93025] hover:text-[#a50e0e] text-[11px] font-bold flex items-center gap-1" onclick="removeWatershed('${cid}')">
+              <button type="button" class="text-[#d93025] hover:text-[#a50e0e] text-[11px] font-bold flex items-center gap-1" onclick="removeWatershed('${escapeHtml(cid)}')">
                 🗑️ Remove this watershed
               </button>
             </div>
@@ -4344,7 +4341,7 @@
             <span class="w-2.5 h-2.5 rounded-full ${isDelin ? 'bg-[#1a73e8]' : 'bg-[#1e8e3e]'} flex-shrink-0" title="${isDelin ? 'Auto-Delineated' : 'Uploaded'}"></span>
             <div class="truncate">
               <div class="font-bold text-[#202124] text-[11px] truncate">
-                ${p.name || cid}
+                ${escapeHtml(p.name || cid)}
               </div>
               <div class="text-[10px] text-[#5f6368] font-mono flex items-center gap-1.5">
                 <span class="text-[#5f6368]">${isDelin ? 'DEM Auto' : 'Upload'}</span> ·
@@ -4399,47 +4396,32 @@
         alert('Name cannot be empty.');
         return;
       }
-
-      try {
-        const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
-        const resp = await fetch('/api/watersheds/rename', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-User-Profile': targetUser
-          },
-          body: JSON.stringify({ catchment_id: cid, name: trimmed, username: targetUser })
-        });
-        if (!resp.ok) {
-          throw new Error('Failed to rename watershed on backend.');
-        }
-
-        // Update in memory
-        feat.properties.name = trimmed;
-
-        // Refresh UI
-        renderWatershedsList();
-        if (activeCatchmentId === cid) {
-          selectWatershed(cid, false);
-        }
-        updateExtractionButtonsState();
-        updateActiveBasinHeader();
-
-        if (typeof renderGeoCatchmentSelector === 'function') renderGeoCatchmentSelector();
-        if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();
-        if (typeof refreshFineTuningTab === 'function') refreshFineTuningTab();
-
-        // Refresh tooltip/popup on map
-        if (watershedLayersMap[cid]) {
-          watershedLayersMap[cid].bindTooltip(trimmed, { permanent: false, direction: 'top' });
-        }
-        if (outletMarkersMap[cid]) {
-          outletMarkersMap[cid].bindPopup(`<b>${trimmed}</b>`);
-        }
-      } catch (err) {
-        console.error('Rename error:', err);
-        alert('An error occurred while renaming the basin.');
+      if (trimmed.length > 120) {
+        alert('Name must be 120 characters or fewer.');
+        return;
       }
+
+      const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+      const resp = await fetch('/api/watersheds/rename', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Profile': targetUser
+        },
+        body: JSON.stringify({ catchment_id: cid, name: trimmed, username: targetUser })
+      });
+      if (!resp.ok) {
+        const errData = await resp.json();
+        alert(errData.detail || errData.error || 'Failed to rename watershed.');
+        return;
+      }
+
+      feat.properties.name = trimmed;
+      addOrUpdateWatershed(feat, activeCatchmentId === cid);
+      updateActiveBasinHeader();
+
+      if (typeof renderGeoCatchmentSelector === 'function') renderGeoCatchmentSelector();
+      if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();
     }
 
     document.getElementById('renameSelectedBtn').addEventListener('click', () => {
@@ -4495,7 +4477,7 @@
         if (isHistBatch) {
           histBtn.innerHTML = `<i data-lucide="download" class="w-4 h-4"></i> Extract Historical Data for All ${totalBasins} Basins`;
         } else {
-          histBtn.innerHTML = `<i data-lucide="download" class="w-4 h-4"></i> Extract Historical Data for ${activeName}`;
+          histBtn.innerHTML = `<i data-lucide="download" class="w-4 h-4"></i> Extract Historical Data for ${escapeHtml(activeName)}`;
         }
       }
 
@@ -5654,8 +5636,8 @@
             <input type="checkbox" class="geo-catchment-check accent-[#1a73e8] w-3.5 h-3.5 rounded cursor-pointer flex-shrink-0" data-cid="${cid}" ${isChecked ? 'checked' : ''} ${geoExtractingCatchmentIds.size > 0 ? 'disabled' : ''} title="Select basin for attribute extraction">
             <span class="w-2.5 h-2.5 rounded-full border flex-shrink-0" style="${dotStyle}"></span>
             <div class="truncate">
-              <div class="font-semibold text-[#202124] text-[11px] truncate">${name}</div>
-              <div class="text-[10px] text-[#5f6368] font-mono">${area || cid}</div>
+              <div class="font-semibold text-[#202124] text-[11px] truncate">${escapeHtml(name)}</div>
+              <div class="text-[10px] text-[#5f6368] font-mono">${escapeHtml(area || cid)}</div>
             </div>
           </div>
           ${rightInfoHtml}
@@ -5914,8 +5896,8 @@
 
             l.bindTooltip(`
               <div class="text-xs p-1.5 space-y-0.5">
-                <div class="font-bold text-[#202124]">${name}</div>
-                <div class="text-[10px] font-mono text-[#3c4043]">ID: ${cid} · Area: ${props.area_km2 ? Number(props.area_km2).toLocaleString() : '—'} km²</div>
+                <div class="font-bold text-[#202124]">${escapeHtml(name)}</div>
+                <div class="text-[10px] font-mono text-[#3c4043]">ID: ${escapeHtml(cid)} · Area: ${props.area_km2 ? Number(props.area_km2).toLocaleString() : '—'} km²</div>
                 ${valHtml}
               </div>
             `, { sticky: true, className: 'bg-white text-[#202124] border border-[#dadce0] rounded shadow-xl' });
@@ -6646,6 +6628,16 @@
           initGeoFeaturesMapLayers();
         } else {
           removeGeoFeaturesMapLayers();
+        }
+
+        // Basin Delineation River Layer Lifecycle
+        if (targetTabId === 'tab-delineation') {
+          if (riverLayerGroup && !map.hasLayer(riverLayerGroup)) {
+            riverLayerGroup.addTo(map);
+          }
+          fetchAndRenderRivers(true);
+        } else if (riverLayerGroup && map.hasLayer(riverLayerGroup)) {
+          map.removeLayer(riverLayerGroup);
         }
       }
 

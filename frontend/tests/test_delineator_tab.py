@@ -26,6 +26,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, ClassVar
 
+import numpy as np
 import pytest
 
 import frontend.config as _frontend_config
@@ -39,8 +40,9 @@ from frontend.config import (
     resolve_hydro_dataset_id,
 )
 from frontend.delineator import get_dem_delineator, reset_delineator_caches
+from frontend.dem_tile_server import DemTileServer
 from frontend.profile_manager import get_profile_manager
-from frontend.river_indexer import reset_river_indexer_caches
+from frontend.river_indexer import HydroRiverNetwork, reset_river_indexer_caches
 from frontend.server import (
     EarthkitHydroHandler,
     ThreadingHTTPServer,
@@ -50,9 +52,11 @@ from multimet.catchment_delineation import DemDelineator
 
 _HTTP_OK: int = 200
 _HTTP_BAD_REQUEST: int = 400
+_HTTP_NOT_FOUND: int = 404
 _EXPECTED_DATASET_OPTIONS: int = 2
 _MIN_DEM_AREA_KM2: float = 10.0
 _MIN_UPSTREAM_CELLS: int = 1000
+_EXPECTED_HYDROATLAS_Z4_MIN_ORDER: int = 7
 
 
 def _write_fast_river_geojson_caches(river_dir: Path) -> None:
@@ -70,7 +74,7 @@ def _write_fast_river_geojson_caches(river_dir: Path) -> None:
                 'properties': {
                     'reach_id': 'HYRIV_70000001',
                     'dataset': 'hydroatlas',
-                    'stream_order': 6,
+                    'stream_order': 7,
                     'upstream_area_km2': 12.1,
                     'length_km': 8.9,
                     'next_down': 0,
@@ -673,19 +677,26 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         ).exists()
 
     def test_delineation_mode_click_regression(self) -> None:
-        """Verify river click requires `isDelineationMode` to be enabled."""
-        assert (
+        """Verify river and polygon clicks require `isDelineationMode`."""
+        expected_guard = (
             "if (currentActiveTabId === 'tab-delineation' && isDelineationMode)"
-            in self.html_text
+        )
+        assert self.html_text.count(expected_guard) >= 2, (  # noqa: PLR2004
+            'Both river-reach and watershed-polygon click handlers must '
+            'require tab-delineation AND isDelineationMode'
         )
         assert (
             "if (currentActiveTabId === 'tab-delineation' || isDelineationMode)"
             not in self.html_text
         )
+        assert (
+            "!props.simplified && typeof maasSnapToFeature === 'function'"
+            in self.html_text
+        )
         assert 'setDelineationMode(false);' in self.html_text
 
     def test_catchment_rename(self) -> None:
-        """Verify `/api/watersheds/rename` persists across profile reloads."""
+        """Verify `/api/watersheds/rename` validation and persistence."""
         assert 'renameSelectedBtn' in self.dom.by_id
         assert 'promptRenameWatershed' in self.html_text
         assert 'rename-btn' in self.html_text
@@ -718,7 +729,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
             '/api/watersheds/rename',
             {
                 'catchment_id': cid,
-                'name': new_name,
+                'name': f'  {new_name}  ',
                 'username': test_user,
             },
         )
@@ -734,6 +745,149 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         )
         assert renamed_feat is not None
         assert renamed_feat['properties']['name'] == new_name
+
+        shape_file = pm.get_catchment_shapes_dir(test_user) / f'{cid}.geojson'
+        assert shape_file.exists()
+        shape_json = json.loads(shape_file.read_text(encoding='utf-8'))
+        assert shape_json['properties']['name'] == new_name
+
+        # Re-delineating the same catchment must preserve the customized name
+        redelin_status, redelin_feat = self._post(
+            '/api/delineate',
+            {
+                'dataset': 'hydroatlas',
+                'dem_id': 'hydrosheds_90m',
+                'latitude': 39.6828,
+                'longitude': -88.7729,
+                'username': test_user,
+            },
+        )
+        assert redelin_status == _HTTP_OK
+        assert redelin_feat['properties']['name'] == new_name
+
+        # Reject invalid names (empty, non-string, >120 chars, control chars)
+        for bad_payload in (
+            {'catchment_id': cid, 'name': '   ', 'username': test_user},
+            {'catchment_id': cid, 'name': 12345, 'username': test_user},
+            {'catchment_id': cid, 'name': 'x' * 121, 'username': test_user},
+            {'catchment_id': cid, 'name': 'bad\nname', 'username': test_user},
+        ):
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                self._post('/api/watersheds/rename', bad_payload)
+            assert exc_info.value.code == _HTTP_BAD_REQUEST
+
+        # Reject unknown catchment_id with 404
+        with pytest.raises(urllib.error.HTTPError) as exc_info_404:
+            self._post(
+                '/api/watersheds/rename',
+                {
+                    'catchment_id': 'nonexistent_catchment_999',
+                    'name': 'Valid Name',
+                    'username': test_user,
+                },
+            )
+        assert exc_info_404.value.code == _HTTP_NOT_FOUND
+
+        with pytest.raises(ValueError, match='new_name'):
+            pm.rename_watershed(cid, '   ', username=test_user)
+        with pytest.raises(KeyError, match='Watershed not found'):
+            pm.rename_watershed(
+                'nonexistent_catchment_999',
+                'Valid Name',
+                username=test_user,
+            )
+
+    def test_dem_tile_server_lazy_overview_loading_and_cache_invalidation(
+        self,
+    ) -> None:
+        """Verify DemTileServer lazy-loads overview grids and clears cache."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            tiles_dir = base_dir / 'tiles'
+            tiles_dir.mkdir(parents=True, exist_ok=True)
+
+            with (
+                unittest.mock.patch(
+                    'frontend.dem_tile_server.GLOBAL_DEM_30S_NPY',
+                    base_dir / 'missing_30s.npy',
+                ),
+                unittest.mock.patch(
+                    'frontend.dem_tile_server.GLOBAL_DEM_15S_NPY',
+                    base_dir / 'missing_15s.npy',
+                ),
+                unittest.mock.patch(
+                    'frontend.dem_tile_server.DEM_DIR',
+                    base_dir / 'empty_dem',
+                ),
+                unittest.mock.patch(
+                    'frontend.dem_tile_server.CACHE_DIR',
+                    base_dir / 'empty_cache',
+                ),
+            ):
+                server = DemTileServer(tiles_dir=tiles_dir)
+                png_before = server.render_tile(z=2, x=1, y=1)
+                assert len(png_before) > 0
+
+                # Write hyd_glo_dem_30s.npy into tiles_dir.parent after init
+                overview_path = base_dir / 'hyd_glo_dem_30s.npy'
+                arr = np.linspace(
+                    100.0,
+                    2500.0,
+                    36 * 72,
+                    dtype=np.float32,
+                ).reshape((36, 72))
+                np.save(overview_path, arr)
+
+                png_after = server.render_tile(z=2, x=1, y=1)
+                assert png_after != png_before
+
+    def test_river_indexer_z4_fallback_clamps_order_and_marks_degraded(
+        self,
+    ) -> None:
+        """Verify z4 fallback at zoom >= 5 clamps order and sets degraded."""
+        self.addCleanup(reset_river_indexer_caches)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            _write_fast_river_geojson_caches(root)
+            reset_river_indexer_caches()
+
+            with (
+                unittest.mock.patch.object(
+                    _frontend_config,
+                    'RIVER_NETWORKS_DIR',
+                    root,
+                ),
+                unittest.mock.patch.object(
+                    _frontend_config,
+                    'CACHE_DIR',
+                    root,
+                ),
+                unittest.mock.patch(
+                    'frontend.river_indexer.get_river_network',
+                    return_value=None,
+                ),
+            ):
+                net = HydroRiverNetwork('hydroatlas')
+                fc = net.get_rivers_in_bbox(
+                    min_lon=-90.0,
+                    min_lat=38.0,
+                    max_lon=-87.0,
+                    max_lat=41.0,
+                    zoom=6,
+                )
+                assert fc['properties']['degraded'] is True
+                assert (
+                    fc['properties']['min_stream_order_applied']
+                    == _EXPECTED_HYDROATLAS_Z4_MIN_ORDER
+                )
+                assert 'Simplified z4 overview pyramid' in (
+                    fc['properties']['resolution']
+                )
+                assert len(fc['features']) >= 1
+                assert all(
+                    f['properties'].get('simplified') is True
+                    for f in fc['features']
+                )
 
 
 if __name__ == '__main__':
