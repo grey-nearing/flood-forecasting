@@ -1893,14 +1893,20 @@ def test_regenerate_era5_climate_tables_vectorized_parity(tmp_path):
   assert np.isclose(u_pq.loc["b_0", "p_mean"], b0_map["b_0"]["p_mean"])
 
 
-def test_gs_uri_preservation():
+def test_gs_uri_preservation(tmp_path):
     """Test that gs:// URIs are preserved in StaticAttributesExtractor.__init__"""
     from unittest import mock
     def fake_init(self, src):
         self.all_gdb_fields = []
+    
+    # Create an empty directory so it passes the local path check
+    dummy_gdb = tmp_path / "hydroatlas.gdb"
+    dummy_gdb.mkdir()
+    (dummy_gdb / "dummy.txt").touch() # Add a file so iterdir() is not empty
+
     with mock.patch("multimet.static_extractor.extractor.StaticAttributesExtractor._init_hydroatlas_source", autospec=True, side_effect=fake_init):
         ext = StaticAttributesExtractor(
-            gdb_path="gs://my-bucket/hydroatlas.gdb",
+            gdb_path=str(dummy_gdb),
             era5_cache_dir="gs://my-bucket/era5",
             era5_source="hybas",
             no_download=False
