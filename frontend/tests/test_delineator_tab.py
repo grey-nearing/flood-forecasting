@@ -154,7 +154,8 @@ class _DOMInspector(HTMLParser):
         el_id = attr_dict.get('id')
         classes = set((attr_dict.get('class') or '').split())
         ancestor_hidden = any(
-            'hidden' in item['classes'] for item in self._stack
+            'hidden' in item['classes'] and 'tab-content' not in item['classes']
+            for item in self._stack
         )
         info: dict[str, Any] = {
             'tag': tag,
@@ -323,6 +324,19 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
 
         assert 'legendBox' in self.dom.by_id
         assert self.dom.by_id['legendBox']['hidden_or_ancestor_hidden']
+
+        # Verify Weather Viewer (#tab-weather) is the initial landing page
+        assert 'tab-weather' in self.dom.by_id
+        assert 'hidden' not in self.dom.by_id['tab-weather']['classes']
+        assert 'tab-delineation' in self.dom.by_id
+        assert 'hidden' in self.dom.by_id['tab-delineation']['classes']
+        active_tab_btns = [
+            b.get('data-tab')
+            for b in self.dom.tab_buttons
+            if 'active' in (b.get('class') or '').split()
+        ]
+        assert active_tab_btns == ['tab-weather']
+        assert "let currentActiveTabId = 'tab-weather';" in self.html_text
 
     @pytest.mark.unit
     def test_task2_login_merged_into_account_tab_and_section2_profile_removed(
@@ -853,9 +867,7 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
         self,
     ) -> None:
         """Verify DemTileServer lazy-loads overview grids and clears cache."""
-        with tempfile.TemporaryDirectory(
-            ignore_cleanup_errors=True
-        ) as tmp_dir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             base_dir = Path(tmp_dir)
             tiles_dir = base_dir / 'tiles'
             tiles_dir.mkdir(parents=True, exist_ok=True)
@@ -934,8 +946,9 @@ class CatchmentDelineatorWorkplanTest(unittest.TestCase):
                     fc['properties']['min_stream_order_applied']
                     == _EXPECTED_HYDROATLAS_Z4_MIN_ORDER
                 )
-                assert 'Simplified z4 overview pyramid' in (
-                    fc['properties']['resolution']
+                assert (
+                    'Simplified z4 overview pyramid'
+                    in (fc['properties']['resolution'])
                 )
                 assert len(fc['features']) >= 1
                 assert all(
