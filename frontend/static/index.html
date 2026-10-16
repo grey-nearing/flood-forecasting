@@ -95,6 +95,10 @@
       border-bottom: 2px solid transparent;
       transition: all 0.15s ease-in-out;
       color: #5f6368;
+      cursor: grab;
+    }
+    .tab-btn:active {
+      cursor: grabbing;
     }
     .tab-btn:hover {
       color: #202124;
@@ -104,6 +108,33 @@
       color: #1a73e8 !important;
       border-bottom-color: #1a73e8 !important;
       background-color: #e8f0fe;
+    }
+    .tab-btn.tab-dragging {
+      opacity: 0.45;
+      background-color: #e8f0fe;
+    }
+    .tab-btn.tab-drop-before {
+      box-shadow: inset 3px 0 0 0 #1a73e8;
+    }
+    .tab-btn.tab-drop-after {
+      box-shadow: inset -3px 0 0 0 #1a73e8;
+    }
+    @keyframes tabSpinnerRotate {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .tab-activity-spinner {
+      width: 12px;
+      height: 12px;
+      border-radius: 9999px;
+      border: 2px solid rgba(26, 115, 232, 0.25);
+      border-top-color: #1a73e8;
+      animation: tabSpinnerRotate 0.75s linear infinite;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .tab-activity-spinner.hidden {
+      display: none !important;
     }
 
     /* Unified Left-Hand Vertical Control Panel (shared across all 7 tabs) */
@@ -309,37 +340,49 @@
       <i data-lucide="panel-left" class="w-4 h-4"></i>
     </button>
     <span id="appBrandTitle" class="text-xs font-bold tracking-wide text-[#1a73e8] pr-3 mr-1 border-r border-[#dadce0] flex items-center gap-1.5 flex-shrink-0"><i data-lucide="waves" class="w-4 h-4 text-[#1a73e8]"></i><span>OpenHydroNet</span></span>
-    <button data-tab="tab-weather" class="tab-btn active py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#1a73e8] flex-shrink-0">
+    <button data-tab="tab-weather" draggable="true" title="Drag left or right to reorder tab" class="tab-btn active py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#1a73e8] flex-shrink-0">
       <i data-lucide="cloud-lightning" class="w-4 h-4"></i>
       <span>Weather Viewer</span>
+      <span class="tab-activity-spinner hidden" data-tab-spinner="tab-weather" aria-label="Active background task"></span>
     </button>
-    <button data-tab="tab-maas" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
+    <button data-tab="tab-maas" draggable="true" title="Drag left or right to reorder tab" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="git-compare" class="w-4 h-4"></i>
       <span>Models-as-a-Service</span>
+      <span class="tab-activity-spinner hidden" data-tab-spinner="tab-maas" aria-label="Active background task"></span>
     </button>
-    <button data-tab="tab-delineation" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
+    <button data-tab="tab-delineation" draggable="true" title="Drag left or right to reorder tab" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="map-pin" class="w-4 h-4"></i>
       <span>Basin Delineation</span>
+      <span class="tab-activity-spinner hidden" data-tab-spinner="tab-delineation" aria-label="Active background task"></span>
     </button>
-    <button data-tab="tab-geo-features" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
+    <button data-tab="tab-geo-features" draggable="true" title="Drag left or right to reorder tab" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="compass" class="w-4 h-4"></i>
       <span>Geographical Features</span>
+      <span class="tab-activity-spinner hidden" data-tab-spinner="tab-geo-features" aria-label="Active background task"></span>
     </button>
-    <button data-tab="tab-training" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
+    <button data-tab="tab-training" draggable="true" title="Drag left or right to reorder tab" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="cpu" class="w-4 h-4"></i>
       <span>Training</span>
+      <span class="tab-activity-spinner hidden" data-tab-spinner="tab-training" aria-label="Active background task"></span>
     </button>
-    <button data-tab="tab-finetuning" id="finetuningTabBtn" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
+    <button data-tab="tab-finetuning" id="finetuningTabBtn" draggable="true" title="Drag left or right to reorder tab" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="sliders" class="w-4 h-4"></i>
       <span>Fine Tuning</span>
+      <span class="tab-activity-spinner hidden" data-tab-spinner="tab-finetuning" aria-label="Active background task"></span>
     </button>
-    <button data-tab="tab-forecasting" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
+    <button data-tab="tab-forecasting" draggable="true" title="Drag left or right to reorder tab" class="tab-btn py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="activity" class="w-4 h-4"></i>
       <span>Forecasting and Data Assimilation</span>
+      <span class="tab-activity-spinner hidden" data-tab-spinner="tab-forecasting" aria-label="Active background task"></span>
     </button>
-    <button data-tab="tab-account" id="accountTabBtn" class="tab-btn ml-auto py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
+    <button id="globalStopDownloadsBtn" type="button" title="Stop all active background downloads" class="hidden ml-2 py-1.5 px-2.5 rounded-lg bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f] border border-[#f5c2c7] text-[11px] font-semibold flex items-center gap-1.5 transition flex-shrink-0 shadow-2xs">
+      <i data-lucide="square" class="w-3 h-3 fill-current"></i>
+      <span id="globalStopDownloadsBtnLabel">Stop Downloads</span>
+    </button>
+    <button data-tab="tab-account" id="accountTabBtn" draggable="true" title="Drag left or right to reorder tab" class="tab-btn ml-auto py-2.5 px-3.5 text-xs font-semibold flex items-center gap-2 text-[#5f6368] hover:text-[#202124] flex-shrink-0">
       <i data-lucide="user" class="w-4 h-4 text-[#1a73e8]"></i>
       <span>Account (<span id="navAccountBadge" class="font-mono text-[#1a73e8]">Guest</span>)</span>
+      <span class="tab-activity-spinner hidden" data-tab-spinner="tab-account" aria-label="Active background task"></span>
     </button>
   </nav>
 
@@ -1232,9 +1275,15 @@
             </div>
           </div>
 
-          <button id="extractHistBtn" disabled class="w-full bg-[#1a73e8] hover:bg-[#1557b0] disabled:bg-[#f1f3f4] disabled:text-[#80868b] text-white font-medium text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition shadow-md shadow-amber-600/20">
-            <i data-lucide="download" class="w-4 h-4"></i> Extract Historical Data
-          </button>
+          <div class="flex items-center gap-2">
+            <button id="extractHistBtn" disabled class="flex-1 bg-[#1a73e8] hover:bg-[#1557b0] disabled:bg-[#f1f3f4] disabled:text-[#80868b] text-white font-medium text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition shadow-md shadow-amber-600/20">
+              <i data-lucide="download" class="w-4 h-4"></i> Extract Historical Data
+            </button>
+            <button id="stopHistJobBtn" type="button" class="hidden bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f] border border-[#f5c2c7] font-semibold text-xs py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition flex-shrink-0" title="Stop active historical data download">
+              <i data-lucide="square" class="w-3.5 h-3.5 fill-current"></i>
+              <span>Stop</span>
+            </button>
+          </div>
 
           <div id="histResult" class="hidden p-3 bg-white border border-[#fde293] rounded-lg text-xs space-y-1 text-[#3c4043]">
             <div class="text-[#1e8e3e] font-semibold flex items-center gap-1">
@@ -1962,10 +2011,16 @@
             </div>
           </div>
 
-          <button id="fcFetchRealtimeBtn" type="button" class="w-full bg-[#1a73e8] hover:bg-[#1557b0] disabled:bg-[#f1f3f4] disabled:text-[#80868b] disabled:cursor-not-allowed text-white font-semibold text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition shadow-md shadow-sky-600/20">
-            <i data-lucide="cloud-rain" class="w-4 h-4"></i>
-            <span id="fcFetchBtnLabel">Fetch Real-Time Data (Cold Start)</span>
-          </button>
+          <div class="flex items-center gap-2">
+            <button id="fcFetchRealtimeBtn" type="button" class="flex-1 bg-[#1a73e8] hover:bg-[#1557b0] disabled:bg-[#f1f3f4] disabled:text-[#80868b] disabled:cursor-not-allowed text-white font-semibold text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition shadow-md shadow-sky-600/20">
+              <i data-lucide="cloud-rain" class="w-4 h-4"></i>
+              <span id="fcFetchBtnLabel">Fetch Real-Time Data (Cold Start)</span>
+            </button>
+            <button id="fcCancelFetchBtn" type="button" class="hidden bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f] border border-[#f5c2c7] font-semibold text-xs py-2.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition flex-shrink-0 shadow-xs" title="Stop active real-time data download">
+              <i data-lucide="square" class="w-3.5 h-3.5 fill-current"></i>
+              <span>Stop Download</span>
+            </button>
+          </div>
 
           <div id="fcFetchStatusBox" class="hidden p-2.5 bg-white rounded-lg border border-[#dadce0] text-[11px] text-[#3c4043] space-y-1.5">
             <div class="flex items-center justify-between gap-2">
@@ -2011,6 +2066,22 @@
             </label>
             <span class="text-[10px] text-[#5f6368] font-mono">OpenHydroNet</span>
           </div>
+
+          <!-- Model Architecture / Weights Selector -->
+          <div class="space-y-1">
+            <label for="fcModelSelect" class="block text-[10px] font-bold text-[#5f6368] uppercase tracking-wider">
+              Pretrained / Fine-Tuned Model Weights
+            </label>
+            <select id="fcModelSelect" class="w-full bg-white border border-[#dadce0] rounded-lg px-2.5 py-1.5 text-xs text-[#202124] font-medium focus:border-[#1e8e3e] focus:outline-none">
+              <option value="google-floodhub-settings-110-epochs">FloodHub Settings (With GraphCast · 110 Epochs)</option>
+              <option value="google-floodhub-settings-no-graphcast-110-epochs">FloodHub Settings (Without GraphCast · HRES + IMERG + CPC)</option>
+              <option value="google-floodhub-settings-aifs-110-epochs">FloodHub Settings (With ECMWF AIFS · HRES + AIFS + IMERG + CPC)</option>
+            </select>
+            <div id="fcModelSelectMeta" class="text-[10px] text-[#5f6368] font-mono leading-snug">
+              Forecast inputs: HRES + GraphCast · Hindcast: HRES, GraphCast, IMERG, CPC
+            </div>
+          </div>
+
           <p id="fcRunModeDesc" class="text-xs text-[#5f6368] leading-relaxed">
             Runs the MeanEmbeddingForecastLSTM over the 365-day spin-up + forecast window for all selected catchments and saves yesterday's state file (t₀ − 1d).
           </p>
@@ -2255,7 +2326,13 @@
           <div id="fcLiveFetchBanner" class="hidden bg-[#e8f0fe]/60 border border-[#d2e3fc] rounded-xl p-2.5 space-y-2">
             <div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
               <span id="fcLiveFetchBannerTitle" class="font-semibold text-[#174ea6] flex items-center gap-1.5"></span>
-              <span id="fcLiveFetchBannerStats" class="font-mono text-[10.5px] text-[#1a73e8] font-bold"></span>
+              <div class="flex items-center gap-2">
+                <span id="fcLiveFetchBannerStats" class="font-mono text-[10.5px] text-[#1a73e8] font-bold"></span>
+                <button id="fcLiveBannerStopBtn" type="button" class="px-2 py-0.5 rounded bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f] border border-[#f5c2c7] text-[10.5px] font-semibold flex items-center gap-1 transition" title="Stop active download">
+                  <i data-lucide="square" class="w-3 h-3 fill-current"></i>
+                  <span>Stop Download</span>
+                </button>
+              </div>
             </div>
             <div id="fcLiveFetchBannerCards" class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1.5"></div>
           </div>
@@ -5220,6 +5297,7 @@
     async function delineateBasin(lat, lon, dataset) {
       if (isDelineating) return;
       isDelineating = true;
+      if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
       lastClickedLat = lat;
       lastClickedLon = lon;
 
@@ -5286,6 +5364,7 @@
         alert('Network error connecting to OpenHydroNet server.');
       } finally {
         isDelineating = false;
+        if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
         if (tempDelineateMarker && map) {
           map.removeLayer(tempDelineateMarker);
           tempDelineateMarker = null;
@@ -5530,6 +5609,42 @@
 
     // Generate Historical Zarr Archive (Async Background Job + Email Notification)
     let currentHistJobPollInterval = null;
+    let activeHistJobId = null;
+    let currentForecastJobPollInterval = null;
+    let activeForecastJobId = null;
+
+    async function stopActiveHistoricalJob() {
+      const targetJobId = activeHistJobId;
+      if (currentHistJobPollInterval) {
+        clearInterval(currentHistJobPollInterval);
+        currentHistJobPollInterval = null;
+      }
+      activeHistJobId = null;
+      const stopBtn = document.getElementById('stopHistJobBtn');
+      if (stopBtn) stopBtn.classList.add('hidden');
+      const btn = document.getElementById('extractHistBtn');
+      if (btn) btn.disabled = false;
+      updateExtractionButtonsState();
+      if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
+      const countEl = document.getElementById('histBasinCount');
+      if (countEl) countEl.innerText = '⏹ Download stopped by user.';
+      if (targetJobId) {
+        try {
+          await fetch('/api/jobs/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job_id: targetJobId })
+          });
+        } catch (err) {
+          console.warn('Could not cancel historical job:', err);
+        }
+      }
+    }
+
+    const stopHistBtnEl = document.getElementById('stopHistJobBtn');
+    if (stopHistBtnEl) {
+      stopHistBtnEl.addEventListener('click', stopActiveHistoricalJob);
+    }
 
     document.getElementById('extractHistBtn').addEventListener('click', async () => {
       if (!activeWatersheds.length) return;
@@ -5545,7 +5660,9 @@
       const notifyEmail = (document.getElementById('histNotifyEmail') ? document.getElementById('histNotifyEmail').value.trim() : '');
       
       const btn = document.getElementById('extractHistBtn');
+      const stopBtn = document.getElementById('stopHistJobBtn');
       btn.disabled = true;
+      if (stopBtn) stopBtn.classList.remove('hidden');
       if (isBatch) {
         btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Submitting Background Job (All ${activeWatersheds.length} Basins)...`;
       } else {
@@ -5553,6 +5670,7 @@
         const activeName = activeFeat ? (activeFeat.properties.name || activeFeat.properties.catchment_id) : (activeCatchmentId || 'Basin');
         btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Submitting Background Job (${activeName})...`;
       }
+      if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
       lucide.createIcons();
 
       try {
@@ -5590,11 +5708,15 @@
         if (!resp.ok) {
           alert('Historical extraction submission failed: ' + (res.detail || res.error || 'Error'));
           btn.disabled = false;
+          if (stopBtn) stopBtn.classList.add('hidden');
           updateExtractionButtonsState();
+          if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
           return;
         }
 
         const jobId = res.job_id;
+        activeHistJobId = jobId;
+        if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
         const resultCard = document.getElementById('histResult');
         resultCard.classList.remove('hidden');
         document.getElementById('histPath').innerText = `Job ID: ${jobId} (Background Processing)`;
@@ -5618,8 +5740,11 @@
             if (jData.status === 'completed') {
               clearInterval(currentHistJobPollInterval);
               currentHistJobPollInterval = null;
+              activeHistJobId = null;
+              if (stopBtn) stopBtn.classList.add('hidden');
               btn.disabled = false;
               updateExtractionButtonsState();
+              if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
 
               const r = jData.result || {};
               document.getElementById('histPath').innerText = r.master_zarr_rel_path || r.zarr_rel_path || r.master_zarr_path;
@@ -5652,11 +5777,23 @@
                   `${pName.replace(/_/g, ' ').toUpperCase()}`
                 );
               }
+            } else if (jData.status === 'cancelled') {
+              clearInterval(currentHistJobPollInterval);
+              currentHistJobPollInterval = null;
+              activeHistJobId = null;
+              if (stopBtn) stopBtn.classList.add('hidden');
+              btn.disabled = false;
+              updateExtractionButtonsState();
+              if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
+              document.getElementById('histBasinCount').innerText = '⏹ Download stopped by user.';
             } else if (jData.status === 'failed') {
               clearInterval(currentHistJobPollInterval);
               currentHistJobPollInterval = null;
+              activeHistJobId = null;
+              if (stopBtn) stopBtn.classList.add('hidden');
               btn.disabled = false;
               updateExtractionButtonsState();
+              if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
               alert(`Historical extraction job failed: ${jData.error || 'Unknown error'}`);
               document.getElementById('histBasinCount').innerText = `✗ Failed: ${jData.error || 'Error'}`;
             }
@@ -5668,8 +5805,11 @@
       } catch (err) {
         console.error(err);
         alert('Historical extraction error.');
+        activeHistJobId = null;
+        if (stopBtn) stopBtn.classList.add('hidden');
         btn.disabled = false;
         updateExtractionButtonsState();
+        if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
       }
     });
 
@@ -5710,6 +5850,7 @@
       const btn = document.getElementById('fetchForecastBtn');
       btn.disabled = true;
       btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Querying dynamical.org...`;
+      if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
       lucide.createIcons();
 
       try {
@@ -5740,27 +5881,44 @@
 
         if (resp.ok) {
           if (res.status === 'queued' && res.job_id) {
+            activeForecastJobId = res.job_id;
+            if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
             btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Processing in Background...`;
             lucide.createIcons();
 
             // Poll for background forecast job completion
-            const pollInterval = setInterval(async () => {
+            if (currentForecastJobPollInterval) clearInterval(currentForecastJobPollInterval);
+            currentForecastJobPollInterval = setInterval(async () => {
               try {
                 const jobResp = await fetch(`/api/jobs/${res.job_id}`);
                 if (jobResp.ok) {
                   const jobData = await jobResp.json();
                   if (jobData.status === 'completed') {
-                    clearInterval(pollInterval);
+                    clearInterval(currentForecastJobPollInterval);
+                    currentForecastJobPollInterval = null;
+                    activeForecastJobId = null;
                     btn.disabled = false;
                     btn.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4"></i> Extract Real-Time Weather Forecasts (Zarr)`;
+                    if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
                     lucide.createIcons();
 
                     const jobResult = jobData.result || {};
                     displayForecastResults(jobResult, scope);
-                  } else if (jobData.status === 'failed') {
-                    clearInterval(pollInterval);
+                  } else if (jobData.status === 'cancelled') {
+                    clearInterval(currentForecastJobPollInterval);
+                    currentForecastJobPollInterval = null;
+                    activeForecastJobId = null;
                     btn.disabled = false;
                     btn.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4"></i> Extract Real-Time Weather Forecasts (Zarr)`;
+                    if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
+                    lucide.createIcons();
+                  } else if (jobData.status === 'failed') {
+                    clearInterval(currentForecastJobPollInterval);
+                    currentForecastJobPollInterval = null;
+                    activeForecastJobId = null;
+                    btn.disabled = false;
+                    btn.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4"></i> Extract Real-Time Weather Forecasts (Zarr)`;
+                    if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
                     lucide.createIcons();
                     alert('Forecast extraction failed: ' + (jobData.error || 'Unknown error'));
                   }
@@ -5782,8 +5940,10 @@
         alert('Forecast query error: ' + err.message);
       } finally {
         if (!btn.innerHTML.includes('Processing in Background')) {
+          activeForecastJobId = null;
           btn.disabled = false;
           btn.innerHTML = `<i data-lucide="cloud-rain" class="w-4 h-4"></i> Extract Real-Time Weather Forecasts (Zarr)`;
+          if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
           lucide.createIcons();
         }
       }
@@ -6183,20 +6343,21 @@
     let geoExtractionCompletedCount = 0;
 
     function updateGeoNavProgressBadge() {
+      if (typeof syncAllTabActivityIndicators === 'function') {
+        syncAllTabActivityIndicators();
+      }
       const navBtn = document.querySelector('.tab-btn[data-tab="tab-geo-features"]');
       if (!navBtn) return;
       let badgeEl = document.getElementById('geoNavProgressBadge');
-      if (geoExtractingCatchmentIds.size > 0) {
+      if (geoExtractingCatchmentIds.size > 0 && geoExtractionTotalCount > 1) {
         if (!badgeEl) {
           badgeEl = document.createElement('span');
           badgeEl.id = 'geoNavProgressBadge';
           badgeEl.className = 'ml-1 px-1.5 py-0.5 rounded-full bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] text-[10px] font-mono inline-flex items-center gap-1';
           navBtn.appendChild(badgeEl);
         }
-        const label = geoExtractionTotalCount > 1
-          ? `${geoExtractionCompletedCount}/${geoExtractionTotalCount}`
-          : '…';
-        badgeEl.innerHTML = `<i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i><span>${label}</span>`;
+        const label = `${geoExtractionCompletedCount}/${geoExtractionTotalCount}`;
+        badgeEl.innerHTML = `<span>${label}</span>`;
       } else if (badgeEl) {
         badgeEl.remove();
       }
@@ -7673,6 +7834,8 @@
         });
     }
 
+    let activeWeatherRefreshJobId = null;
+
     function requestWeatherRefresh(modelKey = 'all') {
       const banner = document.getElementById('weatherRefreshStatusBanner');
       const label = modelKey === 'all'
@@ -7700,17 +7863,24 @@
         body: JSON.stringify(req)
       }).then(res => res.json()).then(data => {
         if (data.status === 'queued' && data.job_id) {
+          activeWeatherRefreshJobId = data.job_id;
+          if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
           pollWeatherRefreshJob(data.job_id, modelKey, 0);
         } else {
+          activeWeatherRefreshJobId = null;
+          if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
           finishWeatherRefreshUI(modelKey, 'completed', data);
         }
       }).catch(err => {
         console.error('Refresh failed:', err);
+        activeWeatherRefreshJobId = null;
+        if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
         finishWeatherRefreshUI(modelKey, 'error', null);
       });
     }
 
     function pollWeatherRefreshJob(jobId, modelKey, tick = 0) {
+      if (!activeWeatherRefreshJobId || activeWeatherRefreshJobId !== jobId) return;
       fetch(`/api/jobs/${jobId}`, { cache: 'no-store' })
         .then(res => res.json())
         .then(job => {
@@ -7720,10 +7890,14 @@
             }
             setTimeout(() => pollWeatherRefreshJob(jobId, modelKey, tick + 1), 1500);
           } else {
+            activeWeatherRefreshJobId = null;
+            if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
             finishWeatherRefreshUI(modelKey, job.status, job.result || null);
           }
         }).catch(err => {
           console.error('Job polling failed:', err);
+          activeWeatherRefreshJobId = null;
+          if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
           finishWeatherRefreshUI(modelKey, 'error', null);
         });
     }
@@ -9605,8 +9779,78 @@
     let fcSelectedNowcast = null;
     let fcSelectedForecast = null;
     let fcSelectedVariableMode = 'precip_and_temp';
+    let fcSelectedModelId = 'google-floodhub-settings-110-epochs';
     let fcIsFetching = false;
     let fcIsRunningModel = false;
+
+    function getSelectedForecastModelId() {
+      const sel = document.getElementById('fcModelSelect');
+      if (sel && sel.value) {
+        fcSelectedModelId = String(sel.value).trim();
+      }
+      return fcSelectedModelId || 'google-floodhub-settings-110-epochs';
+    }
+
+    function updateForecastModelSelectorUI(availableModels) {
+      const sel = document.getElementById('fcModelSelect');
+      const metaEl = document.getElementById('fcModelSelectMeta');
+      if (!sel) return;
+
+      const models = Array.isArray(availableModels) && availableModels.length > 0
+        ? availableModels
+        : [
+            {
+              id: 'google-floodhub-settings-110-epochs',
+              label: 'FloodHub Settings (With GraphCast · 110 Epochs)',
+              forecast_products: ['HRES', 'GRAPHCAST'],
+              hindcast_products: ['HRES', 'GRAPHCAST', 'IMERG', 'CPC'],
+              available: true,
+              status: 'ready'
+            },
+            {
+              id: 'google-floodhub-settings-no-graphcast-110-epochs',
+              label: 'FloodHub Settings (Without GraphCast · HRES + IMERG + CPC)',
+              forecast_products: ['HRES'],
+              hindcast_products: ['HRES', 'IMERG', 'CPC'],
+              available: true,
+              status: 'ready'
+            },
+            {
+              id: 'google-floodhub-settings-aifs-110-epochs',
+              label: 'FloodHub Settings (With ECMWF AIFS · HRES + AIFS + IMERG + CPC)',
+              forecast_products: ['HRES', 'AIFS'],
+              hindcast_products: ['HRES', 'AIFS', 'IMERG', 'CPC'],
+              available: true,
+              status: 'ready'
+            }
+          ];
+
+      const prevVal = sel.value || fcSelectedModelId || 'google-floodhub-settings-110-epochs';
+      sel.innerHTML = '';
+      models.forEach((m) => {
+        if (!m || !m.id) return;
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        const isReady = m.available !== false;
+        opt.textContent = isReady ? m.label : `${m.label} [Training in progress…]`;
+        if (!isReady) {
+          opt.dataset.training = 'true';
+        }
+        sel.appendChild(opt);
+      });
+
+      const hasPrev = Array.from(sel.options).some(o => o.value === prevVal);
+      sel.value = hasPrev ? prevVal : 'google-floodhub-settings-110-epochs';
+      fcSelectedModelId = sel.value;
+
+      const activeMeta = models.find(m => m && m.id === fcSelectedModelId) || models[0];
+      if (metaEl && activeMeta) {
+        const fcProds = Array.isArray(activeMeta.forecast_products) ? activeMeta.forecast_products.join(' + ') : 'HRES';
+        const hcProds = Array.isArray(activeMeta.hindcast_products) ? activeMeta.hindcast_products.join(', ') : 'HRES, IMERG, CPC';
+        const statusTag = activeMeta.available === false ? ' · ⏳ Training weights on GPU…' : '';
+        metaEl.innerText = `Forecast inputs: ${fcProds} · Hindcast: ${hcProds}${statusTag}`;
+      }
+    }
     const fcSelectedCatchmentIds = new Set();
     const fcKnownCatchmentIds = new Set();
 
@@ -10321,6 +10565,7 @@
 
       renderDaCurveCanvas();
       renderDaVariationalCanvas();
+      if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
     }
 
     function renderDaVariationalCanvas() {
@@ -10506,6 +10751,7 @@
           body: JSON.stringify({
             username: u,
             catchment_id: bid,
+            model_id: getSelectedForecastModelId(),
             method: 'variational',
             window_days: state.varWindowDays,
             regularization_weight: state.varRegWeight,
@@ -10642,6 +10888,7 @@
           body: JSON.stringify({
             username: u,
             catchment_id: bid,
+            model_id: getSelectedForecastModelId(),
             method: state.method,
             rho: state.rho,
             alpha: state.alpha,
@@ -12036,11 +12283,22 @@
 
       const fetchBtn = document.getElementById('fcFetchRealtimeBtn');
       const fetchBtnLabel = document.getElementById('fcFetchBtnLabel');
+      const cancelFetchBtn = document.getElementById('fcCancelFetchBtn');
       const fetchDesc = document.getElementById('fcFetchModeDesc');
       const runBtn = document.getElementById('fcRunModelBtn');
       const runBtnLabel = document.getElementById('fcRunBtnLabel');
       const runDesc = document.getElementById('fcRunModeDesc');
       const blockedReasonEl = document.getElementById('fcRunBlockedReason');
+
+      const isFetchActive = Boolean(
+        fcIsFetching || (fcStatusData && fcStatusData.fetch_progress && fcStatusData.fetch_progress.active)
+      );
+      if (cancelFetchBtn) {
+        cancelFetchBtn.classList.toggle('hidden', !isFetchActive);
+      }
+      if (typeof syncAllTabActivityIndicators === 'function') {
+        syncAllTabActivityIndicators();
+      }
 
       const issueDateEl = document.getElementById('fcIssueDateText');
       const savedStateEl = document.getElementById('fcSavedStateDateText');
@@ -12164,6 +12422,17 @@
         const cs = statusMap[cid];
         return cs ? Boolean(cs.has_realtime_data) : Boolean(fcStatusData.has_realtime_data);
       });
+      const availModels = (fcStatusData && Array.isArray(fcStatusData.available_models)) ? fcStatusData.available_models : [];
+      const selectedModelEntry = availModels.find(m => m && m.id === getSelectedForecastModelId());
+      const isSelectedModelTraining = Boolean(selectedModelEntry && selectedModelEntry.available === false);
+      if (isSelectedModelTraining) {
+        if (runBtn) runBtn.disabled = true;
+        if (blockedReasonEl) {
+          blockedReasonEl.className = 'text-[11px] text-[#b06000] leading-relaxed font-medium';
+          blockedReasonEl.innerText = `Selected model (${selectedModelEntry.short_label || selectedModelEntry.id}) is currently training on GPU. Select another model or wait for training to complete.`;
+        }
+        return;
+      }
 
       if (fcCurrentMode === 'hotstart') {
         const canRunHot = Boolean(allSelectedHotValid && allHaveData);
@@ -13366,10 +13635,11 @@
               catchment_id: basinId,
               catchment_ids: [basinId],
               mode: fcCurrentMode,
+              model_id: getSelectedForecastModelId(),
               username: u
             })
           });
-          const baseData = await baseRes.json();
+          const baseData = await safeParseJsonResponse(baseRes);
           if (baseRes.ok && baseData.status === 'success') {
             const baseItem = (baseData.results_by_id && baseData.results_by_id[basinId])
               ? baseData.results_by_id[basinId]
@@ -13399,6 +13669,7 @@
             catchment_id: basinId,
             catchment_ids: [basinId],
             mode: 'hotstart',
+            model_id: getSelectedForecastModelId(),
             username: u,
             precip_overrides: precipPayload,
             temp_overrides: edits.temp_overrides || {},
@@ -13406,7 +13677,7 @@
             is_what_if: true
           })
         });
-        const data = await res.json();
+        const data = await safeParseJsonResponse(res);
         if (!res.ok || data.status !== 'success') {
           throw new Error(data.message || `HTTP ${res.status}`);
         }
@@ -13450,6 +13721,59 @@
     const FC_UI_PRODUCT_ORDER = ['HRES', 'IMERG', 'CPC', 'AIFS', 'GFS', 'GEFS', 'IFS_ENS'];
     let fcFetchProgressPollTimer = null;
     let fcLastCompletedProductsKey = '';
+    let fcActiveFetchAbortController = null;
+
+    async function stopActiveForecastDownload() {
+      if (fcActiveFetchAbortController) {
+        try {
+          fcActiveFetchAbortController.abort();
+        } catch (_e) {
+          // Ignore abort errors
+        }
+        fcActiveFetchAbortController = null;
+      }
+      fcIsFetching = false;
+      stopForecastFetchProgressPolling();
+
+      const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+      let cancelledProgress = null;
+      try {
+        const res = await fetch('/api/forecast/cancel-fetch', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Profile': u
+          },
+          body: JSON.stringify({ username: u })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.fetch_progress) {
+            cancelledProgress = data.fetch_progress;
+            if (fcStatusData) {
+              fcStatusData.fetch_progress = cancelledProgress;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Could not notify server to cancel forecast download:', err);
+      }
+
+      const fetchStatusBox = document.getElementById('fcFetchStatusBox');
+      const fetchStatusText = document.getElementById('fcFetchStatusText');
+      if (fetchStatusBox) fetchStatusBox.classList.remove('hidden');
+      if (fetchStatusText) {
+        fetchStatusText.className = 'font-medium text-[#b06000] leading-snug';
+        fetchStatusText.innerText = 'Download stopped by user.';
+      }
+      renderForecastFetchProgressUI(cancelledProgress || (fcStatusData && fcStatusData.fetch_progress) || null);
+      updateForecastControlsUI();
+      updateWhatIfControlsUI();
+      if (typeof syncAllTabActivityIndicators === 'function') {
+        syncAllTabActivityIndicators();
+      }
+      refreshForecastTabStatus();
+    }
 
     function formatFetchEtaSeconds(sec) {
       if (sec === null || sec === undefined || !isFinite(sec) || sec <= 0) return '';
@@ -13465,6 +13789,14 @@
       const diskStatus = (prog && prog.products_disk_status) || (fcStatusData && fcStatusData.products_disk_status) || {};
       const activeProds = (prog && prog.products) || {};
       const isActive = Boolean((prog && prog.active) || fcIsFetching);
+      const isCancelled = Boolean(prog && prog.status === 'cancelled');
+      const cancelFetchBtn = document.getElementById('fcCancelFetchBtn');
+      if (cancelFetchBtn) {
+        cancelFetchBtn.classList.toggle('hidden', !isActive);
+      }
+      if (typeof syncAllTabActivityIndicators === 'function') {
+        syncAllTabActivityIndicators();
+      }
       const summaryBadge = document.getElementById('fcProductsOverallSummaryBadge');
       const statusBox = document.getElementById('fcFetchStatusBox');
       const statusText = document.getElementById('fcFetchStatusText');
@@ -13489,7 +13821,7 @@
 
         if (!badgeEl || !barEl) return;
 
-        if (pLive && isActive) {
+        if (pLive && (isActive || pLive.status === 'cancelled')) {
           const st = pLive.status || 'queued';
           const pct = Math.max(0, Math.min(100, Number(pLive.percent || 0)));
           const cur = Number(pLive.current || 0);
@@ -13517,6 +13849,16 @@
             if (metaEl) {
               metaEl.classList.remove('hidden');
               metaEl.innerHTML = `<span>${cur} / ${tot} ${unit}s</span><span>${etaTxt || (pLive.rate ? `${pLive.rate}/${unit}` : 'active')}</span>`;
+            }
+          } else if (st === 'cancelled') {
+            badgeEl.className = 'text-[9.5px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293]';
+            badgeEl.innerText = '⏹ Stopped';
+            barEl.className = 'h-full bg-[#f9ab00] rounded-full transition-all duration-300';
+            barEl.style.width = `${pct}%`;
+            if (rowEl) rowEl.className = 'p-1.5 rounded-md border border-[#fde293] bg-[#fef7e0]/25 space-y-1 transition';
+            if (metaEl) {
+              metaEl.classList.remove('hidden');
+              metaEl.innerHTML = `<span>Stopped at ${cur}/${tot || 366} ${unit}s</span><span>Cancelled</span>`;
             }
           } else if (st === 'error') {
             badgeEl.className = 'text-[9.5px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#fce8e6] text-[#c5221f] border border-[#fad2cf]';
@@ -13555,6 +13897,8 @@
       if (summaryBadge) {
         if (isActive && prog && prog.total_products_count > 0) {
           summaryBadge.innerText = `Downloading ${prog.completed_products_count || 0}/${prog.total_products_count} · ${Number(prog.overall_percent || 0).toFixed(0)}%`;
+        } else if (isCancelled) {
+          summaryBadge.innerText = `Stopped · ${readyCount}/${FC_UI_PRODUCT_ORDER.length} Ready`;
         } else {
           summaryBadge.innerText = `${readyCount}/${FC_UI_PRODUCT_ORDER.length} Ready on Disk`;
         }
@@ -13610,6 +13954,64 @@
       }
     }
 
+    async function safeParseJsonResponse(res) {
+      const rawText = await res.text();
+      try {
+        return JSON.parse(rawText);
+      } catch (_parseErr) {
+        const preview = (rawText || '').trim().replace(/\s+/g, ' ').slice(0, 180);
+        return {
+          status: 'error',
+          _nonJson: true,
+          httpStatus: res.status,
+          message: preview
+            ? `Server/proxy returned non-JSON response (HTTP ${res.status}): ${preview}`
+            : `Server/proxy returned empty response (HTTP ${res.status})`
+        };
+      }
+    }
+
+    async function waitForBackgroundFetchCompletion(u, basinId, targetIds) {
+      const cidsParam = targetIds.length > 0 ? `&catchment_ids=${encodeURIComponent(targetIds.join(','))}` : '';
+      let lastProg = null;
+      while (fcIsFetching) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        if (!fcIsFetching) break;
+        try {
+          const pRes = await fetch(`/api/forecast/fetch-progress?catchment_id=${encodeURIComponent(basinId || targetIds[0] || '')}${cidsParam}&username=${encodeURIComponent(u)}`, {
+            headers: { 'X-User-Profile': u }
+          });
+          if (!pRes.ok) continue;
+          const prog = await safeParseJsonResponse(pRes);
+          if (prog && !prog._nonJson) {
+            lastProg = prog;
+            renderForecastFetchProgressUI(prog);
+            if (!prog.active) break;
+          }
+        } catch (_pollErr) {
+          // Ignore transient poll errors while background fetch continues
+        }
+      }
+      if (lastProg && lastProg.status === 'error') {
+        throw new Error(lastProg.error || lastProg.message || 'Background fetch failed');
+      }
+      if (lastProg && lastProg.status === 'cancelled') {
+        return { status: 'cancelled', cancelled: true, message: lastProg.message || 'Download stopped by user.' };
+      }
+      const modelParam = `&model_id=${encodeURIComponent(getSelectedForecastModelId())}`;
+      const stRes = await fetch(`/api/forecast/status?catchment_id=${encodeURIComponent(basinId || targetIds[0] || '')}${cidsParam}${modelParam}&username=${encodeURIComponent(u)}`, {
+        headers: { 'X-User-Profile': u }
+      });
+      const stData = await safeParseJsonResponse(stRes);
+      if (!stRes.ok || stData.status !== 'success') {
+        throw new Error(stData.message || `HTTP ${stRes.status}`);
+      }
+      if (lastProg && lastProg.fetch_summary && !stData.fetch_summary) {
+        stData.fetch_summary = lastProg.fetch_summary;
+      }
+      return stData;
+    }
+
     async function pollForecastFetchProgressOnce() {
       const basinId = getActiveForecastBasinId();
       const selectedIds = getSelectedForecastCatchmentIds();
@@ -13620,7 +14022,8 @@
           headers: { 'X-User-Profile': u }
         });
         if (!res.ok) return;
-        const prog = await res.json();
+        const prog = await safeParseJsonResponse(res);
+        if (!prog || prog._nonJson) return;
         if (fcStatusData) {
           fcStatusData.fetch_progress = prog;
           if (prog.products_disk_status) {
@@ -13663,6 +14066,9 @@
     }
 
     function renderForecastRunProgressUI(prog) {
+      if (typeof syncAllTabActivityIndicators === 'function') {
+        syncAllTabActivityIndicators();
+      }
       const box = document.getElementById('fcRunProgressBox');
       const statusText = document.getElementById('fcRunStatusText');
       const pctBadge = document.getElementById('fcRunOverallPctBadge');
@@ -13762,7 +14168,8 @@
           headers: { 'X-User-Profile': u }
         });
         if (!res.ok) return;
-        const prog = await res.json();
+        const prog = await safeParseJsonResponse(res);
+        if (!prog || prog._nonJson) return;
         if (fcStatusData) {
           fcStatusData.run_progress = prog;
         }
@@ -13825,7 +14232,8 @@
       try {
         const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
         const cidsParam = selectedIds.length > 0 ? `&catchment_ids=${encodeURIComponent(selectedIds.join(','))}` : '';
-        const res = await fetch(`/api/forecast/status?catchment_id=${encodeURIComponent(basinId)}${cidsParam}&username=${encodeURIComponent(u)}`, {
+        const modelParam = `&model_id=${encodeURIComponent(getSelectedForecastModelId())}`;
+        const res = await fetch(`/api/forecast/status?catchment_id=${encodeURIComponent(basinId)}${cidsParam}${modelParam}&username=${encodeURIComponent(u)}`, {
           headers: { 'X-User-Profile': u }
         });
         const data = await res.json();
@@ -13834,6 +14242,9 @@
           return;
         }
         if (res.ok && data.status === 'success') {
+          if (Array.isArray(data.available_models)) {
+            updateForecastModelSelectorUI(data.available_models);
+          }
           fcStatusDataByBasin[basinId] = data;
           if (Array.isArray(data.observed_streamflow)) {
             fcObservedStreamflowByBasin[basinId] = data.observed_streamflow;
@@ -13899,15 +14310,34 @@
       const variableSel = document.getElementById('fcForecastVariableSelect');
       const fetchBtn = document.getElementById('fcFetchRealtimeBtn');
       const fetchBtnLabel = document.getElementById('fcFetchBtnLabel');
+      const cancelFetchBtn = document.getElementById('fcCancelFetchBtn');
+      const liveBannerStopBtn = document.getElementById('fcLiveBannerStopBtn');
       const fetchStatusBox = document.getElementById('fcFetchStatusBox');
       const fetchStatusText = document.getElementById('fcFetchStatusText');
       const fetchProductsList = document.getElementById('fcFetchProductsList');
       const runBtn = document.getElementById('fcRunModelBtn');
       const runBtnLabel = document.getElementById('fcRunBtnLabel');
       const blockedReasonEl = document.getElementById('fcRunBlockedReason');
+      const fcModelSel = document.getElementById('fcModelSelect');
       const resetWhatIfBtn = document.getElementById('fcResetWhatIfInputsBtn');
       const runWhatIfBtn = document.getElementById('fcRunWhatIfBtn');
       const clearAllWhatIfsBtn = document.getElementById('fcClearAllWhatIfsBtn');
+
+      if (cancelFetchBtn) {
+        cancelFetchBtn.addEventListener('click', () => stopActiveForecastDownload());
+      }
+      if (liveBannerStopBtn) {
+        liveBannerStopBtn.addEventListener('click', () => stopActiveForecastDownload());
+      }
+
+      if (fcModelSel) {
+        fcModelSel.addEventListener('change', () => {
+          fcSelectedModelId = String(fcModelSel.value || 'google-floodhub-settings-110-epochs').trim();
+          updateForecastModelSelectorUI(fcStatusData && fcStatusData.available_models);
+          fcStatusDataByBasin = {};
+          refreshForecastTabStatus();
+        });
+      }
 
       if (coldBtn) {
         coldBtn.addEventListener('click', () => setForecastMode('coldstart'));
@@ -13982,7 +14412,7 @@
               username: u
             })
           });
-          const data = await res.json();
+          const data = await safeParseJsonResponse(res);
           if (!res.ok || data.status !== 'success') {
             throw new Error(data.message || `HTTP ${res.status}`);
           }
@@ -14044,7 +14474,7 @@
                 username: u
               })
             });
-            const data = await res.json();
+            const data = await safeParseJsonResponse(res);
             if (!res.ok || data.status !== 'success') {
               throw new Error(data.message || `HTTP ${res.status}`);
             }
@@ -14164,24 +14594,38 @@
 
           try {
             const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+            fcActiveFetchAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
             const res = await fetch('/api/forecast/fetch-realtime', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'X-User-Profile': u
               },
+              signal: fcActiveFetchAbortController ? fcActiveFetchAbortController.signal : undefined,
               body: JSON.stringify({
                 catchment_id: basinId || targetIds[0],
                 catchment_ids: targetIds,
                 mode: fcCurrentMode,
+                model_id: getSelectedForecastModelId(),
                 products: reqProds,
                 reference_date: 'latest',
+                async_poll: true,
                 username: u
               })
             });
-            const data = await res.json();
-            if (!res.ok || data.status !== 'success') {
-              throw new Error(data.message || `HTTP ${res.status}`);
+            let data = await safeParseJsonResponse(res);
+            if ((res.ok && (data.status === 'running' || data.async_in_progress)) || data._nonJson) {
+              data = await waitForBackgroundFetchCompletion(u, basinId || targetIds[0], targetIds);
+            }
+            if (data && data.status === 'cancelled') {
+              if (fetchStatusText) {
+                fetchStatusText.className = 'font-medium text-[#b06000]';
+                fetchStatusText.innerText = data.message || 'Download stopped by user.';
+              }
+              return;
+            }
+            if (!data || data.status !== 'success') {
+              throw new Error((data && data.message) || `HTTP ${res.status}`);
             }
 
             fcStatusData = data;
@@ -14208,11 +14652,17 @@
               fetchProductsList.innerText = `Streams updated: ${writtenKeys.join(', ')}`;
             }
           } catch (err) {
-            if (fetchStatusText) {
+            if (err && err.name === 'AbortError') {
+              if (fetchStatusText) {
+                fetchStatusText.className = 'font-medium text-[#b06000]';
+                fetchStatusText.innerText = 'Download stopped by user.';
+              }
+            } else if (fetchStatusText) {
               fetchStatusText.className = 'font-medium text-[#d93025]';
               fetchStatusText.innerText = `Fetch failed: ${err.message}`;
             }
           } finally {
+            fcActiveFetchAbortController = null;
             fcIsFetching = false;
             stopForecastFetchProgressPolling();
             renderForecastFetchProgressUI((fcStatusData && fcStatusData.fetch_progress) || null);
@@ -14272,10 +14722,11 @@
                 catchment_id: basinId || targetIds[0],
                 catchment_ids: targetIds,
                 mode: fcCurrentMode,
+                model_id: getSelectedForecastModelId(),
                 username: u
               })
             });
-            const data = await res.json();
+            const data = await safeParseJsonResponse(res);
             if (!res.ok || data.status !== 'success') {
               throw new Error(data.message || `HTTP ${res.status}`);
             }
@@ -17390,12 +17841,289 @@
       }
     });
 
-    // Wire up Tab Navigation buttons
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (btn.dataset.tab) switchTab(btn.dataset.tab);
+    // Wire up Tab Navigation buttons and Drag-to-Reorder Tab Bar
+    const TAB_ORDER_STORAGE_KEY = 'openhydronet.tabOrder.v1';
+    let suppressNextTabClickAfterDrag = false;
+
+    function initDraggableTabBar() {
+      const tabBar = document.getElementById('mainTabBar');
+      if (!tabBar) return;
+
+      // Restore persisted tab order if present
+      try {
+        const savedOrderRaw = localStorage.getItem(TAB_ORDER_STORAGE_KEY);
+        if (savedOrderRaw) {
+          const savedOrder = JSON.parse(savedOrderRaw);
+          if (Array.isArray(savedOrder) && savedOrder.length > 0) {
+            const btnByTab = new Map();
+            tabBar.querySelectorAll('.tab-btn').forEach(btn => {
+              if (btn.dataset.tab) btnByTab.set(btn.dataset.tab, btn);
+            });
+            savedOrder.forEach(tabId => {
+              const btn = btnByTab.get(tabId);
+              if (btn) tabBar.appendChild(btn);
+            });
+          }
+        }
+      } catch (e) {
+        // Ignore storage errors
+      }
+
+      let draggedTabBtn = null;
+
+      function clearDropClasses() {
+        tabBar.querySelectorAll('.tab-btn').forEach(btn => {
+          btn.classList.remove('tab-drop-before', 'tab-drop-after');
+        });
+      }
+
+      function persistCurrentTabOrder() {
+        try {
+          const order = Array.from(tabBar.querySelectorAll('.tab-btn'))
+            .map(btn => btn.dataset.tab)
+            .filter(Boolean);
+          localStorage.setItem(TAB_ORDER_STORAGE_KEY, JSON.stringify(order));
+        } catch (e) {
+          // Ignore storage errors
+        }
+      }
+
+      tabBar.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.setAttribute('draggable', 'true');
+
+        btn.addEventListener('click', (e) => {
+          if (suppressNextTabClickAfterDrag) {
+            e.preventDefault();
+            e.stopPropagation();
+            suppressNextTabClickAfterDrag = false;
+            return;
+          }
+          if (btn.dataset.tab) switchTab(btn.dataset.tab);
+        });
+
+        btn.addEventListener('dragstart', (e) => {
+          draggedTabBtn = btn;
+          btn.classList.add('tab-dragging');
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            try {
+              e.dataTransfer.setData('text/plain', btn.dataset.tab || '');
+            } catch (_) {}
+          }
+        });
+
+        btn.addEventListener('dragover', (e) => {
+          if (!draggedTabBtn || draggedTabBtn === btn) return;
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+          clearDropClasses();
+          const rect = btn.getBoundingClientRect();
+          const isAfter = (e.clientX - rect.left) > (rect.width / 2);
+          btn.classList.add(isAfter ? 'tab-drop-after' : 'tab-drop-before');
+        });
+
+        btn.addEventListener('dragleave', () => {
+          btn.classList.remove('tab-drop-before', 'tab-drop-after');
+        });
+
+        btn.addEventListener('drop', (e) => {
+          if (!draggedTabBtn || draggedTabBtn === btn) return;
+          e.preventDefault();
+          const rect = btn.getBoundingClientRect();
+          const insertAfter = (e.clientX - rect.left) > (rect.width / 2);
+          clearDropClasses();
+          if (insertAfter) {
+            btn.insertAdjacentElement('afterend', draggedTabBtn);
+          } else {
+            btn.insertAdjacentElement('beforebegin', draggedTabBtn);
+          }
+          suppressNextTabClickAfterDrag = true;
+          setTimeout(() => { suppressNextTabClickAfterDrag = false; }, 150);
+          persistCurrentTabOrder();
+        });
+
+        btn.addEventListener('dragend', () => {
+          if (draggedTabBtn) draggedTabBtn.classList.remove('tab-dragging');
+          draggedTabBtn = null;
+          clearDropClasses();
+        });
       });
-    });
+    }
+
+    // Track server-side background job activity discovered via global monitor
+    let serverDetectedActiveTabs = {
+      'tab-weather': false,
+      'tab-maas': false,
+      'tab-delineation': false,
+      'tab-geo-features': false,
+      'tab-training': false,
+      'tab-finetuning': false,
+      'tab-forecasting': false,
+    };
+    let serverDetectedDownloadActive = false;
+
+    function isAnyVarDaRunning() {
+      try {
+        if (typeof fcDaStateByBasin === 'object' && fcDaStateByBasin) {
+          return Object.values(fcDaStateByBasin).some(s => Boolean(s && s.varRunning));
+        }
+      } catch (_) {}
+      return false;
+    }
+
+    function syncAllTabActivityIndicators() {
+      const delineateSpinner = document.getElementById('delineateSpinner');
+      const isDelineating = Boolean(delineateSpinner && !delineateSpinner.classList.contains('hidden'));
+      const isGeoExtracting = (typeof geoActiveExtractionCount === 'number' && geoActiveExtractionCount > 0);
+      const isWeatherRefreshing = Boolean(typeof activeWeatherRefreshJobId !== 'undefined' && activeWeatherRefreshJobId) || Boolean(serverDetectedActiveTabs['tab-weather']);
+      const isHistRunning = Boolean(typeof activeHistJobId !== 'undefined' && activeHistJobId) || Boolean(serverDetectedActiveTabs['tab-training']);
+      const isFtActive = Boolean(typeof ftIsRunning !== 'undefined' && ftIsRunning) || Boolean(serverDetectedActiveTabs['tab-finetuning']);
+      const isFcFetching = Boolean(typeof fcIsFetchingRealtime !== 'undefined' && fcIsFetchingRealtime);
+      const isFcModelRunning = Boolean(typeof fcIsRunningModels !== 'undefined' && fcIsRunningModels) || Boolean(typeof activeForecastJobId !== 'undefined' && activeForecastJobId);
+      const isFcActive = isFcFetching || isFcModelRunning || isAnyVarDaRunning() || Boolean(serverDetectedActiveTabs['tab-forecasting']);
+
+      const activeByTab = {
+        'tab-weather': isWeatherRefreshing,
+        'tab-maas': Boolean(serverDetectedActiveTabs['tab-maas']),
+        'tab-delineation': isDelineating || Boolean(serverDetectedActiveTabs['tab-delineation']),
+        'tab-geo-features': isGeoExtracting || Boolean(serverDetectedActiveTabs['tab-geo-features']),
+        'tab-training': isHistRunning,
+        'tab-finetuning': isFtActive,
+        'tab-forecasting': isFcActive,
+      };
+
+      document.querySelectorAll('.tab-activity-spinner[data-tab-spinner]').forEach(el => {
+        const tabId = el.getAttribute('data-tab-spinner');
+        const active = Boolean(tabId && activeByTab[tabId]);
+        el.classList.toggle('hidden', !active);
+      });
+
+      const anyDownloadActive = isFcFetching || isWeatherRefreshing || isHistRunning || Boolean(serverDetectedDownloadActive);
+      const globalStopBtn = document.getElementById('globalStopDownloadsBtn');
+      if (globalStopBtn) {
+        globalStopBtn.classList.toggle('hidden', !anyDownloadActive);
+      }
+      const fcCancelBtn = document.getElementById('fcCancelFetchBtn');
+      if (fcCancelBtn) {
+        fcCancelBtn.classList.toggle('hidden', !(isFcFetching || Boolean(serverDetectedDownloadActive && activeByTab['tab-forecasting'])));
+      }
+      const fcLiveStopBtn = document.getElementById('fcLiveBannerStopBtn');
+      if (fcLiveStopBtn) {
+        fcLiveStopBtn.classList.toggle('hidden', !(isFcFetching || Boolean(serverDetectedDownloadActive && activeByTab['tab-forecasting'])));
+      }
+    }
+
+    async function stopAllActiveDownloads() {
+      const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
+      const headers = { 'Content-Type': 'application/json' };
+      if (u) headers['X-User-Profile'] = u;
+
+      try {
+        if (typeof stopActiveForecastDownload === 'function') {
+          await stopActiveForecastDownload();
+        } else {
+          await fetch('/api/forecast/cancel-fetch', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ username: u || undefined }),
+          });
+        }
+      } catch (_) {}
+
+      try {
+        if (typeof stopActiveHistoricalJob === 'function' && activeHistJobId) {
+          await stopActiveHistoricalJob();
+        }
+      } catch (_) {}
+
+      try {
+        await fetch('/api/jobs/cancel', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ cancel_all: true }),
+        });
+      } catch (_) {}
+
+      activeWeatherRefreshJobId = null;
+      activeHistJobId = null;
+      serverDetectedDownloadActive = false;
+      serverDetectedActiveTabs['tab-weather'] = false;
+      serverDetectedActiveTabs['tab-training'] = false;
+      serverDetectedActiveTabs['tab-forecasting'] = false;
+      syncAllTabActivityIndicators();
+    }
+
+    function startGlobalTabActivityMonitor() {
+      const globalStopBtn = document.getElementById('globalStopDownloadsBtn');
+      if (globalStopBtn) {
+        globalStopBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          stopAllActiveDownloads();
+        });
+      }
+
+      async function pollServerActivityOnce() {
+        const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
+        const headers = u ? { 'X-User-Profile': u } : {};
+        const qs = u ? `?username=${encodeURIComponent(u)}` : '';
+
+        let fcFetchRunningOnServer = false;
+        let fcRunRunningOnServer = false;
+        let weatherJobRunningOnServer = false;
+        let trainingJobRunningOnServer = false;
+
+        try {
+          const resp = await fetch(`/api/forecast/fetch-progress${qs}`, { headers });
+          if (resp.ok) {
+            const prog = await resp.json();
+            if (prog && prog.status === 'running') {
+              fcFetchRunningOnServer = true;
+              if (typeof renderForecastFetchProgressUI === 'function' && !fcIsFetchingRealtime) {
+                renderForecastFetchProgressUI(prog);
+              }
+            }
+          }
+        } catch (_) {}
+
+        try {
+          const resp = await fetch(`/api/forecast/run-progress${qs}`, { headers });
+          if (resp.ok) {
+            const rprog = await resp.json();
+            if (rprog && rprog.status === 'running') {
+              fcRunRunningOnServer = true;
+            }
+          }
+        } catch (_) {}
+
+        try {
+          const resp = await fetch('/api/jobs', { headers });
+          if (resp.ok) {
+            const jdata = await resp.json();
+            const jobs = Array.isArray(jdata && jdata.jobs) ? jdata.jobs : [];
+            jobs.forEach(j => {
+              if (!j || (j.status !== 'pending' && j.status !== 'running')) return;
+              const jType = String(j.job_type || j.type || '').toLowerCase();
+              if (jType.includes('weather')) {
+                weatherJobRunningOnServer = true;
+              } else if (jType.includes('historical') || jType.includes('extract')) {
+                trainingJobRunningOnServer = true;
+              } else if (jType.includes('forecast')) {
+                fcRunRunningOnServer = true;
+              }
+            });
+          }
+        } catch (_) {}
+
+        serverDetectedActiveTabs['tab-weather'] = weatherJobRunningOnServer;
+        serverDetectedActiveTabs['tab-training'] = trainingJobRunningOnServer;
+        serverDetectedActiveTabs['tab-forecasting'] = fcFetchRunningOnServer || fcRunRunningOnServer;
+        serverDetectedDownloadActive = fcFetchRunningOnServer || weatherJobRunningOnServer || trainingJobRunningOnServer;
+        syncAllTabActivityIndicators();
+      }
+
+      setInterval(pollServerActivityOnce, 2500);
+      setTimeout(pollServerActivityOnce, 600);
+    }
 
     // =========================================================
     // Interactive Per-Basin Fine-Tuning Controller
@@ -18509,6 +19237,7 @@
             : 0;
 
           ftIsRunning = true;
+          if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
           runBtn.disabled = true;
           const statePill = document.getElementById('ftSessionStatePill');
           if (statePill) {
@@ -18519,24 +19248,29 @@
 
           const headers = { 'Content-Type': 'application/json' };
           if (u) headers['X-User-Profile'] = u;
-          const resp = await fetch('/api/finetune/run', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              username: u || undefined,
-              basin_id: basinId,
-              model_id: modelId,
-              epochs: epochs,
-              learning_rate: lr,
-              loss: lossVal,
-              learning_rate_strategy: lrStrat,
-              batch_size: batchSize,
-              finetune_modules: Array.from(ftSelectedModulesSet),
-              split_ratio: splitRatio,
-            }),
-          });
-          ftIsRunning = false;
-          runBtn.disabled = false;
+          let resp;
+          try {
+            resp = await fetch('/api/finetune/run', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                username: u || undefined,
+                basin_id: basinId,
+                model_id: modelId,
+                epochs: epochs,
+                learning_rate: lr,
+                loss: lossVal,
+                learning_rate_strategy: lrStrat,
+                batch_size: batchSize,
+                finetune_modules: Array.from(ftSelectedModulesSet),
+                split_ratio: splitRatio,
+              }),
+            });
+          } finally {
+            ftIsRunning = false;
+            runBtn.disabled = false;
+            if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
+          }
 
           const payload = await resp.json();
           if (!resp.ok) {
@@ -18588,10 +19322,13 @@
     }
 
     // Initialize interactive modules
+    initDraggableTabBar();
     initUnifiedSidebar();
     initWeatherViewerInteractivity();
     initModelingInteractivity();
     if (typeof initFineTuningInteractivity === 'function') initFineTuningInteractivity();
+    startGlobalTabActivityMonitor();
+    syncAllTabActivityIndicators();
     updateActiveBasinHeader();
 
     // Start Map

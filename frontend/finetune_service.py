@@ -108,11 +108,27 @@ _STREAMFLOW_CMS_UNITS = frozenset({'m3/s', 'cms', 'm³/s'})
 PRETRAINED_MODEL_DIRS: tuple[tuple[str, str, Path], ...] = (
     (
         'google-floodhub-settings-110-epochs',
-        'Google FloodHub Pretrained (110 Epochs, CMAL)',
+        'Google FloodHub Pretrained (With GraphCast, 110 Epochs)',
         REPO_ROOT
         / 'model'
         / 'pretrained-models'
         / 'google-floodhub-settings-110-epochs',
+    ),
+    (
+        'google-floodhub-settings-no-graphcast-110-epochs',
+        'Google FloodHub Pretrained (Without GraphCast, 110 Epochs)',
+        REPO_ROOT
+        / 'model'
+        / 'pretrained-models'
+        / 'google-floodhub-settings-no-graphcast-110-epochs',
+    ),
+    (
+        'google-floodhub-settings-aifs-110-epochs',
+        'Google FloodHub Pretrained (With ECMWF AIFS, 110 Epochs)',
+        REPO_ROOT
+        / 'model'
+        / 'pretrained-models'
+        / 'google-floodhub-settings-aifs-110-epochs',
     ),
 )
 

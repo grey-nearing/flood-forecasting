@@ -66,6 +66,7 @@ from frontend.profile_manager import (
     is_valid_watershed_name,
 )
 from frontend.realtime_forecast_service import (
+    cancel_realtime_fetch,
     clear_realtime_streamflow_csv,
     fetch_realtime_for_basin,
     get_realtime_fetch_progress,
@@ -1095,6 +1096,10 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             or query.get('requested_issue_date', [''])[0].strip()
             or None
         )
+        model_id = (
+            query.get('model_id', ['google-floodhub-settings-110-epochs'])[0]
+            or 'google-floodhub-settings-110-epochs'
+        ).strip()
         if not is_valid_issue_date_str(requested_issue_date):
             self._send_error(
                 f'Invalid issue_date {requested_issue_date!r}; expected '
@@ -1119,6 +1124,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                     'status': 'no_catchment',
                     'username': user,
                     'basin_id': None,
+                    'model_id': model_id,
                     'selected_catchment_ids': [],
                     'catchments_status': {},
                     'issue_date': None,
@@ -1148,6 +1154,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             query_upstream_if_empty=query_upstream,
             basin_ids=catchment_ids or None,
             requested_issue_date=requested_issue_date,
+            model_id=model_id,
         )
         self._send_json(payload)
 
@@ -1528,6 +1535,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/weather/forecast': self._post_weather_forecast,
             '/api/attributes/extract': self._post_attributes_extract,
             '/api/forecast/fetch-realtime': self._post_forecast_fetch_realtime,
+            '/api/forecast/cancel-fetch': self._post_forecast_cancel_fetch,
             '/api/forecast/run-model': self._post_forecast_run_model,
             '/api/forecast/upload-streamflow': (
                 self._post_forecast_upload_streamflow
@@ -1542,6 +1550,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/finetune/reset': self._post_finetune_reset,
             '/api/weather/refresh': self._post_weather_refresh,
             '/api/weather/sync': self._post_weather_refresh,
+            '/api/jobs/cancel': self._post_jobs_cancel,
         }
         handler = routes.get(path)
         if handler is None:
@@ -2551,6 +2560,9 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         products = data.get('products')
         lookback_days = data.get('lookback_days')
         overwrite = bool(data.get('overwrite', False))
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        ).strip()
 
         norm_mode = mode.lower().strip().replace('-', '').replace('_', '')
         if norm_mode not in ('coldstart', 'hotstart'):
@@ -2564,6 +2576,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 username=user,
                 basin_id=str(catchment_id or ''),
                 basin_ids=catchment_ids,
+                model_id=model_id,
             )
             if not status_info.get('can_fetch_hotstart', False):
                 msg = status_info.get('hotstart_status_message', '')
@@ -2572,6 +2585,43 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                     status=400,
                 )
                 return
+
+        async_poll = bool(data.get('async_poll', False))
+        if async_poll:
+            result_box: dict[str, Any] = {}
+
+            def _bg_fetch() -> None:
+                try:
+                    result_box['payload'] = fetch_realtime_for_basin(
+                        username=user,
+                        basin_id=catchment_id,
+                        basin_ids=catchment_ids,
+                        mode=mode,
+                        reference_date=reference_date,
+                        products=products,
+                        lookback_days=lookback_days,
+                        overwrite=overwrite,
+                        model_id=model_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    result_box['error'] = exc
+
+            bg_thread = threading.Thread(target=_bg_fetch, daemon=True)
+            bg_thread.start()
+            bg_thread.join(timeout=1.5)
+            if bg_thread.is_alive():
+                self._send_json(
+                    {
+                        'status': 'running',
+                        'async_in_progress': True,
+                        'message': 'Real-time download started in background.',
+                    }
+                )
+                return
+            if 'error' in result_box:
+                raise result_box['error']
+            self._send_json(result_box['payload'])
+            return
 
         payload = fetch_realtime_for_basin(
             username=user,
@@ -2582,14 +2632,52 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             products=products,
             lookback_days=lookback_days,
             overwrite=overwrite,
+            model_id=model_id,
         )
         self._send_json(payload)
+
+    def _post_forecast_cancel_fetch(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        payload = cancel_realtime_fetch(username=user)
+        self._send_json(payload)
+
+    def _post_jobs_cancel(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        job_id = str(data.get('job_id') or '').strip()
+        job_mgr = get_job_manager()
+        if job_id:
+            cancelled_job = job_mgr.cancel_job(job_id)
+            if cancelled_job is None:
+                self._send_error(f'Job not found: {job_id}', status=404)
+                return
+            self._send_json(
+                {
+                    'status': 'cancelled',
+                    'job': cancelled_job,
+                    'cancelled_job_ids': [job_id],
+                }
+            )
+            return
+
+        cancelled_ids = job_mgr.cancel_all_active_jobs()
+        rt_cancel = cancel_realtime_fetch(username=user)
+        self._send_json(
+            {
+                'status': 'cancelled',
+                'cancelled_job_ids': cancelled_ids,
+                'realtime_fetch_cancelled': bool(rt_cancel.get('was_active')),
+                'message': 'Stopped all active downloads.',
+            }
+        )
 
     def _post_forecast_run_model(self, data: dict[str, Any]) -> None:
         user = self._get_request_username(data)
         catchment_id = data.get('catchment_id') or data.get('basin_id')
         catchment_ids = data.get('catchment_ids') or data.get('basin_ids')
         mode = str(data.get('mode', 'coldstart'))
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        ).strip()
         model_run_dir = data.get('model_run_dir')
         requested_issue_date = data.get('requested_issue_date') or data.get(
             'issue_date'
@@ -2611,6 +2699,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 username=user,
                 basin_id=str(catchment_id or ''),
                 basin_ids=catchment_ids,
+                model_id=model_id,
             )
             if not status_info.get('can_run_hotstart', False):
                 msg = status_info.get('hotstart_status_message', '')
@@ -2625,6 +2714,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             basin_id=catchment_id,
             basin_ids=catchment_ids,
             mode=mode,
+            model_id=model_id,
             model_run_dir=model_run_dir,
             requested_issue_date=requested_issue_date,
             precip_overrides=precip_overrides,

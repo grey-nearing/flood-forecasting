@@ -21,7 +21,7 @@ from unittest import mock
 
 import pytest
 
-from frontend.jobs import JobManager
+from frontend.jobs import JobManager, check_current_job_cancelled
 from frontend.notifier import format_extraction_email, send_email_notification
 from utils.file_paths import (
     DEFAULT_LOCAL_SERVER_URL,
@@ -132,6 +132,45 @@ class JobsAndNotifierTest(unittest.TestCase):
         assert job_after is not None
         assert job_after['status'] == 'completed'
         assert job_after['result']['val'] == expected_val
+
+    def test_job_manager_cancel_job_and_cancel_all(self) -> None:
+        """Verify JobManager can cancel active jobs and cooperatively abort."""
+        manager = JobManager(max_workers=2)
+
+        def long_running_task() -> dict[str, object]:
+            for _ in range(50):
+                check_current_job_cancelled()
+                time.sleep(0.02)
+            return {'status': 'success'}
+
+        job_id = manager.submit_job(
+            job_type='historical_extraction',
+            task_fn=long_running_task,
+            notify_email=None,
+        )
+        time.sleep(0.05)
+        cancel_res = manager.cancel_job(job_id)
+        assert cancel_res is not None
+        assert cancel_res['status'] == 'cancelled'
+
+        for _ in range(25):
+            cur = manager.get_job(job_id)
+            if cur is not None and cur['status'] == 'cancelled':
+                break
+            time.sleep(0.05)
+
+        final_state = manager.get_job(job_id)
+        assert final_state is not None
+        assert final_state['status'] == 'cancelled'
+
+        # Also test cancel_all_active_jobs
+        job_id_2 = manager.submit_job(
+            job_type='weather_refresh',
+            task_fn=long_running_task,
+            notify_email=None,
+        )
+        cancelled_ids = manager.cancel_all_active_jobs()
+        assert job_id_2 in cancelled_ids
 
 
 if __name__ == '__main__':

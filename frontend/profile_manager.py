@@ -1159,7 +1159,26 @@ class ProfileManager:
                             shutil.rmtree(tmp_z, ignore_errors=True)
                         for var in list(ds_filtered.variables.values()):
                             var.encoding.clear()
-                        ds_filtered.to_zarr(tmp_z, mode='w')
+                        prune_chunks: dict[str, int] = {
+                            b_key: max(1, len(present_keep))
+                        }
+                        if 'date' in ds_filtered.dims:
+                            prune_chunks['date'] = 1
+                        if 'lead_time' in ds_filtered.dims:
+                            prune_chunks['lead_time'] = max(
+                                1, int(ds_filtered.sizes['lead_time'])
+                            )
+                        if 'ensemble_member' in ds_filtered.dims:
+                            prune_chunks['ensemble_member'] = max(
+                                1, int(ds_filtered.sizes['ensemble_member'])
+                            )
+                        ds_filtered = ds_filtered.chunk(prune_chunks)
+                        ds_filtered.to_zarr(
+                            tmp_z,
+                            mode='w',
+                            zarr_format=2,
+                            consolidated=True,
+                        )
                         shutil.rmtree(z_path, ignore_errors=True)
                         tmp_z.replace(z_path)
                 except Exception:  # noqa: BLE001
