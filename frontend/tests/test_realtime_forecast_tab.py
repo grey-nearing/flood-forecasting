@@ -2085,6 +2085,77 @@ class RealtimeForecastTabTest(unittest.TestCase):
         ):
             assert token in html
 
+    def test_async_polled_fetch_realtime_and_self_healing_zarr_open(
+        self,
+    ) -> None:
+        """Verify async_poll realtime fetch and self-healing Zarr store open."""
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir,
+            basin_id=TEST_BASIN,
+            issue_date_str='2026-03-30',
+        )
+        cpc_store = (
+            self.profile_dir
+            / 'realtime'
+            / 'dynamics'
+            / 'CPC'
+            / 'timeseries.zarr'
+        )
+        with xr.open_zarr(cpc_store, consolidated=False) as ds0:
+            orig_basins = [str(b) for b in ds0.coords['basin'].to_numpy()]
+        cpc_za = cpc_store / 'cpc_precipitation' / '.zarray'
+        za_doc = json.loads(cpc_za.read_text(encoding='utf-8'))
+        za_doc['shape'][0] = len(orig_basins) + 2
+        cpc_za.write_text(json.dumps(za_doc), encoding='utf-8')
+        realtime_forecast_service._ZARR_META_CACHE.clear()  # noqa: SLF001
+        realtime_forecast_service._ZARR_WINDOW_CACHE.clear()  # noqa: SLF001
+
+        # Self-healing open via /api/forecast/status repairs mismatched .zarray
+        code_st, st_payload = self._request(
+            'GET',
+            f'/api/forecast/status?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code_st == HTTP_OK
+        assert st_payload['status'] == 'success'
+        with xr.open_zarr(cpc_store, consolidated=False) as ds:
+            assert [str(b) for b in ds.coords['basin'].to_numpy()] == (
+                orig_basins
+            )
+            assert ds['cpc_precipitation'].shape[0] == len(orig_basins)
+
+        # Verify async_poll=True returns immediately when fetch completes fast
+        with mock.patch(
+            'frontend.server.fetch_realtime_for_basin',
+            return_value={
+                'status': 'success',
+                'catchment_id': TEST_BASIN,
+                'issue_date': '2026-03-30',
+            },
+        ):
+            code_fast, fast_res = self._request(
+                'POST',
+                '/api/forecast/fetch-realtime',
+                {
+                    'username': self.test_user,
+                    'catchment_id': TEST_BASIN,
+                    'mode': 'coldstart',
+                    'async_poll': True,
+                },
+            )
+        assert code_fast == HTTP_OK
+        assert fast_res['status'] == 'success'
+
+        html_path = (
+            Path(__file__).resolve().parent.parent / 'static' / 'index.html'
+        )
+        html = html_path.read_text(encoding='utf-8')
+        for token in (
+            'safeParseJsonResponse',
+            'waitForBackgroundFetchCompletion',
+            'async_poll: true',
+        ):
+            assert token in html
+
 
 if __name__ == '__main__':
     unittest.main()
