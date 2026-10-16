@@ -14580,6 +14580,13 @@
           barEl.style.width = '100%';
           if (rowEl) rowEl.className = 'p-1.5 rounded-md border border-[#e8eaed] bg-[#f8f9fa]/60 space-y-1 transition';
           if (metaEl) metaEl.classList.add('hidden');
+        } else if (pDisk && pDisk.stale_on_disk && pDisk.last_date) {
+          badgeEl.className = 'text-[9.5px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293]';
+          badgeEl.innerText = `Stale · ${pDisk.last_date}`;
+          barEl.className = 'h-full bg-[#f9ab00] rounded-full transition-all duration-300';
+          barEl.style.width = '35%';
+          if (rowEl) rowEl.className = 'p-1.5 rounded-md border border-[#fde293] bg-[#fef7e0]/25 space-y-1 transition';
+          if (metaEl) metaEl.classList.add('hidden');
         } else {
           badgeEl.className = 'text-[9.5px] font-mono px-1.5 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368]';
           badgeEl.innerText = 'Not fetched';

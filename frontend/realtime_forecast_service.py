@@ -230,6 +230,7 @@ _DEFAULT_LOOKBACK_DAYS = 14
 _DEFAULT_LEAD_TIME_DAYS = 7
 _HINDCAST_TAIL_DAYS = 14
 _NDIM_3D = 3
+_MAX_NOWCAST_LAG_DAYS = 5
 
 NOWCAST_PRODUCTS_METADATA: dict[str, dict[str, Any]] = {
     'IMERG': {
@@ -1548,6 +1549,8 @@ def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
         cached = _ZARR_META_CACHE.get(mkey)
         if cached is not None:
             return cached
+    last_date_str: str | None = None
+    has_lead_time = False
     try:
         with _open_zarr_self_healing(store_path) as ds:
             basins = (
@@ -1555,6 +1558,12 @@ def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
                 if 'basin' in ds.coords
                 else []
             )
+            has_lead_time = 'lead_time' in ds.dims
+            if 'date' in ds.coords and int(ds.sizes.get('date', 0)) > 0:
+                last_ts = pd.Timestamp(ds.coords['date'].to_numpy()[-1]).floor(
+                    'D'
+                )
+                last_date_str = _format_date_str(last_ts)
     except Exception:
         logger.warning(
             'Could not read Zarr store metadata at %s',
@@ -1566,6 +1575,8 @@ def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
         'basins': basins,
         'lower_map': {b.lower(): b for b in basins},
         'latest_issue_by_basin': {},
+        'last_date': last_date_str,
+        'has_lead_time': has_lead_time,
     }
     with _ZARR_CACHE_LOCK:
         existing = _ZARR_META_CACHE.get(mkey)
@@ -2645,28 +2656,56 @@ def _inspect_products_disk_readiness(
         if k not in all_prods:
             all_prods.append(k)
 
+    metas_by_prod: dict[str, dict[str, Any]] = {}
+    for prod_name in all_prods:
+        store_path = stores.get(prod_name)
+        if store_path is not None and _is_valid_zarr_store(store_path):
+            metas_by_prod[prod_name] = _get_cached_store_meta(store_path)
+
+    all_last_dates = [
+        str(m['last_date'])
+        for m in metas_by_prod.values()
+        if m.get('last_date')
+    ]
+    ref_last_date = max(all_last_dates) if all_last_dates else None
+
     readiness: dict[str, dict[str, Any]] = {}
     for prod_name in all_prods:
         store_path = stores.get(prod_name)
-        valid_store = store_path is not None and _is_valid_zarr_store(
-            store_path
-        )
-        ready_for_basin = False
+        meta = metas_by_prod.get(prod_name)
+        valid_store = meta is not None and store_path is not None
+        has_basins = False
+        is_current = True
         basins_count = 0
-        if valid_store and store_path is not None:
-            meta = _get_cached_store_meta(store_path)
+        last_date = meta.get('last_date') if meta is not None else None
+        if valid_store and meta is not None:
             basins_count = len(meta['basins'])
             if eval_ids:
-                ready_for_basin = all(
+                has_basins = all(
                     cid in meta['basins'] or cid.lower() in meta['lower_map']
                     for cid in eval_ids
                 )
             else:
-                ready_for_basin = basins_count > 0
+                has_basins = basins_count > 0
+            if ref_last_date and last_date:
+                if meta.get('has_lead_time'):
+                    is_current = str(last_date) >= str(ref_last_date)
+                else:
+                    delta_days = int(
+                        (
+                            pd.Timestamp(ref_last_date)
+                            - pd.Timestamp(last_date)
+                        ).days
+                    )
+                    is_current = delta_days <= _MAX_NOWCAST_LAG_DAYS
+        ready_for_basin = bool(has_basins and is_current)
+        stale_on_disk = bool(has_basins and not is_current)
         readiness[prod_name] = {
             'product': prod_name,
             'store_exists': bool(valid_store),
-            'ready_on_disk': bool(ready_for_basin),
+            'ready_on_disk': ready_for_basin,
+            'stale_on_disk': stale_on_disk,
+            'last_date': last_date,
             'basins_count': basins_count,
             'zarr_path': str(store_path) if valid_store else None,
         }
