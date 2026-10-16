@@ -16,12 +16,11 @@
 
 from __future__ import annotations
 
+import configparser
 import functools
 import logging
 import os
 from pathlib import Path
-import shutil
-import subprocess
 from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
@@ -271,23 +270,45 @@ def upload_file_to_gcs(local_path: Union[str, Path], gcs_uri: str) -> None:
 
 
 @functools.lru_cache(maxsize=1)
-def _gcloud_default_project() -> Optional[str]:
-  """Queries gcloud CLI once per process for the default project."""
-  gcloud_bin = shutil.which("gcloud")
-  if not gcloud_bin:
+def _gcloud_default_project() -> str | None:
+  """Read the active gcloud configuration file for the default project."""
+  cfg_env = os.environ.get("CLOUDSDK_CONFIG")
+  if cfg_env and cfg_env.strip():
+    cfg_dir = Path(cfg_env.strip())
+  elif os.name == "nt":
+    appdata = os.environ.get("APPDATA")
+    cfg_dir = (
+        Path(appdata) / "gcloud"
+        if appdata
+        else Path.home() / "AppData" / "Roaming" / "gcloud"
+    )
+  else:
+    cfg_dir = Path.home() / ".config" / "gcloud"
+
+  if not cfg_dir.is_dir():
     return None
-  res = subprocess.run(
-      [gcloud_bin, "config", "get-value", "project"],
-      capture_output=True,
-      text=True,
-      timeout=5.0,
-      check=False,
-  )
-  if res.returncode == 0:
-    proj = res.stdout.strip()
-    if proj and proj != "(unset)":
-      logger.debug("Auto-detected GCP project from gcloud config: %s", proj)
-      return proj
+
+  active_name = os.environ.get("CLOUDSDK_ACTIVE_CONFIG_NAME", "").strip()
+  if not active_name:
+    active_file = cfg_dir / "active_config"
+    active_name = (
+        active_file.read_text(encoding="utf-8").strip()
+        if active_file.is_file()
+        else "default"
+    ) or "default"
+
+  parser = configparser.ConfigParser()
+  for candidate in (
+      cfg_dir / "configurations" / f"config_{active_name}",
+      cfg_dir / "properties",
+  ):
+    if candidate.is_file():
+      parser.read(candidate, encoding="utf-8")
+      if parser.has_option("core", "project"):
+        proj = parser.get("core", "project").strip()
+        if proj and proj != "(unset)":
+          logger.debug("Auto-detected GCP project from gcloud config: %s", proj)
+          return proj
   return None
 
 
