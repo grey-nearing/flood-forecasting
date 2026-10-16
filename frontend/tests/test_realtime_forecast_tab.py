@@ -1560,6 +1560,41 @@ class RealtimeForecastTabTest(unittest.TestCase):
                 'window_days': 366,
             },
         )
+        # Pre-loop Zarr check via Dask must not jump HRES progress to 99.5%
+        realtime_forecast_service._handle_fetch_progress_event(  # noqa: SLF001
+            self.test_user,
+            {
+                'event': 'dask_step',
+                'source': 'dask',
+                'current': 1,
+                'total': 1,
+                'unit': 'chunks',
+            },
+        )
+        realtime_forecast_service._handle_fetch_progress_event(  # noqa: SLF001
+            self.test_user,
+            {
+                'event': 'bar_step',
+                'source': 'tqdm',
+                'current': 14,
+                'total': 366,
+                'unit': 'init_date',
+                'desc': 'HRES OpenData',
+                'rate': 0.1,
+                'eta_seconds': 3520.0,
+                'bar_id': 101,
+            },
+        )
+        code, early_prog = self._request(
+            'GET',
+            f'/api/forecast/fetch-progress?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code == HTTP_OK
+        assert early_prog['products']['HRES']['current'] == 14  # noqa: PLR2004
+        assert early_prog['products']['HRES']['total'] == 366  # noqa: PLR2004
+        assert early_prog['products']['HRES']['percent'] == pytest.approx(3.8)
+        assert early_prog['overall_percent'] == pytest.approx(1.3)
+
         realtime_forecast_service._handle_fetch_progress_event(  # noqa: SLF001
             self.test_user,
             {
@@ -1888,8 +1923,11 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'initHydrographNudgingDrag',
             'NUDGED FORECAST',
             'VARIATIONAL DA (4D-VAR',
+            'let fcDaAccordionExpanded = true;',
+            'userSetEnabled: false',
         ):
             assert token in html
+        assert 'let fcDaAccordionExpanded = false;' not in html
 
     def test_daily_forecast_persistence_and_ttl_expiration(self) -> None:
         """Daily forecasts persist across refresh and auto-expire after TTL."""

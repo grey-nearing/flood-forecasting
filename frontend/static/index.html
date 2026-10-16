@@ -2036,17 +2036,17 @@
 
         <!-- Step 5: Data Assimilation (Expandable / Minimalist Visual Control) -->
         <section id="fcDaSection" class="bg-[#f8f9fa] rounded-xl border border-[#dadce0] flex-shrink-0">
-          <button id="fcDaToggleHeaderBtn" type="button" aria-expanded="false" aria-controls="fcDaCollapsibleBody" class="w-full px-4 py-3 rounded-xl flex items-center justify-between gap-2 text-left hover:bg-[#f1f3f4]/80 transition">
+          <button id="fcDaToggleHeaderBtn" type="button" aria-expanded="true" aria-controls="fcDaCollapsibleBody" class="w-full px-4 py-3 rounded-xl flex items-center justify-between gap-2 text-left hover:bg-[#f1f3f4]/80 transition">
             <span class="text-xs font-bold text-[#202124] uppercase tracking-wider flex items-center gap-1.5">
               <i data-lucide="sliders-horizontal" class="w-4 h-4 text-[#d97706]"></i> 5. Data Assimilation
             </span>
             <span class="flex items-center gap-1.5">
-              <span id="fcDaSummaryBadge" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white border border-[#dadce0] text-[#5f6368]">Off</span>
-              <i id="fcDaChevronIcon" data-lucide="chevron-down" class="w-3.5 h-3.5 text-[#5f6368] transition-transform duration-200"></i>
+              <span id="fcDaSummaryBadge" title="Click to toggle Data Assimilation On / Off" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#fef7e0] border border-[#fde293] text-[#b06000] font-semibold cursor-pointer">ρ=0.65 · α=100%</span>
+              <i id="fcDaChevronIcon" data-lucide="chevron-down" style="transform: rotate(180deg);" class="w-3.5 h-3.5 text-[#5f6368] transition-transform duration-200"></i>
             </span>
           </button>
 
-          <div id="fcDaCollapsibleBody" class="hidden px-4 pb-4 pt-2 space-y-3 border-t border-[#e8eaed]">
+          <div id="fcDaCollapsibleBody" class="px-4 pb-4 pt-2 space-y-3 border-t border-[#e8eaed]">
             <!-- Minimalist 2-Method Segmented Switcher: 1) Nudging (Post-Processing) 2) Variational Embedding -->
             <div class="grid grid-cols-2 gap-1 bg-[#e8eaed] p-1 rounded-lg" role="tablist" aria-label="Data Assimilation Method">
               <button id="fcDaMethodNudgingBtn" type="button" data-da-method="nudging" class="py-1.5 px-2 rounded-md text-[11px] font-semibold transition bg-white text-[#202124] shadow-2xs">
@@ -9651,7 +9651,7 @@
     // Method 1: Nudging with Persistence (Karan's Post-Processing, Eq. 6: Q_pp = max(0, Q_base + alpha * rho^k * e_t0))
     // Method 2: Variational Embedding Data Assimilation (Latent 4D-Var)
     let fcDaStateByBasin = {};
-    let fcDaAccordionExpanded = false;
+    let fcDaAccordionExpanded = true;
     let fcDaCurveCanvasBound = false;
     let fcDaVarCanvasBound = false;
     let fcHydroDaDragBound = false;
@@ -9707,7 +9707,7 @@
             daToSave[cid] = Object.assign({}, st, { varRunning: false });
           }
         });
-        if (Object.keys(modelsToSave).length === 0 && Object.keys(whatIfsToSave).length === 0) {
+        if (Object.keys(modelsToSave).length === 0 && Object.keys(whatIfsToSave).length === 0 && Object.keys(daToSave).length === 0) {
           localStorage.removeItem(key);
           return;
         }
@@ -9762,10 +9762,15 @@
         if (parsed.whatIfCounterByBasin && typeof parsed.whatIfCounterByBasin === 'object') {
           Object.assign(fcWhatIfCounterByBasin, parsed.whatIfCounterByBasin);
         }
-        if (anyValid && parsed.daStateByBasin && typeof parsed.daStateByBasin === 'object') {
+        if (parsed.daStateByBasin && typeof parsed.daStateByBasin === 'object') {
           Object.entries(parsed.daStateByBasin).forEach(([cid, st]) => {
             if (st && typeof st === 'object') {
-              fcDaStateByBasin[cid] = Object.assign(getBasinDaState(cid), st, { varRunning: false });
+              const merged = Object.assign(getBasinDaState(cid), st, { varRunning: false });
+              if (!st.userSetEnabled) {
+                merged.enabled = true;
+              }
+              fcDaStateByBasin[cid] = merged;
+              anyValid = true;
             }
           });
         }
@@ -9814,7 +9819,8 @@
       const bid = String(basinId || getActiveForecastBasinId() || '__default__').trim() || '__default__';
       if (!fcDaStateByBasin[bid]) {
         fcDaStateByBasin[bid] = {
-          enabled: false,
+          enabled: true,
+          userSetEnabled: false,
           method: 'nudging', // 'nudging' | 'variational'
           rho: 0.65,         // Karan's Global-Best post-processing decay factor
           alpha: 1.0,        // Initial nudging gain at anchor (1.0 = exact Eq. 6)
@@ -10114,6 +10120,8 @@
       const state = getBasinDaState(basinId);
       const targetResult = basinId ? fcModelResultsByBasin[basinId] : null;
       const obsSeries = getObservedStreamflowForBasin(basinId);
+      const hasBaseline = Boolean(targetResult && Array.isArray(targetResult.forecast) && targetResult.forecast.length > 0);
+      const hasObserved = Array.isArray(obsSeries) && obsSeries.some(pt => pt && pt.discharge_cms !== null && pt.discharge_cms !== undefined);
       const issueDate = (targetResult && targetResult.issue_date) || (fcStatusData && fcStatusData.issue_date) || null;
       const meta = computeBasinNudgedHydrograph(basinId, targetResult, obsSeries, [], issueDate);
 
@@ -10137,23 +10145,23 @@
       if (legacyOverlayCb) legacyOverlayCb.checked = Boolean(state.enabled);
 
       if (summaryBadge) {
-        if (state.method === 'variational') {
+        if (!state.enabled) {
+          summaryBadge.innerText = 'Off';
+          summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-white border border-[#dadce0] text-[#5f6368] cursor-pointer';
+        } else if (state.method === 'variational') {
           if (state.varRunning) {
             summaryBadge.innerText = '4D-Var…';
-            summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#f5f3ff] border border-[#ddd6fe] text-[#6d28d9] font-semibold animate-pulse';
-          } else if (state.enabled && state.varResult && state.varResult.applied) {
+            summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#f5f3ff] border border-[#ddd6fe] text-[#6d28d9] font-semibold animate-pulse cursor-pointer';
+          } else if (state.varResult && state.varResult.applied) {
             summaryBadge.innerText = `4D-Var · W=${state.varWindowDays}d`;
-            summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#f5f3ff] border border-[#c4b5fd] text-[#6d28d9] font-semibold';
+            summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#f5f3ff] border border-[#c4b5fd] text-[#6d28d9] font-semibold cursor-pointer';
           } else {
             summaryBadge.innerText = `4D-Var · λ=${state.varRegWeight.toFixed(2)}`;
-            summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#e8f0fe] border border-[#d2e3fc] text-[#174ea6] font-semibold';
+            summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#e8f0fe] border border-[#d2e3fc] text-[#174ea6] font-semibold cursor-pointer';
           }
-        } else if (state.enabled) {
-          summaryBadge.innerText = `ρ=${state.rho.toFixed(2)} · α=${Math.round(state.alpha * 100)}%`;
-          summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#fef7e0] border border-[#fde293] text-[#b06000] font-semibold';
         } else {
-          summaryBadge.innerText = 'Off';
-          summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-white border border-[#dadce0] text-[#5f6368]';
+          summaryBadge.innerText = `ρ=${state.rho.toFixed(2)} · α=${Math.round(state.alpha * 100)}%`;
+          summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#fef7e0] border border-[#fde293] text-[#b06000] font-semibold cursor-pointer';
         }
       }
 
@@ -10176,7 +10184,15 @@
         if (state.enabled) {
           activeToggleBtn.className = 'flex-1 py-1.5 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center gap-1.5 transition bg-[#fef7e0] border-[#f59e0b] text-[#b06000] shadow-2xs';
           activeDot.className = 'w-2 h-2 rounded-full bg-[#d97706]';
-          activeLabel.innerText = 'Nudging Active (On Chart)';
+          if (meta.applied) {
+            activeLabel.innerText = 'Nudging Active (On Chart)';
+          } else if (!hasObserved) {
+            activeLabel.innerText = 'Nudging Ready (Upload CSV in Step 3)';
+          } else if (!hasBaseline) {
+            activeLabel.innerText = 'Nudging Ready (Run Model in Step 4)';
+          } else {
+            activeLabel.innerText = 'Nudging Active (On Chart)';
+          }
         } else {
           activeToggleBtn.className = 'flex-1 py-1.5 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center gap-1.5 transition bg-white border-[#dadce0] text-[#3c4043] hover:bg-[#f1f3f4]';
           activeDot.className = 'w-2 h-2 rounded-full bg-[#9aa0a6]';
@@ -10203,6 +10219,15 @@
         if (meta.applied && meta.anchorDate) {
           const sign = meta.residualCms >= 0 ? '+' : '';
           anchorText.innerText = `Anchor ${meta.anchorDate}: e=${sign}${meta.residualCms.toFixed(1)} m³/s`;
+          residualReadout.innerText = hlStr;
+        } else if (!hasObserved && !hasBaseline) {
+          anchorText.innerText = 'Upload CSV (3) & Run Model (4)';
+          residualReadout.innerText = hlStr;
+        } else if (!hasObserved) {
+          anchorText.innerText = 'Upload gauge CSV in Step 3 to anchor DA';
+          residualReadout.innerText = hlStr;
+        } else if (!hasBaseline) {
+          anchorText.innerText = 'Run Model in Step 4 for baseline';
           residualReadout.innerText = hlStr;
         } else {
           anchorText.innerText = 'Drag curve or hydrograph pts';
@@ -10602,13 +10627,13 @@
       if (!bid) return;
       savePersistedForecastsToStorage();
       const state = getBasinDaState(bid);
+      if (state.method !== 'nudging' || !state.enabled) return;
       const targetResult = fcModelResultsByBasin[bid];
-      if (!targetResult || state.method !== 'nudging' || !state.enabled) return;
       const obsSeries = getObservedStreamflowForBasin(bid);
-      if (!obsSeries || obsSeries.length === 0) return;
+      if ((!obsSeries || obsSeries.length === 0) && targetResult) return;
       try {
         const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
-        await fetch('/api/forecast/assimilate', {
+        const resp = await fetch('/api/forecast/assimilate', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -10621,12 +10646,31 @@
             rho: state.rho,
             alpha: state.alpha,
             window_days: state.windowDays,
-            issue_date: targetResult.issue_date,
-            forecast: targetResult.forecast || [],
-            hindcast_tail: targetResult.hindcast_tail || [],
-            observed_streamflow: obsSeries
+            issue_date: (targetResult && targetResult.issue_date) || (fcStatusData && fcStatusData.issue_date) || undefined,
+            forecast: (targetResult && targetResult.forecast) ? targetResult.forecast : undefined,
+            hindcast_tail: (targetResult && targetResult.hindcast_tail) ? targetResult.hindcast_tail : undefined,
+            observed_streamflow: (obsSeries && obsSeries.length > 0) ? obsSeries : undefined
           })
         });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.status === 'success' && !fcModelResultsByBasin[bid] && Array.isArray(data.baseline_forecast) && data.baseline_forecast.length > 0) {
+            fcModelResultsByBasin[bid] = {
+              status: 'success',
+              mode: 'coldstart',
+              basin_id: bid,
+              catchment_id: bid,
+              issue_date: data.issue_date,
+              peak_discharge_cms: data.baseline_peak_discharge_cms,
+              hindcast_tail: data.baseline_hindcast_tail || [],
+              forecast: data.baseline_forecast || [],
+              $savedAtMs: Date.now()
+            };
+            savePersistedForecastsToStorage(u);
+            updateDaControlsUI();
+            renderHydrographChart(undefined, { animate: false });
+          }
+        }
       } catch (_err) {
         // Non-blocking sync; client-side closed-form Eq. 6 is already rendered live.
       }
@@ -13464,8 +13508,9 @@
               metaEl.innerHTML = `<span>${tot > 0 ? `${tot}/${tot} ${unit}s` : 'Written to Zarr'}</span><span>${pLive.elapsed_seconds ? `${pLive.elapsed_seconds}s` : 'Ready'}</span>`;
             }
           } else if (st === 'downloading' || st === 'writing_zarr') {
+            const dispPct = Math.min(99, Math.floor(pct));
             badgeEl.className = 'text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc]';
-            badgeEl.innerText = st === 'writing_zarr' ? 'Saving Zarr…' : `${pct.toFixed(0)}% · ${cur}/${tot}`;
+            badgeEl.innerText = st === 'writing_zarr' ? 'Saving Zarr…' : `${dispPct}% · ${cur}/${tot}`;
             barEl.className = 'h-full bg-[#1a73e8] rounded-full transition-all duration-300 animate-pulse';
             barEl.style.width = `${Math.max(4, pct)}%`;
             if (rowEl) rowEl.className = 'p-1.5 rounded-md border border-[#1a73e8] bg-[#e8f0fe]/40 space-y-1 transition shadow-xs';
@@ -14309,10 +14354,12 @@
       }
 
       // Step 5: Data Assimilation expandable accordion + visual Nudging controls
+      const daSection = document.getElementById('fcDaSection');
       const daHeaderBtn = document.getElementById('fcDaToggleHeaderBtn');
+      const daSummaryBadge = document.getElementById('fcDaSummaryBadge');
       const daBody = document.getElementById('fcDaCollapsibleBody');
       const daChevron = document.getElementById('fcDaChevronIcon');
-      const setDaAccordionExpanded = (expanded) => {
+      const setDaAccordionExpanded = (expanded, scrollIfOpened = false) => {
         fcDaAccordionExpanded = Boolean(expanded);
         if (daHeaderBtn) daHeaderBtn.setAttribute('aria-expanded', fcDaAccordionExpanded ? 'true' : 'false');
         if (daBody) daBody.classList.toggle('hidden', !fcDaAccordionExpanded);
@@ -14322,12 +14369,62 @@
         if (fcDaAccordionExpanded) {
           initDaCurveCanvasDragging();
           initDaVariationalCanvasDragging();
-          requestAnimationFrame(() => updateDaControlsUI());
+          requestAnimationFrame(() => {
+            updateDaControlsUI();
+            if (scrollIfOpened && daSection && typeof daSection.scrollIntoView === 'function') {
+              daSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          });
         }
       };
+      if (daSummaryBadge) {
+        daSummaryBadge.addEventListener('click', (evt) => {
+          evt.stopPropagation();
+          const bid = getActiveForecastBasinId();
+          const st = getBasinDaState(bid);
+          st.enabled = !st.enabled;
+          st.userSetEnabled = true;
+          if (st.enabled && !fcDaAccordionExpanded) {
+            setDaAccordionExpanded(true, true);
+          }
+          savePersistedForecastsToStorage();
+          updateDaControlsUI();
+          renderHydrographChart(undefined, { animate: false });
+          if (st.enabled) {
+            if (st.method === 'variational') {
+              const obs = getObservedStreamflowForBasin(bid);
+              if (!st.varResult && !st.varRunning && obs && obs.length > 0) {
+                runVariationalAssimilationForBasin(bid);
+              }
+            } else {
+              syncAssimilateWithBackend(bid);
+            }
+          }
+        });
+      }
       if (daHeaderBtn) {
         daHeaderBtn.addEventListener('click', () => {
-          setDaAccordionExpanded(!fcDaAccordionExpanded);
+          const nextExpanded = !fcDaAccordionExpanded;
+          setDaAccordionExpanded(nextExpanded, true);
+          if (nextExpanded) {
+            const bid = getActiveForecastBasinId();
+            const st = getBasinDaState(bid);
+            if (!st.enabled) {
+              st.enabled = true;
+              st.userSetEnabled = true;
+              savePersistedForecastsToStorage();
+              updateDaControlsUI();
+              renderHydrographChart(undefined, { animate: false });
+              if (st.method === 'variational') {
+                const obs = getObservedStreamflowForBasin(bid);
+                if (!st.varResult && !st.varRunning && obs && obs.length > 0) {
+                  runVariationalAssimilationForBasin(bid);
+                }
+              } else {
+                syncAssimilateWithBackend(bid);
+              }
+            }
+          }
         });
       }
 
@@ -14335,10 +14432,15 @@
       const daMethodVariationalBtn = document.getElementById('fcDaMethodVariationalBtn');
       if (daMethodNudgingBtn) {
         daMethodNudgingBtn.addEventListener('click', () => {
-          const st = getBasinDaState(getActiveForecastBasinId());
+          const bid = getActiveForecastBasinId();
+          const st = getBasinDaState(bid);
           st.method = 'nudging';
+          st.enabled = true;
+          st.userSetEnabled = true;
+          savePersistedForecastsToStorage();
           updateDaControlsUI();
           renderHydrographChart(undefined, { animate: false });
+          syncAssimilateWithBackend(bid);
         });
       }
       if (daMethodVariationalBtn) {
@@ -14346,6 +14448,9 @@
           const bid = getActiveForecastBasinId();
           const st = getBasinDaState(bid);
           st.method = 'variational';
+          st.enabled = true;
+          st.userSetEnabled = true;
+          savePersistedForecastsToStorage();
           initDaVariationalCanvasDragging();
           updateDaControlsUI();
           renderHydrographChart(undefined, { animate: false });
@@ -14362,6 +14467,7 @@
           const bid = getActiveForecastBasinId();
           const st = getBasinDaState(bid);
           st.enabled = !st.enabled;
+          st.userSetEnabled = true;
           savePersistedForecastsToStorage();
           updateDaControlsUI();
           renderHydrographChart(undefined, { animate: false });
@@ -14377,10 +14483,12 @@
           st.rho = 0.65;
           st.alpha = 1.0;
           st.windowDays = 1;
-          st.enabled = false;
+          st.enabled = true;
+          st.userSetEnabled = true;
           savePersistedForecastsToStorage();
           updateDaControlsUI();
           renderHydrographChart(undefined, { animate: false });
+          syncAssimilateWithBackend(bid);
         });
       }
 
@@ -14393,6 +14501,7 @@
             st.rho = Math.max(0, Math.min(1, rhoVal));
             st.alpha = 1.0;
             st.enabled = true;
+            st.userSetEnabled = true;
             updateDaControlsUI();
             renderHydrographChart(undefined, { animate: false });
             syncAssimilateWithBackend(bid);
@@ -14421,10 +14530,15 @@
           st.varComponents = ['static_embedding', 'hindcast_embedding', 'forecast_embedding'];
           st.varResult = null;
           st.varError = null;
-          st.enabled = false;
+          st.enabled = true;
+          st.userSetEnabled = true;
           savePersistedForecastsToStorage();
           updateDaControlsUI();
           renderHydrographChart(undefined, { animate: false });
+          const obs = getObservedStreamflowForBasin(bid);
+          if (obs && obs.length > 0) {
+            runVariationalAssimilationForBasin(bid);
+          }
         });
       }
 
