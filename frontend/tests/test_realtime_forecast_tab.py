@@ -1675,9 +1675,9 @@ class RealtimeForecastTabTest(unittest.TestCase):
     def test_data_assimilation_nudging_postprocessing_and_ui_controls(
         self,
     ) -> None:
-        """Verify AR(1) nudging with persistence (Post-Processing) and expandable DA UI."""
+        """Verify AR(1) nudging post-processing and expandable DA UI."""
         # 1. Direct mathematical verification of Karan's Eq. (6):
-        # Q_hat_PP(t_anchor + k) = max(0, Q_hat_base(t_anchor + k) + alpha * rho^k * e_anchor)
+        # Q_hat_PP(t + k) = max(0, Q_hat_base(t + k) + alpha * rho^k * e_anchor)
         issue_date = '2026-03-30'
         hindcast_tail = [
             {'date': '2026-03-28', 'discharge_cms': 10.0},
@@ -1693,7 +1693,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         obs_series = [
             {'date': '2026-03-28', 'discharge_cms': 20.0},
             {'date': '2026-03-29', 'discharge_cms': 22.0},
-            {'date': '2026-03-30', 'discharge_cms': 35.0},  # residual at t0 = +20.0 cms
+            {'date': '2026-03-30', 'discharge_cms': 35.0},  # residual +20.0
         ]
 
         res = realtime_forecast_service.compute_nudging_postprocessing(
@@ -1709,14 +1709,14 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert res['anchor_date'] == '2026-03-30'
         assert res['residual_cms'] == pytest.approx(20.0)
         nudged = {pt['date']: pt for pt in res['nudged_series']}
-        # k=0: 15.0 + 1.0 * (0.65^0) * 20.0 = 35.0 (exact match to gauge at t0 when alpha=1)
+        # k=0: 15.0 + 1.0 * (0.65^0) * 20.0 = 35.0 (matches gauge when alpha=1)
         assert nudged['2026-03-30']['discharge_cms'] == pytest.approx(35.0)
         # k=1: 20.0 + 1.0 * (0.65^1) * 20.0 = 33.0
         assert nudged['2026-03-31']['discharge_cms'] == pytest.approx(33.0)
         # k=2: 18.0 + 1.0 * (0.65^2) * 20.0 = 18.0 + 8.45 = 26.45
         assert nudged['2026-04-01']['discharge_cms'] == pytest.approx(26.45)
 
-        # Verify window_days=3 averages the 3 pre-issue residuals: (10 + 10 + 20) / 3 = 13.333
+        # Verify window_days=3 averages the 3 pre-issue residuals: 40 / 3
         res_w3 = realtime_forecast_service.compute_nudging_postprocessing(
             forecast_series=forecast_series,
             hindcast_series=hindcast_tail,
@@ -1749,7 +1749,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         nudged_clamp = {pt['date']: pt for pt in res_clamp['nudged_series']}
         assert nudged_clamp['2026-03-31']['discharge_cms'] == 0.0
 
-        # 2. Verify /api/forecast/assimilate HTTP endpoint with uploaded observations
+        # 2. Verify /api/forecast/assimilate HTTP endpoint with uploaded obs
         csv_text = (
             'date,streamflow_cms\n'
             '2026-03-28,25.0\n'
@@ -1795,13 +1795,19 @@ class RealtimeForecastTabTest(unittest.TestCase):
             27.0, abs=1e-2
         )
 
-        # 3. Verify real Variational (4D-Var Embedding) Data Assimilation via /api/forecast/assimilate
+    def test_variational_data_assimilation_and_ui_tokens(self) -> None:
+        """Verify 4D-Var Embedding Data Assimilation and DA UI controls."""
         _populate_synthetic_realtime_zarr_stores(
             self.profile_dir, TEST_BASIN, '2026-03-30'
         )
-        var_csv_lines = ['date,streamflow_cms']
-        for day in range(20, 30):
-            var_csv_lines.append(f'2026-03-{day:02d},{35.0 + (day - 20) * 1.5:.1f}')
+        expected_obs_days = 10
+        var_csv_lines = [
+            'date,streamflow_cms',
+            *[
+                f'2026-03-{day:02d},{35.0 + (day - 20) * 1.5:.1f}'
+                for day in range(20, 20 + expected_obs_days)
+            ],
+        ]
         code, up_var_res = self._request(
             'POST',
             '/api/forecast/upload-streamflow',
@@ -1823,7 +1829,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
                 'catchment_id': TEST_BASIN,
                 'method': 'variational',
                 'issue_date': '2026-03-30',
-                'window_days': 10,
+                'window_days': expected_obs_days,
                 'regularization_weight': 0.15,
                 'initial_learning_rate': 0.03,
                 'epochs': 20,
@@ -1839,7 +1845,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert var_res['status'] == 'success'
         assert var_res['method'] == 'variational'
         assert var_res['applied'] is True
-        assert var_res['n_valid_obs'] == 10
+        assert var_res['n_valid_obs'] == expected_obs_days
         assert var_res['prior_window_rmse_cms'] is not None
         assert var_res['assimilated_window_rmse_cms'] is not None
         assert (
@@ -1854,7 +1860,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
             var_res['hindcast_tail']
         ) + len(var_res['forecast'])
 
-        # 4. Verify expandable DA menu and interactive visual controls in index.html
+        # Verify expandable DA menu and interactive visual controls
         html_path = (
             Path(__file__).resolve().parent.parent / 'static' / 'index.html'
         )
@@ -1886,7 +1892,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
             assert token in html
 
     def test_daily_forecast_persistence_and_ttl_expiration(self) -> None:
-        """Daily forecasts persist across browser refresh and auto-expire after TTL."""
+        """Daily forecasts persist across refresh and auto-expire after TTL."""
         _populate_synthetic_realtime_zarr_stores(
             self.profile_dir, TEST_BASIN, '2026-03-30'
         )
@@ -1915,7 +1921,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert len(run_res['forecast']) == SYNTHETIC_LEAD_TIME_DAYS
         assert len(run_res['hindcast_tail']) > 0
 
-        # 3. Simulate browser refresh: GET /api/forecast/status returns cached_forecast
+        # 3. Simulate refresh: GET /api/forecast/status returns cached_forecast
         code, st_after = self._request(
             'GET',
             f'/api/forecast/status?catchment_id={TEST_BASIN}&username={self.test_user}',
@@ -1930,7 +1936,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert cached['expires_at_unix'] > cached['cached_at_unix']
         assert st_after['cached_forecasts_by_id'][TEST_BASIN] is not None
 
-        # 4. Run Hot-Start and verify hindcast_tail from Cold-Start is preserved in cache
+        # 4. Run Hot-Start and verify hindcast_tail from Cold-Start is kept
         code, hot_res = self._request(
             'POST',
             '/api/forecast/run-model',
@@ -1953,7 +1959,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
             run_res['hindcast_tail']
         )
 
-        # 5. Simulate TTL expiration after 4+ hours: cache file is auto-deleted and returns None
+        # 5. Simulate TTL expiration after 4+ hours: cache file is auto-deleted
         cache_path = realtime_forecast_service.get_daily_forecast_cache_path(
             self.test_user, TEST_BASIN, run_res['model_id']
         )
@@ -1968,7 +1974,7 @@ class RealtimeForecastTabTest(unittest.TestCase):
         assert expired_load is None
         assert not cache_path.exists()
 
-        # 6. Verify frontend localStorage persistence & 4-hour TTL pruning helpers in index.html
+        # 6. Verify frontend localStorage persistence & 4-hour TTL helpers
         html_path = (
             Path(__file__).resolve().parent.parent / 'static' / 'index.html'
         )
