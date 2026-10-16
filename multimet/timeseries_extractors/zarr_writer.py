@@ -75,6 +75,58 @@ def check_zarr_store_exists(store_path: str, max_retries: int = 6) -> bool:
   )
 
 
+def repair_zarr_basin_dimension_mismatch(
+    store_path: Union[str, os.PathLike],
+) -> bool:
+  """Repairs partial-append Zarr v2 arrays whose ``basin`` axis length diverged from ``basin``."""
+  path_str = os.fspath(store_path)
+  if is_remote_target(path_str) or not os.path.isdir(path_str):
+    return False
+  basin_zarray_path = os.path.join(path_str, "basin", ".zarray")
+  if not os.path.isfile(basin_zarray_path):
+    return False
+  try:
+    with open(basin_zarray_path, "r", encoding="utf-8") as bf:
+      basin_zarray = json.load(bf)
+    expected_n = int(basin_zarray["shape"][0])
+  except Exception:  # noqa: BLE001
+    return False
+
+  repaired = False
+  for entry in os.listdir(path_str):
+    if entry == "basin" or entry.startswith("."):
+      continue
+    sub_dir = os.path.join(path_str, entry)
+    if not os.path.isdir(sub_dir):
+      continue
+    za_path = os.path.join(sub_dir, ".zarray")
+    zattr_path = os.path.join(sub_dir, ".zattrs")
+    if not (os.path.isfile(za_path) and os.path.isfile(zattr_path)):
+      continue
+    try:
+      with open(za_path, "r", encoding="utf-8") as zf:
+        za_doc = json.load(zf)
+      with open(zattr_path, "r", encoding="utf-8") as af:
+        zattr_doc = json.load(af)
+      dims = zattr_doc.get("_ARRAY_DIMENSIONS", [])
+      if "basin" in dims:
+        b_axis = dims.index("basin")
+        if int(za_doc["shape"][b_axis]) != expected_n:
+          za_doc["shape"][b_axis] = expected_n
+          with open(za_path, "w", encoding="utf-8") as zf_out:
+            json.dump(za_doc, zf_out, indent=2)
+          repaired = True
+    except Exception:  # noqa: BLE001
+      continue
+
+  if repaired:
+    try:
+      zarr.consolidate_metadata(path_str)
+    except Exception:  # noqa: BLE001
+      pass
+  return repaired
+
+
 def _safe_to_zarr(
     ds: xr.Dataset, store_path: Union[str, os.PathLike], **kwargs
 ) -> None:
@@ -82,6 +134,14 @@ def _safe_to_zarr(
   sig = inspect.signature(xr.Dataset.to_zarr)
   if "zarr_format" in sig.parameters:
     kwargs.setdefault("zarr_format", 2)
+  if kwargs.get("append_dim") is not None or kwargs.get("region") is not None:
+    repair_zarr_basin_dimension_mismatch(store_path)
+    if "align_chunks" in sig.parameters:
+      kwargs.setdefault("align_chunks", True)
+    ds = ds.copy(deep=False)
+    for var in ds.variables.values():
+      var.encoding.pop("chunks", None)
+      var.encoding.pop("preferred_chunks", None)
   ds.to_zarr(store_path, **kwargs)
 
 
@@ -110,6 +170,7 @@ class MultiMetZarrWriter:
       return None
 
     store_path = self.get_store_path(product)
+    repair_zarr_basin_dimension_mismatch(store_path)
     with xr.open_zarr(store_path) as ds:
       if "basin" not in ds.coords or "date" not in ds.coords:
         return None
@@ -651,6 +712,7 @@ class MultiMetZarrWriter:
       all_store_vars.append(missing_var)
 
     local_chunk_spec = dict(chunk_spec)
+    repair_zarr_basin_dimension_mismatch(store_path)
     with xr.open_zarr(store_path) as existing_ds:
       existing_var_names = list(existing_ds.data_vars)
       target_var_names = (
@@ -1110,6 +1172,7 @@ class MultiMetZarrWriter:
       _safe_to_zarr(ds_chunked, local_target, mode="w", consolidated=True)
     else:
       # Existing store
+      repair_zarr_basin_dimension_mismatch(local_target)
       existing_ds = xr.open_zarr(local_target)
       existing_basins = set(str(b) for b in existing_ds["basin"].values)
 

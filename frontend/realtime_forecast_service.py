@@ -70,6 +70,9 @@ from model.utils.configutils import (
 from multimet.timeseries_extractors import config as mm_config
 from multimet.timeseries_extractors import realtime as mm_realtime
 from multimet.timeseries_extractors.hres import find_latest_hres_open_data_date
+from multimet.timeseries_extractors.zarr_writer import (
+    repair_zarr_basin_dimension_mismatch,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -83,6 +86,137 @@ DEFAULT_MODEL_RUN_DIR = (
     / 'pretrained-models'
     / _DEFAULT_MODEL_ID
 )
+
+PRETRAINED_FORECAST_MODELS: tuple[dict[str, Any], ...] = (
+    {
+        'id': 'google-floodhub-settings-110-epochs',
+        'label': 'FloodHub Settings (With GraphCast · 110 Epochs)',
+        'short_label': 'With GraphCast',
+        'forecast_products': ['HRES', 'GRAPHCAST'],
+        'hindcast_products': ['HRES', 'GRAPHCAST', 'IMERG', 'CPC'],
+        'run_dir': (
+            FLOOD_FORECASTING_REPO_DIR
+            / 'model'
+            / 'pretrained-models'
+            / 'google-floodhub-settings-110-epochs'
+        ),
+    },
+    {
+        'id': 'google-floodhub-settings-no-graphcast-110-epochs',
+        'label': 'FloodHub Settings (Without GraphCast · HRES + IMERG + CPC)',
+        'short_label': 'No GraphCast',
+        'forecast_products': ['HRES'],
+        'hindcast_products': ['HRES', 'IMERG', 'CPC'],
+        'run_dir': (
+            FLOOD_FORECASTING_REPO_DIR
+            / 'model'
+            / 'pretrained-models'
+            / 'google-floodhub-settings-no-graphcast-110-epochs'
+        ),
+    },
+    {
+        'id': 'google-floodhub-settings-aifs-110-epochs',
+        'label': (
+            'FloodHub Settings (With ECMWF AIFS · HRES + AIFS + IMERG + CPC)'
+        ),
+        'short_label': 'With ECMWF AIFS',
+        'forecast_products': ['HRES', 'AIFS'],
+        'hindcast_products': ['HRES', 'AIFS', 'IMERG', 'CPC'],
+        'run_dir': (
+            FLOOD_FORECASTING_REPO_DIR
+            / 'model'
+            / 'pretrained-models'
+            / 'google-floodhub-settings-aifs-110-epochs'
+        ),
+    },
+)
+
+
+def list_forecast_models(
+    username: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return available and training forecast models for the Forecasting UI."""
+    models: list[dict[str, Any]] = []
+    for entry in PRETRAINED_FORECAST_MODELS:
+        run_dir: Path = entry['run_dir']
+        has_cfg = (run_dir / 'config.yml').is_file()
+        ckpts = (
+            sorted(run_dir.glob('model_epoch*.pt')) if run_dir.is_dir() else []
+        )
+        available = bool(has_cfg and len(ckpts) > 0)
+        models.append(
+            {
+                'id': entry['id'],
+                'label': entry['label'],
+                'short_label': entry['short_label'],
+                'forecast_products': list(entry['forecast_products']),
+                'hindcast_products': list(entry['hindcast_products']),
+                'available': available,
+                'status': 'ready' if available else 'training',
+                'is_pretrained': True,
+            }
+        )
+
+    pm = profile_manager.get_profile_manager()
+    user_key = _normalize_user_key(username)
+    user_runs_dir = pm.get_model_runs_dir(user_key)
+    if user_runs_dir.is_dir():
+        for run_dir in sorted(user_runs_dir.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            ckpts = sorted(run_dir.glob('model_epoch*.pt'))
+            if (run_dir / 'config.yml').is_file() and ckpts:
+                models.append(
+                    {
+                        'id': f'user_{run_dir.name}',
+                        'label': f'User Fine-Tuned: {run_dir.name}',
+                        'short_label': run_dir.name,
+                        'forecast_products': ['HRES'],
+                        'hindcast_products': ['HRES', 'IMERG', 'CPC'],
+                        'available': True,
+                        'status': 'ready',
+                        'is_pretrained': False,
+                    }
+                )
+    return models
+
+
+def resolve_forecast_model_run_dir(
+    model_id: str | None = _DEFAULT_MODEL_ID,
+    *,
+    username: str | None = None,
+    run_dir: Path | str | None = None,
+) -> Path:
+    """Resolve a ``model_id`` or explicit ``run_dir`` to a model directory."""
+    if run_dir is not None:
+        return Path(run_dir)
+    clean_id = (model_id or _DEFAULT_MODEL_ID).strip() or _DEFAULT_MODEL_ID
+    for entry in PRETRAINED_FORECAST_MODELS:
+        if entry['id'] == clean_id:
+            return Path(entry['run_dir'])
+    if clean_id.startswith('user_'):
+        run_name = clean_id.removeprefix('user_')
+        if (
+            not run_name
+            or '/' in run_name
+            or '\\' in run_name
+            or '..' in run_name
+        ):
+            raise ValueError(f'Invalid user model_id: {model_id!r}')
+        pm = profile_manager.get_profile_manager()
+        user_key = _normalize_user_key(username)
+        runs_dir = pm.get_model_runs_dir(user_key).resolve()
+        candidate = (runs_dir / run_name).resolve()
+        if candidate.parent != runs_dir:
+            raise ValueError(f'Invalid user model_id: {model_id!r}')
+        return candidate
+    candidate_pretrained = (
+        FLOOD_FORECASTING_REPO_DIR / 'model' / 'pretrained-models' / clean_id
+    )
+    if candidate_pretrained.is_dir():
+        return candidate_pretrained
+    return DEFAULT_MODEL_RUN_DIR
+
 
 _MIN_FORECAST_LEAD_STEPS = 2
 _SECONDS_PER_DAY = 86400.0
@@ -262,12 +396,17 @@ _ALL_REALTIME_PRODUCTS: tuple[str, ...] = (
 )
 _FETCH_PROGRESS_LOCK = threading.Lock()
 _FETCH_PROGRESS_BY_USER: dict[str, dict[str, Any]] = {}
+_FETCH_CANCEL_EVENTS: dict[str, threading.Event] = {}
 _RUN_PROGRESS_LOCK = threading.Lock()
 _RUN_PROGRESS_BY_USER: dict[str, dict[str, Any]] = {}
 _FETCH_THREAD_LOCAL = threading.local()
 _TQDM_PATCH_LOCK = threading.Lock()
 _TQDM_PATCH_INSTALLED = False
 _ORIG_TQDM_CLASS: Any = tqdm_mod.std.tqdm
+
+
+class RealtimeFetchCancelledError(RuntimeError):
+    """Raised when an active real-time forcing download is stopped."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1379,6 +1518,16 @@ def _zarr_store_mtime_key(
     return (resolved, root_mtime, meta_mtime, date_mtime, basin_mtime)
 
 
+def _open_zarr_self_healing(store_path: Path) -> xr.Dataset:
+    """Open ``store_path``, repairing partial-append basin shape mismatches."""
+    try:
+        return xr.open_zarr(store_path, consolidated=False)
+    except ValueError:
+        if repair_zarr_basin_dimension_mismatch(store_path):
+            return xr.open_zarr(store_path, consolidated=False)
+        raise
+
+
 def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
     """Return cached basin list and issue date map for ``store_path``."""
     mkey = _zarr_store_mtime_key(store_path)
@@ -1386,12 +1535,20 @@ def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
         cached = _ZARR_META_CACHE.get(mkey)
         if cached is not None:
             return cached
-    with xr.open_zarr(store_path, consolidated=False) as ds:
-        basins = (
-            [str(b) for b in ds.coords['basin'].to_numpy()]
-            if 'basin' in ds.coords
-            else []
+    try:
+        with _open_zarr_self_healing(store_path) as ds:
+            basins = (
+                [str(b) for b in ds.coords['basin'].to_numpy()]
+                if 'basin' in ds.coords
+                else []
+            )
+    except Exception:
+        logger.warning(
+            'Could not read Zarr store metadata at %s',
+            store_path,
+            exc_info=True,
         )
+        basins = []
     entry: dict[str, Any] = {
         'basins': basins,
         'lower_map': {b.lower(): b for b in basins},
@@ -1421,7 +1578,7 @@ def _open_cached_zarr_window(
         cached = _ZARR_WINDOW_CACHE.get(wkey)
         if cached is not None:
             return cached
-    with xr.open_zarr(store_path, consolidated=False) as raw_ds:
+    with _open_zarr_self_healing(store_path) as raw_ds:
         drop_vars = [
             v for v in raw_ds.data_vars if str(v).endswith('_missing_fraction')
         ]
@@ -2352,6 +2509,7 @@ def get_realtime_status(  # noqa: PLR0913
         'all_selected_have_realtime_data': all_selected_have_realtime_data,
         'can_fetch_hotstart': all_selected_have_valid_state,
         'model_id': model_id,
+        'available_models': list_forecast_models(username),
         'issue_date': issue_date_str,
         'issue_date_source': issue_date_source,
         'expected_state_date': expected_state_date,
@@ -2513,6 +2671,9 @@ class _TrackedTqdm(_ORIG_TQDM_CLASS):  # type: ignore[misc]
             self._oh_emit(int(self.n or 0), event='bar_init')
 
     def _oh_emit(self, current_val: int, *, event: str = 'bar_step') -> None:
+        from frontend.jobs import check_current_job_cancelled  # noqa: PLC0415
+
+        check_current_job_cancelled()
         handler = getattr(self, '_oh_handler', None)
         if handler is None:
             return
@@ -2978,6 +3139,118 @@ def get_realtime_fetch_progress(
     return snapshot
 
 
+def cancel_realtime_fetch(
+    username: str | None = None,
+) -> dict[str, Any]:
+    """Request immediate cancellation of any active real-time forcing fetch."""
+    user_key = _normalize_user_key(username)
+    with _FETCH_PROGRESS_LOCK:
+        cancel_ev = _FETCH_CANCEL_EVENTS.get(user_key)
+        if cancel_ev is None:
+            cancel_ev = threading.Event()
+            _FETCH_CANCEL_EVENTS[user_key] = cancel_ev
+        cancel_ev.set()
+
+        state = _FETCH_PROGRESS_BY_USER.get(user_key)
+        was_active = bool(state and state.get('active'))
+        if state is None:
+            state = {
+                'status': 'cancelled',
+                'active': False,
+                'cancel_requested': True,
+                'username': user_key,
+                'mode': None,
+                'catchment_id': None,
+                'catchment_ids': [],
+                'reference_date': None,
+                'started_at': None,
+                'updated_at': time.time(),
+                'elapsed_seconds': 0.0,
+                'current_product': None,
+                'completed_products_count': 0,
+                'completed_products': [],
+                'total_products_count': 0,
+                'overall_percent': 0.0,
+                'message': 'Download stopped by user.',
+                'error': None,
+                'products_order': [],
+                'products': {},
+            }
+            _FETCH_PROGRESS_BY_USER[user_key] = state
+        else:
+            state['active'] = False
+            state['status'] = 'cancelled'
+            state['cancel_requested'] = True
+            state['current_product'] = None
+            state['message'] = 'Download stopped by user.'
+            for p_entry in state.get('products', {}).values():
+                if p_entry.get('status') in (
+                    'downloading',
+                    'writing_zarr',
+                    'queued',
+                ):
+                    p_entry['status'] = 'cancelled'
+                    p_entry['stage'] = 'cancelled'
+                    p_entry['eta_seconds'] = 0.0
+            _recompute_overall_fetch_progress(state)
+
+    prog_snapshot = get_realtime_fetch_progress(username=user_key)
+    return {
+        'status': 'cancelled',
+        'cancelled': True,
+        'was_active': was_active,
+        'username': user_key,
+        'message': 'Download stopped by user.',
+        'progress': prog_snapshot,
+    }
+
+
+def _record_completed_fetch_summary(
+    user_key: str,
+    target_ids: Sequence[str],
+    summary: mm_realtime.RealtimeFetchResult,
+) -> None:
+    """Attach completed ``fetch_summary`` metadata to user progress state."""
+    ref_ts = pd.Timestamp(summary.reference_date).floor('D').tz_localize(None)
+    with _FETCH_PROGRESS_LOCK:
+        done_state = _FETCH_PROGRESS_BY_USER.get(user_key)
+        if done_state is not None:
+            done_state['reference_date'] = _format_date_str(ref_ts)
+            done_state['fetch_summary'] = {
+                'mode': summary.mode,
+                'reference_date': _format_date_str(ref_ts),
+                'catchment_ids': list(target_ids),
+                'basin_count': len(target_ids),
+                'elapsed_seconds': round(float(summary.elapsed_seconds), 2),
+                'products_written': {
+                    str(k): str(v) for k, v in summary.stores.items()
+                },
+                'windows': {
+                    str(k): [_format_date_str(w[0]), _format_date_str(w[1])]
+                    for k, w in summary.product_windows.items()
+                },
+            }
+
+
+def _mark_user_fetch_cancelled(user_key: str) -> None:
+    """Update user fetch progress state when a download is cancelled."""
+    with _FETCH_PROGRESS_LOCK:
+        c_state = _FETCH_PROGRESS_BY_USER.get(user_key)
+        if c_state is not None:
+            c_state['active'] = False
+            c_state['status'] = 'cancelled'
+            c_state['message'] = 'Download stopped by user.'
+            for p_entry in c_state.get('products', {}).values():
+                if p_entry.get('status') in (
+                    'downloading',
+                    'writing_zarr',
+                    'queued',
+                ):
+                    p_entry['status'] = 'cancelled'
+                    p_entry['stage'] = 'cancelled'
+                    p_entry['eta_seconds'] = 0.0
+
+
 def _execute_tracked_multimet_fetch(  # noqa: PLR0913
     user_key: str,
     target_ids: list[str],
@@ -2997,6 +3270,9 @@ def _execute_tracked_multimet_fetch(  # noqa: PLR0913
         if resolved_enums
         else list(mm_realtime.DEFAULT_REALTIME_PRODUCTS)
     )
+    cancel_ev = threading.Event()
+    with _FETCH_PROGRESS_LOCK:
+        _FETCH_CANCEL_EVENTS[user_key] = cancel_ev
     _init_user_fetch_progress(
         user_key=user_key,
         target_ids=target_ids,
@@ -3007,6 +3283,8 @@ def _execute_tracked_multimet_fetch(  # noqa: PLR0913
     _ensure_tqdm_progress_hook()
 
     def _on_progress(ev: dict[str, Any]) -> None:
+        if cancel_ev.is_set():
+            raise RealtimeFetchCancelledError('Download stopped by user.')
         _handle_fetch_progress_event(user_key, ev)
 
     fetch_kwargs: dict[str, Any] = {
@@ -3031,7 +3309,11 @@ def _execute_tracked_multimet_fetch(  # noqa: PLR0913
     try:
         with _DaskFetchProgressCallback(_on_progress):
             summary = mm_realtime.fetch_realtime_multimet(**fetch_kwargs)
+        _record_completed_fetch_summary(user_key, target_ids, summary)
         _on_progress({'event': 'complete'})
+    except RealtimeFetchCancelledError:
+        _mark_user_fetch_cancelled(user_key)
+        raise
     except Exception as exc:
         with _FETCH_PROGRESS_LOCK:
             err_state = _FETCH_PROGRESS_BY_USER.get(user_key)
@@ -3149,17 +3431,30 @@ def fetch_realtime_forcing_for_catchment(  # noqa: PLR0913
     eff_lookback = (
         int(spinup_days) if norm_mode == 'coldstart' else hotstart_lookback
     )
-    summary = _execute_tracked_multimet_fetch(
-        user_key=user_key,
-        target_ids=target_ids,
-        catchment_geojson_path=catchment_geojson_path,
-        output_dir=output_dir,
-        norm_mode=norm_mode,
-        eff_lookback=eff_lookback,
-        norm_ref_date=norm_ref_date,
-        products=products,
-        overwrite=bool(overwrite),
-    )
+    try:
+        summary = _execute_tracked_multimet_fetch(
+            user_key=user_key,
+            target_ids=target_ids,
+            catchment_geojson_path=catchment_geojson_path,
+            output_dir=output_dir,
+            norm_mode=norm_mode,
+            eff_lookback=eff_lookback,
+            norm_ref_date=norm_ref_date,
+            products=products,
+            overwrite=bool(overwrite),
+        )
+    except RealtimeFetchCancelledError:
+        status_payload = get_realtime_status(
+            username=username,
+            catchment_id=primary_id,
+            requested_issue_date=norm_ref_date,
+            model_id=model_id,
+            catchment_ids=target_ids,
+        )
+        status_payload['status'] = 'cancelled'
+        status_payload['cancelled'] = True
+        status_payload['message'] = 'Download stopped by user.'
+        return status_payload
 
     ref_ts = pd.Timestamp(summary.reference_date).floor('D').tz_localize(None)
     status_payload = get_realtime_status(
@@ -3186,19 +3481,28 @@ def fetch_realtime_forcing_for_catchment(  # noqa: PLR0913
 
 def _load_forecast_model_bundle(
     run_dir: Path | None = None,
+    *,
+    model_id: str | None = _DEFAULT_MODEL_ID,
+    username: str | None = None,
 ) -> dict[str, Any]:
     """Load the trained ``MeanEmbeddingForecastLSTM`` and ``Scaler`` on CPU.
 
     Args:
         run_dir: Model run directory containing ``config.yml``, a
             ``model_epoch*.pt`` checkpoint, and ``scaler.zarr``. Defaults to
-            ``DEFAULT_MODEL_RUN_DIR`` (the shipped pretrained FloodHub run).
+            resolving ``model_id`` via ``resolve_forecast_model_run_dir``.
+        model_id: Identifier of the pretrained or user fine-tuned model.
+        username: Active profile username when resolving ``user_*`` models.
 
     Raises:
         FileNotFoundError: If ``run_dir`` has no ``config.yml`` or no
             ``model_epoch*.pt`` checkpoint.
     """
-    target_dir = Path(run_dir) if run_dir is not None else DEFAULT_MODEL_RUN_DIR
+    target_dir = resolve_forecast_model_run_dir(
+        model_id=model_id,
+        username=username,
+        run_dir=run_dir,
+    )
     cache_key = str(target_dir.resolve())
     if cache_key in _MODEL_CACHE:
         return _MODEL_CACHE[cache_key]
@@ -4333,7 +4637,11 @@ def run_forecast_model(  # noqa: PLR0913
     expected_state_date = _format_date_str(expected_state_ts)
 
     bundle = {
-        **_load_forecast_model_bundle(run_dir=model_run_dir),
+        **_load_forecast_model_bundle(
+            run_dir=model_run_dir,
+            model_id=model_id,
+            username=username,
+        ),
         'active_mode': norm_mode,
         'active_model_id': model_id,
     }
@@ -4448,6 +4756,7 @@ def inspect_realtime_stores_for_basin(  # noqa: PLR0913
     query_upstream_if_empty: bool = False,
     basin_ids: Sequence[str] | None = None,
     requested_issue_date: str | None = None,
+    model_id: str = _DEFAULT_MODEL_ID,
 ) -> dict[str, Any]:
     """Server endpoint wrapper for ``GET /api/forecast/status``."""
     del query_upstream_if_empty
@@ -4455,6 +4764,7 @@ def inspect_realtime_stores_for_basin(  # noqa: PLR0913
         username=username,
         catchment_id=str(basin_id),
         requested_issue_date=requested_issue_date,
+        model_id=model_id or _DEFAULT_MODEL_ID,
         lookback_days=int(nowcast_lookback_days or _DEFAULT_LOOKBACK_DAYS),
         probe_ecmwf=False,
         catchment_ids=basin_ids,
@@ -4471,6 +4781,7 @@ def fetch_realtime_for_basin(  # noqa: PLR0913
     lookback_days: int | None = None,
     overwrite: bool = False,
     basin_ids: Sequence[str] | None = None,
+    model_id: str = _DEFAULT_MODEL_ID,
 ) -> dict[str, Any]:
     """Server endpoint wrapper for ``POST /api/forecast/fetch-realtime``."""
     spinup = int(lookback_days) if lookback_days else _DEFAULT_SPINUP_DAYS
@@ -4482,6 +4793,7 @@ def fetch_realtime_for_basin(  # noqa: PLR0913
         spinup_days=spinup,
         products=products,
         catchment_ids=basin_ids,
+        model_id=model_id or _DEFAULT_MODEL_ID,
         overwrite=overwrite,
     )
 
@@ -4493,6 +4805,7 @@ def run_hydrological_model_for_basin(  # noqa: PLR0913
     model_run_dir: str | Path | None = None,
     requested_issue_date: str | None = None,
     *,
+    model_id: str = _DEFAULT_MODEL_ID,
     precip_overrides: dict[str, Any] | None = None,
     basin_ids: Sequence[str] | None = None,
     temp_overrides: dict[str, float] | None = None,
@@ -4506,6 +4819,7 @@ def run_hydrological_model_for_basin(  # noqa: PLR0913
         mode=mode,
         requested_issue_date=requested_issue_date,
         precip_overrides=precip_overrides,
+        model_id=model_id or _DEFAULT_MODEL_ID,
         model_run_dir=Path(model_run_dir) if model_run_dir else None,
         catchment_ids=basin_ids,
         temp_overrides=temp_overrides,
@@ -4815,7 +5129,11 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
     issue_date_str = _format_date_str(t0)
 
     bundle = {
-        **_load_forecast_model_bundle(run_dir=model_run_dir),
+        **_load_forecast_model_bundle(
+            run_dir=model_run_dir,
+            model_id=model_id,
+            username=username,
+        ),
         'active_mode': 'coldstart',
         'active_model_id': model_id,
     }

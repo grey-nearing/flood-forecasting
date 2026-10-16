@@ -1209,9 +1209,10 @@ class HRESExtractor(BaseExtractor):
                             )
                     pbar.update(1)
             else:
-                with concurrent.futures.ThreadPoolExecutor(
+                pool = concurrent.futures.ThreadPoolExecutor(
                     max_workers=n_workers
-                ) as pool:
+                )
+                try:
                     futures = [
                         pool.submit(_process_one_day, d_pos, dt)
                         for d_pos, dt in enumerate(date_idx)
@@ -1240,6 +1241,11 @@ class HRESExtractor(BaseExtractor):
                                     day_miss
                                 )
                         pbar.update(1)
+                except BaseException:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
+                else:
+                    pool.shutdown(wait=True)
 
         if not published_dates:
             raise FileNotFoundError(

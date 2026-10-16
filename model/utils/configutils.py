@@ -21,9 +21,11 @@ import more_itertools
 # whose directory names contain underscores (single-token local product keys
 # such as 'daymet' -> 'DAYMET' are upper-cased by canonical_product_name).
 PRODUCT_ALIASES: dict[str, str] = {
+    'aifs': 'AIFS',
     'chirps': 'CHIRPS',
     'chirpsgefs': 'CHIRPS_GEFS',
     'cpc': 'CPC',
+    'ecmwfaifs': 'AIFS',
     'era5land': 'ERA5_LAND',
     'era5landfc': 'ERA5_LAND_FC',
     'gefsreforecast': 'GEFS_REFORECAST',

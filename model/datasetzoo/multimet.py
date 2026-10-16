@@ -564,14 +564,12 @@ class Multimet(Dataset):
             )
             for feat in self._local_static_features
         }
-        target_arr = np.ascontiguousarray(
-            np.stack(
-                [
-                    self._dataset[feat].transpose('basin', 'date').data
-                    for feat in self._target_features
-                ],
-                axis=-1,
-            )
+        target_arr = np.stack(
+            [
+                self._dataset[feat].transpose('basin', 'date').data
+                for feat in self._target_features
+            ],
+            axis=-1,
         )
         self._fast_target_win = np.moveaxis(
             swv(target_arr, self._seq_length, axis=1), -1, 2
@@ -596,14 +594,12 @@ class Multimet(Dataset):
 
         self._fast_hindcast_wins: dict[str, np.ndarray] = {}
         for feature in self._hindcast_features_without_lead_time:
-            arr = np.ascontiguousarray(
-                self._dataset[feature].transpose('basin', 'date').data
-            )
+            arr = self._dataset[feature].transpose('basin', 'date').data
             self._fast_hindcast_wins[feature] = swv(
                 arr, self._seq_length, axis=1
             )
         for feature in self._hindcast_features_with_lead_time:
-            arr = np.ascontiguousarray(
+            arr = (
                 self._dataset[feature]
                 .isel(lead_time=0)
                 .transpose('basin', 'date')
@@ -616,7 +612,7 @@ class Multimet(Dataset):
         self._fast_forecast_3d: dict[str, np.ndarray] = {}
         self._fast_forecast_overlap_wins: dict[str, np.ndarray] = {}
         for feature in self._forecast_features:
-            arr_3d = np.ascontiguousarray(
+            arr_3d = (
                 self._dataset[feature]
                 .transpose('basin', 'date', 'lead_time')
                 .data
@@ -626,7 +622,7 @@ class Multimet(Dataset):
                 self._forecast_overlap is not None
                 and self._forecast_overlap > 0
             ):
-                arr_l0 = np.ascontiguousarray(arr_3d[:, :, 0])
+                arr_l0 = arr_3d[:, :, 0]
                 self._fast_forecast_overlap_wins[feature] = swv(
                     arr_l0, self._forecast_overlap, axis=1
                 )

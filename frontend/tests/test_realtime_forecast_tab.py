@@ -2028,6 +2028,63 @@ class RealtimeForecastTabTest(unittest.TestCase):
             assert token in html
         assert 'const fcDaStateByBasin' not in html
 
+    def test_cancel_realtime_fetch_and_tab_activity_spinner_and_drag_markup(
+        self,
+    ) -> None:
+        """Verify cancel-fetch endpoint, tab spinners, and draggable tabs."""
+        # 1. POST /api/forecast/cancel-fetch sets cancelled status in progress
+        code, cancel_res = self._request(
+            'POST',
+            '/api/forecast/cancel-fetch',
+            {'username': self.test_user},
+        )
+        assert code == HTTP_OK
+        assert cancel_res['status'] == 'cancelled'
+        assert cancel_res['progress']['status'] == 'cancelled'
+
+        code_p, prog = self._request(
+            'GET',
+            f'/api/forecast/fetch-progress?username={self.test_user}',
+        )
+        assert code_p == HTTP_OK
+        assert prog['status'] == 'cancelled'
+
+        # 2. POST /api/jobs/cancel cancels active background jobs
+        code_j, jobs_cancel_res = self._request(
+            'POST',
+            '/api/jobs/cancel',
+            {'cancel_all': True},
+        )
+        assert code_j == HTTP_OK
+        assert jobs_cancel_res['status'] == 'cancelled'
+
+        # 3. Verify frontend markup for tab activity spinners, draggable tabs,
+        # and Stop Download controls
+        html_path = (
+            Path(__file__).resolve().parent.parent / 'static' / 'index.html'
+        )
+        html = html_path.read_text(encoding='utf-8')
+        for token in (
+            'tab-activity-spinner',
+            'data-tab-spinner="tab-weather"',
+            'data-tab-spinner="tab-maas"',
+            'data-tab-spinner="tab-delineation"',
+            'data-tab-spinner="tab-geo-features"',
+            'data-tab-spinner="tab-training"',
+            'data-tab-spinner="tab-finetuning"',
+            'data-tab-spinner="tab-forecasting"',
+            'draggable="true"',
+            'initDraggableTabBar',
+            'syncAllTabActivityIndicators',
+            'stopAllActiveDownloads',
+            'stopActiveForecastDownload',
+            'id="globalStopDownloadsBtn"',
+            'id="fcCancelFetchBtn"',
+            'id="fcLiveBannerStopBtn"',
+            'id="stopHistJobBtn"',
+        ):
+            assert token in html
+
 
 if __name__ == '__main__':
     unittest.main()

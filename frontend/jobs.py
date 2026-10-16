@@ -31,6 +31,22 @@ from utils.file_paths import DEFAULT_LOCAL_SERVER_URL
 logger = logging.getLogger(__name__)
 
 
+_JOB_THREAD_LOCAL = threading.local()
+
+
+class JobCancelledError(RuntimeError):
+    """Raised when a background job is cancelled by the user."""
+
+
+def check_current_job_cancelled() -> None:
+    """Raise ``JobCancelledError`` if the active thread's job was cancelled."""
+    cancel_ev: threading.Event | None = getattr(
+        _JOB_THREAD_LOCAL, 'cancel_event', None
+    )
+    if cancel_ev is not None and cancel_ev.is_set():
+        raise JobCancelledError('Background job cancelled by user.')
+
+
 class JobManager:
     """Manage background processing jobs and completion notifications."""
 
@@ -45,6 +61,8 @@ class JobManager:
             max_workers=max_workers,
         )
         self._jobs: dict[str, dict[str, Any]] = {}
+        self._futures: dict[str, concurrent.futures.Future[Any]] = {}
+        self._cancel_events: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     def submit_job(
@@ -88,11 +106,13 @@ class JobManager:
             'error': None,
             'email_sent': False,
         }
+        cancel_ev = threading.Event()
 
         with self._lock:
             self._jobs[job_id] = job_record
+            self._cancel_events[job_id] = cancel_ev
 
-        self._executor.submit(
+        fut = self._executor.submit(
             self._execute_job,
             job_id,
             task_fn,
@@ -100,8 +120,27 @@ class JobManager:
             kwargs,
             notify_email,
         )
+        with self._lock:
+            self._futures[job_id] = fut
         logger.info('Submitted background job %s (type=%s)', job_id, job_type)
         return job_id
+
+    def _mark_job_started(
+        self, job_id: str
+    ) -> tuple[bool, threading.Event | None]:
+        """Mark job as running if not already cancelled."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.get('status') == 'cancelled':
+                return False, None
+            cancel_ev = self._cancel_events.get(job_id)
+            if cancel_ev is not None and cancel_ev.is_set():
+                job['status'] = 'cancelled'
+                job['completed_at'] = datetime.now(UTC).isoformat()
+                return False, cancel_ev
+            job['status'] = 'running'
+            job['started_at'] = datetime.now(UTC).isoformat()
+            return True, cancel_ev
 
     def _execute_job(
         self,
@@ -112,16 +151,40 @@ class JobManager:
         notify_email: str | None,
     ) -> None:
         """Execute the task and notify the recipient on completion."""
-        with self._lock:
-            if job_id not in self._jobs:
-                return
-            self._jobs[job_id]['status'] = 'running'
-            self._jobs[job_id]['started_at'] = datetime.now(UTC).isoformat()
+        can_run, cancel_ev = self._mark_job_started(job_id)
+        if not can_run:
+            return
 
-        result = task_fn(*args, **kwargs)
+        _JOB_THREAD_LOCAL.cancel_event = cancel_ev
+        try:
+            result = task_fn(*args, **kwargs)
+        except JobCancelledError as exc:
+            with self._lock:
+                if job_id in self._jobs:
+                    self._jobs[job_id]['status'] = 'cancelled'
+                    self._jobs[job_id]['completed_at'] = datetime.now(
+                        UTC
+                    ).isoformat()
+                    self._jobs[job_id]['error'] = str(exc)
+            return
+        except Exception as exc:
+            with self._lock:
+                if job_id in self._jobs:
+                    if self._jobs[job_id].get('status') != 'cancelled':
+                        self._jobs[job_id]['status'] = 'failed'
+                        self._jobs[job_id]['error'] = str(exc)
+                    self._jobs[job_id]['completed_at'] = datetime.now(
+                        UTC
+                    ).isoformat()
+            raise
+        finally:
+            _JOB_THREAD_LOCAL.cancel_event = None
+
         completed_at = datetime.now(UTC).isoformat()
 
         with self._lock:
+            if self._jobs[job_id].get('status') == 'cancelled':
+                return
             self._jobs[job_id]['status'] = 'completed'
             self._jobs[job_id]['completed_at'] = completed_at
             self._jobs[job_id]['result'] = result
@@ -135,6 +198,55 @@ class JobManager:
             )
             with self._lock:
                 self._jobs[job_id]['email_sent'] = email_sent
+
+    def cancel_job(self, job_id: str) -> dict[str, Any] | None:
+        """Cancel a queued or running background job.
+
+        Args:
+            job_id: Job identifier to cancel.
+
+        Returns:
+            Updated job record dictionary, or None if not found.
+        """
+        now_iso = datetime.now(UTC).isoformat()
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            cancel_ev = self._cancel_events.get(job_id)
+            if cancel_ev is not None:
+                cancel_ev.set()
+            fut = self._futures.get(job_id)
+            if fut is not None and not fut.done():
+                fut.cancel()
+            if job.get('status') in ('queued', 'running'):
+                job['status'] = 'cancelled'
+                job['completed_at'] = now_iso
+                job['error'] = 'Cancelled by user'
+            return dict(job)
+
+    def cancel_all_active_jobs(self) -> list[str]:
+        """Cancel all currently queued or running background jobs.
+
+        Returns:
+            List of cancelled job IDs.
+        """
+        now_iso = datetime.now(UTC).isoformat()
+        cancelled_ids: list[str] = []
+        with self._lock:
+            for job_id, job in self._jobs.items():
+                if job.get('status') in ('queued', 'running'):
+                    cancel_ev = self._cancel_events.get(job_id)
+                    if cancel_ev is not None:
+                        cancel_ev.set()
+                    fut = self._futures.get(job_id)
+                    if fut is not None and not fut.done():
+                        fut.cancel()
+                    job['status'] = 'cancelled'
+                    job['completed_at'] = now_iso
+                    job['error'] = 'Cancelled by user'
+                    cancelled_ids.append(job_id)
+        return cancelled_ids
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Retrieve status and results for a job.

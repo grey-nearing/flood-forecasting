@@ -641,5 +641,52 @@ def test_imerg_version_cutover_and_missing_file_handling(monkeypatch):
     ext.extract_for_basins(gdf, start_date="2026-01-01", end_date="2026-01-15")
 
 
+def test_append_empty_basins_with_multi_date_chunks_and_repair(tmp_path):
+  """Verifies appending a basin to a multi-day chunked Zarr store and repairing partial basin resize."""
+  import json
+  import os
+
+  writer = MultiMetZarrWriter(tmp_path)
+  dates = pd.date_range("2025-01-01", periods=10, freq="D")
+  basins = ["b1", "b2", "b3", "b4", "b5", "b6"]
+  ds = xr.Dataset(
+      {
+          band: (
+              ("basin", "date", "lead_time"),
+              np.ones((6, 10, 10), dtype=np.float32),
+          )
+          for band in PRODUCT_BANDS[Product.HRES]
+      },
+      coords={
+          "basin": basins,
+          "date": dates.values,
+          "lead_time": np.arange(1, 11, dtype=np.int64),
+      },
+  )
+  store_path = writer.get_store_path(Product.HRES)
+  ds.chunk({"basin": 6, "date": 9, "lead_time": 10}).to_zarr(
+      store_path, mode="w", zarr_format=2, consolidated=True
+  )
+
+  # Simulate a partial failed basin resize on one variable
+  thermal_za = os.path.join(
+      store_path, "hres_surface_net_thermal_radiation", ".zarray"
+  )
+  with open(thermal_za, "r", encoding="utf-8") as f:
+    za_doc = json.load(f)
+  za_doc["shape"][0] = 9
+  with open(thermal_za, "w", encoding="utf-8") as f:
+    json.dump(za_doc, f)
+
+  # get_store_info and _append_empty_basins must self-heal and append cleanly
+  writer._append_empty_basins(Product.HRES, ["b7"])
+  info = writer.get_store_info(Product.HRES)
+  assert info is not None
+  assert info["basins"] == ["b1", "b2", "b3", "b4", "b5", "b6", "b7"]
+  with xr.open_zarr(store_path, consolidated=False) as out_ds:
+    assert dict(out_ds.sizes) == {"basin": 7, "date": 10, "lead_time": 10}
+
+
+
 
 
