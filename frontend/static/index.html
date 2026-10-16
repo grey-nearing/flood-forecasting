@@ -1493,8 +1493,8 @@
               <div>
                 <label for="ftStreamflowUnitsSelect" class="text-[10px] text-[#5f6368] block">Units</label>
                 <select id="ftStreamflowUnitsSelect" class="w-full bg-[#f8f9fa] border border-[#dadce0] text-[11px] rounded px-1.5 py-1 text-[#202124]">
-                  <option value="mm/day" selected>mm/day</option>
-                  <option value="m3/s">m&sup3;/s (CMS)</option>
+                  <option value="m3/s" selected>m&sup3;/s (CMS)</option>
+                  <option value="mm/day">mm/day</option>
                 </select>
               </div>
               <div>
@@ -1509,6 +1509,8 @@
               </button>
             </div>
           </div>
+
+          <div id="ftUploadFeedbackMessage" class="hidden text-[11px] px-2.5 py-1.5 rounded-lg border font-mono"></div>
 
           <!-- Template & Clear Helpers -->
           <div class="flex items-center gap-1.5 pt-1">
@@ -13939,20 +13941,29 @@
           if (!res.ok || data.status !== 'success') {
             throw new Error(data.message || `HTTP ${res.status}`);
           }
+          const targetCid = String(data.catchment_id || basinId).trim();
           if (data.observed_by_id && typeof data.observed_by_id === 'object') {
             Object.entries(data.observed_by_id).forEach(([cid, series]) => {
               fcObservedStreamflowByBasin[cid] = series;
             });
           } else if (Array.isArray(data.observed_streamflow)) {
-            fcObservedStreamflowByBasin[basinId] = data.observed_streamflow;
+            fcObservedStreamflowByBasin[targetCid] = data.observed_streamflow;
           }
-          if (fcStatusData && fcStatusData.catchment_id === basinId) {
-            fcStatusData.observed_streamflow = fcObservedStreamflowByBasin[basinId] || [];
+          if (targetCid && targetCid !== basinId) {
+            activeCatchmentId = targetCid;
+            if (basinSel) basinSel.value = targetCid;
+          }
+          if (data.forecast_status && typeof data.forecast_status === 'object') {
+            fcStatusData = data.forecast_status;
+          } else if (fcStatusData && fcStatusData.catchment_id === targetCid) {
+            fcStatusData.observed_streamflow = fcObservedStreamflowByBasin[targetCid] || [];
             fcStatusData.has_observed_streamflow = (fcStatusData.observed_streamflow.length > 0);
           }
           updateStreamflowCsvStatusUI(data.message);
+          updateDaControlsUI();
+          renderForecastCatchmentChecklist();
           renderForcingChart({ animate: false });
-          renderHydrographChart(fcModelResultsByBasin[basinId] || null, { animate: false });
+          renderHydrographChart(fcModelResultsByBasin[targetCid] || null, { animate: false });
         } catch (err) {
           if (csvStatusEl) {
             csvStatusEl.innerText = `CSV upload failed: ${err.message}`;
@@ -17344,22 +17355,26 @@
     };
 
     function setFtStatusBanner(msg, tone = 'info') {
-      const box = document.getElementById('ftStatusMessage');
-      if (!box) return;
-      if (!msg) {
-        box.classList.add('hidden');
-        box.textContent = '';
-        return;
-      }
-      box.classList.remove('hidden', 'bg-[#e8f0fe]', 'text-[#174ea6]', 'border-[#d2e3fc]', 'bg-[#fce8e6]', 'text-[#c5221f]', 'border-[#f5c2c7]', 'bg-[#e6f4ea]', 'text-[#137333]', 'border-[#ceead6]');
-      if (tone === 'error') {
-        box.classList.add('bg-[#fce8e6]', 'text-[#c5221f]', 'border-[#f5c2c7]');
-      } else if (tone === 'success') {
-        box.classList.add('bg-[#e6f4ea]', 'text-[#137333]', 'border-[#ceead6]');
-      } else {
-        box.classList.add('bg-[#e8f0fe]', 'text-[#174ea6]', 'border-[#d2e3fc]');
-      }
-      box.textContent = msg;
+      const boxes = [
+        document.getElementById('ftStatusMessage'),
+        document.getElementById('ftUploadFeedbackMessage'),
+      ].filter(Boolean);
+      boxes.forEach(box => {
+        if (!msg) {
+          box.classList.add('hidden');
+          box.textContent = '';
+          return;
+        }
+        box.classList.remove('hidden', 'bg-[#e8f0fe]', 'text-[#174ea6]', 'border-[#d2e3fc]', 'bg-[#fce8e6]', 'text-[#c5221f]', 'border-[#f5c2c7]', 'bg-[#e6f4ea]', 'text-[#137333]', 'border-[#ceead6]');
+        if (tone === 'error') {
+          box.classList.add('bg-[#fce8e6]', 'text-[#c5221f]', 'border-[#f5c2c7]');
+        } else if (tone === 'success') {
+          box.classList.add('bg-[#e6f4ea]', 'text-[#137333]', 'border-[#ceead6]');
+        } else {
+          box.classList.add('bg-[#e8f0fe]', 'text-[#174ea6]', 'border-[#d2e3fc]');
+        }
+        box.textContent = msg;
+      });
     }
 
     function formatCleanFtBasinName(rawName, reachAttrs, cid) {
@@ -18035,7 +18050,11 @@
         const el = document.getElementById(elId);
         if (!el) return;
         if (info && info.num_days) {
-          el.textContent = info.num_days + 'd (' + info.num_lead_columns + ' lead cols)';
+          if (info.source === 'realtime_dynamics') {
+            el.textContent = info.num_days + 'd (Profile Forcing)';
+          } else {
+            el.textContent = info.num_days + 'd (' + info.num_lead_columns + ' lead cols)';
+          }
           el.className = 'text-[10px] font-mono text-[#137333] font-semibold';
         } else {
           el.textContent = 'Not uploaded';
@@ -18098,11 +18117,14 @@
       const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
       const slider = document.getElementById('ftSplitRatioSlider');
       const splitRatio = slider ? (parseInt(slider.value, 10) / 100.0) : 0.7;
+      const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
 
       const resp = await fetch(
         '/api/finetune/status?basin_id=' + encodeURIComponent(basinId) +
         '&model_id=' + encodeURIComponent(modelId) +
-        '&split_ratio=' + encodeURIComponent(splitRatio)
+        '&split_ratio=' + encodeURIComponent(splitRatio) +
+        (u ? '&username=' + encodeURIComponent(u) : ''),
+        u ? { headers: { 'X-User-Profile': u } } : undefined
       );
       if (resp.ok) {
         const data = await resp.json();
@@ -18119,12 +18141,13 @@
         setFtStatusBanner('Please clip or delineate a watershed polygon in your account before uploading CSVs.', 'error');
         return;
       }
+      const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
       const modelSel = document.getElementById('ftModelSelect');
       const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
       const unitsSel = document.getElementById('ftStreamflowUnitsSelect');
       const areaInp = document.getElementById('ftBasinAreaInput');
       const selectedUnits = dataType === 'streamflow'
-        ? (unitsSel ? unitsSel.value : 'mm/day')
+        ? (unitsSel ? unitsSel.value : 'm3/s')
         : (dataType === 'temp' ? 'degC' : 'mm/day');
       let areaVal = null;
       if (dataType === 'streamflow' && selectedUnits === 'm3/s') {
@@ -18135,10 +18158,13 @@
       }
 
       setFtStatusBanner('Uploading ' + file.name + '...', 'info');
+      const headers = { 'Content-Type': 'application/json' };
+      if (u) headers['X-User-Profile'] = u;
       const resp = await fetch('/api/finetune/upload-csv', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
+          username: u || undefined,
           basin_id: basinId,
           model_id: modelId,
           data_type: dataType,
@@ -18153,7 +18179,13 @@
         setFtStatusBanner(payload.error || 'CSV upload failed', 'error');
         return;
       }
-      setFtStatusBanner('Uploaded ' + file.name + ' (' + payload.upload.num_days + ' days).', 'success');
+      const numBasins = (payload.upload && Array.isArray(payload.upload.basins_uploaded))
+        ? payload.upload.basins_uploaded.length
+        : 1;
+      const suffix = numBasins > 1
+        ? (' (' + payload.upload.num_days + ' days across ' + numBasins + ' basins).')
+        : (' (' + payload.upload.num_days + ' days).');
+      setFtStatusBanner('Uploaded ' + file.name + suffix, 'success');
       applyFtWorkspacePayload(payload.workspace, { preserveComponentSelection: true });
     }
 
@@ -18213,7 +18245,10 @@
         const btn = document.getElementById(btnId);
         const inp = document.getElementById(inputId);
         if (btn && inp) {
-          btn.addEventListener('click', () => inp.click());
+          btn.addEventListener('click', () => {
+            inp.value = '';
+            inp.click();
+          });
           inp.addEventListener('change', () => handleFtCsvFileUpload(dtype, inp));
         }
       };
@@ -18251,10 +18286,13 @@
           if (!basinId) return;
           const basinLabel = getActiveFtBasinDisplayName();
           const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+          const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
+          const headers = { 'Content-Type': 'application/json' };
+          if (u) headers['X-User-Profile'] = u;
           const resp = await fetch('/api/finetune/clear-data', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ basin_id: basinId, model_id: modelId }),
+            headers,
+            body: JSON.stringify({ username: u || undefined, basin_id: basinId, model_id: modelId }),
           });
           if (resp.ok) {
             const payload = await resp.json();
@@ -18339,6 +18377,7 @@
             return;
           }
           const basinLabel = getActiveFtBasinDisplayName();
+          const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
           const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
           const epochs = (epochsInput && parseInt(epochsInput.value, 10)) || 3;
           const lrInp = document.getElementById('ftLearningRateInput');
@@ -18364,10 +18403,13 @@
           }
           setFtStatusBanner('Fine-tuning ' + modelId + ' on ' + basinLabel + ' for ' + epochs + ' epoch(s)...', 'info');
 
+          const headers = { 'Content-Type': 'application/json' };
+          if (u) headers['X-User-Profile'] = u;
           const resp = await fetch('/api/finetune/run', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
+              username: u || undefined,
               basin_id: basinId,
               model_id: modelId,
               epochs: epochs,
@@ -18414,10 +18456,13 @@
         resetBtn.addEventListener('click', async () => {
           const basinId = getActiveFtBasinId();
           const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+          const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
+          const headers = { 'Content-Type': 'application/json' };
+          if (u) headers['X-User-Profile'] = u;
           const resp = await fetch('/api/finetune/reset', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ basin_id: basinId, model_id: modelId }),
+            headers,
+            body: JSON.stringify({ username: u || undefined, basin_id: basinId, model_id: modelId }),
           });
           if (resp.ok) {
             const payload = await resp.json();
