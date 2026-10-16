@@ -1043,6 +1043,32 @@ def _extract_realtime_forcing_matrix(
     return None
 
 
+def _attach_overlapping_realtime_forcing(
+    loaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]],
+    username: str,
+    basin_id: str,
+    target_lead_time: int,
+) -> None:
+    if 'streamflow' not in loaded:
+        return
+    sf_dates = loaded['streamflow'][0]
+    sf_start, sf_end = sf_dates[0], sf_dates[-1]
+    for key, candidates in (
+        ('precip', _REALTIME_PRECIP_CANDIDATES),
+        ('temp', _REALTIME_TEMP_CANDIDATES),
+    ):
+        if key in loaded:
+            continue
+        rt = _extract_realtime_forcing_matrix(
+            username,
+            basin_id,
+            candidates,
+            target_lead_time=target_lead_time,
+        )
+        if rt is not None and max(sf_start, rt[0][0]) < min(sf_end, rt[0][-1]):
+            loaded[key] = (rt[0], rt[1])
+
+
 def _load_uploaded_arrays(
     username: str,
     basin_id: str,
@@ -1060,25 +1086,9 @@ def _load_uploaded_arrays(
                 dates = pd.to_datetime(archive['dates'])
                 matrix = archive['matrix'].astype(np.float32)
                 loaded[key] = (pd.DatetimeIndex(dates), matrix)
-    if 'streamflow' in loaded:
-        if 'precip' not in loaded:
-            rt_p = _extract_realtime_forcing_matrix(
-                username,
-                basin_id,
-                _REALTIME_PRECIP_CANDIDATES,
-                target_lead_time=target_lead_time,
-            )
-            if rt_p is not None:
-                loaded['precip'] = (rt_p[0], rt_p[1])
-        if 'temp' not in loaded:
-            rt_t = _extract_realtime_forcing_matrix(
-                username,
-                basin_id,
-                _REALTIME_TEMP_CANDIDATES,
-                target_lead_time=target_lead_time,
-            )
-            if rt_t is not None:
-                loaded['temp'] = (rt_t[0], rt_t[1])
+    _attach_overlapping_realtime_forcing(
+        loaded, username, basin_id, target_lead_time
+    )
     return loaded
 
 

@@ -631,63 +631,61 @@ class FineTuneServiceUnitTests(unittest.TestCase):
     ) -> None:
         """Verify streamflow-only CSV uses realtime/dynamics/HRES forcing."""
         pm = profile_manager.get_profile_manager()
-        rt_hres_zarr = (
-            pm.get_realtime_dir(TEST_USER)
-            / 'dynamics'
-            / 'HRES'
-            / 'timeseries.zarr'
-        )
+        rt_dyn_dir = pm.get_realtime_dir(TEST_USER) / 'dynamics'
+        rt_hres_zarr = rt_dyn_dir / 'HRES' / 'timeseries.zarr'
         rt_hres_zarr.parent.mkdir(parents=True, exist_ok=True)
-        dates = pd.date_range('2025-01-01', periods=70, freq='D')
-        leads = np.arange(1, EXPECTED_LEAD_TIME + 1, dtype=np.int64)
-        p_mm = np.full(
-            (1, len(dates), EXPECTED_LEAD_TIME), 5.0, dtype=np.float32
-        )
-        t_degc = np.full(
-            (1, len(dates), EXPECTED_LEAD_TIME), 15.0, dtype=np.float32
-        )
-        ds_rt = xr.Dataset(
-            {
-                'hres_tp': (
-                    ('basin', 'date', 'lead_time'),
-                    p_mm,
-                ),
-                'hres_2t': (
-                    ('basin', 'date', 'lead_time'),
-                    t_degc,
-                ),
-            },
-            coords={
-                'basin': np.array([TEST_BASIN], dtype=object),
-                'date': dates.to_numpy().astype('datetime64[ns]'),
-                'lead_time': leads,
-            },
-        )
-        ds_rt.to_zarr(rt_hres_zarr, mode='w', consolidated=True)
-
-        q_rows = ['basin,date,streamflow']
-        for i, dt in enumerate(dates):
-            q_rows.append(
-                f'{TEST_BASIN},{dt.strftime("%Y-%m-%d")},{10.0 + 0.2 * i:.2f}'
+        try:
+            dates = pd.date_range('2025-01-01', periods=70, freq='D')
+            leads = np.arange(1, EXPECTED_LEAD_TIME + 1, dtype=np.int64)
+            p_mm = np.full(
+                (1, len(dates), EXPECTED_LEAD_TIME), 5.0, dtype=np.float32
             )
-        finetune_service.upload_finetune_csv(
-            username=TEST_USER,
-            basin_id=TEST_BASIN,
-            data_type='streamflow',
-            csv_content='\n'.join(q_rows),
-            filename='usgs_streamflow.csv',
-            units='m3/s',
-        )
+            t_degc = np.full(
+                (1, len(dates), EXPECTED_LEAD_TIME), 15.0, dtype=np.float32
+            )
+            ds_rt = xr.Dataset(
+                {
+                    'hres_tp': (
+                        ('basin', 'date', 'lead_time'),
+                        p_mm,
+                    ),
+                    'hres_2t': (
+                        ('basin', 'date', 'lead_time'),
+                        t_degc,
+                    ),
+                },
+                coords={
+                    'basin': np.array([TEST_BASIN], dtype=object),
+                    'date': dates.to_numpy().astype('datetime64[ns]'),
+                    'lead_time': leads,
+                },
+            )
+            ds_rt.to_zarr(rt_hres_zarr, mode='w', consolidated=True)
 
-        ws = finetune_service.get_finetune_workspace_status(
-            username=TEST_USER,
-            basin_id=TEST_BASIN,
-            model_id=SYNTH_MODEL_ID,
-        )
-        assert ws['data_ready'] is True
-        assert len(ws['timeseries']['dates']) == len(dates)
-        assert np.allclose(ws['timeseries']['precip'], 5.0, atol=1e-2)
-        assert ws['partition']['total_days'] == len(dates)
+            q_rows = ['basin,date,streamflow']
+            for i, dt in enumerate(dates):
+                d_str = dt.strftime('%Y-%m-%d')
+                q_rows.append(f'{TEST_BASIN},{d_str},{10.0 + 0.2 * i:.2f}')
+            finetune_service.upload_finetune_csv(
+                username=TEST_USER,
+                basin_id=TEST_BASIN,
+                data_type='streamflow',
+                csv_content='\n'.join(q_rows),
+                filename='usgs_streamflow.csv',
+                units='m3/s',
+            )
+
+            ws = finetune_service.get_finetune_workspace_status(
+                username=TEST_USER,
+                basin_id=TEST_BASIN,
+                model_id=SYNTH_MODEL_ID,
+            )
+            assert ws['data_ready'] is True
+            assert len(ws['timeseries']['dates']) == len(dates)
+            assert np.allclose(ws['timeseries']['precip'], 5.0, atol=1e-2)
+            assert ws['partition']['total_days'] == len(dates)
+        finally:
+            shutil.rmtree(rt_dyn_dir, ignore_errors=True)
 
 
 @pytest.mark.integration
