@@ -1922,12 +1922,17 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'computeBasinNudgedHydrograph',
             'initHydrographNudgingDrag',
             'NUDGED FORECAST',
-            'VARIATIONAL DA (4D-VAR',
+            'VARIATIONAL DA (',
+            'Start Variational DA',
+            'id="fcHydroLegendSubpanel"',
+            'renderHydrographLegend',
             'let fcDaAccordionExpanded = true;',
             'userSetEnabled: false',
         ):
             assert token in html
         assert 'let fcDaAccordionExpanded = false;' not in html
+        assert '4D-Var' not in html
+        assert '4D-VAR' not in html
 
     def test_daily_forecast_persistence_and_ttl_expiration(self) -> None:
         """Daily forecasts persist across refresh and auto-expire after TTL."""

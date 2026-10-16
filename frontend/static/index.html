@@ -2173,18 +2173,18 @@
               </div>
             </div>
 
-            <!-- Method 2: Variational Embedding Data Assimilation (Karan's Latent 4D-Var Engine) -->
+            <!-- Method 2: Variational Embedding Data Assimilation (Karan's Latent Variational Engine) -->
             <div id="fcDaVariationalPanel" class="hidden space-y-2.5">
-              <!-- Manual Iterative Run / Continue / Reset Controls -->
+              <!-- Manual Iterative Start / Continue / Reset Controls -->
               <div class="flex items-center justify-between gap-1.5">
                 <button id="fcDaVarRunBtn" type="button" class="flex-1 py-1.5 px-2 rounded-lg border border-[#7c3aed] bg-[#f5f3ff] hover:bg-[#ede9fe] text-[#6d28d9] text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition shadow-2xs" title="Start fresh from Step 0 (Prior) and run the selected number of backprop iterations">
                   <span id="fcDaVarRunDot" class="w-2 h-2 rounded-full bg-[#7c3aed]"></span>
-                  <span id="fcDaVarRunBtnLabel">Run 5 Steps (Fresh)</span>
+                  <span id="fcDaVarRunBtnLabel">Start Variational DA (5 Steps)</span>
                 </button>
                 <button id="fcDaVarContinueBtn" type="button" disabled class="py-1.5 px-2 rounded-lg border border-[#dadce0] bg-white hover:bg-[#f5f3ff] text-[#3c4043] text-[10.5px] font-semibold transition disabled:opacity-45 disabled:cursor-not-allowed" title="Continue backprop from the currently inspected step with current learning parameters">
                   <span id="fcDaVarContinueBtnLabel">+5 Steps</span>
                 </button>
-                <button id="fcDaVarResetBtn" type="button" class="py-1.5 px-2 rounded-lg border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[10.5px] font-medium text-[#5f6368] transition" title="Reset 4D-Var to default (W=14d, λ_bg=0.50, lr=0.01, 5 steps, All Embeddings)">
+                <button id="fcDaVarResetBtn" type="button" class="py-1.5 px-2 rounded-lg border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[10.5px] font-medium text-[#5f6368] transition" title="Reset Variational DA to default (W=14d, λ_bg=0.50, lr=0.01, 5 steps, All Embeddings)">
                   Reset
                 </button>
               </div>
@@ -2229,7 +2229,7 @@
               <div class="space-y-1">
                 <div class="flex items-center justify-between text-[10px] text-[#5f6368]">
                   <span class="font-semibold uppercase tracking-wider">Latent Components</span>
-                  <div class="inline-flex rounded border border-[#dadce0] bg-white p-0.5 gap-0.5" role="group" aria-label="4D-Var Loss Objective">
+                  <div class="inline-flex rounded border border-[#dadce0] bg-white p-0.5 gap-0.5" role="group" aria-label="Variational DA Loss Objective">
                     <button type="button" data-da-var-loss="MSE" class="fc-da-var-loss-chip px-1.5 py-0.5 rounded text-[9.5px] font-mono font-semibold bg-[#f5f3ff] text-[#6d28d9]">MSE</button>
                     <button type="button" data-da-var-loss="CMAL" class="fc-da-var-loss-chip px-1.5 py-0.5 rounded text-[9.5px] font-mono text-[#5f6368] hover:text-[#202124]">CMAL</button>
                     <button type="button" data-da-var-loss="NSE" class="fc-da-var-loss-chip px-1.5 py-0.5 rounded text-[9.5px] font-mono text-[#5f6368] hover:text-[#202124]">NSE</button>
@@ -2266,7 +2266,7 @@
                   <button id="fcDaVarStepNextBtn" type="button" disabled class="px-1.5 py-0.5 rounded border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[10px] font-mono text-[#3c4043] disabled:opacity-40" title="Next iteration">▶</button>
                 </div>
                 <div id="fcDaVarStepReadout" class="text-[9.5px] font-mono text-[#5f6368] leading-snug">
-                  Click <strong class="text-[#6d28d9]">Run 5 Steps</strong> to optimize latent embeddings and inspect each iteration.
+                  Click <strong class="text-[#6d28d9]">Start Variational DA</strong> to optimize latent embeddings and inspect each iteration.
                 </div>
               </div>
 
@@ -2282,13 +2282,13 @@
                 </div>
                 <div id="fcDaVarHint" class="text-[10px] text-[#5f6368] leading-snug flex items-center justify-between gap-1 font-mono">
                   <span id="fcDaVarStatusText">Drag window [-W..t₀] & pull gain</span>
-                  <span id="fcDaVarRmseReadout" class="text-[#6d28d9] font-semibold">4D-Var Ready</span>
+                  <span id="fcDaVarRmseReadout" class="text-[#6d28d9] font-semibold">Variational Ready</span>
                 </div>
               </div>
 
-              <!-- One-Click 4D-Var Regime Presets -->
+              <!-- One-Click Variational Regime Presets -->
               <div class="grid grid-cols-4 gap-1">
-                <button type="button" data-da-var-preset="balanced" class="fc-da-var-preset-chip py-1 px-1 rounded border border-[#7c3aed] bg-[#f5f3ff] text-[10px] font-mono font-semibold text-[#6d28d9] transition" title="Balanced 4D-Var (W=14d, λ_bg=0.50, All Embeddings)">
+                <button type="button" data-da-var-preset="balanced" class="fc-da-var-preset-chip py-1 px-1 rounded border border-[#7c3aed] bg-[#f5f3ff] text-[10px] font-mono font-semibold text-[#6d28d9] transition" title="Balanced Variational DA (W=14d, λ_bg=0.50, All Embeddings)">
                   Balanced
                 </button>
                 <button type="button" data-da-var-preset="tight" class="fc-da-var-preset-chip py-1 px-1 rounded border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[10px] font-mono text-[#3c4043] transition" title="Tight gauge fit over recent 7 days (W=7d, λ_bg=0.05, All Embeddings)">
@@ -2435,6 +2435,7 @@
           </div>
 
           <div class="flex-1 relative min-h-[250px]">
+            <div id="fcHydroLegendSubpanel" class="hidden absolute top-2.5 left-[74px] z-10 bg-white/95 backdrop-blur-xs border border-[#dadce0] rounded-lg shadow-sm px-2.5 py-1.5 max-w-[360px] max-h-[160px] overflow-y-auto space-y-1 text-[10.5px]"></div>
             <canvas id="masterHydrographCanvas"></canvas>
           </div>
         </div>
@@ -9952,7 +9953,8 @@
 
     // Data Assimilation (Step 5) per-basin interactive state:
     // Method 1: Nudging with Persistence (Karan's Post-Processing, Eq. 6: Q_pp = max(0, Q_base + alpha * rho^k * e_t0))
-    // Method 2: Variational Embedding Data Assimilation (Latent 4D-Var)
+    // Method 2: Variational Embedding Data Assimilation (Latent Variational DA)
+    const fcHiddenHydroLegendKeys = new Set();
     let fcDaStateByBasin = {};
     let fcDaAccordionExpanded = true;
     let fcDaCurveCanvasBound = false;
@@ -10132,7 +10134,7 @@
           alpha: 1.0,        // Initial nudging gain at anchor (1.0 = exact Eq. 6)
           windowDays: 1,     // Residual averaging lookback window ending at t_anchor (1 = exact Eq. 6)
           lastMeta: null,
-          // Method 2: Embedding Variational 4D-Var (Assimilation / AssimilationConfig)
+          // Method 2: Embedding Variational DA (Assimilation / AssimilationConfig)
           varWindowDays: 14,
           varRegWeight: 0.50,
           varLearningRate: 0.01,
@@ -10478,13 +10480,13 @@
           summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-white border border-[#dadce0] text-[#5f6368] cursor-pointer';
         } else if (state.method === 'variational') {
           if (state.varRunning) {
-            summaryBadge.innerText = '4D-Var…';
+            summaryBadge.innerText = 'Variational…';
             summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#f5f3ff] border border-[#ddd6fe] text-[#6d28d9] font-semibold animate-pulse cursor-pointer';
           } else if (state.varResult && state.varResult.applied) {
-            summaryBadge.innerText = `4D-Var · W=${state.varWindowDays}d`;
+            summaryBadge.innerText = `Variational · W=${state.varWindowDays}d`;
             summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#f5f3ff] border border-[#c4b5fd] text-[#6d28d9] font-semibold cursor-pointer';
           } else {
-            summaryBadge.innerText = `4D-Var · λ=${state.varRegWeight.toFixed(2)}`;
+            summaryBadge.innerText = `Variational · λ=${state.varRegWeight.toFixed(2)}`;
             summaryBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#e8f0fe] border border-[#d2e3fc] text-[#174ea6] font-semibold cursor-pointer';
           }
         } else {
@@ -10563,7 +10565,7 @@
         }
       }
 
-      // Update Method 2 (Variational 4D-Var) UI controls
+      // Update Method 2 (Variational DA) UI controls
       const varRunBtn = document.getElementById('fcDaVarRunBtn');
       const varRunDot = document.getElementById('fcDaVarRunDot');
       const varRunLabel = document.getElementById('fcDaVarRunBtnLabel');
@@ -10631,7 +10633,7 @@
         } else {
           varRunBtn.className = 'flex-1 py-1.5 px-2 rounded-lg border border-[#7c3aed] bg-[#f5f3ff] hover:bg-[#ede9fe] text-[#6d28d9] text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition shadow-2xs';
           varRunDot.className = 'w-2 h-2 rounded-full bg-[#7c3aed]';
-          varRunLabel.innerText = `Run ${stepsPerRun} Steps (Fresh)`;
+          varRunLabel.innerText = `Start Variational DA (${stepsPerRun} Steps)`;
         }
       }
 
@@ -10661,7 +10663,7 @@
         }
       }
 
-      // Highlight ONLY the matching 4D-Var regime preset chip (or none when custom)
+      // Highlight ONLY the matching Variational DA regime preset chip (or none when custom)
       const orderComps = ['static_embedding', 'hindcast_embedding', 'forecast_embedding'];
       const activeComps = new Set(state.varComponents || []);
       const compsKey = orderComps.filter(c => activeComps.has(c)).join(',');
@@ -10759,9 +10761,9 @@
             : '';
           varStepReadout.innerText = `${lossPart}${rmsePart}${pkPart}`;
         } else if (state.varResult && state.varResult.applied === false) {
-          varStepReadout.innerText = 'Upload overlapping gauge CSV in Step 3 before running 4D-Var.';
+          varStepReadout.innerText = 'Upload overlapping gauge CSV in Step 3 before running Variational DA.';
         } else {
-          varStepReadout.innerHTML = 'Adjust parameters and click <strong class="text-[#6d28d9]">Run Steps</strong> to optimize &amp; inspect each iteration.';
+          varStepReadout.innerHTML = 'Adjust parameters and click <strong class="text-[#6d28d9]">Start Variational DA</strong> to optimize &amp; inspect each iteration.';
         }
       }
 
@@ -11251,7 +11253,7 @@
       ctx.stroke();
       ctx.restore();
 
-      // 4. Schematic 4D-Var trajectory from [-W..t0] into forecast [+1..+7d]
+      // 4. Schematic Variational DA trajectory from [-W..t0] into forecast [+1..+7d]
       const hasStatic = (state.varComponents || []).includes('static_embedding');
       const fcRetain = hasStatic ? 0.72 : 0.45;
       ctx.beginPath();
@@ -12785,7 +12787,7 @@
               }
             },
             plugins: {
-              legend: { labels: { color: '#202124', font: { size: 10 }, boxWidth: 14 } },
+              legend: { display: false, labels: { color: '#202124', font: { size: 10 }, boxWidth: 14 } },
               tooltip: {
                 filter: (item) => {
                   const ds = item.dataset;
@@ -13899,6 +13901,75 @@
       });
     }
 
+    function renderHydrographLegend() {
+      const panel = document.getElementById('fcHydroLegendSubpanel');
+      if (!panel) return;
+      const datasets = (masterHydroChart && masterHydroChart.data && Array.isArray(masterHydroChart.data.datasets))
+        ? masterHydroChart.data.datasets
+        : [];
+      const activeItems = [];
+      datasets.forEach((ds, dsIdx) => {
+        if (!ds || !ds.label) return;
+        const hasData = Array.isArray(ds.data) && ds.data.some(v => v !== null && v !== undefined);
+        if (hasData) {
+          activeItems.push({ ds, dsIdx });
+        }
+      });
+      if (activeItems.length === 0) {
+        panel.classList.add('hidden');
+        panel.innerHTML = '';
+        return;
+      }
+      panel.classList.remove('hidden');
+      panel.innerHTML = '';
+
+      activeItems.forEach(({ ds, dsIdx }) => {
+        const lKey = ds.$legendKey || ds.$fcRole || ds.label;
+        const isVisible = !fcHiddenHydroLegendKeys.has(lKey) && masterHydroChart.isDatasetVisible(dsIdx);
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.dataset.datasetIndex = String(dsIdx);
+        row.title = `${ds.label} — Click to ${isVisible ? 'hide' : 'show'}`;
+        row.className = `w-full flex items-center gap-2 text-left px-1.5 py-0.5 rounded transition cursor-pointer ${
+          isVisible
+            ? 'hover:bg-[#f1f3f4] text-[#202124] font-medium'
+            : 'hover:bg-[#f1f3f4] text-[#9aa0a6] opacity-55 line-through'
+        }`;
+
+        const stroke = typeof ds.borderColor === 'string' ? ds.borderColor : '#15803d';
+        const isDashed = Array.isArray(ds.borderDash) && ds.borderDash.length > 0;
+        const dotFill = (ds.$fcRole === 'baseline_forecast') ? '#ffffff' : stroke;
+        const dashAttr = isDashed ? 'stroke-dasharray="4,2"' : '';
+        const swatchSvg = `
+          <svg width="22" height="10" viewBox="0 0 22 10" class="flex-shrink-0" aria-hidden="true">
+            <line x1="1" y1="5" x2="21" y2="5" stroke="${stroke}" stroke-width="2.4" ${dashAttr} stroke-linecap="round" />
+            <circle cx="11" cy="5" r="2.8" fill="${dotFill}" stroke="${stroke}" stroke-width="1.6" />
+          </svg>
+        `;
+
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'truncate font-mono text-[10px] leading-tight';
+        labelSpan.textContent = ds.label;
+
+        row.innerHTML = swatchSvg;
+        row.appendChild(labelSpan);
+
+        row.addEventListener('click', () => {
+          const nextVis = !masterHydroChart.isDatasetVisible(dsIdx);
+          masterHydroChart.setDatasetVisibility(dsIdx, nextVis);
+          if (nextVis) {
+            fcHiddenHydroLegendKeys.delete(lKey);
+          } else {
+            fcHiddenHydroLegendKeys.add(lKey);
+          }
+          masterHydroChart.update('none');
+          renderHydrographLegend();
+        });
+
+        panel.appendChild(row);
+      });
+    }
+
     function renderHydrographChart(modelResult, opts = {}) {
       if (!masterHydroChart) return;
       const updateMode = opts && opts.animate === false ? 'none' : undefined;
@@ -13943,6 +14014,7 @@
             ]
           : [];
         masterHydroChart.update(updateMode);
+        renderHydrographLegend();
         if (peakBadge) peakBadge.classList.add('hidden');
         if (subtitleEl) {
           subtitleEl.innerText = activeId
@@ -13967,6 +14039,9 @@
         chartDatasets.push({
           label: `HINDCAST (< t₀): ${refResult.basin_id || activeId} Spin-Up Streamflow (m³/s)`,
           data: hindcastData,
+          $fcRole: 'hindcast_streamflow',
+          $legendKey: 'hindcast_streamflow',
+          hidden: fcHiddenHydroLegendKeys.has('hindcast_streamflow'),
           borderColor: '#0284c7',
           backgroundColor: 'rgba(2, 132, 199, 0.15)',
           borderWidth: 2.3,
@@ -13992,6 +14067,9 @@
         chartDatasets.push({
           label: `BASELINE FORECAST (≥ t₀): ${targetResult.basin_id} (${targetResult.mode === 'hotstart' ? 'Hot Start' : 'Cold Start'}, m³/s)`,
           data: forecastData,
+          $fcRole: 'baseline_forecast',
+          $legendKey: 'baseline_forecast',
+          hidden: fcHiddenHydroLegendKeys.has('baseline_forecast'),
           $bridgedIndex: bridgedHydroIdx,
           borderColor: '#15803d',
           backgroundColor: 'rgba(21, 128, 61, 0.20)',
@@ -14020,10 +14098,14 @@
         const peakVal = (sc.result.peak_discharge_cms !== undefined && sc.result.peak_discharge_cms !== null)
           ? ` · Peak ${Number(sc.result.peak_discharge_cms).toFixed(1)} m³/s`
           : '';
+        const scLegendKey = `whatif:${sc.id}`;
 
         chartDatasets.push({
           label: `${sc.name} (≥ t₀): ${sc.summary}${peakVal}`,
           data: scData,
+          $fcRole: 'whatif_forecast',
+          $legendKey: scLegendKey,
+          hidden: fcHiddenHydroLegendKeys.has(scLegendKey),
           $bridgedIndex: scBridgedIdx,
           $whatIfScenarioId: sc.id,
           borderColor: sc.color,
@@ -14050,6 +14132,8 @@
           label: `OBSERVED STREAMFLOW (CSV): ${activeId} (m³/s)`,
           data: obsData,
           $fcRole: 'observed_streamflow',
+          $legendKey: 'observed_streamflow',
+          hidden: fcHiddenHydroLegendKeys.has('observed_streamflow'),
           borderColor: '#111827',
           backgroundColor: '#111827',
           borderWidth: 2.4,
@@ -14067,7 +14151,7 @@
 
       // Overlay Data Assimilation Forecast:
       // Method 1: Nudged Forecast (Post-Processing with Persistence, Karan DA paper Eq. 6)
-      // Method 2: Variational Embedding 4D-Var (Karan's Assimilation / AssimilationConfig engine)
+      // Method 2: Variational Embedding DA (Karan's Assimilation / AssimilationConfig engine)
       const daState = getBasinDaState(activeId);
       let nudgedMeta = null;
       if (hasBaseline && hasObserved) {
@@ -14080,6 +14164,8 @@
             label: `NUDGED FORECAST (ρ=${daState.rho.toFixed(2)}, α=${Math.round(daState.alpha * 100)}%, W=${daState.windowDays}d)${nudgedPeakStr}`,
             data: nudgedMeta.data,
             $fcRole: 'nudged_forecast',
+            $legendKey: 'nudged_forecast',
+            hidden: fcHiddenHydroLegendKeys.has('nudged_forecast'),
             $nudgingMeta: nudgedMeta,
             borderColor: '#d97706',
             backgroundColor: 'rgba(217, 119, 6, 0.14)',
@@ -14138,9 +14224,11 @@
           ? `Step ${vr.inspected_step}/${vr.max_step}, `
           : '';
         chartDatasets.push({
-          label: `VARIATIONAL DA (4D-VAR, ${stepTag}W=${vr.window_days || daState.varWindowDays}d, λ=${Number(vr.regularization_weight ?? daState.varRegWeight).toFixed(2)})${varPeakStr}`,
+          label: `VARIATIONAL DA (${stepTag}W=${vr.window_days || daState.varWindowDays}d, λ=${Number(vr.regularization_weight ?? daState.varRegWeight).toFixed(2)})${varPeakStr}`,
           data: varData,
           $fcRole: 'variational_forecast',
+          $legendKey: 'variational_forecast',
+          hidden: fcHiddenHydroLegendKeys.has('variational_forecast'),
           borderColor: '#7c3aed',
           backgroundColor: 'rgba(124, 58, 237, 0.14)',
           borderWidth: 3.0,
@@ -14167,13 +14255,14 @@
       masterHydroChart.data.labels = labels;
       masterHydroChart.data.datasets = chartDatasets;
       masterHydroChart.update(updateMode);
+      renderHydrographLegend();
 
       if (peakBadge) {
         if (hasBaseline && targetResult.peak_discharge_cms !== null && targetResult.peak_discharge_cms !== undefined) {
           const latestSc = enabledScenarios.length > 0 ? enabledScenarios[enabledScenarios.length - 1] : null;
           if (activeVarStep && activeVarStep.applied && activeVarStep.peak_discharge_cms !== null) {
             const sLabel = activeVarStep.inspected_step !== undefined ? `S${activeVarStep.inspected_step}` : `W=${daState.varWindowDays}d`;
-            peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s · 4D-Var Peak (${sLabel}): ${Number(activeVarStep.peak_discharge_cms).toFixed(2)} m³/s`;
+            peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s · Variational Peak (${sLabel}): ${Number(activeVarStep.peak_discharge_cms).toFixed(2)} m³/s`;
           } else if (daState.enabled && daState.method === 'nudging' && nudgedMeta && nudgedMeta.applied && nudgedMeta.peakDischargeCms !== null) {
             peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s · Nudged Peak (ρ=${daState.rho.toFixed(2)}): ${Number(nudgedMeta.peakDischargeCms).toFixed(2)} m³/s`;
           } else if (latestSc && latestSc.result && latestSc.result.peak_discharge_cms !== null && latestSc.result.peak_discharge_cms !== undefined) {
@@ -15552,7 +15641,7 @@
         });
       });
 
-      // Method 2: Variational Embedding 4D-Var manual & visual listeners
+      // Method 2: Variational Embedding DA manual & visual listeners
       const daVarRunBtn = document.getElementById('fcDaVarRunBtn');
       if (daVarRunBtn) {
         daVarRunBtn.addEventListener('click', () => {

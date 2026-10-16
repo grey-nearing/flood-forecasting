@@ -5071,7 +5071,8 @@ def _init_user_da_progress(  # noqa: PLR0913
         'window_rmse_cms': prior_rmse,
         'prior_window_rmse_cms': prior_rmse,
         'message': (
-            f'Starting 4D-Var backprop (Step {base_step} → {target_step})...'
+            f'Starting Variational DA backprop '
+            f'(Step {base_step} → {target_step})...'
             if total_steps > 0
             else 'Evaluating Step 0 (Prior)...'
         ),
@@ -5160,7 +5161,7 @@ def _update_user_da_progress(  # noqa: C901, PLR0913
             state['active'] = False
             state['status'] = 'error'
             state['error'] = error or 'Variational DA failed'
-            state['message'] = f'4D-Var failed: {state["error"]}'
+            state['message'] = f'Variational DA failed: {state["error"]}'
 
 
 def get_variational_assimilation_progress(
@@ -5448,7 +5449,7 @@ def _eval_da_loss_tensors(  # noqa: PLR0913, PLR0917
     *,
     fits_head_outputs: bool,
 ) -> tuple[torch.Tensor, float, float, float]:
-    """Evaluate 4D-Var objective (obs + background reg) on window slice."""
+    """Evaluate Variational DA objective (obs + prior reg) on window slice."""
     point = model.point_prediction(output)[:, win_start_idx:win_end_idx]
     if not fits_head_outputs:
         prediction: dict[str, torch.Tensor] = {'y_hat': point}
