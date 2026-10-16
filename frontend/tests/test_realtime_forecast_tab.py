@@ -1979,8 +1979,10 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'restorePersistedForecastsFromStorage',
             'pruneExpiredDailyForecasts',
             'cached_forecasts_by_id',
+            'let fcDaStateByBasin = {};',
         ):
             assert token in html
+        assert 'const fcDaStateByBasin' not in html
 
 
 if __name__ == '__main__':
