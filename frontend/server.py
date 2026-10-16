@@ -593,7 +593,8 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         json_cache_path = attr_dir / 'extracted_attributes.json'
         results_by_id: dict[str, Any] = {}
         if json_cache_path.exists():
-            cached = json.loads(json_cache_path.read_text(encoding='utf-8'))
+            raw_text = json_cache_path.read_text(encoding='utf-8').strip()
+            cached, _ = json.JSONDecoder().raw_decode(raw_text)
             if isinstance(cached, dict):
                 raw_by_id = cached.get('results_by_id', cached)
                 if isinstance(raw_by_id, dict):
@@ -1155,9 +1156,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         )
         self._send_json(payload)
 
-    def _get_forecast_fetch_progress(
-        self, query: dict[str, list[str]]
-    ) -> None:
+    def _get_forecast_fetch_progress(self, query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
         pm = get_profile_manager()
         catchment_id = (
@@ -1190,9 +1189,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         )
         self._send_json(payload)
 
-    def _get_forecast_run_progress(
-        self, query: dict[str, list[str]]
-    ) -> None:
+    def _get_forecast_run_progress(self, query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
         pm = get_profile_manager()
         catchment_id = (
@@ -1452,7 +1449,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         days_raw = query.get('days', ['all'])[0].strip().lower()
         schema = query.get('schema', ['standard'])[0].strip().lower()
         base_dir = STATIC_DIR / 'usgs_realtime_streamflow'
-
+        min_csv_cols = 3
         basin_files: dict[str, tuple[str, str]] = {
             '02151500': (
                 'usgs_02151500_broad_river_nc.csv',
@@ -1479,92 +1476,89 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 'catchment_hydroatlas_POINT_35833_81711_35832_81713',
             ),
         }
+        suffix = '' if days_raw == 'all' else f'_last_{days_raw}d'
+
+        def _load_rows(fname: str) -> list[list[str]]:
+            lines = (base_dir / fname).read_text(encoding='utf-8').splitlines()
+            rows = [
+                ln.split(',')
+                for ln in lines[1:]
+                if ln.strip() and len(ln.split(',')) >= min_csv_cols
+            ]
+            return rows[-int(days_raw) :] if days_raw.isdigit() else rows
 
         def _format_single_csv(site_no: str) -> tuple[str, str]:
             fname, cid = basin_files[site_no]
-            fpath = base_dir / fname
-            lines = fpath.read_text(encoding='utf-8').splitlines()
-            rows = [ln.split(',') for ln in lines[1:] if ln.strip()]
-            if days_raw != 'all' and days_raw.isdigit():
-                n_days = int(days_raw)
-                rows = rows[-n_days:]
-            suffix = '' if days_raw == 'all' else f'_last_{days_raw}d'
+            rows = _load_rows(fname)
             out_name = fname.replace('.csv', f'{suffix}.csv')
-            if schema == 'single':
-                body = ['date,discharge_cms'] + [
-                    f'{r[1]},{r[2]}' for r in rows if len(r) >= 3
-                ]
-            else:
-                body = ['basin,date,streamflow'] + [
-                    f'{cid},{r[1]},{r[2]}' for r in rows if len(r) >= 3
-                ]
-            return out_name, '\n'.join(body) + '\n'
+            hdr = (
+                'date,discharge_cms'
+                if schema == 'single'
+                else 'basin,date,streamflow'
+            )
+            fmt = (
+                (lambda r: f'{r[1]},{r[2]}')
+                if schema == 'single'
+                else (lambda r: f'{cid},{r[1]},{r[2]}')
+            )
+            return out_name, '\n'.join([hdr, *(fmt(r) for r in rows)]) + '\n'
 
         def _format_combined_csv() -> tuple[str, str]:
-            suffix = '' if days_raw == 'all' else f'_last_{days_raw}d'
             out_name = f'usgs_all_basins_streamflow{suffix}.csv'
-            if schema == 'single':
-                body = ['basin_id,usgs_site_no,date,discharge_cms']
-            else:
-                body = ['basin,date,streamflow']
+            body = [
+                'basin_id,usgs_site_no,date,discharge_cms'
+                if schema == 'single'
+                else 'basin,date,streamflow'
+            ]
             for site_no, (fname, cid) in basin_files.items():
-                fpath = base_dir / fname
-                lines = fpath.read_text(encoding='utf-8').splitlines()
-                rows = [ln.split(',') for ln in lines[1:] if ln.strip()]
-                if days_raw != 'all' and days_raw.isdigit():
-                    rows = rows[-int(days_raw) :]
-                for r in rows:
-                    if len(r) < 3:
-                        continue
-                    if schema == 'single':
-                        body.append(f'{cid},{site_no},{r[1]},{r[2]}')
-                    else:
-                        body.append(f'{cid},{r[1]},{r[2]}')
+                for r in _load_rows(fname):
+                    row_txt = (
+                        f'{cid},{site_no},{r[1]},{r[2]}'
+                        if schema == 'single'
+                        else f'{cid},{r[1]},{r[2]}'
+                    )
+                    body.append(row_txt)
             return out_name, '\n'.join(body) + '\n'
 
         if target == 'zip':
             buf = io.BytesIO()
-            suffix = '' if days_raw == 'all' else f'_last_{days_raw}d'
             zip_name = f'usgs_realtime_streamflow_test_basins{suffix}.zip'
             with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-                comb_name, comb_csv = _format_combined_csv()
-                zf.writestr(comb_name, comb_csv)
+                zf.writestr(*_format_combined_csv())
                 for site_no in basin_files:
-                    b_name, b_csv = _format_single_csv(site_no)
-                    zf.writestr(b_name, b_csv)
-            payload = buf.getvalue()
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/zip')
-            self.send_header(
-                'Content-Disposition',
-                f'attachment; filename="{zip_name}"',
+                    zf.writestr(*_format_single_csv(site_no))
+            self._send_binary_attachment(
+                buf.getvalue(), 'application/zip', zip_name
             )
-            self.send_header('Content-Length', str(len(payload)))
-            self._send_cors_headers(include_methods=False)
-            self.end_headers()
-            self.wfile.write(payload)
             return
 
         if target in ('all', 'usgs_all_basins_streamflow.csv'):
             out_name, csv_text = _format_combined_csv()
         else:
-            matched_site = target if target in basin_files else None
-            if matched_site is None:
-                for site_no, (fname, cid) in basin_files.items():
-                    if target in (fname, cid):
-                        matched_site = site_no
-                        break
+            matched_site = next(
+                (
+                    s
+                    for s, (fn, cid) in basin_files.items()
+                    if target in (s, fn, cid)
+                ),
+                None,
+            )
             if matched_site is None:
                 self._send_error(f"Unknown basin target '{target}'", status=404)
                 return
             out_name, csv_text = _format_single_csv(matched_site)
 
-        payload = csv_text.encode('utf-8')
+        self._send_binary_attachment(
+            csv_text.encode('utf-8'), 'text/csv; charset=utf-8', out_name
+        )
+
+    def _send_binary_attachment(
+        self, payload: bytes, content_type: str, filename: str
+    ) -> None:
         self.send_response(200)
-        self.send_header('Content-Type', 'text/csv; charset=utf-8')
+        self.send_header('Content-Type', content_type)
         self.send_header(
-            'Content-Disposition',
-            f'attachment; filename="{out_name}"',
+            'Content-Disposition', f'attachment; filename="{filename}"'
         )
         self.send_header('Content-Length', str(len(payload)))
         self._send_cors_headers(include_methods=False)
@@ -1751,33 +1745,6 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             != str(catchment_id)
         ]
         pm.save_watersheds(new_feats, username=user)
-
-        attr_dir = pm.get_attributes_dir(user)
-        json_cache_path = attr_dir / 'extracted_attributes.json'
-        csv_path = attr_dir / 'caravan_hydroatlas_attributes.csv'
-        if json_cache_path.exists():
-            cached = json.loads(json_cache_path.read_text(encoding='utf-8'))
-            r_map = (
-                dict(cached.get('results_by_id', cached))
-                if isinstance(cached, dict)
-                else {}
-            )
-            if str(catchment_id) in r_map:
-                del r_map[str(catchment_id)]
-                json_cache_path.write_text(
-                    json.dumps(
-                        sanitize_for_json({'results_by_id': r_map}),
-                        indent=2,
-                    ),
-                    encoding='utf-8',
-                )
-                if r_map:
-                    get_attributes_extractor().export_caravan_csv(
-                        list(r_map.values()),
-                        csv_path,
-                    )
-                elif csv_path.exists():
-                    csv_path.unlink()
 
         self._send_json(
             {
@@ -2520,7 +2487,8 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         json_cache_path = attr_dir / 'extracted_attributes.json'
         existing_by_id: dict[str, Any] = {}
         if json_cache_path.exists():
-            cached = json.loads(json_cache_path.read_text(encoding='utf-8'))
+            raw_text = json_cache_path.read_text(encoding='utf-8').strip()
+            cached, _ = json.JSONDecoder().raw_decode(raw_text)
             if isinstance(cached, dict):
                 existing_by_id = dict(cached.get('results_by_id', cached))
 

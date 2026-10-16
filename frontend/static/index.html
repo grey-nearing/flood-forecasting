@@ -564,7 +564,7 @@
             <span class="text-[#5f6368]">Selected Basin:</span>
             <div class="flex items-center gap-1.5 flex-1 ml-2 justify-end overflow-hidden">
               <span id="cardId" class="font-mono text-[#1a73e8] font-medium truncate" title="Catchment Name/ID">---</span>
-              <button id="renameSelectedBtn" type="button" class="text-[#5f6368] hover:text-[#1a73e8] flex-shrink-0" title="Rename basin">
+              <button id="renameSelectedBtn" type="button" class="hidden" aria-hidden="true" title="Rename basin">
                 <i data-lucide="pencil" class="w-3 h-3"></i>
               </button>
             </div>
@@ -603,7 +603,7 @@
               <i data-lucide="layers" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
               <span class="text-[11px] font-bold text-[#1a73e8] uppercase tracking-wider">Active Watersheds</span>
             </div>
-            <button id="clearAllWatershedsBtn" type="button" class="text-[10px] text-[#d93025] hover:text-[#c5221f] hover:underline flex items-center gap-1 transition">
+            <button id="clearAllWatershedsBtn" type="button" class="hidden" aria-hidden="true">
               <i data-lucide="trash-2" class="w-3 h-3"></i> Clear All
             </button>
             <button id="clearWatershedsBtn" type="button" class="hidden" aria-hidden="true"></button>
@@ -2415,6 +2415,43 @@
             </dl>
           </section>
 
+          <!-- Basins in the current account (Rename & Delete live exclusively here) -->
+          <section id="accountBasinsSection" aria-labelledby="accountBasinsHeading" class="bg-white border border-[#dadce0] rounded-xl p-5 space-y-3 shadow-sm">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-2.5">
+                <h2 id="accountBasinsHeading" class="text-base font-medium text-[#202124]">Basins</h2>
+                <span id="accountMatrixBasinBadge" class="text-xs bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] px-2.5 py-0.5 rounded-full font-medium tabular-nums">0 basins</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button id="accountClearAllBasinsBtn" type="button" onclick="clearAccountBasins()" class="hidden text-xs font-medium text-[#c5221f] hover:bg-[#fce8e6] border border-[#fad2cf] px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                  <span>Delete all basins</span>
+                </button>
+              </div>
+            </div>
+            <p class="text-xs text-[#5f6368]">
+              Manage basins saved in this account. Renaming updates the basin name across all tabs; deleting a basin removes its polygon and all associated static attributes, forcings, targets, and forecast data.
+            </p>
+            <div class="overflow-x-auto border border-[#dadce0] rounded-lg">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr class="bg-[#f8f9fa] border-b border-[#dadce0] text-[10px] uppercase tracking-wider text-[#5f6368]">
+                    <th class="py-2.5 px-3">Basin Name &amp; ID</th>
+                    <th class="py-2.5 px-3 text-right">Area (km²)</th>
+                    <th class="py-2.5 px-3">Polygon</th>
+                    <th class="py-2.5 px-3">Attributes</th>
+                    <th class="py-2.5 px-3">Historical</th>
+                    <th class="py-2.5 px-3">Targets</th>
+                    <th class="py-2.5 px-3">Forecasts</th>
+                    <th class="py-2.5 px-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="accountBasinCoverageTableBody" class="divide-y divide-[#e8eaed]">
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           <!-- Interactive Streamflow CSV Downloader for usgs_test Account Basins -->
           <section id="accountStreamflowDownloaderSection" aria-labelledby="accountStreamflowDownloaderHeading" class="bg-white border border-[#dadce0] rounded-xl p-5 space-y-4 shadow-sm">
             <div class="flex flex-wrap items-start justify-between gap-3">
@@ -2595,8 +2632,6 @@
             <button id="loginTabLogoutBtn" type="button" tabindex="-1">Switch to Guest</button>
             <button id="loginTabSaveCurrentBtn" type="button" tabindex="-1">Save current basins</button>
             <button id="loginTabRefreshArchivesBtn" type="button" tabindex="-1">Refresh files</button>
-            <span id="accountMatrixBasinBadge"></span>
-            <table><tbody id="accountBasinCoverageTableBody"></tbody></table>
             <div id="loginTabArchivesList"></div>
             <div id="accountPolygonsContainer"></div>
             <a id="accountDownloadAttrCsvLink" href="/api/attributes/csv" download tabindex="-1">Download CSV</a>
@@ -3705,6 +3740,17 @@
       }, 100);
     }
 
+    function deleteAccountBasin(basinId) {
+      if (!basinId) return;
+      removeWatershed(basinId);
+    }
+
+    function clearAccountBasins() {
+      const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+      if (!confirm(`Delete all basins and their associated data from @${targetUser}?`)) return;
+      clearAllWatersheds();
+    }
+
     let accountSummaryRequestSeq = 0;
 
     async function loadAccountSummary(targetUsername = null) {
@@ -3802,6 +3848,10 @@
       // 3. Per-Basin Account Data Coverage Matrix
       const coverage = summary.basin_coverage || [];
       setTxt('accountMatrixBasinBadge', countLabel(coverage.length, 'basin', 'basins'));
+      const clearAllAccountBtn = document.getElementById('accountClearAllBasinsBtn');
+      if (clearAllAccountBtn) {
+        clearAllAccountBtn.classList.toggle('hidden', coverage.length === 0);
+      }
       const matrixBody = document.getElementById('accountBasinCoverageTableBody');
       if (matrixBody) {
         if (coverage.length === 0) {
@@ -3831,11 +3881,13 @@
               ? `<span class="px-2 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293] text-[10px]">✓ ${row.realtime_forecast_info || 'Available'}</span>`
               : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">None</span>`;
             const areaTxt = (row.area_km2 !== null && row.area_km2 !== undefined) ? Number(row.area_km2).toLocaleString() : '—';
+            const safeId = escapeHtml(String(row.basin_id || ''));
+            const safeName = escapeHtml(String(row.name || row.basin_id || ''));
             return `
-              <tr class="hover:bg-[#f1f3f4] transition">
+              <tr class="hover:bg-[#f1f3f4] transition" data-basin-id="${safeId}">
                 <td class="py-2.5 px-3">
-                  <div class="font-bold text-[#202124]">${row.basin_id}</div>
-                  <div class="text-[10px] text-[#5f6368] font-sans truncate max-w-[220px]" title="${row.name || row.basin_id}">${row.name || row.basin_id}</div>
+                  <div class="font-bold text-[#202124] font-sans text-xs">${safeName}</div>
+                  <div class="text-[10px] text-[#5f6368] font-mono truncate max-w-[220px]" title="${safeId}">${safeId}</div>
                 </td>
                 <td class="py-2.5 px-3 text-right font-semibold text-[#1a73e8]">${areaTxt}</td>
                 <td class="py-2.5 px-3 font-sans">${polyBadge}</td>
@@ -3844,9 +3896,17 @@
                 <td class="py-2.5 px-3 font-sans">${targBadge}</td>
                 <td class="py-2.5 px-3 font-sans">${fcstBadge}</td>
                 <td class="py-2.5 px-3 text-right font-sans">
-                  <button type="button" onclick="focusAccountBasinOnMap('${row.basin_id}')" class="text-[11px] bg-[#f1f3f4] hover:bg-[#e8eaed] text-[#1a73e8] border border-[#dadce0] px-2 py-1 rounded transition">
-                    View on Map
-                  </button>
+                  <div class="inline-flex items-center justify-end gap-1.5">
+                    <button type="button" onclick="promptRenameWatershed('${safeId}')" class="rename-btn text-[11px] bg-white hover:bg-[#e8f0fe] text-[#3c4043] hover:text-[#1a73e8] border border-[#dadce0] px-2 py-1 rounded transition inline-flex items-center gap-1" title="Rename Basin">
+                      <i data-lucide="pencil" class="w-3 h-3"></i> Rename
+                    </button>
+                    <button type="button" onclick="focusAccountBasinOnMap('${safeId}')" class="text-[11px] bg-[#f1f3f4] hover:bg-[#e8eaed] text-[#1a73e8] border border-[#dadce0] px-2 py-1 rounded transition" title="View Basin on Map">
+                      View on Map
+                    </button>
+                    <button type="button" onclick="deleteAccountBasin('${safeId}')" class="del-btn text-[11px] bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#f5c2c0] px-2 py-1 rounded transition inline-flex items-center gap-1" title="Delete Basin and All Associated Data">
+                      <i data-lucide="trash-2" class="w-3 h-3"></i> Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
             `;
@@ -5028,11 +5088,6 @@
             <div class="font-mono text-[10px] text-[#5f6368]">ID: ${escapeHtml(props.catchment_id)}</div>
             <div><b>Outlet:</b> ${outlet.latitude.toFixed(4)}°N, ${outlet.longitude.toFixed(4)}°E</div>
             <div><b>Area:</b> ${props.area_km2 ? props.area_km2.toLocaleString() : '—'} km²</div>
-            <div class="pt-1 border-t border-[#dadce0]">
-              <button type="button" class="text-[#d93025] hover:text-[#a50e0e] text-[11px] font-bold flex items-center gap-1" onclick="removeWatershed('${escapeHtml(cid)}')">
-                🗑️ Remove this watershed
-              </button>
-            </div>
           </div>
         `);
 
@@ -5153,6 +5208,9 @@
           'X-User-Profile': targetUser
         },
         body: JSON.stringify({ catchment_id: catchmentId, username: targetUser })
+      }).then(() => {
+        if (typeof loadAccountSummary === 'function') loadAccountSummary(targetUser);
+        if (typeof fetchCurrentProfile === 'function') fetchCurrentProfile();
       }).catch(console.error);
 
       // Handle active selection transition
@@ -5196,6 +5254,9 @@
           'X-User-Profile': targetUser
         },
         body: JSON.stringify({ username: targetUser })
+      }).then(() => {
+        if (typeof loadAccountSummary === 'function') loadAccountSummary(targetUser);
+        if (typeof fetchCurrentProfile === 'function') fetchCurrentProfile();
       }).catch(console.error);
 
       document.getElementById('noCatchmentNotice').classList.remove('hidden');
@@ -5265,26 +5326,14 @@
             </div>
           </div>
           <div class="flex items-center gap-1 flex-shrink-0">
-            <button type="button" class="rename-btn text-[#5f6368] hover:text-[#1a73e8] p-1 text-[10px] bg-[#f8f9fa] hover:bg-[#e8f0fe] border border-[#dadce0] rounded transition" title="Rename Basin">
-              <i data-lucide="pencil" class="w-3 h-3"></i>
-            </button>
             <button type="button" class="focus-btn text-[#5f6368] hover:text-[#1a73e8] p-1 text-[10px] bg-[#f8f9fa] hover:bg-[#e8f0fe] border border-[#dadce0] rounded transition" title="Zoom to Basin">
               <i data-lucide="zoom-in" class="w-3 h-3"></i>
-            </button>
-            <button type="button" class="del-btn text-[#5f6368] hover:text-[#d93025] p-1 text-[10px] bg-[#f8f9fa] hover:bg-[#fce8e6] border border-[#dadce0] hover:border-[#fad2cf] rounded transition" title="Remove this basin">
-              <i data-lucide="trash" class="w-3 h-3"></i>
             </button>
           </div>
         `;
 
         row.addEventListener('click', (e) => {
-          if (e.target.closest('.del-btn')) {
-            e.stopPropagation();
-            removeWatershed(cid);
-          } else if (e.target.closest('.rename-btn')) {
-            e.stopPropagation();
-            promptRenameWatershed(cid);
-          } else if (e.target.closest('.focus-btn')) {
+          if (e.target.closest('.focus-btn')) {
             e.stopPropagation();
             selectWatershed(cid, true);
           } else {
@@ -5302,8 +5351,7 @@
 
     async function promptRenameWatershed(cid) {
       const feat = activeWatersheds.find(f => String((f && f.properties && f.properties.catchment_id) || (f && f.id) || '').trim() === String(cid));
-      if (!feat) return;
-      const currentName = feat.properties.name || cid;
+      const currentName = (feat && feat.properties && feat.properties.name) || cid;
       const newName = prompt('Enter a new name for this basin:', currentName);
       if (newName === null) return;
       const trimmed = newName.trim();
@@ -5331,13 +5379,17 @@
         return;
       }
 
-      feat.properties.name = trimmed;
-      addOrUpdateWatershed(feat, activeCatchmentId === cid);
+      if (feat) {
+        feat.properties.name = trimmed;
+        addOrUpdateWatershed(feat, activeCatchmentId === cid);
+      }
       updateActiveBasinHeader();
 
       if (typeof renderGeoCatchmentSelector === 'function') renderGeoCatchmentSelector();
       if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();
       if (typeof syncFtBasinDropdown === 'function') syncFtBasinDropdown();
+      if (typeof loadAccountSummary === 'function') loadAccountSummary(targetUser);
+      if (typeof fetchCurrentProfile === 'function') fetchCurrentProfile();
     }
 
     document.getElementById('renameSelectedBtn').addEventListener('click', () => {

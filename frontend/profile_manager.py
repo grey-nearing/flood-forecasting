@@ -173,8 +173,7 @@ def is_valid_watershed_name(name: object) -> bool:
     if not clean or len(clean) > MAX_WATERSHED_NAME_LEN:
         return False
     return not any(
-        ord(ch) < _ASCII_PRINTABLE_MIN or ord(ch) == _ASCII_DEL
-        for ch in clean
+        ord(ch) < _ASCII_PRINTABLE_MIN or ord(ch) == _ASCII_DEL for ch in clean
     )
 
 
@@ -916,7 +915,258 @@ class ProfileManager:
             content = ('\n'.join(split_ids) + '\n') if split_ids else ''
             (basin_lists_dir / list_name).write_text(content, encoding='utf-8')
 
+        self.prune_basin_data(username=user, keep_basin_ids=set(basin_ids))
         return basin_ids
+
+    def prune_basin_data(  # noqa: C901, PLR0912, PLR0915
+        self,
+        username: str | None = None,
+        keep_basin_ids: set[str] | None = None,
+    ) -> None:
+        """Remove downstream data for basins no longer in ``keep_basin_ids``."""
+        user = _sanitize_username(username or self._active_username)
+        p_dir = self.get_profile_dir(user)
+        if keep_basin_ids is None:
+            keep_basin_ids = {
+                _extract_basin_id(f, idx)
+                for idx, f in enumerate(self.load_watersheds(user))
+                if isinstance(f, dict)
+            }
+
+        # 1. Static attributes JSON & CSVs
+        for attr_base in (
+            self.get_attributes_dir(user),
+            self.get_statics_dir(user),
+        ):
+            if not attr_base.exists():
+                continue
+            for jf in list(attr_base.rglob('*.json')):
+                if not jf.is_file() or '.zarr' in str(jf):
+                    continue
+                if not keep_basin_ids:
+                    jf.unlink(missing_ok=True)
+                    continue
+                try:
+                    raw_text = jf.read_text(encoding='utf-8').strip()
+                    obj, _ = json.JSONDecoder().raw_decode(raw_text)
+                    if isinstance(obj, dict):
+                        r_map = obj.get('results_by_id', obj)
+                        if isinstance(r_map, dict):
+                            filtered = {
+                                k: v
+                                for k, v in r_map.items()
+                                if str(k) in keep_basin_ids
+                            }
+                            expected_text = json.dumps(
+                                {'results_by_id': filtered}, indent=2
+                            )
+                            if not filtered:
+                                jf.unlink(missing_ok=True)
+                            elif (
+                                len(filtered) != len(r_map)
+                                or raw_text != expected_text
+                            ):
+                                payload = (
+                                    {'results_by_id': filtered}
+                                    if 'results_by_id' in obj
+                                    else filtered
+                                )
+                                jf.write_text(
+                                    json.dumps(payload, indent=2),
+                                    encoding='utf-8',
+                                )
+                except Exception:  # noqa: BLE001
+                    logger.warning('Failed to prune JSON %s', jf)
+
+            for cf in list(attr_base.rglob('*.csv')):
+                if not cf.is_file():
+                    continue
+                if not keep_basin_ids:
+                    cf.unlink(missing_ok=True)
+                    continue
+                try:
+                    df = pd.read_csv(cf)
+                    if df.empty:
+                        cf.unlink(missing_ok=True)
+                        continue
+                    id_col = next(
+                        (
+                            c
+                            for c in (
+                                'gauge_id',
+                                'basin_id',
+                                'catchment_id',
+                                'id',
+                            )
+                            if c in df.columns
+                        ),
+                        df.columns[0],
+                    )
+                    mask = df[id_col].astype(str).isin(keep_basin_ids)
+                    if not mask.any():
+                        cf.unlink(missing_ok=True)
+                    elif not mask.all():
+                        df[mask].to_csv(cf, index=False)
+                except Exception:  # noqa: BLE001
+                    logger.warning('Failed to prune attribute CSV %s', cf)
+
+        # 2. Return periods JSON
+        rp_file = self.get_return_periods_path(user)
+        if rp_file.is_file():
+            if not keep_basin_ids:
+                rp_file.unlink(missing_ok=True)
+            else:
+                try:
+                    rp_data = json.loads(rp_file.read_text(encoding='utf-8'))
+                    if isinstance(rp_data, dict):
+                        rp_filtered = {
+                            k: v
+                            for k, v in rp_data.items()
+                            if str(k) in keep_basin_ids
+                        }
+                        if not rp_filtered:
+                            rp_file.unlink(missing_ok=True)
+                        elif len(rp_filtered) != len(rp_data):
+                            rp_file.write_text(
+                                json.dumps(rp_filtered, indent=2),
+                                encoding='utf-8',
+                            )
+                except Exception:  # noqa: BLE001
+                    logger.warning('Failed to prune return periods %s', rp_file)
+
+        # 3. Zonal weights, DA states, Hot-start files, Forecasts subdirs
+        for aux_dir in (
+            self.get_zonal_weights_dir(user),
+            self.get_da_states_dir(user),
+            self.get_hot_start_dir(user),
+        ):
+            if not aux_dir.exists():
+                continue
+            for f_item in list(aux_dir.rglob('*')):
+                if not f_item.is_file():
+                    continue
+                if not keep_basin_ids or not any(
+                    bid in f_item.name for bid in keep_basin_ids
+                ):
+                    f_item.unlink(missing_ok=True)
+
+        fc_dir = self.get_forecasts_dir(user)
+        if fc_dir.exists():
+            for sub in list(fc_dir.iterdir()):
+                if (
+                    sub.is_dir()
+                    and not sub.name.endswith('.zarr')
+                    and sub.name not in keep_basin_ids
+                ):
+                    shutil.rmtree(sub, ignore_errors=True)
+
+        # 4. Target & Assimilation CSV uploads
+        for up_dir in (
+            self.get_targets_dir(user) / 'uploads',
+            self.get_assimilation_dir(user) / 'uploads',
+        ):
+            if not up_dir.exists():
+                continue
+            for uf in list(up_dir.glob('*.csv')):
+                if not keep_basin_ids:
+                    uf.unlink(missing_ok=True)
+                    continue
+                try:
+                    df_u = pd.read_csv(uf)
+                    b_col = next(
+                        (
+                            c
+                            for c in (
+                                'basin',
+                                'basin_id',
+                                'catchment_id',
+                                'gauge_id',
+                            )
+                            if c in df_u.columns
+                        ),
+                        None,
+                    )
+                    if b_col is not None:
+                        mask = df_u[b_col].astype(str).isin(keep_basin_ids)
+                        if not mask.any():
+                            uf.unlink(missing_ok=True)
+                        elif not mask.all():
+                            df_u[mask].to_csv(uf, index=False)
+                    elif not any(bid in uf.name for bid in keep_basin_ids):
+                        uf.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    logger.warning('Failed to prune upload CSV %s', uf)
+
+        # 5. Zarr stores across the profile
+        zarr_roots = (
+            self.get_historical_dir(user),
+            self.get_dynamics_dir(user),
+            self.get_realtime_dir_v2(user),
+            self.get_forecast_dir(user),
+            self.get_forecasts_dir(user),
+            self.get_targets_dir(user),
+            self.get_assimilation_dir(user),
+            self.get_statics_dir(user),
+            p_dir / 'archives',
+        )
+        seen_z: set[str] = set()
+        for z_root in zarr_roots:
+            if not z_root.exists():
+                continue
+            for z_path in list(_find_zarr_dirs(z_root)):
+                if str(z_path) in seen_z:
+                    continue
+                seen_z.add(str(z_path))
+                if not keep_basin_ids:
+                    shutil.rmtree(z_path, ignore_errors=True)
+                    continue
+                try:
+                    with xr.open_zarr(
+                        str(z_path), decode_timedelta=False
+                    ) as ds:
+                        b_key = next(
+                            (
+                                k
+                                for k in (
+                                    'basin',
+                                    'basin_id',
+                                    'catchment_id',
+                                    'gauge_id',
+                                )
+                                if k in ds.coords
+                            ),
+                            None,
+                        )
+                        if b_key is None:
+                            continue
+                        store_basins = [
+                            str(b) for b in ds.coords[b_key].to_numpy()
+                        ]
+                        present_keep = [
+                            b for b in store_basins if b in keep_basin_ids
+                        ]
+                        if len(present_keep) == len(store_basins):
+                            continue
+                        if not present_keep:
+                            ds_filtered = None
+                        else:
+                            ds_filtered = ds.sel({b_key: present_keep}).load()
+                    if ds_filtered is None:
+                        shutil.rmtree(z_path, ignore_errors=True)
+                    else:
+                        tmp_z = z_path.with_name(z_path.name + '.tmp_prune')
+                        if tmp_z.exists():
+                            shutil.rmtree(tmp_z, ignore_errors=True)
+                        for var in list(ds_filtered.variables.values()):
+                            var.encoding.clear()
+                        ds_filtered.to_zarr(tmp_z, mode='w')
+                        shutil.rmtree(z_path, ignore_errors=True)
+                        tmp_z.replace(z_path)
+                except Exception:  # noqa: BLE001
+                    logger.warning('Failed to prune Zarr store %s', z_path)
+
+        with _ZARR_INSPECT_LOCK:
+            _ZARR_INSPECT_CACHE.clear()
 
     def save_watersheds(
         self,
@@ -1502,20 +1752,8 @@ class ProfileManager:
         forecast_stores = stores_by_kind['forecast']
         assimilation_stores = stores_by_kind['assimilation']
 
-        all_basin_ids: list[str] = []
         poly_by_basin = {c['catchment_id']: c for c in catchments_list}
-        for cid in list(poly_by_basin) + list(attr_basins):
-            if cid not in all_basin_ids:
-                all_basin_ids.append(cid)
-        for st in (
-            historical_stores
-            + targets_stores
-            + forecast_stores
-            + assimilation_stores
-        ):
-            for b in st.get('basins', []):
-                if b not in all_basin_ids:
-                    all_basin_ids.append(b)
+        all_basin_ids: list[str] = list(poly_by_basin)
 
         attr_preview_by_basin = {p['basin_id']: p for p in attr_basin_previews}
         basin_coverage: list[dict[str, Any]] = []
@@ -1595,8 +1833,18 @@ class ProfileManager:
         catchments_list, polygon_files, total_area_km2 = (
             self._summarize_polygons(user, p_dir)
         )
+        active_basin_set = {c['catchment_id'] for c in catchments_list}
         attributes_summary = self._summarize_attributes(user, p_dir)
-        attr_basins = attributes_summary['basins']
+        attr_basins = [
+            b for b in attributes_summary['basins'] if b in active_basin_set
+        ]
+        attributes_summary['basins'] = attr_basins
+        attributes_summary['basin_count'] = len(attr_basins)
+        attributes_summary['basin_previews'] = [
+            p
+            for p in attributes_summary['basin_previews']
+            if p.get('basin_id') in active_basin_set
+        ]
         attr_variables = attributes_summary['variable_names']
         attr_files = attributes_summary['files']
 
@@ -1696,16 +1944,28 @@ class ProfileManager:
         non_zarr_bytes = _sum_non_zarr_bytes(p_dir, seen_zarrs)
         total_bytes = inspected_zarr_bytes + non_zarr_bytes
         hist_basins_set = {
-            b for s in historical_stores for b in s.get('basins', [])
+            b
+            for s in historical_stores
+            for b in s.get('basins', [])
+            if b in active_basin_set
         }
         fcst_basins_set = {
-            b for s in forecast_stores for b in s.get('basins', [])
+            b
+            for s in forecast_stores
+            for b in s.get('basins', [])
+            if b in active_basin_set
         }
         targ_basins_set = {
-            b for s in targets_stores for b in s.get('basins', [])
+            b
+            for s in targets_stores
+            for b in s.get('basins', [])
+            if b in active_basin_set
         }
         assim_basins_set = {
-            b for s in assimilation_stores for b in s.get('basins', [])
+            b
+            for s in assimilation_stores
+            for b in s.get('basins', [])
+            if b in active_basin_set
         }
 
         return {
