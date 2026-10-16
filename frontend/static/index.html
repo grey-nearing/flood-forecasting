@@ -2432,18 +2432,14 @@
             <p class="text-xs text-[#5f6368]">
               Manage basins saved in this account. Renaming updates the basin name across all tabs; deleting a basin removes its polygon and all associated static attributes, forcings, targets, and forecast data.
             </p>
-            <div class="overflow-x-auto border border-[#dadce0] rounded-lg">
+            <div class="border border-[#dadce0] rounded-lg overflow-hidden">
               <table class="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr class="bg-[#f8f9fa] border-b border-[#dadce0] text-[10px] uppercase tracking-wider text-[#5f6368]">
                     <th class="py-2.5 px-3">Basin Name &amp; ID</th>
-                    <th class="py-2.5 px-3 text-right">Area (km²)</th>
-                    <th class="py-2.5 px-3">Polygon</th>
-                    <th class="py-2.5 px-3">Attributes</th>
-                    <th class="py-2.5 px-3">Historical</th>
-                    <th class="py-2.5 px-3">Targets</th>
-                    <th class="py-2.5 px-3">Forecasts</th>
-                    <th class="py-2.5 px-3 text-right">Actions</th>
+                    <th class="py-2.5 px-3 text-right whitespace-nowrap">Area (km²)</th>
+                    <th class="py-2.5 px-3">Saved Data</th>
+                    <th class="py-2.5 px-3 text-right whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
                 <tbody id="accountBasinCoverageTableBody" class="divide-y divide-[#e8eaed]">
@@ -3605,7 +3601,7 @@
         if (coverage.length === 0) {
           matrixBody.innerHTML = `
             <tr>
-              <td colspan="8" class="text-center py-6 text-[#5f6368] font-sans whitespace-normal">
+              <td colspan="4" class="text-center py-6 text-[#5f6368] font-sans whitespace-normal">
                 No basins yet. Delineate or upload one in
                 <button type="button" onclick="switchTab('tab-delineation')" class="text-[#1a73e8] hover:underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1a73e8]">Basin Delineation</button>.
               </td>
@@ -3613,21 +3609,25 @@
           `;
         } else {
           matrixBody.innerHTML = coverage.map(row => {
-            const polyBadge = row.has_polygon
-              ? `<span class="px-2 py-0.5 rounded bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] text-[10px]">✓ ${row.polygon_source === 'delineated' ? 'DEM Auto' : 'GeoJSON'} (${row.dataset || 'hydro'})</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">Missing</span>`;
-            const attrBadge = row.has_attributes
-              ? `<span class="px-2 py-0.5 rounded bg-[#f3e8fd] text-[#7627bb] border border-[#e9d2fd] text-[10px]">✓ ${row.attributes_count} vars</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">Not extracted</span>`;
-            const histBadge = row.has_historical_weather
-              ? `<span class="px-2 py-0.5 rounded bg-[#e6f4ea] text-[#137333] border border-[#ceead6] text-[10px]">✓ ${row.historical_weather_info || 'Extracted'}</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">Not extracted</span>`;
-            const targBadge = row.has_streamflow_targets
-              ? `<span class="px-2 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc] text-[10px]">✓ ${row.streamflow_targets_info || 'Zarr ready'}</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">No CSV uploaded</span>`;
-            const fcstBadge = row.has_realtime_forecast
-              ? `<span class="px-2 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293] text-[10px]">✓ ${row.realtime_forecast_info || 'Available'}</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">None</span>`;
+            const badges = [];
+            if (row.has_polygon) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] text-[10px]">Polygon</span>`);
+            }
+            if (row.has_attributes) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#f3e8fd] text-[#7627bb] border border-[#e9d2fd] text-[10px]">${row.attributes_count} attrs</span>`);
+            }
+            if (row.has_historical_weather) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#e6f4ea] text-[#137333] border border-[#ceead6] text-[10px]">Historical</span>`);
+            }
+            if (row.has_streamflow_targets) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc] text-[10px]">Targets</span>`);
+            }
+            if (row.has_realtime_forecast) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293] text-[10px]">Forecasts</span>`);
+            }
+            const badgesHtml = badges.length > 0
+              ? `<div class="flex flex-wrap gap-1">${badges.join('')}</div>`
+              : `<span class="text-[#5f6368] text-[10px]">Polygon only</span>`;
             const areaTxt = (row.area_km2 !== null && row.area_km2 !== undefined) ? Number(row.area_km2).toLocaleString() : '—';
             const safeId = escapeHtml(String(row.basin_id || ''));
             const safeName = escapeHtml(String(row.name || row.basin_id || ''));
@@ -3635,23 +3635,19 @@
               <tr class="hover:bg-[#f1f3f4] transition" data-basin-id="${safeId}">
                 <td class="py-2.5 px-3">
                   <div class="font-bold text-[#202124] font-sans text-xs">${safeName}</div>
-                  <div class="text-[10px] text-[#5f6368] font-mono truncate max-w-[220px]" title="${safeId}">${safeId}</div>
+                  <div class="text-[10px] text-[#5f6368] font-mono truncate max-w-[240px]" title="${safeId}">${safeId}</div>
                 </td>
-                <td class="py-2.5 px-3 text-right font-semibold text-[#1a73e8]">${areaTxt}</td>
-                <td class="py-2.5 px-3 font-sans">${polyBadge}</td>
-                <td class="py-2.5 px-3 font-sans">${attrBadge}</td>
-                <td class="py-2.5 px-3 font-sans">${histBadge}</td>
-                <td class="py-2.5 px-3 font-sans">${targBadge}</td>
-                <td class="py-2.5 px-3 font-sans">${fcstBadge}</td>
-                <td class="py-2.5 px-3 text-right font-sans">
+                <td class="py-2.5 px-3 text-right font-semibold text-[#1a73e8] whitespace-nowrap">${areaTxt}</td>
+                <td class="py-2.5 px-3 font-sans">${badgesHtml}</td>
+                <td class="py-2.5 px-3 text-right font-sans whitespace-nowrap">
                   <div class="inline-flex items-center justify-end gap-1.5">
-                    <button type="button" onclick="promptRenameWatershed('${safeId}')" class="rename-btn text-[11px] bg-white hover:bg-[#e8f0fe] text-[#3c4043] hover:text-[#1a73e8] border border-[#dadce0] px-2 py-1 rounded transition inline-flex items-center gap-1" title="Rename Basin">
+                    <button type="button" onclick="promptRenameWatershed('${safeId}')" class="rename-btn text-[11px] bg-white hover:bg-[#e8f0fe] text-[#3c4043] hover:text-[#1a73e8] border border-[#dadce0] px-2.5 py-1 rounded transition inline-flex items-center gap-1" title="Rename Basin">
                       <i data-lucide="pencil" class="w-3 h-3"></i> Rename
                     </button>
-                    <button type="button" onclick="focusAccountBasinOnMap('${safeId}')" class="text-[11px] bg-[#f1f3f4] hover:bg-[#e8eaed] text-[#1a73e8] border border-[#dadce0] px-2 py-1 rounded transition" title="View Basin on Map">
+                    <button type="button" onclick="focusAccountBasinOnMap('${safeId}')" class="text-[11px] bg-[#f1f3f4] hover:bg-[#e8eaed] text-[#1a73e8] border border-[#dadce0] px-2.5 py-1 rounded transition" title="View Basin on Map">
                       View on Map
                     </button>
-                    <button type="button" onclick="deleteAccountBasin('${safeId}')" class="del-btn text-[11px] bg-white hover:bg-[#fce8e6] text-[#c5221f] border border-[#f5c2c0] px-2 py-1 rounded transition inline-flex items-center gap-1" title="Delete Basin and All Associated Data">
+                    <button type="button" onclick="deleteAccountBasin('${safeId}')" class="del-btn text-[11px] font-medium bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f] border border-[#f5c2c0] px-2.5 py-1 rounded transition inline-flex items-center gap-1" title="Delete this basin and all its data">
                       <i data-lucide="trash-2" class="w-3 h-3"></i> Delete
                     </button>
                   </div>
