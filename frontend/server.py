@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import gzip
-import io
 import json
 import logging
 import math
@@ -28,7 +27,6 @@ import re
 import threading
 import urllib.parse
 import urllib.request
-import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
@@ -519,9 +517,6 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/attributes/csv': self._get_attributes_csv,
             '/api/archives/caravan_hydroatlas_attributes.csv': (
                 self._get_attributes_csv
-            ),
-            '/api/streamflow/usgs_test/download': (
-                self._get_usgs_test_streamflow_download
             ),
             '/': self._get_index_html,
             '/index.html': self._get_index_html,
@@ -1441,129 +1436,6 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         self._send_cors_headers(include_methods=False)
         self.end_headers()
         self.wfile.write(content)
-
-    def _get_usgs_test_streamflow_download(
-        self, query: dict[str, list[str]]
-    ) -> None:
-        target = query.get('target', ['all'])[0].strip()
-        days_raw = query.get('days', ['all'])[0].strip().lower()
-        schema = query.get('schema', ['standard'])[0].strip().lower()
-        base_dir = STATIC_DIR / 'usgs_realtime_streamflow'
-        min_csv_cols = 3
-        basin_files: dict[str, tuple[str, str]] = {
-            '02151500': (
-                'usgs_02151500_broad_river_nc.csv',
-                'catchment_hydroatlas_HYRIV_70689198_35212_81698',
-            ),
-            '03455000': (
-                'usgs_03455000_french_broad_river_tn.csv',
-                'catchment_hydroatlas_HYRIV_70669100_35981_83157',
-            ),
-            '03114500': (
-                'usgs_03114500_middle_island_creek_wv.csv',
-                'catchment_hydroatlas_HYRIV_70582588_39475_80998',
-            ),
-            '03201000': (
-                'usgs_03201000_pocatalico_river_wv.csv',
-                'catchment_hydroatlas_POINT_38526_81631_38525_81630',
-            ),
-            '03115400': (
-                'usgs_03115400_little_muskingum_river_oh.csv',
-                'catchment_hydroatlas_POINT_39563_81203_39565_81200',
-            ),
-            '02140991': (
-                'usgs_02140991_johns_river_nc.csv',
-                'catchment_hydroatlas_POINT_35833_81711_35832_81713',
-            ),
-        }
-        suffix = '' if days_raw == 'all' else f'_last_{days_raw}d'
-
-        def _load_rows(fname: str) -> list[list[str]]:
-            lines = (base_dir / fname).read_text(encoding='utf-8').splitlines()
-            rows = [
-                ln.split(',')
-                for ln in lines[1:]
-                if ln.strip() and len(ln.split(',')) >= min_csv_cols
-            ]
-            return rows[-int(days_raw) :] if days_raw.isdigit() else rows
-
-        def _format_single_csv(site_no: str) -> tuple[str, str]:
-            fname, cid = basin_files[site_no]
-            rows = _load_rows(fname)
-            out_name = fname.replace('.csv', f'{suffix}.csv')
-            hdr = (
-                'date,discharge_cms'
-                if schema == 'single'
-                else 'basin,date,streamflow'
-            )
-            fmt = (
-                (lambda r: f'{r[1]},{r[2]}')
-                if schema == 'single'
-                else (lambda r: f'{cid},{r[1]},{r[2]}')
-            )
-            return out_name, '\n'.join([hdr, *(fmt(r) for r in rows)]) + '\n'
-
-        def _format_combined_csv() -> tuple[str, str]:
-            out_name = f'usgs_all_basins_streamflow{suffix}.csv'
-            body = [
-                'basin_id,usgs_site_no,date,discharge_cms'
-                if schema == 'single'
-                else 'basin,date,streamflow'
-            ]
-            for site_no, (fname, cid) in basin_files.items():
-                for r in _load_rows(fname):
-                    row_txt = (
-                        f'{cid},{site_no},{r[1]},{r[2]}'
-                        if schema == 'single'
-                        else f'{cid},{r[1]},{r[2]}'
-                    )
-                    body.append(row_txt)
-            return out_name, '\n'.join(body) + '\n'
-
-        if target == 'zip':
-            buf = io.BytesIO()
-            zip_name = f'usgs_realtime_streamflow_test_basins{suffix}.zip'
-            with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr(*_format_combined_csv())
-                for site_no in basin_files:
-                    zf.writestr(*_format_single_csv(site_no))
-            self._send_binary_attachment(
-                buf.getvalue(), 'application/zip', zip_name
-            )
-            return
-
-        if target in ('all', 'usgs_all_basins_streamflow.csv'):
-            out_name, csv_text = _format_combined_csv()
-        else:
-            matched_site = next(
-                (
-                    s
-                    for s, (fn, cid) in basin_files.items()
-                    if target in (s, fn, cid)
-                ),
-                None,
-            )
-            if matched_site is None:
-                self._send_error(f"Unknown basin target '{target}'", status=404)
-                return
-            out_name, csv_text = _format_single_csv(matched_site)
-
-        self._send_binary_attachment(
-            csv_text.encode('utf-8'), 'text/csv; charset=utf-8', out_name
-        )
-
-    def _send_binary_attachment(
-        self, payload: bytes, content_type: str, filename: str
-    ) -> None:
-        self.send_response(200)
-        self.send_header('Content-Type', content_type)
-        self.send_header(
-            'Content-Disposition', f'attachment; filename="{filename}"'
-        )
-        self.send_header('Content-Length', str(len(payload)))
-        self._send_cors_headers(include_methods=False)
-        self.end_headers()
-        self.wfile.write(payload)
 
     def _get_dem_tile(self, path: str) -> None:
         parts = path.removeprefix('/api/tiles/dem/').split('/')
