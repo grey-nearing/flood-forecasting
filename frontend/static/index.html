@@ -564,7 +564,7 @@
             <span class="text-[#5f6368]">Selected Basin:</span>
             <div class="flex items-center gap-1.5 flex-1 ml-2 justify-end overflow-hidden">
               <span id="cardId" class="font-mono text-[#1a73e8] font-medium truncate" title="Catchment Name/ID">---</span>
-              <button id="renameSelectedBtn" type="button" class="text-[#5f6368] hover:text-[#1a73e8] flex-shrink-0" title="Rename basin">
+              <button id="renameSelectedBtn" type="button" class="hidden" aria-hidden="true" title="Rename basin">
                 <i data-lucide="pencil" class="w-3 h-3"></i>
               </button>
             </div>
@@ -603,7 +603,7 @@
               <i data-lucide="layers" class="w-3.5 h-3.5 text-[#1a73e8]"></i>
               <span class="text-[11px] font-bold text-[#1a73e8] uppercase tracking-wider">Active Watersheds</span>
             </div>
-            <button id="clearAllWatershedsBtn" type="button" class="text-[10px] text-[#d93025] hover:text-[#c5221f] hover:underline flex items-center gap-1 transition">
+            <button id="clearAllWatershedsBtn" type="button" class="hidden" aria-hidden="true">
               <i data-lucide="trash-2" class="w-3 h-3"></i> Clear All
             </button>
             <button id="clearWatershedsBtn" type="button" class="hidden" aria-hidden="true"></button>
@@ -2415,164 +2415,36 @@
             </dl>
           </section>
 
-          <!-- Interactive Streamflow CSV Downloader for usgs_test Account Basins -->
-          <section id="accountStreamflowDownloaderSection" aria-labelledby="accountStreamflowDownloaderHeading" class="bg-white border border-[#dadce0] rounded-xl p-5 space-y-4 shadow-sm">
-            <div class="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div class="flex items-center gap-2">
-                  <h2 id="accountStreamflowDownloaderHeading" class="text-base font-medium text-[#202124]">Streamflow CSV Downloader</h2>
-                  <span class="text-[11px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2 py-0.5 rounded-full font-medium">Updated through 2026-10-15</span>
-                </div>
-                <p class="text-xs text-[#5f6368] mt-1">
-                  Direct laptop download for the 6 <code class="bg-[#f1f3f4] px-1.5 py-0.5 rounded text-[11px] font-mono text-[#202124]">usgs_test</code> basins (USGS NWIS Daily + Instantaneous <code class="bg-[#f1f3f4] px-1 py-0.5 rounded text-[11px] font-mono">00060</code> converted to m³/s). Download one combined CSV, a ZIP archive, or individual basin CSVs.
-                </p>
+          <!-- Basins in the current account (Rename & Delete live exclusively here) -->
+          <section id="accountBasinsSection" aria-labelledby="accountBasinsHeading" class="bg-white border border-[#dadce0] rounded-xl p-5 space-y-3 shadow-sm">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-2.5">
+                <h2 id="accountBasinsHeading" class="text-base font-medium text-[#202124]">Basins</h2>
+                <span id="accountMatrixBasinBadge" class="text-xs bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] px-2.5 py-0.5 rounded-full font-medium tabular-nums">0 basins</span>
               </div>
-              <a href="/static/usgs_realtime_streamflow/index.html" target="_blank" rel="noopener" class="text-xs font-medium text-[#1a73e8] hover:underline flex items-center gap-1">
-                Open full-page downloader ↗
-              </a>
-            </div>
-
-            <!-- Interactive Filter Controls -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-[#f8f9fa] border border-[#e8eaed] rounded-lg p-3">
-              <div>
-                <label for="usgsCsvDaysSelect" class="block text-[11px] font-semibold uppercase tracking-wider text-[#5f6368] mb-1">Date Window</label>
-                <select id="usgsCsvDaysSelect" onchange="updateUsgsCsvDownloaderLinks()" class="w-full text-xs bg-white border border-[#dadce0] rounded-lg px-2.5 py-2 text-[#202124] focus:outline-none focus:ring-2 focus:ring-[#1a73e8]">
-                  <option value="all" selected>Full Year: 2025-10-11 → 2026-10-15 (370 days · 2,216 obs)</option>
-                  <option value="90">Last 90 Days: 2026-07-18 → 2026-10-15</option>
-                  <option value="30">Last 30 Days: 2026-09-16 → 2026-10-15</option>
-                  <option value="14">Last 14 Days: 2026-10-02 → 2026-10-15</option>
-                  <option value="7">Last 7 Days: 2026-10-09 → 2026-10-15</option>
-                </select>
-              </div>
-              <div>
-                <label for="usgsCsvSchemaSelect" class="block text-[11px] font-semibold uppercase tracking-wider text-[#5f6368] mb-1">CSV Column Format</label>
-                <select id="usgsCsvSchemaSelect" onchange="updateUsgsCsvDownloaderLinks()" class="w-full text-xs bg-white border border-[#dadce0] rounded-lg px-2.5 py-2 text-[#202124] focus:outline-none focus:ring-2 focus:ring-[#1a73e8]">
-                  <option value="standard" selected>basin,date,streamflow (Earthkit Hydro / DA standard)</option>
-                  <option value="single">date,discharge_cms (or basin_id,usgs_site_no,date,discharge_cms)</option>
-                </select>
+              <div class="flex items-center gap-2">
+                <button id="accountClearAllBasinsBtn" type="button" onclick="clearAccountBasins()" class="hidden text-xs font-medium text-[#c5221f] hover:bg-[#fce8e6] border border-[#fad2cf] px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                  <span>Delete all basins</span>
+                </button>
               </div>
             </div>
-
-            <!-- Bulk Download Actions -->
-            <div class="flex flex-wrap items-center gap-2.5">
-              <a id="usgsDlCombinedBtn" href="/api/streamflow/usgs_test/download?target=all&amp;days=all&amp;schema=standard" download="usgs_all_basins_streamflow.csv" class="inline-flex items-center gap-2 bg-[#1a73e8] hover:bg-[#1557b0] text-white text-xs font-medium px-3.5 py-2.5 rounded-lg transition shadow-sm">
-                <i data-lucide="download" class="w-4 h-4"></i>
-                <span>Download 1 CSV With All 6 Basins (<code class="text-[11px] font-mono">usgs_all_basins_streamflow.csv</code>)</span>
-              </a>
-              <button type="button" onclick="downloadAllSixUsgsIndividualCsvs()" class="inline-flex items-center gap-1.5 bg-[#137333] hover:bg-[#0d5324] text-white text-xs font-medium px-3.5 py-2.5 rounded-lg transition shadow-sm">
-                <i data-lucide="files" class="w-4 h-4"></i>
-                <span>Download All 6 Individual CSVs</span>
-              </button>
-              <a id="usgsDlZipBtn" href="/api/streamflow/usgs_test/download?target=zip&amp;days=all&amp;schema=standard" download="usgs_realtime_streamflow_test_basins.zip" class="inline-flex items-center gap-1.5 bg-white hover:bg-[#f1f3f4] text-[#1a73e8] border border-[#dadce0] text-xs font-medium px-3 py-2.5 rounded-lg transition">
-                <i data-lucide="archive" class="w-4 h-4"></i>
-                <span>Download ZIP (.zip)</span>
-              </a>
-              <button type="button" onclick="previewUsgsStreamflowCsv('all')" class="inline-flex items-center gap-1.5 bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] text-xs font-medium px-3 py-2.5 rounded-lg transition">
-                <i data-lucide="eye" class="w-4 h-4"></i>
-                <span>Preview / Copy Combined CSV</span>
-              </button>
-            </div>
-
-            <div id="usgsCsvStatusToast" class="hidden text-xs bg-[#e6f4ea] text-[#137333] border border-[#ceead6] rounded-lg px-3 py-2 font-medium"></div>
-
-            <!-- Per-Basin Table with Individual Download & Preview Buttons -->
-            <div class="overflow-x-auto border border-[#dadce0] rounded-lg">
+            <p class="text-xs text-[#5f6368]">
+              Manage basins saved in this account. Renaming updates the basin name across all tabs; deleting a basin removes its polygon and all associated static attributes, forcings, targets, and forecast data.
+            </p>
+            <div class="border border-[#dadce0] rounded-lg overflow-hidden">
               <table class="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr class="bg-[#f8f9fa] border-b border-[#dadce0] text-[10px] uppercase tracking-wider text-[#5f6368]">
-                    <th class="py-2.5 px-3">USGS Gage &amp; Basin</th>
-                    <th class="py-2.5 px-3"><code class="font-mono">usgs_test</code> Basin ID</th>
-                    <th class="py-2.5 px-3 text-right">Last 4 Days (Oct 12 → Oct 15, m³/s)</th>
-                    <th class="py-2.5 px-3 text-right">Individual CSV</th>
+                    <th class="py-2.5 px-3">Basin Name &amp; ID</th>
+                    <th class="py-2.5 px-3 text-right whitespace-nowrap">Area (km²)</th>
+                    <th class="py-2.5 px-3">Saved Data</th>
+                    <th class="py-2.5 px-3 text-right whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
-                <tbody class="divide-y divide-[#e8eaed]">
-                  <tr class="hover:bg-[#f8f9fa]">
-                    <td class="py-2.5 px-3">
-                      <div class="font-medium text-[#202124]">Broad River near Boiling Springs, NC</div>
-                      <div class="text-[11px] font-mono text-[#1a73e8]">USGS 02151500 · 370 days</div>
-                    </td>
-                    <td class="py-2.5 px-3 font-mono text-[11px] text-[#5f6368]">catchment_hydroatlas_HYRIV_70689198_35212_81698</td>
-                    <td class="py-2.5 px-3 text-right font-mono text-[11px] text-[#3c4043]">199.4 → 83.8 → 46.4 → <strong class="text-[#137333]">31.6</strong></td>
-                    <td class="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
-                      <button type="button" onclick="previewUsgsStreamflowCsv('02151500')" class="text-[11px] text-[#5f6368] hover:text-[#202124] border border-[#dadce0] bg-white hover:bg-[#f1f3f4] px-2 py-1 rounded">Preview</button>
-                      <a data-usgs-site="02151500" data-usgs-base="usgs_02151500_broad_river_nc.csv" href="/api/streamflow/usgs_test/download?target=02151500&amp;days=all&amp;schema=standard" download="usgs_02151500_broad_river_nc.csv" class="usgs-indiv-dl-link inline-flex items-center gap-1 text-[11px] font-medium text-white bg-[#1a73e8] hover:bg-[#1557b0] px-2.5 py-1 rounded">⬇ CSV</a>
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-[#f8f9fa]">
-                    <td class="py-2.5 px-3">
-                      <div class="font-medium text-[#202124]">French Broad River near Newport, TN</div>
-                      <div class="text-[11px] font-mono text-[#1a73e8]">USGS 03455000 · 370 days</div>
-                    </td>
-                    <td class="py-2.5 px-3 font-mono text-[11px] text-[#5f6368]">catchment_hydroatlas_HYRIV_70669100_35981_83157</td>
-                    <td class="py-2.5 px-3 text-right font-mono text-[11px] text-[#3c4043]">294.5 → 232.8 → 118.4 → <strong class="text-[#137333]">64.6</strong></td>
-                    <td class="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
-                      <button type="button" onclick="previewUsgsStreamflowCsv('03455000')" class="text-[11px] text-[#5f6368] hover:text-[#202124] border border-[#dadce0] bg-white hover:bg-[#f1f3f4] px-2 py-1 rounded">Preview</button>
-                      <a data-usgs-site="03455000" data-usgs-base="usgs_03455000_french_broad_river_tn.csv" href="/api/streamflow/usgs_test/download?target=03455000&amp;days=all&amp;schema=standard" download="usgs_03455000_french_broad_river_tn.csv" class="usgs-indiv-dl-link inline-flex items-center gap-1 text-[11px] font-medium text-white bg-[#1a73e8] hover:bg-[#1557b0] px-2.5 py-1 rounded">⬇ CSV</a>
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-[#f8f9fa]">
-                    <td class="py-2.5 px-3">
-                      <div class="font-medium text-[#202124]">Middle Island Creek at Little, WV</div>
-                      <div class="text-[11px] font-mono text-[#1a73e8]">USGS 03114500 · 368 days</div>
-                    </td>
-                    <td class="py-2.5 px-3 font-mono text-[11px] text-[#5f6368]">catchment_hydroatlas_HYRIV_70582588_39475_80998</td>
-                    <td class="py-2.5 px-3 text-right font-mono text-[11px] text-[#3c4043]">113.6 → 34.8 → 17.7 → <strong class="text-[#137333]">62.7</strong></td>
-                    <td class="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
-                      <button type="button" onclick="previewUsgsStreamflowCsv('03114500')" class="text-[11px] text-[#5f6368] hover:text-[#202124] border border-[#dadce0] bg-white hover:bg-[#f1f3f4] px-2 py-1 rounded">Preview</button>
-                      <a data-usgs-site="03114500" data-usgs-base="usgs_03114500_middle_island_creek_wv.csv" href="/api/streamflow/usgs_test/download?target=03114500&amp;days=all&amp;schema=standard" download="usgs_03114500_middle_island_creek_wv.csv" class="usgs-indiv-dl-link inline-flex items-center gap-1 text-[11px] font-medium text-white bg-[#1a73e8] hover:bg-[#1557b0] px-2.5 py-1 rounded">⬇ CSV</a>
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-[#f8f9fa]">
-                    <td class="py-2.5 px-3">
-                      <div class="font-medium text-[#202124]">Pocatalico River at Sissonville, WV</div>
-                      <div class="text-[11px] font-mono text-[#1a73e8]">USGS 03201000 · 370 days</div>
-                    </td>
-                    <td class="py-2.5 px-3 font-mono text-[11px] text-[#5f6368]">catchment_hydroatlas_POINT_38526_81631_38525_81630</td>
-                    <td class="py-2.5 px-3 text-right font-mono text-[11px] text-[#3c4043]">32.8 → 12.6 → 6.80 → <strong class="text-[#137333]">5.38</strong></td>
-                    <td class="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
-                      <button type="button" onclick="previewUsgsStreamflowCsv('03201000')" class="text-[11px] text-[#5f6368] hover:text-[#202124] border border-[#dadce0] bg-white hover:bg-[#f1f3f4] px-2 py-1 rounded">Preview</button>
-                      <a data-usgs-site="03201000" data-usgs-base="usgs_03201000_pocatalico_river_wv.csv" href="/api/streamflow/usgs_test/download?target=03201000&amp;days=all&amp;schema=standard" download="usgs_03201000_pocatalico_river_wv.csv" class="usgs-indiv-dl-link inline-flex items-center gap-1 text-[11px] font-medium text-white bg-[#1a73e8] hover:bg-[#1557b0] px-2.5 py-1 rounded">⬇ CSV</a>
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-[#f8f9fa]">
-                    <td class="py-2.5 px-3">
-                      <div class="font-medium text-[#202124]">Little Muskingum River at Bloomfield, OH</div>
-                      <div class="text-[11px] font-mono text-[#1a73e8]">USGS 03115400 · 368 days</div>
-                    </td>
-                    <td class="py-2.5 px-3 font-mono text-[11px] text-[#5f6368]">catchment_hydroatlas_POINT_39563_81203_39565_81200</td>
-                    <td class="py-2.5 px-3 text-right font-mono text-[11px] text-[#3c4043]">38.2 → 9.83 → 7.59 → <strong class="text-[#137333]">26.3</strong></td>
-                    <td class="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
-                      <button type="button" onclick="previewUsgsStreamflowCsv('03115400')" class="text-[11px] text-[#5f6368] hover:text-[#202124] border border-[#dadce0] bg-white hover:bg-[#f1f3f4] px-2 py-1 rounded">Preview</button>
-                      <a data-usgs-site="03115400" data-usgs-base="usgs_03115400_little_muskingum_river_oh.csv" href="/api/streamflow/usgs_test/download?target=03115400&amp;days=all&amp;schema=standard" download="usgs_03115400_little_muskingum_river_oh.csv" class="usgs-indiv-dl-link inline-flex items-center gap-1 text-[11px] font-medium text-white bg-[#1a73e8] hover:bg-[#1557b0] px-2.5 py-1 rounded">⬇ CSV</a>
-                    </td>
-                  </tr>
-                  <tr class="hover:bg-[#f8f9fa]">
-                    <td class="py-2.5 px-3">
-                      <div class="font-medium text-[#202124]">Johns River at Arneys Store, NC</div>
-                      <div class="text-[11px] font-mono text-[#1a73e8]">USGS 02140991 · 370 days</div>
-                    </td>
-                    <td class="py-2.5 px-3 font-mono text-[11px] text-[#5f6368]">catchment_hydroatlas_POINT_35833_81711_35832_81713</td>
-                    <td class="py-2.5 px-3 text-right font-mono text-[11px] text-[#3c4043]">51.8 → 25.8 → 16.7 → <strong class="text-[#137333]">13.2</strong></td>
-                    <td class="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
-                      <button type="button" onclick="previewUsgsStreamflowCsv('02140991')" class="text-[11px] text-[#5f6368] hover:text-[#202124] border border-[#dadce0] bg-white hover:bg-[#f1f3f4] px-2 py-1 rounded">Preview</button>
-                      <a data-usgs-site="02140991" data-usgs-base="usgs_02140991_johns_river_nc.csv" href="/api/streamflow/usgs_test/download?target=02140991&amp;days=all&amp;schema=standard" download="usgs_02140991_johns_river_nc.csv" class="usgs-indiv-dl-link inline-flex items-center gap-1 text-[11px] font-medium text-white bg-[#1a73e8] hover:bg-[#1557b0] px-2.5 py-1 rounded">⬇ CSV</a>
-                    </td>
-                  </tr>
+                <tbody id="accountBasinCoverageTableBody" class="divide-y divide-[#e8eaed]">
                 </tbody>
               </table>
-            </div>
-
-            <!-- Inline CSV Preview & Copy Box -->
-            <div id="usgsCsvPreviewContainer" class="hidden border border-[#dadce0] rounded-lg bg-[#f8f9fa] p-3 space-y-2">
-              <div class="flex items-center justify-between">
-                <span id="usgsCsvPreviewTitle" class="text-xs font-semibold text-[#202124] font-mono">CSV Preview</span>
-                <div class="flex items-center gap-2">
-                  <button type="button" onclick="copyUsgsPreviewCsv()" class="text-xs font-medium text-[#1a73e8] hover:underline bg-white border border-[#dadce0] px-2.5 py-1 rounded">Copy Full CSV to Clipboard</button>
-                  <button type="button" onclick="document.getElementById('usgsCsvPreviewContainer').classList.add('hidden')" class="text-xs text-[#5f6368] hover:text-[#202124] px-2 py-1">Close ✕</button>
-                </div>
-              </div>
-              <pre id="usgsCsvPreviewText" class="text-[11px] font-mono bg-white border border-[#dadce0] rounded p-2.5 max-h-56 overflow-auto text-[#202124] leading-relaxed"></pre>
             </div>
           </section>
 
@@ -2595,8 +2467,6 @@
             <button id="loginTabLogoutBtn" type="button" tabindex="-1">Switch to Guest</button>
             <button id="loginTabSaveCurrentBtn" type="button" tabindex="-1">Save current basins</button>
             <button id="loginTabRefreshArchivesBtn" type="button" tabindex="-1">Refresh files</button>
-            <span id="accountMatrixBasinBadge"></span>
-            <table><tbody id="accountBasinCoverageTableBody"></tbody></table>
             <div id="loginTabArchivesList"></div>
             <div id="accountPolygonsContainer"></div>
             <a id="accountDownloadAttrCsvLink" href="/api/attributes/csv" download tabindex="-1">Download CSV</a>
@@ -3040,97 +2910,6 @@
       if (modal) {
         modal.classList.add('hidden');
         modal.style.display = 'none';
-      }
-    }
-
-    // ---- Interactive Streamflow CSV Downloader for usgs_test Account Basins ----
-    let currentUsgsPreviewCsvContent = '';
-
-    function getUsgsCsvDownloaderParams() {
-      const daysEl = document.getElementById('usgsCsvDaysSelect');
-      const schemaEl = document.getElementById('usgsCsvSchemaSelect');
-      return {
-        days: daysEl ? daysEl.value : 'all',
-        schema: schemaEl ? schemaEl.value : 'standard'
-      };
-    }
-
-    function showUsgsCsvToast(msg) {
-      const el = document.getElementById('usgsCsvStatusToast');
-      if (!el) return;
-      el.textContent = msg;
-      el.classList.remove('hidden');
-      setTimeout(() => el.classList.add('hidden'), 5000);
-    }
-
-    function updateUsgsCsvDownloaderLinks() {
-      const { days, schema } = getUsgsCsvDownloaderParams();
-      const suffix = days === 'all' ? '' : `_last_${days}d`;
-      const combBtn = document.getElementById('usgsDlCombinedBtn');
-      if (combBtn) {
-        combBtn.href = `/api/streamflow/usgs_test/download?target=all&days=${encodeURIComponent(days)}&schema=${encodeURIComponent(schema)}`;
-        combBtn.setAttribute('download', `usgs_all_basins_streamflow${suffix}.csv`);
-      }
-      const zipBtn = document.getElementById('usgsDlZipBtn');
-      if (zipBtn) {
-        zipBtn.href = `/api/streamflow/usgs_test/download?target=zip&days=${encodeURIComponent(days)}&schema=${encodeURIComponent(schema)}`;
-        zipBtn.setAttribute('download', `usgs_realtime_streamflow_test_basins${suffix}.zip`);
-      }
-      document.querySelectorAll('.usgs-indiv-dl-link').forEach(link => {
-        const site = link.getAttribute('data-usgs-site');
-        const base = link.getAttribute('data-usgs-base') || `usgs_${site}.csv`;
-        link.href = `/api/streamflow/usgs_test/download?target=${encodeURIComponent(site)}&days=${encodeURIComponent(days)}&schema=${encodeURIComponent(schema)}`;
-        link.setAttribute('download', base.replace('.csv', `${suffix}.csv`));
-      });
-    }
-
-    async function downloadAllSixUsgsIndividualCsvs() {
-      const { days, schema } = getUsgsCsvDownloaderParams();
-      const sites = ['02151500', '03455000', '03114500', '03201000', '03115400', '02140991'];
-      showUsgsCsvToast('Downloading all 6 individual basin CSV files to your laptop...');
-      sites.forEach((site, idx) => {
-        setTimeout(() => {
-          const iframe = document.createElement('iframe');
-          iframe.style.display = 'none';
-          iframe.src = `/api/streamflow/usgs_test/download?target=${encodeURIComponent(site)}&days=${encodeURIComponent(days)}&schema=${encodeURIComponent(schema)}`;
-          document.body.appendChild(iframe);
-          setTimeout(() => iframe.remove(), 15000);
-        }, idx * 350);
-      });
-    }
-
-    async function previewUsgsStreamflowCsv(target) {
-      const { days, schema } = getUsgsCsvDownloaderParams();
-      const url = `/api/streamflow/usgs_test/download?target=${encodeURIComponent(target)}&days=${encodeURIComponent(days)}&schema=${encodeURIComponent(schema)}`;
-      try {
-        const resp = await fetch(url);
-        const text = await resp.text();
-        currentUsgsPreviewCsvContent = text;
-        const lines = text.trim().split('\n');
-        const container = document.getElementById('usgsCsvPreviewContainer');
-        const titleEl = document.getElementById('usgsCsvPreviewTitle');
-        const preEl = document.getElementById('usgsCsvPreviewText');
-        if (titleEl) {
-          titleEl.textContent = `${target === 'all' ? 'usgs_all_basins_streamflow.csv' : 'USGS ' + target} (${lines.length - 1} rows · showing header + last 15 rows)`;
-        }
-        if (preEl) {
-          const header = lines[0];
-          const tail = lines.slice(Math.max(1, lines.length - 15));
-          preEl.textContent = [header, ...tail].join('\n');
-        }
-        if (container) container.classList.remove('hidden');
-      } catch (err) {
-        showUsgsCsvToast('Error loading CSV preview: ' + err);
-      }
-    }
-
-    async function copyUsgsPreviewCsv() {
-      if (!currentUsgsPreviewCsvContent) return;
-      try {
-        await navigator.clipboard.writeText(currentUsgsPreviewCsvContent);
-        showUsgsCsvToast('✓ Copied full CSV content to clipboard!');
-      } catch (err) {
-        showUsgsCsvToast('Could not copy automatically — select text in the preview box.');
       }
     }
 
@@ -3705,6 +3484,17 @@
       }, 100);
     }
 
+    function deleteAccountBasin(basinId) {
+      if (!basinId) return;
+      removeWatershed(basinId);
+    }
+
+    function clearAccountBasins() {
+      const targetUser = (activeProfileInfo && activeProfileInfo.username) || 'guest';
+      if (!confirm(`Delete all basins and their associated data from @${targetUser}?`)) return;
+      clearAllWatersheds();
+    }
+
     let accountSummaryRequestSeq = 0;
 
     async function loadAccountSummary(targetUsername = null) {
@@ -3802,12 +3592,16 @@
       // 3. Per-Basin Account Data Coverage Matrix
       const coverage = summary.basin_coverage || [];
       setTxt('accountMatrixBasinBadge', countLabel(coverage.length, 'basin', 'basins'));
+      const clearAllAccountBtn = document.getElementById('accountClearAllBasinsBtn');
+      if (clearAllAccountBtn) {
+        clearAllAccountBtn.classList.toggle('hidden', coverage.length === 0);
+      }
       const matrixBody = document.getElementById('accountBasinCoverageTableBody');
       if (matrixBody) {
         if (coverage.length === 0) {
           matrixBody.innerHTML = `
             <tr>
-              <td colspan="8" class="text-center py-6 text-[#5f6368] font-sans whitespace-normal">
+              <td colspan="4" class="text-center py-6 text-[#5f6368] font-sans whitespace-normal">
                 No basins yet. Delineate or upload one in
                 <button type="button" onclick="switchTab('tab-delineation')" class="text-[#1a73e8] hover:underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1a73e8]">Basin Delineation</button>.
               </td>
@@ -3815,38 +3609,48 @@
           `;
         } else {
           matrixBody.innerHTML = coverage.map(row => {
-            const polyBadge = row.has_polygon
-              ? `<span class="px-2 py-0.5 rounded bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] text-[10px]">✓ ${row.polygon_source === 'delineated' ? 'DEM Auto' : 'GeoJSON'} (${row.dataset || 'hydro'})</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">Missing</span>`;
-            const attrBadge = row.has_attributes
-              ? `<span class="px-2 py-0.5 rounded bg-[#f3e8fd] text-[#7627bb] border border-[#e9d2fd] text-[10px]">✓ ${row.attributes_count} vars</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">Not extracted</span>`;
-            const histBadge = row.has_historical_weather
-              ? `<span class="px-2 py-0.5 rounded bg-[#e6f4ea] text-[#137333] border border-[#ceead6] text-[10px]">✓ ${row.historical_weather_info || 'Extracted'}</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">Not extracted</span>`;
-            const targBadge = row.has_streamflow_targets
-              ? `<span class="px-2 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc] text-[10px]">✓ ${row.streamflow_targets_info || 'Zarr ready'}</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">No CSV uploaded</span>`;
-            const fcstBadge = row.has_realtime_forecast
-              ? `<span class="px-2 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293] text-[10px]">✓ ${row.realtime_forecast_info || 'Available'}</span>`
-              : `<span class="px-2 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368] text-[10px]">None</span>`;
+            const badges = [];
+            if (row.has_polygon) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] text-[10px]">Polygon</span>`);
+            }
+            if (row.has_attributes) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#f3e8fd] text-[#7627bb] border border-[#e9d2fd] text-[10px]">${row.attributes_count} attrs</span>`);
+            }
+            if (row.has_historical_weather) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#e6f4ea] text-[#137333] border border-[#ceead6] text-[10px]">Historical</span>`);
+            }
+            if (row.has_streamflow_targets) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc] text-[10px]">Targets</span>`);
+            }
+            if (row.has_realtime_forecast) {
+              badges.push(`<span class="px-2 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293] text-[10px]">Forecasts</span>`);
+            }
+            const badgesHtml = badges.length > 0
+              ? `<div class="flex flex-wrap gap-1">${badges.join('')}</div>`
+              : `<span class="text-[#5f6368] text-[10px]">Polygon only</span>`;
             const areaTxt = (row.area_km2 !== null && row.area_km2 !== undefined) ? Number(row.area_km2).toLocaleString() : '—';
+            const safeId = escapeHtml(String(row.basin_id || ''));
+            const safeName = escapeHtml(String(row.name || row.basin_id || ''));
             return `
-              <tr class="hover:bg-[#f1f3f4] transition">
+              <tr class="hover:bg-[#f1f3f4] transition" data-basin-id="${safeId}">
                 <td class="py-2.5 px-3">
-                  <div class="font-bold text-[#202124]">${row.basin_id}</div>
-                  <div class="text-[10px] text-[#5f6368] font-sans truncate max-w-[220px]" title="${row.name || row.basin_id}">${row.name || row.basin_id}</div>
+                  <div class="font-bold text-[#202124] font-sans text-xs">${safeName}</div>
+                  <div class="text-[10px] text-[#5f6368] font-mono truncate max-w-[240px]" title="${safeId}">${safeId}</div>
                 </td>
-                <td class="py-2.5 px-3 text-right font-semibold text-[#1a73e8]">${areaTxt}</td>
-                <td class="py-2.5 px-3 font-sans">${polyBadge}</td>
-                <td class="py-2.5 px-3 font-sans">${attrBadge}</td>
-                <td class="py-2.5 px-3 font-sans">${histBadge}</td>
-                <td class="py-2.5 px-3 font-sans">${targBadge}</td>
-                <td class="py-2.5 px-3 font-sans">${fcstBadge}</td>
-                <td class="py-2.5 px-3 text-right font-sans">
-                  <button type="button" onclick="focusAccountBasinOnMap('${row.basin_id}')" class="text-[11px] bg-[#f1f3f4] hover:bg-[#e8eaed] text-[#1a73e8] border border-[#dadce0] px-2 py-1 rounded transition">
-                    View on Map
-                  </button>
+                <td class="py-2.5 px-3 text-right font-semibold text-[#1a73e8] whitespace-nowrap">${areaTxt}</td>
+                <td class="py-2.5 px-3 font-sans">${badgesHtml}</td>
+                <td class="py-2.5 px-3 text-right font-sans whitespace-nowrap">
+                  <div class="inline-flex items-center justify-end gap-1.5">
+                    <button type="button" onclick="promptRenameWatershed('${safeId}')" class="rename-btn text-[11px] bg-white hover:bg-[#e8f0fe] text-[#3c4043] hover:text-[#1a73e8] border border-[#dadce0] px-2.5 py-1 rounded transition inline-flex items-center gap-1" title="Rename Basin">
+                      <i data-lucide="pencil" class="w-3 h-3"></i> Rename
+                    </button>
+                    <button type="button" onclick="focusAccountBasinOnMap('${safeId}')" class="text-[11px] bg-[#f1f3f4] hover:bg-[#e8eaed] text-[#1a73e8] border border-[#dadce0] px-2.5 py-1 rounded transition" title="View Basin on Map">
+                      View on Map
+                    </button>
+                    <button type="button" onclick="deleteAccountBasin('${safeId}')" class="del-btn text-[11px] font-medium bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f] border border-[#f5c2c0] px-2.5 py-1 rounded transition inline-flex items-center gap-1" title="Delete this basin and all its data">
+                      <i data-lucide="trash-2" class="w-3 h-3"></i> Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
             `;
@@ -5028,11 +4832,6 @@
             <div class="font-mono text-[10px] text-[#5f6368]">ID: ${escapeHtml(props.catchment_id)}</div>
             <div><b>Outlet:</b> ${outlet.latitude.toFixed(4)}°N, ${outlet.longitude.toFixed(4)}°E</div>
             <div><b>Area:</b> ${props.area_km2 ? props.area_km2.toLocaleString() : '—'} km²</div>
-            <div class="pt-1 border-t border-[#dadce0]">
-              <button type="button" class="text-[#d93025] hover:text-[#a50e0e] text-[11px] font-bold flex items-center gap-1" onclick="removeWatershed('${escapeHtml(cid)}')">
-                🗑️ Remove this watershed
-              </button>
-            </div>
           </div>
         `);
 
@@ -5153,6 +4952,9 @@
           'X-User-Profile': targetUser
         },
         body: JSON.stringify({ catchment_id: catchmentId, username: targetUser })
+      }).then(() => {
+        if (typeof loadAccountSummary === 'function') loadAccountSummary(targetUser);
+        if (typeof fetchCurrentProfile === 'function') fetchCurrentProfile();
       }).catch(console.error);
 
       // Handle active selection transition
@@ -5196,6 +4998,9 @@
           'X-User-Profile': targetUser
         },
         body: JSON.stringify({ username: targetUser })
+      }).then(() => {
+        if (typeof loadAccountSummary === 'function') loadAccountSummary(targetUser);
+        if (typeof fetchCurrentProfile === 'function') fetchCurrentProfile();
       }).catch(console.error);
 
       document.getElementById('noCatchmentNotice').classList.remove('hidden');
@@ -5265,26 +5070,14 @@
             </div>
           </div>
           <div class="flex items-center gap-1 flex-shrink-0">
-            <button type="button" class="rename-btn text-[#5f6368] hover:text-[#1a73e8] p-1 text-[10px] bg-[#f8f9fa] hover:bg-[#e8f0fe] border border-[#dadce0] rounded transition" title="Rename Basin">
-              <i data-lucide="pencil" class="w-3 h-3"></i>
-            </button>
             <button type="button" class="focus-btn text-[#5f6368] hover:text-[#1a73e8] p-1 text-[10px] bg-[#f8f9fa] hover:bg-[#e8f0fe] border border-[#dadce0] rounded transition" title="Zoom to Basin">
               <i data-lucide="zoom-in" class="w-3 h-3"></i>
-            </button>
-            <button type="button" class="del-btn text-[#5f6368] hover:text-[#d93025] p-1 text-[10px] bg-[#f8f9fa] hover:bg-[#fce8e6] border border-[#dadce0] hover:border-[#fad2cf] rounded transition" title="Remove this basin">
-              <i data-lucide="trash" class="w-3 h-3"></i>
             </button>
           </div>
         `;
 
         row.addEventListener('click', (e) => {
-          if (e.target.closest('.del-btn')) {
-            e.stopPropagation();
-            removeWatershed(cid);
-          } else if (e.target.closest('.rename-btn')) {
-            e.stopPropagation();
-            promptRenameWatershed(cid);
-          } else if (e.target.closest('.focus-btn')) {
+          if (e.target.closest('.focus-btn')) {
             e.stopPropagation();
             selectWatershed(cid, true);
           } else {
@@ -5302,8 +5095,7 @@
 
     async function promptRenameWatershed(cid) {
       const feat = activeWatersheds.find(f => String((f && f.properties && f.properties.catchment_id) || (f && f.id) || '').trim() === String(cid));
-      if (!feat) return;
-      const currentName = feat.properties.name || cid;
+      const currentName = (feat && feat.properties && feat.properties.name) || cid;
       const newName = prompt('Enter a new name for this basin:', currentName);
       if (newName === null) return;
       const trimmed = newName.trim();
@@ -5331,13 +5123,17 @@
         return;
       }
 
-      feat.properties.name = trimmed;
-      addOrUpdateWatershed(feat, activeCatchmentId === cid);
+      if (feat) {
+        feat.properties.name = trimmed;
+        addOrUpdateWatershed(feat, activeCatchmentId === cid);
+      }
       updateActiveBasinHeader();
 
       if (typeof renderGeoCatchmentSelector === 'function') renderGeoCatchmentSelector();
       if (typeof syncForecastTabBasin === 'function') syncForecastTabBasin();
       if (typeof syncFtBasinDropdown === 'function') syncFtBasinDropdown();
+      if (typeof loadAccountSummary === 'function') loadAccountSummary(targetUser);
+      if (typeof fetchCurrentProfile === 'function') fetchCurrentProfile();
     }
 
     document.getElementById('renameSelectedBtn').addEventListener('click', () => {

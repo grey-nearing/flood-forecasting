@@ -586,6 +586,19 @@ class ProfileStorageArchitectureTest(unittest.TestCase):
         assert hist_stores[0]['end_date'] == '2022-01-10'
         assert 'total_precipitation_sum' in hist_stores[0]['dynamic_variables']
 
+        # Deleting basin_002 cascades to attributes CSV and Zarr stores
+        self.pm.save_watersheds(features[:1], username='acct_test_user')
+        after_summary = self.pm.get_account_summary('acct_test_user')
+        after_totals = after_summary['totals']
+        assert after_totals['polygon_count'] == 1
+        assert after_totals['attributes_basins_count'] == 1
+        assert after_totals['historical_basins_count'] == 1
+        assert [r['basin_id'] for r in after_summary['basin_coverage']] == [
+            'basin_001'
+        ]
+        df_after = pd.read_csv(attr_csv, index_col=0)
+        assert list(df_after.index.astype(str)) == ['basin_001']
+
     def test_account_tab_dom_elements_in_index_html(self) -> None:
         """Verify required Account tab DOM elements exist in index.html."""
         index_path = config.STATIC_DIR / 'index.html'
@@ -596,6 +609,8 @@ class ProfileStorageArchitectureTest(unittest.TestCase):
             'id="navAccountBadge"',
             'id="tab-account"',
             'id="accountTabProfileSelect"',
+            'id="accountBasinsSection"',
+            'id="accountClearAllBasinsBtn"',
             'id="accountBasinCoverageTableBody"',
             'id="accountPolygonsContainer"',
             'id="accountAttributesContainer"',
@@ -603,6 +618,8 @@ class ProfileStorageArchitectureTest(unittest.TestCase):
             'id="accountRealtimeAndModelsContainer"',
             'async function loadAccountSummary(',
             'function renderAccountSummaryUI(',
+            'function deleteAccountBasin(',
+            'function clearAccountBasins(',
         ]
         for snippet in required_snippets:
             assert snippet in html, (
