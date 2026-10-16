@@ -13506,8 +13506,9 @@
               metaEl.innerHTML = `<span>${tot > 0 ? `${tot}/${tot} ${unit}s` : 'Written to Zarr'}</span><span>${pLive.elapsed_seconds ? `${pLive.elapsed_seconds}s` : 'Ready'}</span>`;
             }
           } else if (st === 'downloading' || st === 'writing_zarr') {
+            const dispPct = Math.min(99, Math.floor(pct));
             badgeEl.className = 'text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc]';
-            badgeEl.innerText = st === 'writing_zarr' ? 'Saving Zarr…' : `${pct.toFixed(0)}% · ${cur}/${tot}`;
+            badgeEl.innerText = st === 'writing_zarr' ? 'Saving Zarr…' : `${dispPct}% · ${cur}/${tot}`;
             barEl.className = 'h-full bg-[#1a73e8] rounded-full transition-all duration-300 animate-pulse';
             barEl.style.width = `${Math.max(4, pct)}%`;
             if (rowEl) rowEl.className = 'p-1.5 rounded-md border border-[#1a73e8] bg-[#e8f0fe]/40 space-y-1 transition shadow-xs';

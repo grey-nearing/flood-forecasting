@@ -2802,6 +2802,9 @@ def _apply_product_lifecycle_event(
         state['message'] = f'Completed {prod_name} Zarr store.'
 
 
+_TQDM_REALTIME_PRODUCTS = frozenset({'HRES', 'IMERG', 'CPC'})
+
+
 def _apply_step_progress_event(
     state: dict[str, Any],
     ev: dict[str, Any],
@@ -2837,7 +2840,7 @@ def _apply_step_progress_event(
                 'current': eff_cur,
                 'total': eff_tot,
                 'unit': unit,
-                'percent': max(float(p_entry.get('percent') or 0.0), pct),
+                'percent': pct,
                 'desc': str(ev.get('desc') or p_entry.get('desc') or ''),
                 'rate': ev.get('rate'),
                 'eta_seconds': ev.get('eta_seconds'),
@@ -2847,8 +2850,10 @@ def _apply_step_progress_event(
             f'Downloading {active_prod}: {eff_cur} / {eff_tot} {unit}s '
             f'({p_entry["percent"]:.1f}%)'
         )
-    elif event_type in ('dask_start', 'dask_step') and not p_entry.get(
-        '_has_tqdm'
+    elif (
+        event_type in ('dask_start', 'dask_step')
+        and not p_entry.get('_has_tqdm')
+        and active_prod not in _TQDM_REALTIME_PRODUCTS
     ):
         d_cur = max(0, int(ev.get('current') or 0))
         d_tot = max(1, int(ev.get('total') or 1))
@@ -2860,7 +2865,7 @@ def _apply_step_progress_event(
                 'current': d_cur,
                 'total': d_tot,
                 'unit': 'chunks',
-                'percent': max(float(p_entry.get('percent') or 0.0), pct),
+                'percent': pct,
                 'rate': ev.get('rate'),
                 'eta_seconds': ev.get('eta_seconds'),
             }
