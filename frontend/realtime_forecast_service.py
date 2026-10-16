@@ -27,6 +27,7 @@ Connects the Forecasting and Data Assimilation UI tab directly to:
 from __future__ import annotations
 
 import calendar
+import contextlib
 import copy
 import dataclasses
 import hashlib
@@ -407,7 +408,7 @@ def get_daily_forecast_cache_path(
     return cache_dir / f'{safe_cid}_{safe_mid}_forecast.json'
 
 
-def load_cached_daily_forecast(
+def load_cached_daily_forecast(  # noqa: PLR0911
     username: str | None,
     catchment_id: str,
     model_id: str = _DEFAULT_MODEL_ID,
@@ -437,10 +438,8 @@ def load_cached_daily_forecast(
         except OSError:
             return None
     if ttl_seconds <= 0.0 or (now - cached_at) > float(ttl_seconds):
-        try:
+        with contextlib.suppress(OSError):
             cache_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         return None
 
     payload['cached_at_unix'] = round(cached_at, 3)
@@ -457,7 +456,7 @@ def save_cached_daily_forecast(
     *,
     ttl_seconds: float = _DAILY_FORECAST_TTL_SECONDS,
 ) -> dict[str, Any]:
-    """Persist daily forecast result with TTL so browser refreshes restore it."""
+    """Persist daily forecast result with TTL for browser refresh restore."""
     now = time.time()
     existing = load_cached_daily_forecast(
         username=username,
@@ -2476,8 +2475,8 @@ def _inspect_products_disk_readiness(
     readiness: dict[str, dict[str, Any]] = {}
     for prod_name in all_prods:
         store_path = stores.get(prod_name)
-        valid_store = (
-            store_path is not None and _is_valid_zarr_store(store_path)
+        valid_store = store_path is not None and _is_valid_zarr_store(
+            store_path
         )
         ready_for_basin = False
         basins_count = 0
@@ -2557,9 +2556,8 @@ class _TrackedTqdm(_ORIG_TQDM_CLASS):  # type: ignore[misc]
         return res
 
     def close(self) -> None:
-        if (
-            getattr(self, '_oh_handler', None) is not None
-            and not getattr(self, '_oh_closed', False)
+        if getattr(self, '_oh_handler', None) is not None and not getattr(
+            self, '_oh_closed', False
         ):
             self._oh_closed = True
             self._oh_emit(int(self.n or 0), event='bar_close')
@@ -2703,7 +2701,7 @@ def _init_user_fetch_progress(
         'total_products_count': len(requested_products),
         'overall_percent': 0.0,
         'message': (
-            f"Preparing to fetch {', '.join(requested_products)}..."
+            f'Preparing to fetch {", ".join(requested_products)}...'
             if requested_products
             else 'Preparing real-time fetch...'
         ),
@@ -2769,8 +2767,8 @@ def _apply_product_lifecycle_event(
                 'window': [ev.get('start_date'), ev.get('end_date')],
                 'started_at': time.time(),
                 'desc': (
-                    f"{prod_name} [{ev.get('start_date')} .. "
-                    f"{ev.get('end_date')}]"
+                    f'{prod_name} [{ev.get("start_date")} .. '
+                    f'{ev.get("end_date")}]'
                 ),
                 '_window_days': win_days,
                 '_cum_offset': 0,
@@ -2779,9 +2777,7 @@ def _apply_product_lifecycle_event(
                 '_has_tqdm': False,
             }
         )
-        state['message'] = (
-            f'Downloading {prod_name} (0 / {win_days} days · 0%)'
-        )
+        state['message'] = f'Downloading {prod_name} (0 / {win_days} days · 0%)'
     elif event_type == 'product_writing':
         p_entry['status'] = 'writing_zarr'
         p_entry['stage'] = 'writing_zarr'
@@ -2849,7 +2845,7 @@ def _apply_step_progress_event(
         )
         state['message'] = (
             f'Downloading {active_prod}: {eff_cur} / {eff_tot} {unit}s '
-            f"({p_entry['percent']:.1f}%)"
+            f'({p_entry["percent"]:.1f}%)'
         )
     elif event_type in ('dask_start', 'dask_step') and not p_entry.get(
         '_has_tqdm'
@@ -2871,7 +2867,7 @@ def _apply_step_progress_event(
         )
         state['message'] = (
             f'Downloading {active_prod}: {d_cur} / {d_tot} chunks '
-            f"({p_entry['percent']:.1f}%)"
+            f'({p_entry["percent"]:.1f}%)'
         )
 
 
@@ -2909,7 +2905,7 @@ def _handle_fetch_progress_event(user_key: str, ev: dict[str, Any]) -> None:
                     p_entry['ready_on_disk'] = True
             _invalidate_zarr_caches()
             state['message'] = (
-                f"Completed fetching {len(state.get('products_order', []))} "
+                f'Completed fetching {len(state.get("products_order", []))} '
                 'product(s).'
             )
         _recompute_overall_fetch_progress(state)
@@ -4145,7 +4141,7 @@ def _init_user_run_progress(  # noqa: PLR0913
     return state
 
 
-def _update_user_run_progress_step(  # noqa: PLR0913
+def _update_user_run_progress_step(  # noqa: C901, PLR0913, PLR0915
     user_key: str,
     *,
     event: str,
@@ -4225,14 +4221,14 @@ def _update_user_run_progress_step(  # noqa: PLR0913
             state['overall_percent'] = 100.0
             state['message'] = (
                 f'{mode_label} inference complete for {len(order)} '
-                f"basin{'s' if len(order) != 1 else ''} "
-                f"({state['elapsed_seconds']:.2f}s)"
+                f'basin{"s" if len(order) != 1 else ""} '
+                f'({state["elapsed_seconds"]:.2f}s)'
             )
         elif event == 'error':
             state['active'] = False
             state['status'] = 'error'
             state['error'] = error or 'Model execution failed'
-            state['message'] = f"Model run failed: {state['error']}"
+            state['message'] = f'Model run failed: {state["error"]}'
             cur_b = state.get('current_basin')
             if cur_b and cur_b in basins_map:
                 basins_map[cur_b]['status'] = 'error'
@@ -4410,9 +4406,7 @@ def run_forecast_model(  # noqa: PLR0913
             )
         _update_user_run_progress_step(user_key, event='complete')
     except Exception as exc:
-        _update_user_run_progress_step(
-            user_key, event='error', error=str(exc)
-        )
+        _update_user_run_progress_step(user_key, event='error', error=str(exc))
         raise
 
     primary_res = results_by_id[primary_id]
@@ -4519,9 +4513,10 @@ _DEFAULT_NUDGING_RHO = 0.65
 _DEFAULT_NUDGING_ALPHA = 1.0
 _DEFAULT_NUDGING_WINDOW_DAYS = 1
 _MAX_NUDGING_WINDOW_DAYS = 14
+_MIN_POSITIVE_DISCHARGE_CMS = 1e-6
 
 
-def compute_nudging_postprocessing(  # noqa: PLR0913
+def compute_nudging_postprocessing(  # noqa: C901, PLR0912, PLR0913, PLR0915
     forecast_series: Sequence[dict[str, Any]],
     hindcast_series: Sequence[dict[str, Any]] | None = None,
     observed_series: Sequence[dict[str, Any]] | None = None,
@@ -4572,9 +4567,7 @@ def compute_nudging_postprocessing(  # noqa: PLR0913
         if d_str and q_val is not None and q_val >= 0.0:
             obs_by_date[d_str] = q_val
 
-    overlap_dates = sorted(
-        d for d in obs_by_date if d in base_by_date
-    )
+    overlap_dates = sorted(d for d in obs_by_date if d in base_by_date)
     if issue_date:
         pre_issue = [d for d in overlap_dates if d <= str(issue_date).strip()]
         if pre_issue:
@@ -4658,7 +4651,7 @@ def compute_nudging_postprocessing(  # noqa: PLR0913
             delta_q = delta_by_date[d_str]
             item['discharge_cms'] = new_q
             base_mm = _clean_float(item.get('discharge_mm_day'))
-            if base_mm is not None and base_q > 1e-6:
+            if base_mm is not None and base_q > _MIN_POSITIVE_DISCHARGE_CMS:
                 item['discharge_mm_day'] = round(
                     max(0.0, base_mm * (new_q / base_q)), 4
                 )
@@ -4708,8 +4701,8 @@ _ALL_ASSIMILATION_COMPONENTS = (
 )
 
 
-def _normalize_assimilation_components(
-    raw_components: Any,
+def _normalize_assimilation_components(  # noqa: C901, PLR0912
+    raw_components: Any,  # noqa: ANN401
 ) -> list[str] | dict[str, dict[str, float]]:
     """Normalize user-specified latent embedding component selection."""
     if raw_components is None:
@@ -4776,7 +4769,7 @@ def _normalize_assimilation_components(
     return list(_ALL_ASSIMILATION_COMPONENTS)
 
 
-def run_variational_assimilation_for_basin(  # noqa: PLR0913, PLR0915
+def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR0915
     username: str | None,
     catchment_id: str,
     *,
@@ -4786,7 +4779,7 @@ def run_variational_assimilation_for_basin(  # noqa: PLR0913, PLR0915
     initial_learning_rate: float = _DEFAULT_VARIATIONAL_LR,
     epochs: int = _DEFAULT_VARIATIONAL_EPOCHS,
     loss: str = _DEFAULT_VARIATIONAL_LOSS,
-    assimilation_components: Any = None,
+    assimilation_components: Any = None,  # noqa: ANN401
     clip_gradient_norm: float | None = _DEFAULT_VARIATIONAL_CLIP_NORM,
     early_stopping_tolerance: float | None = _DEFAULT_VARIATIONAL_TOLERANCE,
     observed_series: Sequence[dict[str, Any]] | None = None,
@@ -4796,7 +4789,7 @@ def run_variational_assimilation_for_basin(  # noqa: PLR0913, PLR0915
     temp_overrides: dict[str, float] | None = None,
     product_overrides: dict[str, dict[str, dict[str, float]]] | None = None,
 ) -> dict[str, Any]:
-    """Run variational latent-embedding DA via ``model.evaluation.assimilation.Assimilation``.
+    """Run variational latent-embedding DA via ``Assimilation``.
 
     Optimizes the selected latent embeddings of ``MeanEmbeddingForecastLSTM``
     (``static_embedding``, ``hindcast_embedding``, ``forecast_embedding``)
@@ -4945,14 +4938,13 @@ def run_variational_assimilation_for_basin(  # noqa: PLR0913, PLR0915
 
     last_obs_idx = int(finite_hc_idx[-1])
     lag_steps = max(0, (seq_len - 1) - last_obs_idx)
-    effective_window = int(
-        np.clip(win_clamped + lag_steps, 1, max(1, seq_len))
-    )
+    effective_window = int(np.clip(win_clamped + lag_steps, 1, max(1, seq_len)))
     win_start_idx = seq_len - effective_window
     win_end_idx = seq_len
 
     # Check if any finite observation falls inside [win_start_idx, win_end_idx);
-    # if all observations are older than win_start_idx, expand window to reach last_obs_idx.
+    # if all observations are older than win_start_idx, expand window to reach
+    # last_obs_idx.
     if not np.isfinite(y_cms_arr[win_start_idx:win_end_idx]).any():
         effective_window = int(
             np.clip((seq_len - last_obs_idx) + win_clamped - 1, 1, seq_len)
@@ -5011,8 +5003,8 @@ def run_variational_assimilation_for_basin(  # noqa: PLR0913, PLR0915
         da_block['early_stopping_tolerance'] = float(early_stopping_tolerance)
 
     parent_dict = dict(cfg.as_dict())
-    # AssimilationConfig._validate_window checks window <= seq_length - lead_time,
-    # whereas MeanEmbeddingForecastLSTM tensors have total length seq_len + lead_time.
+    # AssimilationConfig._validate_window checks window <= seq_length - lead,
+    # whereas MeanEmbeddingForecastLSTM tensors have length seq_len + lead_time.
     parent_dict['seq_length'] = int(seq_len + lead_time)
     parent_dict['lead_time'] = int(lead_time)
 
@@ -5054,9 +5046,7 @@ def run_variational_assimilation_for_basin(  # noqa: PLR0913, PLR0915
                 diff_norm = float(
                     torch.linalg.vector_norm((a_t - p_t)[v_mask]).item()
                 )
-                base_norm = float(
-                    torch.linalg.vector_norm(p_t[v_mask]).item()
-                )
+                base_norm = float(torch.linalg.vector_norm(p_t[v_mask]).item())
                 component_shifts[c_name] = round(
                     diff_norm / max(base_norm, 1e-6), 4
                 )
@@ -5072,19 +5062,21 @@ def run_variational_assimilation_for_basin(  # noqa: PLR0913, PLR0915
     )
     n_valid_obs = int(np.sum(valid_win))
     if n_valid_obs > 0:
+        prior_diff = win_prior[valid_win] - win_obs[valid_win]
+        assim_diff = win_assim[valid_win] - win_obs[valid_win]
         prior_rmse: float | None = round(
-            float(np.sqrt(np.mean((win_prior[valid_win] - win_obs[valid_win]) ** 2))),
+            float(np.sqrt(np.mean(prior_diff**2))),
             3,
         )
         assim_rmse: float | None = round(
-            float(np.sqrt(np.mean((win_assim[valid_win] - win_obs[valid_win]) ** 2))),
+            float(np.sqrt(np.mean(assim_diff**2))),
             3,
         )
     else:
         prior_rmse = None
         assim_rmse = None
 
-    # Build continuous assimilated series over the visible hindcast tail + forecast window
+    # Continuous assimilated series over visible hindcast tail + forecast window
     all_dates_ts = list(hindcast_dates) + list(forecast_dates)
     tail_start_idx = max(0, min(win_start_idx, seq_len - _HINDCAST_TAIL_DAYS))
     assimilated_series: list[dict[str, Any]] = []
@@ -5146,6 +5138,54 @@ def run_variational_assimilation_for_basin(  # noqa: PLR0913, PLR0915
     }
 
 
+def _resolve_nudging_baseline_series(  # noqa: PLR0913
+    username: str | None,
+    catchment_id: str,
+    *,
+    forecast_series: Sequence[dict[str, Any]] | None,
+    hindcast_series: Sequence[dict[str, Any]] | None,
+    issue_date: str | None,
+    model_id: str,
+    model_run_dir: Path | None,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    str | None,
+    float | None,
+]:
+    """Return baseline forecast/hindcast series, using cache or run fallback."""
+    fc_in = list(forecast_series or [])
+    hc_in = list(hindcast_series or [])
+    eff_issue = issue_date
+    base_peak: float | None = None
+    if forecast_series is None and not fc_in:
+        cached_fc = load_cached_daily_forecast(username, catchment_id, model_id)
+        if cached_fc and cached_fc.get('forecast'):
+            fc_in = list(cached_fc.get('forecast') or [])
+            hc_in = list(cached_fc.get('hindcast_tail') or [])
+            base_peak = _clean_float(cached_fc.get('peak_discharge_cms'))
+            if not eff_issue:
+                eff_issue = cached_fc.get('issue_date')
+        else:
+            try:
+                base_run = run_forecast_model(
+                    username=username,
+                    catchment_id=catchment_id,
+                    mode='coldstart',
+                    requested_issue_date=issue_date,
+                    model_id=model_id,
+                    model_run_dir=model_run_dir,
+                )
+                fc_in = list(base_run.get('forecast') or [])
+                hc_in = list(base_run.get('hindcast_tail') or [])
+                base_peak = _clean_float(base_run.get('peak_discharge_cms'))
+                if not eff_issue:
+                    eff_issue = base_run.get('issue_date')
+            except (ValueError, FileNotFoundError, KeyError):
+                pass
+    return fc_in, hc_in, eff_issue, base_peak
+
+
 def run_data_assimilation_for_basin(  # noqa: PLR0913
     username: str | None,
     catchment_id: str,
@@ -5162,7 +5202,7 @@ def run_data_assimilation_for_basin(  # noqa: PLR0913
     initial_learning_rate: float = _DEFAULT_VARIATIONAL_LR,
     epochs: int = _DEFAULT_VARIATIONAL_EPOCHS,
     loss: str = _DEFAULT_VARIATIONAL_LOSS,
-    assimilation_components: Any = None,
+    assimilation_components: Any = None,  # noqa: ANN401
     clip_gradient_norm: float | None = _DEFAULT_VARIATIONAL_CLIP_NORM,
     early_stopping_tolerance: float | None = _DEFAULT_VARIATIONAL_TOLERANCE,
     model_id: str = _DEFAULT_MODEL_ID,
@@ -5183,17 +5223,30 @@ def run_data_assimilation_for_basin(  # noqa: PLR0913
             if observed_series is not None
             else load_realtime_streamflow_series(username, cid_str)
         )
-        res = compute_nudging_postprocessing(
-            forecast_series=list(forecast_series or []),
-            hindcast_series=list(hindcast_series or []),
-            observed_series=obs,
+        fc_in, hc_in, eff_issue, base_peak = _resolve_nudging_baseline_series(
+            username=username,
+            catchment_id=cid_str,
+            forecast_series=forecast_series,
+            hindcast_series=hindcast_series,
             issue_date=issue_date,
+            model_id=model_id,
+            model_run_dir=model_run_dir,
+        )
+        res = compute_nudging_postprocessing(
+            forecast_series=fc_in,
+            hindcast_series=hc_in,
+            observed_series=obs,
+            issue_date=eff_issue,
             rho=rho,
             alpha=alpha,
             window_days=window_days,
         )
         res['catchment_id'] = cid_str
         res['basin_id'] = cid_str
+        res['issue_date'] = eff_issue
+        res['baseline_forecast'] = fc_in
+        res['baseline_hindcast_tail'] = hc_in
+        res['baseline_peak_discharge_cms'] = base_peak
         return res
 
     if norm_method in (
@@ -5228,7 +5281,6 @@ def run_data_assimilation_for_basin(  # noqa: PLR0913
         )
 
     raise ValueError(
-        f"Unsupported data assimilation method {method!r}; expected "
+        f'Unsupported data assimilation method {method!r}; expected '
         "'nudging' or 'variational'."
     )
-
