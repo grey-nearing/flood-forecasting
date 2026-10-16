@@ -2825,9 +2825,10 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             area_km2=area_km2,
             target_lead_time=lead_time,
         )
+        target_basin_id = str(upload_info.get('basin_id') or basin_id)
         status_payload = get_finetune_workspace_status(
             username=user,
-            basin_id=basin_id,
+            basin_id=target_basin_id,
             model_id=model_id,
         )
         self._send_json(

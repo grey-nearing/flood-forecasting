@@ -570,6 +570,123 @@ class FineTuneServiceUnitTests(unittest.TestCase):
                 epochs=1,
             )
 
+    def test_upload_streamflow_csv_with_basin_column_and_multi_basin(
+        self,
+    ) -> None:
+        """Verify basin,date,streamflow CSV auto-switches or multi-uploads."""
+        pm = profile_manager.get_profile_manager()
+        basin_b = 'catchment_hydroatlas_HYRIV_70582588_39475_80998'
+        feat_b = {
+            'type': 'Feature',
+            'id': basin_b,
+            'properties': {
+                'catchment_id': basin_b,
+                'name': 'Georges Creek at Franklin, MD (USGS 01599000)',
+                'area_km2': 187.5,
+                'source': 'delineated',
+            },
+            'geometry': TEST_WATERSHED_FEATURE['geometry'],
+        }
+        pm.save_watersheds([TEST_WATERSHED_FEATURE, feat_b], username=TEST_USER)
+        finetune_service.clear_finetune_data(TEST_USER, basin_b)
+
+        single_basin_csv = (
+            'basin,date,streamflow\n'
+            f'{basin_b},2025-04-01,10.0\n'
+            f'{basin_b},2025-04-02,20.0\n'
+        )
+        res_single = finetune_service.upload_finetune_csv(
+            username=TEST_USER,
+            basin_id=TEST_BASIN,
+            data_type='streamflow',
+            csv_content=single_basin_csv,
+            filename='usgs_01599000_streamflow.csv',
+            units='m3/s',
+        )
+        assert res_single['basin_id'] == basin_b
+        assert res_single['area_km2'] == pytest.approx(187.5)
+        expected_mean = 15.0 * 86.4 / 187.5
+        assert res_single['mean_val'] == pytest.approx(expected_mean, abs=1e-3)
+
+        multi_basin_csv = (
+            'basin,date,streamflow\n'
+            f'{TEST_BASIN},2025-04-01,10.0\n'
+            f'{TEST_BASIN},2025-04-02,12.0\n'
+            f'{basin_b},2025-04-01,5.0\n'
+            f'{basin_b},2025-04-02,7.0\n'
+        )
+        res_multi = finetune_service.upload_finetune_csv(
+            username=TEST_USER,
+            basin_id=TEST_BASIN,
+            data_type='streamflow',
+            csv_content=multi_basin_csv,
+            filename='usgs_all_basins_streamflow.csv',
+            units='m3/s',
+        )
+        assert set(res_multi['basins_uploaded']) == {TEST_BASIN, basin_b}
+        assert res_multi['basin_id'] == TEST_BASIN
+
+    def test_streamflow_only_upload_falls_back_to_realtime_dynamics_forcing(
+        self,
+    ) -> None:
+        """Verify streamflow-only CSV uses realtime/dynamics/HRES forcing."""
+        pm = profile_manager.get_profile_manager()
+        rt_dyn_dir = pm.get_realtime_dir(TEST_USER) / 'dynamics'
+        rt_hres_zarr = rt_dyn_dir / 'HRES' / 'timeseries.zarr'
+        rt_hres_zarr.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            dates = pd.date_range('2025-01-01', periods=70, freq='D')
+            leads = np.arange(1, EXPECTED_LEAD_TIME + 1, dtype=np.int64)
+            p_mm = np.full(
+                (1, len(dates), EXPECTED_LEAD_TIME), 5.0, dtype=np.float32
+            )
+            t_degc = np.full(
+                (1, len(dates), EXPECTED_LEAD_TIME), 15.0, dtype=np.float32
+            )
+            ds_rt = xr.Dataset(
+                {
+                    'hres_tp': (
+                        ('basin', 'date', 'lead_time'),
+                        p_mm,
+                    ),
+                    'hres_2t': (
+                        ('basin', 'date', 'lead_time'),
+                        t_degc,
+                    ),
+                },
+                coords={
+                    'basin': np.array([TEST_BASIN], dtype=object),
+                    'date': dates.to_numpy().astype('datetime64[ns]'),
+                    'lead_time': leads,
+                },
+            )
+            ds_rt.to_zarr(rt_hres_zarr, mode='w', consolidated=True)
+
+            q_rows = ['basin,date,streamflow']
+            for i, dt in enumerate(dates):
+                d_str = dt.strftime('%Y-%m-%d')
+                q_rows.append(f'{TEST_BASIN},{d_str},{10.0 + 0.2 * i:.2f}')
+            finetune_service.upload_finetune_csv(
+                username=TEST_USER,
+                basin_id=TEST_BASIN,
+                data_type='streamflow',
+                csv_content='\n'.join(q_rows),
+                filename='usgs_streamflow.csv',
+                units='m3/s',
+            )
+
+            ws = finetune_service.get_finetune_workspace_status(
+                username=TEST_USER,
+                basin_id=TEST_BASIN,
+                model_id=SYNTH_MODEL_ID,
+            )
+            assert ws['data_ready'] is True
+            assert len(ws['timeseries']['dates']) == len(dates)
+            assert np.allclose(ws['timeseries']['precip'], 5.0, atol=1e-2)
+            assert ws['partition']['total_days'] == len(dates)
+        finally:
+            shutil.rmtree(rt_dyn_dir, ignore_errors=True)
+
 
 @pytest.mark.integration
 class FineTuneWorkflowIntegrationTests(unittest.TestCase):

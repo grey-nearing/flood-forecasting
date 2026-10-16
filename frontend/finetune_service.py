@@ -67,6 +67,27 @@ _M3S_TO_MM_DAY_FACTOR = 86.4
 _DATE_COLUMN_ALIASES = frozenset(
     {'date', 'time', 'datetime', 'timestamp', 'issue_date'}
 )
+_BASIN_COLUMN_ALIASES = frozenset(
+    {'basin', 'basin_id', 'catchment_id', 'gauge_id', 'site_no', 'station_id'}
+)
+_REALTIME_PRECIP_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ('HRES', 'hres_tp'),
+    ('GFS', 'gfs_tp'),
+    ('NOAA_GFS', 'gfs_tp'),
+    ('AIFS', 'aifs_tp'),
+    ('ECMWF_AIFS', 'aifs_tp'),
+    ('IMERG', 'imerg_precipitation'),
+    ('CPC', 'cpc_precip'),
+    ('ERA5_LAND', 'era5land_total_precipitation_sum'),
+)
+_REALTIME_TEMP_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ('HRES', 'hres_2t'),
+    ('GFS', 'gfs_2t'),
+    ('NOAA_GFS', 'gfs_2t'),
+    ('AIFS', 'aifs_2t'),
+    ('ECMWF_AIFS', 'aifs_2t'),
+    ('ERA5_LAND', 'era5land_temperature_2m'),
+)
 _NA_STRINGS = frozenset({'', 'nan', 'null', 'none', 'na', 'n/a'})
 _SUPPORTED_DATA_TYPES = frozenset(
     {
@@ -391,7 +412,8 @@ def list_finetune_models(
     }
 
     for model_id, label, run_dir in PRETRAINED_MODEL_DIRS:
-        if (run_dir / 'config.yml').exists():
+        ckpt_path, _ = _find_latest_checkpoint(run_dir)
+        if (run_dir / 'config.yml').exists() and ckpt_path is not None:
             info = _inspect_model_from_run_dir(
                 model_id,
                 label,
@@ -427,7 +449,12 @@ def _resolve_model_dir(
         raise ValueError('model_id must be a non-empty string.')
 
     for mid, label, run_dir in PRETRAINED_MODEL_DIRS:
-        if mid == clean_id and (run_dir / 'config.yml').exists():
+        ckpt_path, _ = _find_latest_checkpoint(run_dir)
+        if (
+            mid == clean_id
+            and (run_dir / 'config.yml').exists()
+            and ckpt_path is not None
+        ):
             return label, run_dir
 
     if clean_id.startswith('user_'):
@@ -459,6 +486,40 @@ def _identify_date_column(df: pd.DataFrame) -> str:
     )
 
 
+def _identify_basin_column(df: pd.DataFrame, date_col: str) -> str | None:
+    for col in df.columns:
+        if col == date_col:
+            continue
+        if str(col).strip().lower() in _BASIN_COLUMN_ALIASES:
+            return str(col)
+    return None
+
+
+def _list_csv_basins(csv_content: str) -> list[str]:
+    text = (csv_content or '').strip()
+    if not text:
+        return []
+    try:
+        df = pd.read_csv(io.StringIO(text))
+    except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError):
+        return []
+    if df.empty or len(df.columns) < _MIN_CSV_COLUMNS:
+        return []
+    try:
+        date_col = _identify_date_column(df)
+    except ValueError:
+        return []
+    basin_col = _identify_basin_column(df, date_col)
+    if basin_col is None:
+        return []
+    basin_series = df[basin_col].astype(str).str.strip()
+    return [
+        b
+        for b in dict.fromkeys(basin_series.tolist())
+        if b and b.lower() not in _NA_STRINGS
+    ]
+
+
 def _validate_numeric_column(series: pd.Series, col_name: str) -> None:
     str_vals = series.dropna().astype(str).str.strip()
     non_empty_mask = ~str_vals.str.lower().isin(_NA_STRINGS)
@@ -473,20 +534,36 @@ def _validate_numeric_column(series: pd.Series, col_name: str) -> None:
         )
 
 
-def _extract_daily_dataframe(
-    csv_content: str,
-) -> tuple[pd.DataFrame, pd.DatetimeIndex, list[str]]:
-    text = (csv_content or '').strip()
-    if not text:
-        raise ValueError('Uploaded CSV content is empty.')
-
-    df = pd.read_csv(io.StringIO(text))
-    if df.empty or len(df.columns) < _MIN_CSV_COLUMNS:
+def _filter_dataframe_by_basin(
+    df: pd.DataFrame, basin_col: str, basin_id: str | None
+) -> pd.DataFrame:
+    basin_series = df[basin_col].astype(str).str.strip()
+    unique_basins = [
+        b
+        for b in dict.fromkeys(basin_series.tolist())
+        if b and b.lower() not in _NA_STRINGS
+    ]
+    target_b = (basin_id or '').strip()
+    if target_b and target_b in unique_basins:
+        return df.loc[basin_series == target_b].copy()
+    if len(unique_basins) == 1:
+        return df.loc[basin_series == unique_basins[0]].copy()
+    if len(unique_basins) > 1:
+        if target_b:
+            raise ValueError(
+                f"Basin '{target_b}' was not found in CSV column "
+                f"'{basin_col}'. Available basins: {unique_basins[:10]}"
+            )
         raise ValueError(
-            'CSV must contain a date/time column and at least one data column.'
+            f'Multi-basin CSV contains {len(unique_basins)} basins '
+            f'({unique_basins[:5]}); specify basin_id to select one.'
         )
+    return df
 
-    date_col = _identify_date_column(df)
+
+def _parse_and_validate_daily_dates(
+    df: pd.DataFrame, date_col: str
+) -> pd.Series:
     raw_dates = pd.to_datetime(df[date_col], errors='coerce', utc=False)
     if raw_dates.isna().any():
         bad_count = int(raw_dates.isna().sum())
@@ -505,10 +582,35 @@ def _extract_daily_dataframe(
         raise ValueError(
             'CSV contains duplicate dates; each daily timestamp must be unique.'
         )
+    return raw_dates
 
-    data_cols = [
-        str(c) for c in df.columns if c not in (date_col, '__parsed_date__')
-    ]
+
+def _extract_daily_dataframe(
+    csv_content: str,
+    *,
+    basin_id: str | None = None,
+) -> tuple[pd.DataFrame, pd.DatetimeIndex, list[str]]:
+    text = (csv_content or '').strip()
+    if not text:
+        raise ValueError('Uploaded CSV content is empty.')
+
+    df = pd.read_csv(io.StringIO(text))
+    if df.empty or len(df.columns) < _MIN_CSV_COLUMNS:
+        raise ValueError(
+            'CSV must contain a date/time column and at least one data column.'
+        )
+
+    date_col = _identify_date_column(df)
+    basin_col = _identify_basin_column(df, date_col)
+    if basin_col is not None:
+        df = _filter_dataframe_by_basin(df, basin_col, basin_id)
+
+    raw_dates = _parse_and_validate_daily_dates(df, date_col)
+
+    excluded_cols = {date_col, '__parsed_date__'}
+    if basin_col is not None:
+        excluded_cols.add(basin_col)
+    data_cols = [str(c) for c in df.columns if c not in excluded_cols]
     if not data_cols:
         raise ValueError('CSV contains no numeric data columns.')
     for col in data_cols:
@@ -575,6 +677,7 @@ def parse_time_by_lead_csv(
     csv_content: str,
     *,
     target_lead_time: int = 7,
+    basin_id: str | None = None,
 ) -> tuple[pd.DatetimeIndex, np.ndarray, list[int]]:
     """Parse a CSV file structured as ``time`` by ``lead_time``.
 
@@ -584,6 +687,8 @@ def parse_time_by_lead_csv(
         Raw CSV text uploaded by the user.
     target_lead_time : int, optional
         Number of forecast lead steps expected by the model (default 7).
+    basin_id : str | None, optional
+        Target basin identifier when filtering a multi-basin CSV.
 
     Returns
     -------
@@ -596,7 +701,9 @@ def parse_time_by_lead_csv(
     target_leads = _validate_positive_int(
         target_lead_time, 'target_lead_time', min_val=1
     )
-    df, full_dates, data_cols = _extract_daily_dataframe(csv_content)
+    df, full_dates, data_cols = _extract_daily_dataframe(
+        csv_content, basin_id=basin_id
+    )
     lead_map = _extract_lead_columns(df, data_cols)
 
     num_dates = len(full_dates)
@@ -657,6 +764,79 @@ def _resolve_upload_key_and_units(
     )
 
 
+def _save_single_basin_finetune_csv(  # noqa: PLR0913
+    username: str,
+    basin_id: str,
+    data_type: str,
+    dtype_clean: str,
+    csv_content: str,
+    *,
+    filename: str,
+    units: str | None,
+    area_km2: float | None,
+    target_lead_time: int,
+) -> dict[str, object]:
+    dates, matrix, parsed_leads = parse_time_by_lead_csv(
+        csv_content,
+        target_lead_time=target_lead_time,
+        basin_id=basin_id,
+    )
+
+    if not np.isfinite(matrix[:, 0]).any():
+        raise ValueError(
+            f'Uploaded {data_type} CSV contains no finite values '
+            'in the primary lead_1 column.'
+        )
+
+    data_root = _basin_data_root(username, basin_id)
+    raw_dir = data_root / 'raw_arrays'
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = data_root / 'upload_meta.json'
+    meta: dict[str, object] = (
+        json.loads(meta_path.read_text(encoding='utf-8'))
+        if meta_path.exists()
+        else {}
+    )
+
+    key, matrix, canonical_units = _resolve_upload_key_and_units(
+        dtype_clean, matrix, units, area_km2
+    )
+
+    np.savez(
+        raw_dir / f'{key}.npz',
+        dates=dates.strftime('%Y-%m-%d').to_numpy(dtype='U10'),
+        matrix=matrix,
+        parsed_leads=np.array(parsed_leads, dtype=np.int32),
+    )
+
+    finite_mask = np.isfinite(matrix[:, 0])
+    entry_meta: dict[str, object] = {
+        'basin_id': basin_id,
+        'filename': filename or f'{key}.csv',
+        'uploaded_at': datetime.now(UTC).isoformat(),
+        'start_date': str(dates[0].strftime('%Y-%m-%d')),
+        'end_date': str(dates[-1].strftime('%Y-%m-%d')),
+        'num_days': len(dates),
+        'num_valid_days': int(finite_mask.sum()),
+        'num_lead_columns': len(parsed_leads),
+        'parsed_leads': parsed_leads,
+        'units': canonical_units,
+        'original_units': units or canonical_units,
+        'area_km2': area_km2,
+        'min_val': float(np.nanmin(matrix[:, 0])),
+        'max_val': float(np.nanmax(matrix[:, 0])),
+        'mean_val': float(np.nanmean(matrix[:, 0])),
+    }
+    meta[key] = entry_meta
+    meta['basin_id'] = basin_id
+    meta_path.write_text(json.dumps(meta, indent=2), encoding='utf-8')
+
+    _rebuild_local_zarr_stores(
+        username, basin_id, target_lead_time=target_lead_time
+    )
+    return entry_meta
+
+
 def upload_finetune_csv(
     username: str,
     basin_id: str,
@@ -695,11 +875,6 @@ def upload_finetune_csv(
     raw_units = options.get('units')
     units = str(raw_units) if raw_units is not None else None
     raw_area = options.get('area_km2')
-    area_km2 = (
-        _validate_finite_float(raw_area, 'area_km2', strictly_positive=True)
-        if raw_area is not None
-        else _resolve_basin_area_km2(username, basin_id)
-    )
     raw_lead = options.get('target_lead_time', 7)
     target_lead_time = _validate_positive_int(
         raw_lead, 'target_lead_time', min_val=1
@@ -712,61 +887,67 @@ def upload_finetune_csv(
             "Must be 'precip', 'temp', or 'streamflow'."
         )
 
-    dates, matrix, parsed_leads = parse_time_by_lead_csv(
-        csv_content, target_lead_time=target_lead_time
-    )
-
-    if not np.isfinite(matrix[:, 0]).any():
-        raise ValueError(
-            f'Uploaded {data_type} CSV contains no finite values '
-            'in the primary lead_1 column.'
-        )
-
-    data_root = _basin_data_root(username, basin_id)
-    raw_dir = data_root / 'raw_arrays'
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    meta_path = data_root / 'upload_meta.json'
-    meta: dict[str, object] = (
-        json.loads(meta_path.read_text(encoding='utf-8'))
-        if meta_path.exists()
-        else {}
-    )
-
-    key, matrix, canonical_units = _resolve_upload_key_and_units(
-        dtype_clean, matrix, units, area_km2
-    )
-
-    np.savez(
-        raw_dir / f'{key}.npz',
-        dates=dates.strftime('%Y-%m-%d').to_numpy(dtype='U10'),
-        matrix=matrix,
-        parsed_leads=np.array(parsed_leads, dtype=np.int32),
-    )
-
-    finite_mask = np.isfinite(matrix[:, 0])
-    entry_meta: dict[str, object] = {
-        'filename': filename or f'{key}.csv',
-        'uploaded_at': datetime.now(UTC).isoformat(),
-        'start_date': str(dates[0].strftime('%Y-%m-%d')),
-        'end_date': str(dates[-1].strftime('%Y-%m-%d')),
-        'num_days': len(dates),
-        'num_valid_days': int(finite_mask.sum()),
-        'num_lead_columns': len(parsed_leads),
-        'parsed_leads': parsed_leads,
-        'units': canonical_units,
-        'original_units': units or canonical_units,
-        'area_km2': area_km2,
-        'min_val': float(np.nanmin(matrix[:, 0])),
-        'max_val': float(np.nanmax(matrix[:, 0])),
-        'mean_val': float(np.nanmean(matrix[:, 0])),
+    csv_basins = _list_csv_basins(csv_content)
+    clipped_ids = {
+        str(b['basin_id']) for b in list_user_clipped_basins(username)
     }
-    meta[key] = entry_meta
-    meta['basin_id'] = basin_id
-    meta_path.write_text(json.dumps(meta, indent=2), encoding='utf-8')
 
-    _rebuild_local_zarr_stores(
-        username, basin_id, target_lead_time=target_lead_time
+    if len(csv_basins) > 1:
+        target_basins = [
+            b for b in csv_basins if b in clipped_ids or b == basin_id
+        ] or list(csv_basins)
+        results_by_basin: dict[str, dict[str, object]] = {}
+        for b_id in target_basins:
+            b_area = (
+                _validate_finite_float(
+                    raw_area, 'area_km2', strictly_positive=True
+                )
+                if (raw_area is not None and b_id == basin_id)
+                else _resolve_basin_area_km2(username, b_id)
+            )
+            results_by_basin[b_id] = _save_single_basin_finetune_csv(
+                username,
+                b_id,
+                data_type,
+                dtype_clean,
+                csv_content,
+                filename=filename,
+                units=units,
+                area_km2=b_area,
+                target_lead_time=target_lead_time,
+            )
+        primary_b = (
+            basin_id if basin_id in results_by_basin else target_basins[0]
+        )
+        primary_meta = dict(results_by_basin[primary_b])
+        primary_meta['basins_uploaded'] = target_basins
+        return primary_meta
+
+    if (
+        len(csv_basins) == 1
+        and csv_basins[0] != basin_id
+        and csv_basins[0] in clipped_ids
+    ):
+        basin_id = csv_basins[0]
+        raw_area = None
+
+    area_km2 = (
+        _validate_finite_float(raw_area, 'area_km2', strictly_positive=True)
+        if raw_area is not None
+        else _resolve_basin_area_km2(username, basin_id)
     )
+    entry_meta = _save_single_basin_finetune_csv(
+        username,
+        basin_id,
+        data_type,
+        dtype_clean,
+        csv_content,
+        filename=filename,
+        units=units,
+        area_km2=area_km2,
+        target_lead_time=target_lead_time,
+    )
+    entry_meta['basins_uploaded'] = [basin_id]
     return entry_meta
 
 
@@ -783,8 +964,116 @@ def clear_finetune_data(username: str, basin_id: str) -> dict[str, object]:
     return {'status': 'cleared', 'basin_id': basin_id}
 
 
+def _read_zarr_basin_lead_matrix(
+    zpath: Path,
+    basin_id: str,
+    var_name: str,
+    target_lead_time: int,
+) -> tuple[pd.DatetimeIndex, np.ndarray] | None:
+    if not _is_valid_zarr_dir(zpath):
+        return None
+    ds = xr.open_zarr(str(zpath), decode_timedelta=False)
+    basin_coord = next(
+        (
+            c
+            for c in ('basin', 'basin_id', 'catchment_id', 'gauge_id')
+            if c in ds.coords
+        ),
+        None,
+    )
+    if (
+        basin_coord is None
+        or 'date' not in ds.coords
+        or var_name not in ds.data_vars
+    ):
+        return None
+    basin_vals = [str(b) for b in ds.coords[basin_coord].to_numpy()]
+    if basin_id not in basin_vals:
+        return None
+    sub = ds[var_name].sel({basin_coord: basin_id}).load()
+    raw_dates = pd.to_datetime(sub.coords['date'].to_numpy())
+    dates = (
+        pd.DatetimeIndex(raw_dates).tz_localize(None).floor('D')
+        if getattr(raw_dates, 'tz', None) is not None
+        else pd.DatetimeIndex(raw_dates).floor('D')
+    )
+    if len(dates) == 0:
+        return None
+    vals = np.asarray(sub.to_numpy(), dtype=np.float32)
+    mat = np.full((len(dates), target_lead_time), np.nan, dtype=np.float32)
+    if vals.ndim == 2:  # noqa: PLR2004
+        cols = min(vals.shape[1], target_lead_time)
+        mat[:, :cols] = vals[:, :cols]
+    elif vals.ndim == 1:
+        mat[:, 0] = vals
+    if not np.isfinite(mat[:, 0]).any():
+        return None
+    lead0 = mat[:, 0]
+    idx_base = np.arange(len(dates))
+    for k in range(1, target_lead_time):
+        nan_mask = ~np.isfinite(mat[:, k])
+        if nan_mask.any():
+            shifted_idx = np.minimum(idx_base + k, len(dates) - 1)
+            mat[nan_mask, k] = lead0[shifted_idx[nan_mask]]
+    return dates, mat
+
+
+def _extract_realtime_forcing_matrix(
+    username: str,
+    basin_id: str,
+    candidates: Sequence[tuple[str, str]],
+    target_lead_time: int = 7,
+) -> tuple[pd.DatetimeIndex, np.ndarray, str] | None:
+    pm = get_profile_manager()
+    profile_dir = pm.get_profile_dir(username)
+    for base_dir in (
+        pm.get_realtime_dir(username) / 'dynamics',
+        profile_dir / 'realtime' / 'dynamics',
+        profile_dir / 'dynamics',
+    ):
+        if not base_dir.is_dir():
+            continue
+        for prod_name, var_name in candidates:
+            zpath = base_dir / prod_name / 'timeseries.zarr'
+            res = _read_zarr_basin_lead_matrix(
+                zpath, basin_id, var_name, target_lead_time
+            )
+            if res is not None:
+                return res[0], res[1], prod_name
+    return None
+
+
+def _attach_overlapping_realtime_forcing(
+    loaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]],
+    username: str,
+    basin_id: str,
+    target_lead_time: int,
+) -> None:
+    if 'streamflow' not in loaded:
+        return
+    sf_dates = loaded['streamflow'][0]
+    sf_start, sf_end = sf_dates[0], sf_dates[-1]
+    for key, candidates in (
+        ('precip', _REALTIME_PRECIP_CANDIDATES),
+        ('temp', _REALTIME_TEMP_CANDIDATES),
+    ):
+        if key in loaded:
+            continue
+        rt = _extract_realtime_forcing_matrix(
+            username,
+            basin_id,
+            candidates,
+            target_lead_time=target_lead_time,
+        )
+        if rt is not None and max(sf_start, rt[0][0]) < min(sf_end, rt[0][-1]):
+            loaded[key] = (rt[0], rt[1])
+
+
 def _load_uploaded_arrays(
-    username: str, basin_id: str
+    username: str,
+    basin_id: str,
+    *,
+    target_lead_time: int = 7,
 ) -> dict[str, tuple[pd.DatetimeIndex, np.ndarray]]:
     raw_dir = _basin_data_root(username, basin_id) / 'raw_arrays'
     loaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]] = {}
@@ -797,6 +1086,9 @@ def _load_uploaded_arrays(
                 dates = pd.to_datetime(archive['dates'])
                 matrix = archive['matrix'].astype(np.float32)
                 loaded[key] = (pd.DatetimeIndex(dates), matrix)
+    _attach_overlapping_realtime_forcing(
+        loaded, username, basin_id, target_lead_time
+    )
     return loaded
 
 
@@ -807,7 +1099,9 @@ def _rebuild_local_zarr_stores(
     target_lead_time: int = 7,
 ) -> dict[str, object] | None:
     """Write ``LOCAL_FORCING/timeseries.zarr`` and ``streamflow.zarr``."""
-    loaded = _load_uploaded_arrays(username, basin_id)
+    loaded = _load_uploaded_arrays(
+        username, basin_id, target_lead_time=target_lead_time
+    )
     if not all(k in loaded for k in ('precip', 'temp', 'streamflow')):
         return None
 
@@ -1484,6 +1778,93 @@ def _evaluate_dataset_predictions(
     return mean_loss, sim_lead1, sim_lead_last
 
 
+def _populate_realtime_upload_meta(
+    loaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]],
+    upload_meta: dict[str, object],
+) -> None:
+    if 'streamflow' not in loaded:
+        return
+    for k_name, unit_str in (('precip', 'mm/day'), ('temp', 'degC')):
+        if k_name in loaded and k_name not in upload_meta:
+            d_idx, mat = loaded[k_name]
+            upload_meta[k_name] = {
+                'filename': 'Profile Forcing',
+                'source': 'realtime_dynamics',
+                'start_date': d_idx[0].strftime('%Y-%m-%d'),
+                'end_date': d_idx[-1].strftime('%Y-%m-%d'),
+                'num_days': len(d_idx),
+                'num_valid_days': int(np.isfinite(mat[:, 0]).sum()),
+                'num_lead_columns': int(mat.shape[1]),
+                'units': unit_str,
+            }
+
+
+def _build_workspace_timeseries_and_partition(
+    loaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]],
+    selected_model: dict[str, object],
+    *,
+    data_ready: bool,
+    active_split: float,
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    if not loaded:
+        return None, None
+    seq_len_val = int(str(selected_model['seq_length']))
+    lead_val = int(str(selected_model['lead_time']))
+    pred_last_val = int(str(selected_model['predict_last_n']))
+    active_keys = (
+        ('precip', 'temp', 'streamflow')
+        if data_ready
+        else tuple(k for k in ('precip', 'temp', 'streamflow') if k in loaded)
+    )
+    start_d = max(loaded[k][0][0] for k in active_keys)
+    end_d = min(loaded[k][0][-1] for k in active_keys)
+    if start_d > end_d:
+        return None, None
+
+    common_dates = pd.date_range(start_d, end_d, freq='D')
+
+    def _extract_lead1(key: str) -> list[float | None]:
+        if key not in loaded:
+            return [None] * len(common_dates)
+        d_idx, mat = loaded[key]
+        indexer = d_idx.get_indexer(common_dates)
+        return [
+            round(float(mat[pos, 0]), 4)
+            if pos >= 0 and np.isfinite(mat[pos, 0])
+            else None
+            for pos in indexer
+        ]
+
+    partition_info: dict[str, object] | None = None
+    if data_ready:
+        partition_info = compute_partition_dates(
+            common_dates,
+            base_seq_length=seq_len_val,
+            lead_time=lead_val,
+            split_ratio=active_split,
+            predict_last_n=pred_last_val,
+        )
+    else:
+        try:
+            partition_info = compute_partition_dates(
+                common_dates,
+                base_seq_length=seq_len_val,
+                lead_time=lead_val,
+                split_ratio=active_split,
+                predict_last_n=pred_last_val,
+            )
+        except ValueError:
+            partition_info = None
+
+    timeseries_payload: dict[str, object] = {
+        'dates': [d.strftime('%Y-%m-%d') for d in common_dates],
+        'precip': _extract_lead1('precip'),
+        'temp': _extract_lead1('temp'),
+        'streamflow_obs': _extract_lead1('streamflow'),
+    }
+    return timeseries_payload, partition_info
+
+
 def get_finetune_workspace_status(
     username: str,
     basin_id: str,
@@ -1507,9 +1888,7 @@ def get_finetune_workspace_status(
         not clean_basin_id or clean_basin_id == 'custom_basin_01'
     ) and user_basins:
         clean_basin_id = str(user_basins[0]['basin_id'])
-    if not clean_basin_id:
-        clean_basin_id = 'custom_basin_01'
-    basin_id = clean_basin_id
+    basin_id = clean_basin_id or 'custom_basin_01'
 
     matched_basin = next(
         (b for b in user_basins if b['basin_id'] == basin_id),
@@ -1527,6 +1906,8 @@ def get_finetune_workspace_status(
         else _resolve_basin_area_km2(username, basin_id)
     )
 
+    lead_val = int(str(selected_model['lead_time']))
+
     data_root = _basin_data_root(username, basin_id)
     meta_path = data_root / 'upload_meta.json'
     upload_meta = (
@@ -1534,8 +1915,11 @@ def get_finetune_workspace_status(
         if meta_path.exists()
         else {}
     )
-    loaded = _load_uploaded_arrays(username, basin_id)
+    loaded = _load_uploaded_arrays(
+        username, basin_id, target_lead_time=lead_val
+    )
     data_ready = all(k in loaded for k in ('precip', 'temp', 'streamflow'))
+    _populate_realtime_upload_meta(loaded, upload_meta)
 
     sess_dir = _session_root(
         username, basin_id, str(selected_model['model_id'])
@@ -1558,41 +1942,14 @@ def get_finetune_workspace_status(
         else float(str(session_state.get('split_ratio', 0.7)))
     )
 
-    timeseries_payload: dict[str, object] | None = None
-    partition_info: dict[str, object] | None = None
-
-    if data_ready:
-        start_d = max(loaded[k][0][0] for k in ('precip', 'temp', 'streamflow'))
-        end_d = min(loaded[k][0][-1] for k in ('precip', 'temp', 'streamflow'))
-        common_dates = pd.date_range(start_d, end_d, freq='D')
-
-        def _extract_lead1(key: str) -> list[float | None]:
-            d_idx, mat = loaded[key]
-            indexer = d_idx.get_indexer(common_dates)
-            out: list[float | None] = []
-            for pos in indexer:
-                if pos >= 0 and np.isfinite(mat[pos, 0]):
-                    out.append(round(float(mat[pos, 0]), 4))
-                else:
-                    out.append(None)
-            return out
-
-        seq_len_val = int(str(selected_model['seq_length']))
-        lead_val = int(str(selected_model['lead_time']))
-        pred_last_val = int(str(selected_model['predict_last_n']))
-        partition_info = compute_partition_dates(
-            common_dates,
-            base_seq_length=seq_len_val,
-            lead_time=lead_val,
-            split_ratio=active_split,
-            predict_last_n=pred_last_val,
+    timeseries_payload, partition_info = (
+        _build_workspace_timeseries_and_partition(
+            loaded,
+            selected_model,
+            data_ready=data_ready,
+            active_split=active_split,
         )
-        timeseries_payload = {
-            'dates': [d.strftime('%Y-%m-%d') for d in common_dates],
-            'precip': _extract_lead1('precip'),
-            'temp': _extract_lead1('temp'),
-            'streamflow_obs': _extract_lead1('streamflow'),
-        }
+    )
 
     comp_names = selected_model.get('tunable_component_names')
     default_head = _default_head_component_name(
@@ -2231,7 +2588,9 @@ def run_finetune_epochs(
             'CSVs before fine-tuning.'
         )
 
-    loaded = _load_uploaded_arrays(username, basin_id)
+    loaded = _load_uploaded_arrays(
+        username, basin_id, target_lead_time=lead_time
+    )
     _validate_uploaded_forecast_leads(loaded, lead_time)
 
     start_d = max(loaded[k][0][0] for k in ('precip', 'temp', 'streamflow'))
