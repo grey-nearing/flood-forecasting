@@ -266,9 +266,13 @@ def test_dask_store_exists_and_overwrite_fsspec(tmp_path):
   assert not fs_remote.exists(remote_path)
 
 
-def test_gcp_project_autodetection_and_configuration(monkeypatch):
+def test_gcp_project_autodetection_and_configuration(monkeypatch, tmp_path):
   """Tests GCP project autodetection precedence and fsspec/env configuration."""
-  from multimet.utils.gcs import auto_detect_gcp_project, configure_gcp_project
+  from multimet.utils.gcs import (
+      _gcloud_default_project,
+      auto_detect_gcp_project,
+      configure_gcp_project,
+  )
   import fsspec.config
 
   # 1. Explicit project takes precedence
@@ -277,6 +281,17 @@ def test_gcp_project_autodetection_and_configuration(monkeypatch):
   # 2. Environment variable fallback
   for k in ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_QUOTA_PROJECT", "CLOUDSDK_CORE_PROJECT", "GCP_PROJECT", "GCLOUD_PROJECT"):
     monkeypatch.delenv(k, raising=False)
+
+  # 2b. Local gcloud config file fallback via CLOUDSDK_CONFIG
+  cfg_dir = tmp_path / "gcloud"
+  (cfg_dir / "configurations").mkdir(parents=True)
+  (cfg_dir / "active_config").write_text("custom\n", encoding="utf-8")
+  (cfg_dir / "configurations" / "config_custom").write_text(
+      "[core]\nproject = ini-proj-321\n", encoding="utf-8"
+  )
+  monkeypatch.setenv("CLOUDSDK_CONFIG", str(cfg_dir))
+  _gcloud_default_project.cache_clear()
+  assert auto_detect_gcp_project() == "ini-proj-321"
 
   monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "env-proj-456")
   assert auto_detect_gcp_project() == "env-proj-456"
@@ -288,6 +303,7 @@ def test_gcp_project_autodetection_and_configuration(monkeypatch):
   assert "GOOGLE_CLOUD_QUOTA_PROJECT" not in os.environ
   assert fsspec.config.conf.get("gs", {}).get("project") == "configured-proj-789"
   assert fsspec.config.conf.get("gcs", {}).get("project") == "configured-proj-789"
+  _gcloud_default_project.cache_clear()
 
 
 def test_dask_append_dates_nowcast(dask_client):

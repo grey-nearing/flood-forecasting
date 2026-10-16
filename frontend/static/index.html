@@ -9648,7 +9648,7 @@
     // Data Assimilation (Step 5) per-basin interactive state:
     // Method 1: Nudging with Persistence (Karan's Post-Processing, Eq. 6: Q_pp = max(0, Q_base + alpha * rho^k * e_t0))
     // Method 2: Variational Embedding Data Assimilation (Latent 4D-Var)
-    const fcDaStateByBasin = {};
+    let fcDaStateByBasin = {};
     let fcDaAccordionExpanded = false;
     let fcDaCurveCanvasBound = false;
     let fcDaVarCanvasBound = false;
