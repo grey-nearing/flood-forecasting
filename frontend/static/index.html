@@ -2175,14 +2175,54 @@
 
             <!-- Method 2: Variational Embedding Data Assimilation (Karan's Latent 4D-Var Engine) -->
             <div id="fcDaVariationalPanel" class="hidden space-y-2.5">
+              <!-- Manual Iterative Run / Continue / Reset Controls -->
               <div class="flex items-center justify-between gap-1.5">
-                <button id="fcDaVarRunBtn" type="button" class="flex-1 py-1.5 px-2.5 rounded-lg border border-[#7c3aed] bg-[#f5f3ff] hover:bg-[#ede9fe] text-[#6d28d9] text-[11px] font-semibold flex items-center justify-center gap-1.5 transition shadow-2xs">
+                <button id="fcDaVarRunBtn" type="button" class="flex-1 py-1.5 px-2 rounded-lg border border-[#7c3aed] bg-[#f5f3ff] hover:bg-[#ede9fe] text-[#6d28d9] text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition shadow-2xs" title="Start fresh from Step 0 (Prior) and run the selected number of backprop iterations">
                   <span id="fcDaVarRunDot" class="w-2 h-2 rounded-full bg-[#7c3aed]"></span>
-                  <span id="fcDaVarRunBtnLabel">Run 4D-Var Assimilation</span>
+                  <span id="fcDaVarRunBtnLabel">Run 5 Steps (Fresh)</span>
                 </button>
-                <button id="fcDaVarResetBtn" type="button" class="py-1.5 px-2.5 rounded-lg border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[11px] font-medium text-[#5f6368] transition" title="Reset 4D-Var to Karan's default (W=14d, λ_bg=0.50, All Embeddings)">
+                <button id="fcDaVarContinueBtn" type="button" disabled class="py-1.5 px-2 rounded-lg border border-[#dadce0] bg-white hover:bg-[#f5f3ff] text-[#3c4043] text-[10.5px] font-semibold transition disabled:opacity-45 disabled:cursor-not-allowed" title="Continue backprop from the currently inspected step with current learning parameters">
+                  <span id="fcDaVarContinueBtnLabel">+5 Steps</span>
+                </button>
+                <button id="fcDaVarResetBtn" type="button" class="py-1.5 px-2 rounded-lg border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[10.5px] font-medium text-[#5f6368] transition" title="Reset 4D-Var to default (W=14d, λ_bg=0.50, lr=0.01, 5 steps, All Embeddings)">
                   Reset
                 </button>
+              </div>
+
+              <!-- Live Backprop Progress Bar + Stop Button -->
+              <div id="fcDaVarProgressBox" class="hidden rounded-lg border border-[#ddd6fe] bg-[#f5f3ff]/80 p-2 space-y-1.5">
+                <div class="flex items-center justify-between gap-1.5 text-[10px] font-mono">
+                  <span id="fcDaVarProgressLabel" class="text-[#5b21b6] font-semibold truncate">Optimizing latent state…</span>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <span id="fcDaVarProgressPct" class="text-[#6d28d9] font-bold">0%</span>
+                    <button id="fcDaVarStopBtn" type="button" class="px-1.5 py-0.5 rounded border border-[#fca5a5] bg-[#fef2f2] hover:bg-[#fee2e2] text-[#b91c1c] text-[9.5px] font-semibold transition">
+                      Stop
+                    </button>
+                  </div>
+                </div>
+                <div class="w-full h-2 rounded-full bg-[#ede9fe] overflow-hidden">
+                  <div id="fcDaVarProgressBarFill" class="h-full bg-[#7c3aed] transition-all duration-150" style="width: 0%;"></div>
+                </div>
+              </div>
+
+              <!-- Manual Hyperparameter Controls (Steps/Run, Learning Rate, Window W, Reg Weight λ_bg) -->
+              <div class="grid grid-cols-4 gap-1.5 bg-white border border-[#dadce0] rounded-lg p-2">
+                <label class="flex flex-col gap-0.5">
+                  <span class="text-[9px] font-semibold uppercase tracking-wider text-[#5f6368]">Steps/Run</span>
+                  <input id="fcDaVarStepsInput" type="number" min="1" max="200" step="1" value="5" class="w-full px-1.5 py-1 rounded border border-[#dadce0] text-[10.5px] font-mono text-[#202124] focus:outline-none focus:border-[#7c3aed]" title="Number of Adam backprop iterations per Run / Continue click" />
+                </label>
+                <label class="flex flex-col gap-0.5">
+                  <span class="text-[9px] font-semibold uppercase tracking-wider text-[#5f6368]">Learn Rate</span>
+                  <input id="fcDaVarLrInput" type="number" min="0.0001" max="0.5" step="0.002" value="0.01" class="w-full px-1.5 py-1 rounded border border-[#dadce0] text-[10.5px] font-mono text-[#202124] focus:outline-none focus:border-[#7c3aed]" title="Adam learning rate η for latent embedding updates" />
+                </label>
+                <label class="flex flex-col gap-0.5">
+                  <span class="text-[9px] font-semibold uppercase tracking-wider text-[#5f6368]">Win (Days)</span>
+                  <input id="fcDaVarWindowInput" type="number" min="1" max="180" step="1" value="14" class="w-full px-1.5 py-1 rounded border border-[#dadce0] text-[10.5px] font-mono text-[#202124] focus:outline-none focus:border-[#7c3aed]" title="Assimilation window W (days before issue date t₀)" />
+                </label>
+                <label class="flex flex-col gap-0.5">
+                  <span class="text-[9px] font-semibold uppercase tracking-wider text-[#5f6368]">Prior λ_bg</span>
+                  <input id="fcDaVarRegInput" type="number" min="0" max="20" step="0.05" value="0.50" class="w-full px-1.5 py-1 rounded border border-[#dadce0] text-[10.5px] font-mono text-[#202124] focus:outline-none focus:border-[#7c3aed]" title="Background L2 regularization weight λ_bg anchoring to Step 0 prior" />
+                </label>
               </div>
 
               <!-- Point-and-Click Latent Embedding Component Selector (MeanEmbeddingForecastLSTM) -->
@@ -2211,14 +2251,33 @@
                 </div>
               </div>
 
+              <!-- Per-Iteration Visual Convergence Chart & Step Scrubber (Fine-Tuning Style) -->
+              <div id="fcDaVarInspectorBox" class="bg-white border border-[#dadce0] rounded-lg p-2 space-y-1.5">
+                <div class="flex items-center justify-between gap-1 text-[10px]">
+                  <span class="font-semibold uppercase tracking-wider text-[#5f6368]">Iteration Inspector</span>
+                  <span id="fcDaVarStepBadge" class="px-1.5 py-0.5 rounded bg-[#f5f3ff] text-[#6d28d9] font-mono font-semibold border border-[#ddd6fe]">Step 0 (Prior)</span>
+                </div>
+                <div class="relative w-full h-[116px] select-none">
+                  <canvas id="fcDaVarLossCanvas" class="w-full h-full block cursor-pointer" title="Click or drag to inspect any backprop iteration (Step 0..K) on the hydrograph"></canvas>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <button id="fcDaVarStepPrevBtn" type="button" disabled class="px-1.5 py-0.5 rounded border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[10px] font-mono text-[#3c4043] disabled:opacity-40" title="Previous iteration">◀</button>
+                  <input id="fcDaVarStepSlider" type="range" min="0" max="0" step="1" value="0" disabled class="flex-1 accent-[#7c3aed] cursor-pointer disabled:opacity-40" title="Scrub across backprop iterations (Step 0 = Prior .. Step K)" />
+                  <button id="fcDaVarStepNextBtn" type="button" disabled class="px-1.5 py-0.5 rounded border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[10px] font-mono text-[#3c4043] disabled:opacity-40" title="Next iteration">▶</button>
+                </div>
+                <div id="fcDaVarStepReadout" class="text-[9.5px] font-mono text-[#5f6368] leading-snug">
+                  Click <strong class="text-[#6d28d9]">Run 5 Steps</strong> to optimize latent embeddings and inspect each iteration.
+                </div>
+              </div>
+
               <!-- Interactive Graphical Point+Click / Drag 2D Variational Pad -->
               <div class="bg-white border border-[#dadce0] rounded-lg p-2 space-y-1.5">
                 <div class="flex items-center justify-between text-[10px] font-mono text-[#5f6368] gap-1">
                   <span id="fcDaVarPillWin" class="px-1.5 py-0.5 rounded bg-[#f5f3ff] text-[#6d28d9] font-semibold border border-[#ddd6fe]" title="Assimilation window W before t₀ (drag window boundary horizontally)">W = 14d</span>
                   <span id="fcDaVarPillReg" class="px-1.5 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] font-semibold border border-[#d2e3fc]" title="Background prior regularization weight λ_bg (drag curve vertically)">λ_bg = 0.50</span>
-                  <span id="fcDaVarPillSteps" class="px-1.5 py-0.5 rounded bg-[#f1f3f4] text-[#3c4043] font-semibold border border-[#dadce0]" title="Adam optimization steps & learning rate">30 ep · .01</span>
+                  <span id="fcDaVarPillSteps" class="px-1.5 py-0.5 rounded bg-[#f1f3f4] text-[#3c4043] font-semibold border border-[#dadce0]" title="Adam optimization steps per run & learning rate">5 st · .01</span>
                 </div>
-                <div class="relative w-full h-[142px] select-none">
+                <div class="relative w-full h-[132px] select-none">
                   <canvas id="fcDaVarCanvas" class="w-full h-full block cursor-crosshair"></canvas>
                 </div>
                 <div id="fcDaVarHint" class="text-[10px] text-[#5f6368] leading-snug flex items-center justify-between gap-1 font-mono">
@@ -2227,7 +2286,7 @@
                 </div>
               </div>
 
-              <!-- Minimalist One-Click 4D-Var Regime Presets (No typing numbers) -->
+              <!-- One-Click 4D-Var Regime Presets -->
               <div class="grid grid-cols-4 gap-1">
                 <button type="button" data-da-var-preset="balanced" class="fc-da-var-preset-chip py-1 px-1 rounded border border-[#7c3aed] bg-[#f5f3ff] text-[10px] font-mono font-semibold text-[#6d28d9] transition" title="Balanced 4D-Var (W=14d, λ_bg=0.50, All Embeddings)">
                   Balanced
@@ -10009,9 +10068,12 @@
         if (parsed.daStateByBasin && typeof parsed.daStateByBasin === 'object') {
           Object.entries(parsed.daStateByBasin).forEach(([cid, st]) => {
             if (st && typeof st === 'object') {
-              const merged = Object.assign(getBasinDaState(cid), st, { varRunning: false });
+              const merged = Object.assign(getBasinDaState(cid), st, { varRunning: false, varProgress: null });
               if (!st.userSetEnabled) {
                 merged.enabled = true;
+              }
+              if (!st.varEpochsUserSet) {
+                merged.varEpochs = 5;
               }
               fcDaStateByBasin[cid] = merged;
               anyValid = true;
@@ -10074,15 +10136,37 @@
           varWindowDays: 14,
           varRegWeight: 0.50,
           varLearningRate: 0.01,
-          varEpochs: 30,
+          varEpochs: 5,
+          varEpochsUserSet: false,
           varLoss: 'MSE',
           varComponents: ['static_embedding', 'hindcast_embedding', 'forecast_embedding'],
           varRunning: false,
+          varProgress: null,
+          varInspectedStep: null,
           varResult: null,
           varError: null
         };
       }
       return fcDaStateByBasin[bid];
+    }
+
+    function getActiveVariationalStepEntry(state) {
+      if (!state || !state.varResult || !state.varResult.applied) return null;
+      const vr = state.varResult;
+      const hist = Array.isArray(vr.epoch_history) ? vr.epoch_history : [];
+      if (hist.length === 0) return vr;
+      const lastEntry = hist[hist.length - 1];
+      const targetStep = (state.varInspectedStep !== null && state.varInspectedStep !== undefined)
+        ? Number(state.varInspectedStep)
+        : Number(lastEntry.step ?? (hist.length - 1));
+      const matched = hist.find(h => Number(h.step) === targetStep) || lastEntry;
+      return Object.assign({}, vr, matched, {
+        inspected_step: Number(matched.step ?? 0),
+        max_step: Number(lastEntry.step ?? (hist.length - 1)),
+        assimilated_window_rmse_cms: (matched.window_rmse_cms !== undefined)
+          ? matched.window_rmse_cms
+          : vr.assimilated_window_rmse_cms
+      });
     }
 
     function computeBasinNudgedHydrograph(basinId, targetResult, obsSeries, allDates, issueDate) {
@@ -10483,34 +10567,126 @@
       const varRunBtn = document.getElementById('fcDaVarRunBtn');
       const varRunDot = document.getElementById('fcDaVarRunDot');
       const varRunLabel = document.getElementById('fcDaVarRunBtnLabel');
+      const varContinueBtn = document.getElementById('fcDaVarContinueBtn');
+      const varContinueLabel = document.getElementById('fcDaVarContinueBtnLabel');
       const varPillWin = document.getElementById('fcDaVarPillWin');
       const varPillReg = document.getElementById('fcDaVarPillReg');
       const varPillSteps = document.getElementById('fcDaVarPillSteps');
       const varStatusText = document.getElementById('fcDaVarStatusText');
       const varRmseReadout = document.getElementById('fcDaVarRmseReadout');
+      const varStepsInput = document.getElementById('fcDaVarStepsInput');
+      const varLrInput = document.getElementById('fcDaVarLrInput');
+      const varWinInput = document.getElementById('fcDaVarWindowInput');
+      const varRegInput = document.getElementById('fcDaVarRegInput');
+      const varProgressBox = document.getElementById('fcDaVarProgressBox');
+      const varProgressLabel = document.getElementById('fcDaVarProgressLabel');
+      const varProgressPct = document.getElementById('fcDaVarProgressPct');
+      const varProgressBarFill = document.getElementById('fcDaVarProgressBarFill');
+      const varStepBadge = document.getElementById('fcDaVarStepBadge');
+      const varStepSlider = document.getElementById('fcDaVarStepSlider');
+      const varStepPrevBtn = document.getElementById('fcDaVarStepPrevBtn');
+      const varStepNextBtn = document.getElementById('fcDaVarStepNextBtn');
+      const varStepReadout = document.getElementById('fcDaVarStepReadout');
 
-      if (varPillWin) varPillWin.innerText = `W = ${state.varWindowDays}d`;
-      if (varPillReg) varPillReg.innerText = `λ_bg = ${Number(state.varRegWeight).toFixed(2)}`;
-      if (varPillSteps) varPillSteps.innerText = `${state.varEpochs} ep · lr=${Number(state.varLearningRate).toFixed(3).replace(/^0/, '')}`;
+      const stepsPerRun = Math.max(1, Math.min(200, Math.round(Number(state.varEpochs ?? 5))));
+      const lrVal = Number(state.varLearningRate ?? 0.01);
+      const winVal = Math.max(1, Math.min(180, Math.round(Number(state.varWindowDays ?? 14))));
+      const regVal = Math.max(0, Number(state.varRegWeight ?? 0.5));
+
+      if (varStepsInput && document.activeElement !== varStepsInput) {
+        varStepsInput.value = String(stepsPerRun);
+      }
+      if (varLrInput && document.activeElement !== varLrInput) {
+        varLrInput.value = String(lrVal);
+      }
+      if (varWinInput && document.activeElement !== varWinInput) {
+        varWinInput.value = String(winVal);
+      }
+      if (varRegInput && document.activeElement !== varRegInput) {
+        varRegInput.value = regVal.toFixed(2);
+      }
+
+      if (varPillWin) varPillWin.innerText = `W = ${winVal}d`;
+      if (varPillReg) varPillReg.innerText = `λ_bg = ${regVal.toFixed(2)}`;
+      if (varPillSteps) varPillSteps.innerText = `${stepsPerRun} st · lr=${lrVal.toFixed(3).replace(/^0/, '')}`;
+
+      const activeStepEntry = getActiveVariationalStepEntry(state);
+      const hist = (state.varResult && Array.isArray(state.varResult.epoch_history))
+        ? state.varResult.epoch_history
+        : [];
+      const hasHistory = hist.length > 0 && Boolean(state.varResult && state.varResult.applied);
+      const maxStep = hasHistory ? Number(hist[hist.length - 1].step ?? (hist.length - 1)) : 0;
+      const inspectedStep = activeStepEntry ? Number(activeStepEntry.inspected_step ?? maxStep) : 0;
 
       if (varRunBtn && varRunDot && varRunLabel) {
+        varRunBtn.disabled = Boolean(state.varRunning);
         if (state.varRunning) {
-          varRunBtn.className = 'flex-1 py-1.5 px-2.5 rounded-lg border border-[#7c3aed] bg-[#ede9fe] text-[#5b21b6] text-[11px] font-semibold flex items-center justify-center gap-1.5 transition animate-pulse';
+          varRunBtn.className = 'flex-1 py-1.5 px-2 rounded-lg border border-[#7c3aed] bg-[#ede9fe] text-[#5b21b6] text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition animate-pulse';
           varRunDot.className = 'w-2 h-2 rounded-full bg-[#7c3aed] animate-ping';
-          varRunLabel.innerText = 'Optimizing Latent State…';
-        } else if (state.enabled && state.varResult && state.varResult.applied) {
-          varRunBtn.className = 'flex-1 py-1.5 px-2.5 rounded-lg border border-[#7c3aed] bg-[#f5f3ff] hover:bg-[#ede9fe] text-[#5b21b6] text-[11px] font-semibold flex items-center justify-center gap-1.5 transition shadow-2xs';
+          varRunLabel.innerText = 'Running Backprop…';
+        } else if (hasHistory) {
+          varRunBtn.className = 'flex-1 py-1.5 px-2 rounded-lg border border-[#7c3aed] bg-[#f5f3ff] hover:bg-[#ede9fe] text-[#5b21b6] text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition shadow-2xs';
           varRunDot.className = 'w-2 h-2 rounded-full bg-[#7c3aed]';
-          varRunLabel.innerText = '4D-Var Active (Re-run)';
+          varRunLabel.innerText = `Restart (${stepsPerRun} Steps)`;
         } else {
-          varRunBtn.className = 'flex-1 py-1.5 px-2.5 rounded-lg border border-[#dadce0] bg-white hover:bg-[#f5f3ff] text-[#3c4043] text-[11px] font-semibold flex items-center justify-center gap-1.5 transition';
+          varRunBtn.className = 'flex-1 py-1.5 px-2 rounded-lg border border-[#7c3aed] bg-[#f5f3ff] hover:bg-[#ede9fe] text-[#6d28d9] text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition shadow-2xs';
           varRunDot.className = 'w-2 h-2 rounded-full bg-[#7c3aed]';
-          varRunLabel.innerText = 'Run 4D-Var Assimilation';
+          varRunLabel.innerText = `Run ${stepsPerRun} Steps (Fresh)`;
         }
       }
 
+      if (varContinueBtn && varContinueLabel) {
+        const canContinue = hasHistory && !state.varRunning;
+        varContinueBtn.disabled = !canContinue;
+        varContinueBtn.className = canContinue
+          ? 'py-1.5 px-2 rounded-lg border border-[#7c3aed] bg-[#7c3aed] hover:bg-[#6d28d9] text-white text-[10.5px] font-semibold transition shadow-2xs'
+          : 'py-1.5 px-2 rounded-lg border border-[#dadce0] bg-white text-[#3c4043] text-[10.5px] font-semibold transition disabled:opacity-45 disabled:cursor-not-allowed';
+        varContinueLabel.innerText = (hasHistory && inspectedStep < maxStep)
+          ? `+${stepsPerRun} from S${inspectedStep}`
+          : `+${stepsPerRun} Steps`;
+      }
+
+      if (varProgressBox && varProgressLabel && varProgressPct && varProgressBarFill) {
+        if (state.varRunning) {
+          varProgressBox.classList.remove('hidden');
+          const prog = state.varProgress || {};
+          const pct = Number.isFinite(Number(prog.overall_percent))
+            ? Math.max(4, Math.min(100, Number(prog.overall_percent)))
+            : 12;
+          varProgressPct.innerText = `${Math.round(pct)}%`;
+          varProgressBarFill.style.width = `${pct}%`;
+          varProgressLabel.innerText = prog.message || `Running ${stepsPerRun} backprop steps…`;
+        } else {
+          varProgressBox.classList.add('hidden');
+        }
+      }
+
+      // Highlight ONLY the matching 4D-Var regime preset chip (or none when custom)
+      const orderComps = ['static_embedding', 'hindcast_embedding', 'forecast_embedding'];
       const activeComps = new Set(state.varComponents || []);
-      const shifts = (state.varResult && state.varResult.component_shifts) || {};
+      const compsKey = orderComps.filter(c => activeComps.has(c)).join(',');
+      const allThreeKey = 'static_embedding,hindcast_embedding,forecast_embedding';
+      const dynOnlyKey = 'hindcast_embedding,forecast_embedding';
+      document.querySelectorAll('.fc-da-var-preset-chip').forEach(btn => {
+        const preset = btn.getAttribute('data-da-var-preset');
+        let isMatch = false;
+        if (preset === 'balanced') {
+          isMatch = (winVal === 14 && Math.abs(regVal - 0.50) < 0.02 && compsKey === allThreeKey);
+        } else if (preset === 'tight') {
+          isMatch = (winVal === 7 && Math.abs(regVal - 0.05) < 0.02 && compsKey === allThreeKey);
+        } else if (preset === 'dynamic') {
+          isMatch = (winVal === 14 && Math.abs(regVal - 0.35) < 0.02 && compsKey === dynOnlyKey);
+        } else if (preset === 'seasonal') {
+          isMatch = (winVal === 60 && Math.abs(regVal - 0.50) < 0.02 && compsKey === allThreeKey);
+        }
+        btn.className = isMatch
+          ? 'fc-da-var-preset-chip py-1 px-1 rounded border border-[#7c3aed] bg-[#f5f3ff] text-[10px] font-mono font-semibold text-[#6d28d9] transition shadow-2xs'
+          : 'fc-da-var-preset-chip py-1 px-1 rounded border border-[#dadce0] bg-white hover:bg-[#f1f3f4] text-[10px] font-mono text-[#3c4043] transition';
+      });
+
+      const shifts = (activeStepEntry && activeStepEntry.component_shifts)
+        || (state.varResult && state.varResult.component_shifts)
+        || {};
       const defaultCompShort = {
         static_embedding: 'e_stat',
         hindcast_embedding: 'e_hind',
@@ -10540,32 +10716,430 @@
           : 'fc-da-var-loss-chip px-1.5 py-0.5 rounded text-[9.5px] font-mono text-[#5f6368] hover:text-[#202124]';
       });
 
+      // Update Step Scrubber & Iteration Inspector Readout
+      if (varStepBadge) {
+        if (hasHistory) {
+          varStepBadge.innerText = inspectedStep === 0
+            ? `Step 0 / ${maxStep} (Prior)`
+            : `Step ${inspectedStep} / ${maxStep}`;
+        } else {
+          varStepBadge.innerText = 'Step 0 (Prior)';
+        }
+      }
+      if (varStepSlider) {
+        varStepSlider.min = '0';
+        varStepSlider.max = String(maxStep);
+        varStepSlider.value = String(inspectedStep);
+        varStepSlider.disabled = !hasHistory || maxStep <= 0 || Boolean(state.varRunning);
+      }
+      if (varStepPrevBtn) {
+        varStepPrevBtn.disabled = !hasHistory || inspectedStep <= 0 || Boolean(state.varRunning);
+      }
+      if (varStepNextBtn) {
+        varStepNextBtn.disabled = !hasHistory || inspectedStep >= maxStep || Boolean(state.varRunning);
+      }
+      if (varStepReadout) {
+        if (state.varError) {
+          varStepReadout.innerText = `Error: ${state.varError}`;
+        } else if (hasHistory && activeStepEntry) {
+          const jVal = activeStepEntry.total_loss;
+          const oVal = activeStepEntry.obs_loss;
+          const rVal = activeStepEntry.reg_loss;
+          const r0 = state.varResult.prior_window_rmse_cms;
+          const rCur = activeStepEntry.assimilated_window_rmse_cms;
+          const pk = activeStepEntry.peak_discharge_cms;
+          const lossPart = (jVal !== null && jVal !== undefined)
+            ? `J=${Number(jVal).toFixed(4)} (obs ${Number(oVal ?? jVal).toFixed(4)} + reg ${Number(rVal ?? 0).toFixed(4)})`
+            : 'J=—';
+          const rmsePart = (r0 !== null && r0 !== undefined && rCur !== null && rCur !== undefined)
+            ? ` · RMSE ${Number(r0).toFixed(1)}→${Number(rCur).toFixed(1)} m³/s`
+            : '';
+          const pkPart = (pk !== null && pk !== undefined)
+            ? ` · Peak ${Number(pk).toFixed(1)} m³/s`
+            : '';
+          varStepReadout.innerText = `${lossPart}${rmsePart}${pkPart}`;
+        } else if (state.varResult && state.varResult.applied === false) {
+          varStepReadout.innerText = 'Upload overlapping gauge CSV in Step 3 before running 4D-Var.';
+        } else {
+          varStepReadout.innerHTML = 'Adjust parameters and click <strong class="text-[#6d28d9]">Run Steps</strong> to optimize &amp; inspect each iteration.';
+        }
+      }
+
       if (varStatusText && varRmseReadout) {
         if (state.varError) {
           varStatusText.innerText = state.varError;
           varRmseReadout.innerText = 'Error';
-        } else if (state.varResult && state.varResult.applied) {
+        } else if (hasHistory && activeStepEntry) {
           const r0 = state.varResult.prior_window_rmse_cms;
-          const r1 = state.varResult.assimilated_window_rmse_cms;
+          const r1 = activeStepEntry.assimilated_window_rmse_cms;
           const el = state.varResult.elapsed_sec;
           if (r0 !== null && r0 !== undefined && r1 !== null && r1 !== undefined) {
             varStatusText.innerText = `Win RMSE: ${Number(r0).toFixed(1)} → ${Number(r1).toFixed(1)} m³/s`;
           } else {
             varStatusText.innerText = `Window ${state.varResult.window_start_date || ''}..${state.varResult.anchor_date || ''}`;
           }
-          varRmseReadout.innerText = el !== undefined ? `${Number(el).toFixed(2)}s` : 'Applied';
+          varRmseReadout.innerText = `S${inspectedStep}/${maxStep}` + (el !== undefined ? ` · ${Number(el).toFixed(1)}s` : '');
         } else if (state.varResult && state.varResult.applied === false) {
           varStatusText.innerText = 'Upload overlapping gauge CSV first';
           varRmseReadout.innerText = 'No Obs';
         } else {
           varStatusText.innerText = 'Drag window [-W..t₀] & pull gain';
-          varRmseReadout.innerText = '4D-Var Ready';
+          varRmseReadout.innerText = 'Manual Mode';
         }
       }
 
       renderDaCurveCanvas();
       renderDaVariationalCanvas();
+      renderDaVariationalLossChart();
+      initDaVariationalLossCanvasScrubbing();
       if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
+    }
+
+    function renderDaVariationalLossChart() {
+      const canvas = document.getElementById('fcDaVarLossCanvas');
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const cssW = Math.max(220, Math.round(rect.width || 256));
+      const cssH = Math.max(96, Math.round(rect.height || 116));
+      const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+      if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, cssW, cssH);
+
+      const basinId = getActiveForecastBasinId();
+      const state = getBasinDaState(basinId);
+      const hist = (state.varResult && Array.isArray(state.varResult.epoch_history))
+        ? state.varResult.epoch_history
+        : [];
+
+      const padL = 34;
+      const padR = 34;
+      const padT = 16;
+      const padB = 20;
+      const plotW = Math.max(100, cssW - padL - padR);
+      const plotH = Math.max(50, cssH - padT - padB);
+
+      // Subtle background grid
+      ctx.strokeStyle = '#f1f3f4';
+      ctx.lineWidth = 1;
+      [0.0, 0.5, 1.0].forEach(frac => {
+        const y = padT + frac * plotH;
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(padL + plotW, y);
+        ctx.stroke();
+      });
+
+      if (hist.length === 0) {
+        canvas.$lossGeom = null;
+        ctx.fillStyle = '#80868b';
+        ctx.font = '9.5px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('No backprop steps yet — click Run Steps', padL + plotW / 2, padT + plotH / 2);
+        ctx.restore();
+        return;
+      }
+
+      const steps = hist.map((h, idx) => Number(h.step ?? idx));
+      const maxIdx = Math.max(1, hist.length - 1);
+      const xForIdx = (i) => hist.length === 1
+        ? (padL + plotW / 2)
+        : (padL + (i / maxIdx) * plotW);
+
+      const lossVals = [];
+      const rmseVals = [];
+      hist.forEach(h => {
+        if (h.total_loss !== null && h.total_loss !== undefined && Number.isFinite(Number(h.total_loss))) {
+          lossVals.push(Number(h.total_loss));
+        }
+        if (h.obs_loss !== null && h.obs_loss !== undefined && Number.isFinite(Number(h.obs_loss))) {
+          lossVals.push(Number(h.obs_loss));
+        }
+        if (h.window_rmse_cms !== null && h.window_rmse_cms !== undefined && Number.isFinite(Number(h.window_rmse_cms))) {
+          rmseVals.push(Number(h.window_rmse_cms));
+        }
+      });
+
+      const minL = lossVals.length > 0 ? Math.min(...lossVals) : 0;
+      const maxL = lossVals.length > 0 ? Math.max(...lossVals) : 1;
+      const spanL = Math.max(1e-6, maxL - minL);
+      const yForLoss = (v) => padT + (1 - (v - minL) / spanL) * plotH;
+
+      const minR = rmseVals.length > 0 ? Math.min(...rmseVals) : 0;
+      const maxR = rmseVals.length > 0 ? Math.max(...rmseVals) : 1;
+      const spanR = Math.max(1e-4, maxR - minR);
+      const yForRmse = (v) => padT + (1 - (v - minR) / spanR) * plotH;
+
+      const activeEntry = getActiveVariationalStepEntry(state);
+      const inspectedStep = activeEntry ? Number(activeEntry.inspected_step ?? steps[steps.length - 1]) : steps[steps.length - 1];
+      const inspectedIdx = Math.max(0, steps.findIndex(s => s === inspectedStep));
+
+      canvas.$lossGeom = {
+        padL, padR, padT, padB, plotW, plotH, steps, xForIdx
+      };
+
+      // Top legend
+      ctx.font = '8.5px monospace';
+      ctx.textBaseline = 'top';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#6d28d9';
+      ctx.fillText('— J(z)', padL, 2);
+      ctx.fillStyle = '#2563eb';
+      ctx.fillText('-- L_obs', padL + 44, 2);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#b45309';
+      ctx.fillText('— RMSE', padL + plotW, 2);
+
+      // Left axis labels (Loss J)
+      ctx.fillStyle = '#6d28d9';
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(maxL.toFixed(2), padL - 4, padT + 2);
+      ctx.fillText(minL.toFixed(2), padL - 4, padT + plotH - 2);
+
+      // Right axis labels (RMSE)
+      if (rmseVals.length > 0) {
+        ctx.fillStyle = '#b45309';
+        ctx.textAlign = 'left';
+        ctx.fillText(maxR.toFixed(1), padL + plotW + 4, padT + 2);
+        ctx.fillText(minR.toFixed(1), padL + plotW + 4, padT + plotH - 2);
+      }
+
+      // Vertical cursor line at inspected step
+      const xInspect = xForIdx(inspectedIdx);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(124, 58, 237, 0.55)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 2]);
+      ctx.beginPath();
+      ctx.moveTo(xInspect, padT);
+      ctx.lineTo(xInspect, padT + plotH);
+      ctx.stroke();
+      ctx.restore();
+
+      // 1. Obs Loss curve (dashed blue)
+      ctx.save();
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      let startedObs = false;
+      hist.forEach((h, i) => {
+        const v = Number(h.obs_loss);
+        if (!Number.isFinite(v)) return;
+        const px = xForIdx(i);
+        const py = yForLoss(v);
+        if (!startedObs) {
+          ctx.moveTo(px, py);
+          startedObs = true;
+        } else {
+          ctx.lineTo(px, py);
+        }
+      });
+      ctx.stroke();
+      ctx.restore();
+
+      // 2. Window RMSE curve (solid amber)
+      if (rmseVals.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = '#d97706';
+        ctx.lineWidth = 1.7;
+        ctx.beginPath();
+        let startedRmse = false;
+        hist.forEach((h, i) => {
+          const v = Number(h.window_rmse_cms);
+          if (!Number.isFinite(v)) return;
+          const px = xForIdx(i);
+          const py = yForRmse(v);
+          if (!startedRmse) {
+            ctx.moveTo(px, py);
+            startedRmse = true;
+          } else {
+            ctx.lineTo(px, py);
+          }
+        });
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // 3. Total Loss J(z) curve (solid purple) + interactive step dots
+      ctx.save();
+      ctx.strokeStyle = '#7c3aed';
+      ctx.lineWidth = 2.1;
+      ctx.beginPath();
+      let startedTot = false;
+      hist.forEach((h, i) => {
+        const v = Number(h.total_loss);
+        if (!Number.isFinite(v)) return;
+        const px = xForIdx(i);
+        const py = yForLoss(v);
+        if (!startedTot) {
+          ctx.moveTo(px, py);
+          startedTot = true;
+        } else {
+          ctx.lineTo(px, py);
+        }
+      });
+      ctx.stroke();
+
+      hist.forEach((h, i) => {
+        const v = Number(h.total_loss);
+        if (!Number.isFinite(v)) return;
+        const px = xForIdx(i);
+        const py = yForLoss(v);
+        const isSel = (i === inspectedIdx);
+        ctx.beginPath();
+        ctx.arc(px, py, isSel ? 4.8 : 2.6, 0, Math.PI * 2);
+        ctx.fillStyle = isSel ? '#7c3aed' : '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = isSel ? 2.0 : 1.4;
+        ctx.strokeStyle = '#7c3aed';
+        ctx.stroke();
+      });
+      ctx.restore();
+
+      // X-axis step labels
+      ctx.fillStyle = '#5f6368';
+      ctx.font = '8.5px monospace';
+      ctx.textBaseline = 'top';
+      ctx.textAlign = 'left';
+      ctx.fillText('S0', padL, padT + plotH + 4);
+      if (hist.length > 2) {
+        const midIdx = Math.floor((hist.length - 1) / 2);
+        ctx.textAlign = 'center';
+        ctx.fillText(`S${steps[midIdx]}`, xForIdx(midIdx), padT + plotH + 4);
+      }
+      if (hist.length > 1) {
+        ctx.textAlign = 'right';
+        ctx.fillText(`S${steps[steps.length - 1]}`, padL + plotW, padT + plotH + 4);
+      }
+
+      ctx.restore();
+    }
+
+    let fcDaVarProgressPollTimer = null;
+    let fcDaVarLossCanvasBound = false;
+
+    function stopDaVariationalProgressPolling() {
+      if (fcDaVarProgressPollTimer) {
+        clearInterval(fcDaVarProgressPollTimer);
+        fcDaVarProgressPollTimer = null;
+      }
+    }
+
+    function startDaVariationalProgressPolling(basinId) {
+      stopDaVariationalProgressPolling();
+      const pollOnce = async () => {
+        const bid = String(basinId || getActiveForecastBasinId() || '').trim();
+        const st = getBasinDaState(bid);
+        if (!st.varRunning) {
+          stopDaVariationalProgressPolling();
+          return;
+        }
+        try {
+          const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+          const resp = await fetch(`/api/forecast/assimilate-progress?catchment_id=${encodeURIComponent(bid)}&username=${encodeURIComponent(u)}`, {
+            headers: { 'X-User-Profile': u }
+          });
+          if (!resp.ok) return;
+          const prog = await resp.json();
+          if (st.varRunning && prog && typeof prog === 'object') {
+            st.varProgress = prog;
+            updateDaControlsUI();
+          }
+        } catch (err) {
+          // Ignore transient polling errors
+        }
+      };
+      fcDaVarProgressPollTimer = setInterval(pollOnce, 220);
+    }
+
+    async function stopActiveVariationalAssimilation() {
+      const bid = getActiveForecastBasinId();
+      const st = getBasinDaState(bid);
+      try {
+        const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+        await fetch('/api/forecast/cancel-assimilate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Profile': u
+          },
+          body: JSON.stringify({ username: u, catchment_id: bid })
+        });
+      } catch (err) {
+        // Ignore network errors on cancel
+      }
+      if (st.varProgress) {
+        st.varProgress.message = 'Stopping after current backprop step…';
+      }
+      updateDaControlsUI();
+    }
+
+    function selectVariationalInspectedStep(stepNum) {
+      const bid = getActiveForecastBasinId();
+      const st = getBasinDaState(bid);
+      if (!st.varResult || !Array.isArray(st.varResult.epoch_history) || st.varResult.epoch_history.length === 0) {
+        return;
+      }
+      const hist = st.varResult.epoch_history;
+      const minS = Number(hist[0].step ?? 0);
+      const maxS = Number(hist[hist.length - 1].step ?? (hist.length - 1));
+      st.varInspectedStep = Math.max(minS, Math.min(maxS, Math.round(Number(stepNum))));
+      savePersistedForecastsToStorage();
+      updateDaControlsUI();
+      renderHydrographChart(undefined, { animate: false });
+    }
+
+    function initDaVariationalLossCanvasScrubbing() {
+      const canvas = document.getElementById('fcDaVarLossCanvas');
+      if (!canvas || fcDaVarLossCanvasBound) return;
+      fcDaVarLossCanvasBound = true;
+
+      let scrubbing = false;
+      const scrubAtEvent = (evt) => {
+        const g = canvas.$lossGeom;
+        if (!g || !Array.isArray(g.steps) || g.steps.length === 0) return;
+        const rect = canvas.getBoundingClientRect();
+        const cx = (evt.touches && evt.touches[0]) ? evt.touches[0].clientX : evt.clientX;
+        const relX = cx - rect.left;
+        const frac = Math.max(0, Math.min(1, (relX - g.padL) / Math.max(1, g.plotW)));
+        const idx = Math.round(frac * (g.steps.length - 1));
+        const targetStep = g.steps[Math.max(0, Math.min(g.steps.length - 1, idx))];
+        selectVariationalInspectedStep(targetStep);
+      };
+
+      canvas.addEventListener('mousedown', (evt) => {
+        if (evt.button !== 0) return;
+        scrubbing = true;
+        scrubAtEvent(evt);
+      });
+      window.addEventListener('mousemove', (evt) => {
+        if (!scrubbing) return;
+        scrubAtEvent(evt);
+      });
+      window.addEventListener('mouseup', () => {
+        scrubbing = false;
+      });
+      canvas.addEventListener('touchstart', (evt) => {
+        scrubbing = true;
+        scrubAtEvent(evt);
+      }, { passive: true });
+      canvas.addEventListener('touchmove', (evt) => {
+        if (!scrubbing) return;
+        scrubAtEvent(evt);
+      }, { passive: true });
+      window.addEventListener('touchend', () => {
+        scrubbing = false;
+      });
     }
 
     function renderDaVariationalCanvas() {
@@ -10573,7 +11147,7 @@
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       const cssW = Math.max(220, Math.round(rect.width || 256));
-      const cssH = Math.max(120, Math.round(rect.height || 142));
+      const cssH = Math.max(120, Math.round(rect.height || 132));
       const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
       if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
         canvas.width = Math.round(cssW * dpr);
@@ -10726,19 +11300,35 @@
       ctx.restore();
     }
 
-    async function runVariationalAssimilationForBasin(basinId) {
+    async function runVariationalAssimilationForBasin(basinId, opts = {}) {
       const bid = String(basinId || getActiveForecastBasinId() || '').trim();
       if (!bid) return;
       const state = getBasinDaState(bid);
+      if (state.varRunning) return;
       const targetResult = fcModelResultsByBasin[bid];
       const obsSeries = getObservedStreamflowForBasin(bid);
       const issueDate = (targetResult && targetResult.issue_date) || (fcStatusData && fcStatusData.issue_date) || null;
+
+      const continueSession = Boolean(opts && opts.continueSession);
+      const resetSession = opts && opts.reset !== undefined ? Boolean(opts.reset) : !continueSession;
+      const activeEntry = getActiveVariationalStepEntry(state);
+      const fromStep = (continueSession && activeEntry && activeEntry.inspected_step !== undefined)
+        ? Number(activeEntry.inspected_step)
+        : undefined;
 
       state.method = 'variational';
       state.enabled = true;
       state.varRunning = true;
       state.varError = null;
+      state.varProgress = {
+        active: true,
+        overall_percent: 5,
+        message: continueSession
+          ? `Continuing +${state.varEpochs} steps from Step ${fromStep ?? 0}…`
+          : `Starting ${state.varEpochs} backprop steps from Prior…`
+      };
       updateDaControlsUI();
+      startDaVariationalProgressPolling(bid);
 
       try {
         const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
@@ -10759,6 +11349,9 @@
             epochs: state.varEpochs,
             loss: state.varLoss || 'MSE',
             assimilation_components: state.varComponents,
+            continue_session: continueSession,
+            reset: resetSession,
+            from_step: fromStep,
             issue_date: issueDate,
             observed_streamflow: (obsSeries && obsSeries.length > 0) ? obsSeries : undefined
           })
@@ -10768,6 +11361,12 @@
           throw new Error(data.error || data.message || `HTTP ${resp.status}`);
         }
         state.varResult = data;
+        if (Array.isArray(data.epoch_history) && data.epoch_history.length > 0) {
+          const latestStep = data.epoch_history[data.epoch_history.length - 1].step;
+          state.varInspectedStep = Number(data.current_step ?? latestStep ?? 0);
+        } else {
+          state.varInspectedStep = 0;
+        }
         // If baseline had not been run yet in this session, populate baseline from prior_forecast
         if (!fcModelResultsByBasin[bid] && Array.isArray(data.baseline_forecast) && data.baseline_forecast.length > 0) {
           fcModelResultsByBasin[bid] = {
@@ -10786,7 +11385,9 @@
       } catch (err) {
         state.varError = String(err && err.message ? err.message : err);
       } finally {
+        stopDaVariationalProgressPolling();
         state.varRunning = false;
+        state.varProgress = null;
         updateDaControlsUI();
         renderHydrographChart(undefined, { animate: false });
       }
@@ -10814,12 +11415,10 @@
         state.method = 'variational';
         state.enabled = true;
 
-        // Vertical drag sets pullStrength -> regularization_weight, learning_rate, epochs
+        // Vertical drag sets pullStrength -> regularization_weight (preserves manual lr & steps/run)
         const pull = Math.max(0.05, Math.min(0.98, 1 - (pos.y - g.padT) / Math.max(1, g.plotH)));
         const regW = Math.exp(g.logMin + (1 - pull) * (g.logMax - g.logMin));
         state.varRegWeight = Math.round(regW * 100) / 100;
-        state.varLearningRate = Math.round((0.003 + pull * 0.022) * 1000) / 1000;
-        state.varEpochs = Math.round(18 + pull * 27);
 
         // Horizontal drag in the left pre-issue zone sets assimilation_window W in [3..90]
         if (pos.x <= g.xAnchor + 6) {
@@ -10847,7 +11446,8 @@
       const endVarDrag = () => {
         if (dragging) {
           dragging = false;
-          runVariationalAssimilationForBasin(getActiveForecastBasinId());
+          savePersistedForecastsToStorage();
+          updateDaControlsUI();
         }
       };
       window.addEventListener('mouseup', endVarDrag);
@@ -13504,8 +14104,11 @@
         }
       }
 
-      if (daState.enabled && daState.method === 'variational' && daState.varResult && daState.varResult.applied) {
-        const vr = daState.varResult;
+      const activeVarStep = (daState.enabled && daState.method === 'variational')
+        ? getActiveVariationalStepEntry(daState)
+        : null;
+      if (activeVarStep && activeVarStep.applied) {
+        const vr = activeVarStep;
         const varByDate = {};
         const varInWindowByDate = {};
         if (Array.isArray(vr.assimilated_series)) {
@@ -13531,8 +14134,11 @@
         const varPeakStr = (vr.peak_discharge_cms !== null && vr.peak_discharge_cms !== undefined)
           ? ` · Peak ${Number(vr.peak_discharge_cms).toFixed(1)} m³/s`
           : '';
+        const stepTag = (vr.inspected_step !== undefined && vr.max_step !== undefined)
+          ? `Step ${vr.inspected_step}/${vr.max_step}, `
+          : '';
         chartDatasets.push({
-          label: `VARIATIONAL DA (4D-VAR, W=${vr.window_days || daState.varWindowDays}d, λ=${Number(vr.regularization_weight ?? daState.varRegWeight).toFixed(2)})${varPeakStr}`,
+          label: `VARIATIONAL DA (4D-VAR, ${stepTag}W=${vr.window_days || daState.varWindowDays}d, λ=${Number(vr.regularization_weight ?? daState.varRegWeight).toFixed(2)})${varPeakStr}`,
           data: varData,
           $fcRole: 'variational_forecast',
           borderColor: '#7c3aed',
@@ -13565,8 +14171,9 @@
       if (peakBadge) {
         if (hasBaseline && targetResult.peak_discharge_cms !== null && targetResult.peak_discharge_cms !== undefined) {
           const latestSc = enabledScenarios.length > 0 ? enabledScenarios[enabledScenarios.length - 1] : null;
-          if (daState.enabled && daState.method === 'variational' && daState.varResult && daState.varResult.applied && daState.varResult.peak_discharge_cms !== null) {
-            peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s · 4D-Var Peak (W=${daState.varWindowDays}d): ${Number(daState.varResult.peak_discharge_cms).toFixed(2)} m³/s`;
+          if (activeVarStep && activeVarStep.applied && activeVarStep.peak_discharge_cms !== null) {
+            const sLabel = activeVarStep.inspected_step !== undefined ? `S${activeVarStep.inspected_step}` : `W=${daState.varWindowDays}d`;
+            peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s · 4D-Var Peak (${sLabel}): ${Number(activeVarStep.peak_discharge_cms).toFixed(2)} m³/s`;
           } else if (daState.enabled && daState.method === 'nudging' && nudgedMeta && nudgedMeta.applied && nudgedMeta.peakDischargeCms !== null) {
             peakBadge.innerText = `Baseline Peak: ${Number(targetResult.peak_discharge_cms).toFixed(2)} m³/s · Nudged Peak (ρ=${daState.rho.toFixed(2)}): ${Number(nudgedMeta.peakDischargeCms).toFixed(2)} m³/s`;
           } else if (latestSc && latestSc.result && latestSc.result.peak_discharge_cms !== null && latestSc.result.peak_discharge_cms !== undefined) {
@@ -14841,15 +15448,8 @@
           savePersistedForecastsToStorage();
           updateDaControlsUI();
           renderHydrographChart(undefined, { animate: false });
-          if (st.enabled) {
-            if (st.method === 'variational') {
-              const obs = getObservedStreamflowForBasin(bid);
-              if (!st.varResult && !st.varRunning && obs && obs.length > 0) {
-                runVariationalAssimilationForBasin(bid);
-              }
-            } else {
-              syncAssimilateWithBackend(bid);
-            }
+          if (st.enabled && st.method !== 'variational') {
+            syncAssimilateWithBackend(bid);
           }
         });
       }
@@ -14866,12 +15466,7 @@
               savePersistedForecastsToStorage();
               updateDaControlsUI();
               renderHydrographChart(undefined, { animate: false });
-              if (st.method === 'variational') {
-                const obs = getObservedStreamflowForBasin(bid);
-                if (!st.varResult && !st.varRunning && obs && obs.length > 0) {
-                  runVariationalAssimilationForBasin(bid);
-                }
-              } else {
+              if (st.method !== 'variational') {
                 syncAssimilateWithBackend(bid);
               }
             }
@@ -14903,12 +15498,9 @@
           st.userSetEnabled = true;
           savePersistedForecastsToStorage();
           initDaVariationalCanvasDragging();
+          initDaVariationalLossCanvasScrubbing();
           updateDaControlsUI();
           renderHydrographChart(undefined, { animate: false });
-          const obs = getObservedStreamflowForBasin(bid);
-          if (!st.varResult && !st.varRunning && obs && obs.length > 0) {
-            runVariationalAssimilationForBasin(bid);
-          }
         });
       }
 
@@ -14960,11 +15552,31 @@
         });
       });
 
-      // Method 2: Variational Embedding 4D-Var listeners
+      // Method 2: Variational Embedding 4D-Var manual & visual listeners
       const daVarRunBtn = document.getElementById('fcDaVarRunBtn');
       if (daVarRunBtn) {
         daVarRunBtn.addEventListener('click', () => {
-          runVariationalAssimilationForBasin(getActiveForecastBasinId());
+          runVariationalAssimilationForBasin(getActiveForecastBasinId(), {
+            continueSession: false,
+            reset: true
+          });
+        });
+      }
+
+      const daVarContinueBtn = document.getElementById('fcDaVarContinueBtn');
+      if (daVarContinueBtn) {
+        daVarContinueBtn.addEventListener('click', () => {
+          runVariationalAssimilationForBasin(getActiveForecastBasinId(), {
+            continueSession: true,
+            reset: false
+          });
+        });
+      }
+
+      const daVarStopBtn = document.getElementById('fcDaVarStopBtn');
+      if (daVarStopBtn) {
+        daVarStopBtn.addEventListener('click', () => {
+          stopActiveVariationalAssimilation();
         });
       }
 
@@ -14976,9 +15588,11 @@
           st.varWindowDays = 14;
           st.varRegWeight = 0.50;
           st.varLearningRate = 0.01;
-          st.varEpochs = 30;
+          st.varEpochs = 5;
+          st.varEpochsUserSet = true;
           st.varLoss = 'MSE';
           st.varComponents = ['static_embedding', 'hindcast_embedding', 'forecast_embedding'];
+          st.varInspectedStep = null;
           st.varResult = null;
           st.varError = null;
           st.enabled = true;
@@ -14986,9 +15600,101 @@
           savePersistedForecastsToStorage();
           updateDaControlsUI();
           renderHydrographChart(undefined, { animate: false });
-          const obs = getObservedStreamflowForBasin(bid);
-          if (obs && obs.length > 0) {
-            runVariationalAssimilationForBasin(bid);
+        });
+      }
+
+      const daVarStepsInput = document.getElementById('fcDaVarStepsInput');
+      if (daVarStepsInput) {
+        const applyStepsInput = () => {
+          const bid = getActiveForecastBasinId();
+          const st = getBasinDaState(bid);
+          const v = Number(daVarStepsInput.value);
+          if (Number.isFinite(v) && v >= 1) {
+            st.varEpochs = Math.max(1, Math.min(200, Math.round(v)));
+            st.varEpochsUserSet = true;
+            savePersistedForecastsToStorage();
+            updateDaControlsUI();
+          }
+        };
+        daVarStepsInput.addEventListener('input', applyStepsInput);
+        daVarStepsInput.addEventListener('change', applyStepsInput);
+      }
+
+      const daVarLrInput = document.getElementById('fcDaVarLrInput');
+      if (daVarLrInput) {
+        const applyLrInput = () => {
+          const bid = getActiveForecastBasinId();
+          const st = getBasinDaState(bid);
+          const v = Number(daVarLrInput.value);
+          if (Number.isFinite(v) && v > 0) {
+            st.varLearningRate = Math.max(0.00001, Math.min(1.0, v));
+            savePersistedForecastsToStorage();
+            updateDaControlsUI();
+          }
+        };
+        daVarLrInput.addEventListener('input', applyLrInput);
+        daVarLrInput.addEventListener('change', applyLrInput);
+      }
+
+      const daVarWindowInput = document.getElementById('fcDaVarWindowInput');
+      if (daVarWindowInput) {
+        const applyWinInput = () => {
+          const bid = getActiveForecastBasinId();
+          const st = getBasinDaState(bid);
+          const v = Number(daVarWindowInput.value);
+          if (Number.isFinite(v) && v >= 1) {
+            st.varWindowDays = Math.max(1, Math.min(180, Math.round(v)));
+            savePersistedForecastsToStorage();
+            updateDaControlsUI();
+          }
+        };
+        daVarWindowInput.addEventListener('input', applyWinInput);
+        daVarWindowInput.addEventListener('change', applyWinInput);
+      }
+
+      const daVarRegInput = document.getElementById('fcDaVarRegInput');
+      if (daVarRegInput) {
+        const applyRegInput = () => {
+          const bid = getActiveForecastBasinId();
+          const st = getBasinDaState(bid);
+          const v = Number(daVarRegInput.value);
+          if (Number.isFinite(v) && v >= 0) {
+            st.varRegWeight = Math.max(0, Math.min(100, v));
+            savePersistedForecastsToStorage();
+            updateDaControlsUI();
+          }
+        };
+        daVarRegInput.addEventListener('input', applyRegInput);
+        daVarRegInput.addEventListener('change', applyRegInput);
+      }
+
+      const daVarStepSlider = document.getElementById('fcDaVarStepSlider');
+      if (daVarStepSlider) {
+        daVarStepSlider.addEventListener('input', () => {
+          selectVariationalInspectedStep(Number(daVarStepSlider.value));
+        });
+      }
+
+      const daVarStepPrevBtn = document.getElementById('fcDaVarStepPrevBtn');
+      if (daVarStepPrevBtn) {
+        daVarStepPrevBtn.addEventListener('click', () => {
+          const bid = getActiveForecastBasinId();
+          const st = getBasinDaState(bid);
+          const cur = getActiveVariationalStepEntry(st);
+          if (cur && cur.inspected_step !== undefined) {
+            selectVariationalInspectedStep(Number(cur.inspected_step) - 1);
+          }
+        });
+      }
+
+      const daVarStepNextBtn = document.getElementById('fcDaVarStepNextBtn');
+      if (daVarStepNextBtn) {
+        daVarStepNextBtn.addEventListener('click', () => {
+          const bid = getActiveForecastBasinId();
+          const st = getBasinDaState(bid);
+          const cur = getActiveVariationalStepEntry(st);
+          if (cur && cur.inspected_step !== undefined) {
+            selectVariationalInspectedStep(Number(cur.inspected_step) + 1);
           }
         });
       }
@@ -15007,8 +15713,8 @@
           }
           const order = ['static_embedding', 'hindcast_embedding', 'forecast_embedding'];
           st.varComponents = order.filter(c => set.has(c));
+          savePersistedForecastsToStorage();
           updateDaControlsUI();
-          runVariationalAssimilationForBasin(bid);
         });
       });
 
@@ -15019,8 +15725,8 @@
           const lossVal = chip.getAttribute('data-da-var-loss');
           if (lossVal) {
             st.varLoss = lossVal;
+            savePersistedForecastsToStorage();
             updateDaControlsUI();
-            runVariationalAssimilationForBasin(bid);
           }
         });
       });
@@ -15034,29 +15740,25 @@
             st.varWindowDays = 7;
             st.varRegWeight = 0.05;
             st.varLearningRate = 0.02;
-            st.varEpochs = 40;
             st.varComponents = ['static_embedding', 'hindcast_embedding', 'forecast_embedding'];
           } else if (preset === 'dynamic') {
             st.varWindowDays = 14;
             st.varRegWeight = 0.35;
             st.varLearningRate = 0.012;
-            st.varEpochs = 30;
             st.varComponents = ['hindcast_embedding', 'forecast_embedding'];
           } else if (preset === 'seasonal') {
             st.varWindowDays = 60;
             st.varRegWeight = 0.50;
             st.varLearningRate = 0.01;
-            st.varEpochs = 35;
             st.varComponents = ['static_embedding', 'hindcast_embedding', 'forecast_embedding'];
           } else {
             st.varWindowDays = 14;
             st.varRegWeight = 0.50;
             st.varLearningRate = 0.01;
-            st.varEpochs = 30;
             st.varComponents = ['static_embedding', 'hindcast_embedding', 'forecast_embedding'];
           }
+          savePersistedForecastsToStorage();
           updateDaControlsUI();
-          runVariationalAssimilationForBasin(bid);
         });
       });
 

@@ -67,10 +67,12 @@ from frontend.profile_manager import (
 )
 from frontend.realtime_forecast_service import (
     cancel_realtime_fetch,
+    cancel_variational_assimilation,
     clear_realtime_streamflow_csv,
     fetch_realtime_for_basin,
     get_realtime_fetch_progress,
     get_realtime_run_progress,
+    get_variational_assimilation_progress,
     inspect_realtime_stores_for_basin,
     is_valid_issue_date_str,
     run_data_assimilation_for_basin,
@@ -512,6 +514,9 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/forecast/status': self._get_forecast_status,
             '/api/forecast/fetch-progress': self._get_forecast_fetch_progress,
             '/api/forecast/run-progress': self._get_forecast_run_progress,
+            '/api/forecast/assimilate-progress': (
+                self._get_forecast_assimilate_progress
+            ),
             '/api/finetune/models': self._get_finetune_models,
             '/api/finetune/status': self._get_finetune_status,
             '/api/archives': self._get_archives,
@@ -1224,6 +1229,22 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         )
         self._send_json(payload)
 
+    def _get_forecast_assimilate_progress(
+        self,
+        query: dict[str, list[str]],
+    ) -> None:
+        user = self._get_request_username()
+        catchment_id = (
+            query.get('catchment_id', [''])[0].strip()
+            or query.get('basin_id', [''])[0].strip()
+            or None
+        )
+        payload = get_variational_assimilation_progress(
+            username=user,
+            catchment_id=catchment_id,
+        )
+        self._send_json(payload)
+
     def _get_archives(self, _query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
         pm = get_profile_manager()
@@ -1544,6 +1565,9 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 self._post_forecast_clear_streamflow
             ),
             '/api/forecast/assimilate': self._post_forecast_assimilate,
+            '/api/forecast/cancel-assimilate': (
+                self._post_forecast_cancel_assimilate
+            ),
             '/api/finetune/upload-csv': self._post_finetune_upload_csv,
             '/api/finetune/clear-data': self._post_finetune_clear_data,
             '/api/finetune/run': self._post_finetune_run,
@@ -2783,6 +2807,9 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         assimilation_components = data.get('assimilation_components')
         clip_norm = _parse_float(data.get('clip_gradient_norm'))
         tolerance = _parse_float(data.get('early_stopping_tolerance'))
+        continue_session = bool(data.get('continue_session'))
+        reset = bool(data.get('reset'))
+        from_step = _parse_int(data.get('from_step'))
         model_id = str(
             data.get('model_id') or 'google-floodhub-settings-110-epochs'
         ).strip()
@@ -2833,13 +2860,14 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                     0.5 if reg_weight is None else reg_weight
                 ),
                 initial_learning_rate=0.01 if lr is None else lr,
-                epochs=30 if epochs is None else epochs,
+                epochs=5 if epochs is None else epochs,
                 loss=loss,
                 assimilation_components=assimilation_components,
                 clip_gradient_norm=1.0 if clip_norm is None else clip_norm,
-                early_stopping_tolerance=(
-                    0.05 if tolerance is None else tolerance
-                ),
+                early_stopping_tolerance=tolerance,
+                continue_session=continue_session,
+                reset=reset,
+                from_step=from_step,
                 model_id=model_id,
                 model_run_dir=model_run_dir,
                 precip_overrides=(
@@ -2861,6 +2889,11 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         except (ValueError, FileNotFoundError) as exc:
             self._send_error(str(exc), status=400)
             return
+        self._send_json(payload)
+
+    def _post_forecast_cancel_assimilate(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        payload = cancel_variational_assimilation(username=user)
         self._send_json(payload)
 
     def _resolve_finetune_basin_id(
