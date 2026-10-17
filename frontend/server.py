@@ -44,10 +44,12 @@ from frontend.delineator import HydroDelineator
 from frontend.dem_tile_server import DemTileServer
 from frontend.finetune_service import (
     clear_finetune_data,
+    get_finetune_run_progress,
     get_finetune_workspace_status,
     list_finetune_models,
     reset_finetune_session,
     run_finetune_epochs,
+    save_finetune_checkpoint_to_inventory,
     upload_finetune_csv,
 )
 from frontend.forecast_zarr import ForecastZarrExtractor
@@ -69,12 +71,14 @@ from frontend.realtime_forecast_service import (
     cancel_realtime_fetch,
     cancel_variational_assimilation,
     clear_realtime_streamflow_csv,
+    evict_forecast_model_cache,
     fetch_realtime_for_basin,
     get_realtime_fetch_progress,
     get_realtime_run_progress,
     get_variational_assimilation_progress,
     inspect_realtime_stores_for_basin,
     is_valid_issue_date_str,
+    list_forecast_models,
     run_data_assimilation_for_basin,
     run_hydrological_model_for_basin,
     upload_realtime_streamflow_csv,
@@ -526,6 +530,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             ),
             '/api/finetune/models': self._get_finetune_models,
             '/api/finetune/status': self._get_finetune_status,
+            '/api/finetune/run-progress': self._get_finetune_run_progress,
             '/api/archives': self._get_archives,
             '/api/attributes/csv': self._get_attributes_csv,
             '/api/archives/caravan_hydroatlas_attributes.csv': (
@@ -1052,7 +1057,12 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
 
     def _get_finetune_models(self, _query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
-        self._send_json({'models': list_finetune_models(user)})
+        self._send_json(
+            {
+                'models': list_finetune_models(user),
+                'forecast_models': list_forecast_models(user),
+            }
+        )
 
     def _get_finetune_status(self, query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
@@ -1086,6 +1096,16 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             self._send_error(str(exc), status=400)
             return
         self._send_json(payload)
+
+    def _get_finetune_run_progress(self, query: dict[str, list[str]]) -> None:
+        user = self._get_request_username()
+        raw_basin_id = (
+            query.get('basin_id', [''])[0]
+            or query.get('catchment_id', [''])[0]
+            or ''
+        )
+        basin_id = self._resolve_finetune_basin_id(user, raw_basin_id)
+        self._send_json(get_finetune_run_progress(user, basin_id))
 
     def _get_forecast_status(self, query: dict[str, list[str]]) -> None:
         user = self._get_request_username()
@@ -1149,6 +1169,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                     'username': user,
                     'basin_id': None,
                     'model_id': model_id,
+                    'available_models': list_forecast_models(user),
                     'selected_catchment_ids': [],
                     'catchments_status': {},
                     'issue_date': None,
@@ -1591,6 +1612,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             '/api/finetune/clear-data': self._post_finetune_clear_data,
             '/api/finetune/run': self._post_finetune_run,
             '/api/finetune/reset': self._post_finetune_reset,
+            '/api/finetune/save-model': self._post_finetune_save_model,
             '/api/weather/refresh': self._post_weather_refresh,
             '/api/weather/sync': self._post_weather_refresh,
             '/api/jobs/cancel': self._post_jobs_cancel,
@@ -3094,11 +3116,15 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         model_id = str(
             data.get('model_id') or 'google-floodhub-settings-110-epochs'
         ).strip()
+        split_ratio = _parse_float(data.get('split_ratio'))
+        forcing_mode = str(data.get('forcing_mode') or '').strip() or None
         try:
             payload = reset_finetune_session(
                 username=user,
                 basin_id=basin_id,
                 model_id=model_id,
+                split_ratio=split_ratio,
+                forcing_mode=forcing_mode,
             )
         except (
             ValueError,
@@ -3110,6 +3136,58 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             self._send_error(str(exc), status=400)
             return
         self._send_json(payload)
+
+    def _post_finetune_save_model(self, data: dict[str, Any]) -> None:
+        user = self._get_request_username(data)
+        basin_id = self._resolve_finetune_basin_id(
+            user, data.get('basin_id') or data.get('catchment_id')
+        )
+        if not basin_id:
+            self._send_error(
+                'No clipped watershed found in account. Please delineate or '
+                'upload a catchment polygon first.',
+                status=400,
+            )
+            return
+        model_id = str(
+            data.get('model_id') or 'google-floodhub-settings-110-epochs'
+        ).strip()
+        epoch = _parse_int(data.get('epoch'))
+        if epoch is None or epoch < 0:
+            self._send_error(
+                'A valid non-negative integer epoch is required.',
+                status=400,
+            )
+            return
+        model_name = str(
+            data.get('model_name') or data.get('name') or ''
+        ).strip()
+        if not model_name:
+            self._send_error(
+                'Please provide a non-empty name for the saved model.',
+                status=400,
+            )
+            return
+        try:
+            result = save_finetune_checkpoint_to_inventory(
+                username=user,
+                basin_id=basin_id,
+                model_id=model_id,
+                epoch=epoch,
+                model_name=model_name,
+            )
+            evict_forecast_model_cache()
+            result['forecast_models'] = list_forecast_models(user)
+        except (
+            ValueError,
+            FileNotFoundError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+        ) as exc:
+            self._send_error(str(exc), status=400)
+            return
+        self._send_json(result)
 
     def _post_weather_refresh(self, data: dict[str, Any]) -> None:
         req_model = data.get('model')

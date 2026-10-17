@@ -32,7 +32,11 @@ import torch
 import xarray as xr
 
 import frontend.tests as _isolated_profiles
-from frontend import finetune_service, profile_manager
+from frontend import (
+    finetune_service,
+    profile_manager,
+    realtime_forecast_service,
+)
 from frontend.config import STATIC_DIR
 from frontend.server import EarthkitHydroHandler
 from model.datautils.scaler import Scaler
@@ -317,6 +321,7 @@ class FineTuningDOMTests(unittest.TestCase):
             'ftGlobalForcingCard',
             'ftGlobalArchiveBadge',
             'ftGlobalCoverageSummaryText',
+            'ftGlobalProductBadgesList',
             'ftExtractGlobalForcingBtn',
             'ftCancelGlobalExtractBtn',
             'ftGlobalExtractProgressBox',
@@ -348,10 +353,21 @@ class FineTuningDOMTests(unittest.TestCase):
             'ftRunEpochsBtn',
             'ftResetSessionBtn',
             'ftEpochScrubber',
+            'ftSaveEpochModelBtn',
+            'ftSaveModelPromptBox',
+            'ftSaveModelNameInput',
+            'ftConfirmSaveModelBtn',
+            'ftCancelSaveModelBtn',
+            'ftGlobalProductsStatusStrip',
+            'ftForcingLegendContainer',
+            'ftForcingLegendGrid',
+            'ftInputForcingCanvas',
             'ftHydrographCanvas',
             'ftHydrographLoadingOverlay',
             'ftHydrographLoadingTitle',
             'ftHydrographLoadingSubtitle',
+            'ftHydrographLoadingEpochCounter',
+            'ftHydrographLoadingBarFill',
             'ftLossCurveCanvas',
             'ftEpochHistoryTableBody',
         ]
@@ -719,6 +735,12 @@ class FineTuneServiceUnitTests(unittest.TestCase):
             assert (
                 ws['global_forcing_status']['fully_covers_streamflow'] is True
             )
+            assert (
+                'HRES'
+                in ws['global_forcing_status']['available_global_products']
+            )
+            assert ws['timeseries']['input_products']['HRES']['has_precip']
+            assert ws['timeseries']['input_products']['HRES']['has_temp']
             assert len(ws['timeseries']['dates']) == len(dates)
             assert np.allclose(ws['timeseries']['precip'], 5.0, atol=1e-2)
             assert np.allclose(
@@ -739,6 +761,14 @@ class FineTuneServiceUnitTests(unittest.TestCase):
             assert step_global['session']['current_epoch'] == 1
             assert len(step_global['session']['epoch_history']) == (
                 EXPECTED_STEP1_EPOCH
+            )
+            prog = finetune_service.get_finetune_run_progress(
+                TEST_USER, TEST_BASIN
+            )
+            assert (prog['status'], prog['step_epoch'], prog['percent']) == (
+                'completed',
+                1,
+                pytest.approx(100.0),
             )
         finally:
             shutil.rmtree(rt_dyn_dir, ignore_errors=True)
@@ -865,6 +895,69 @@ class FineTuneWorkflowIntegrationTests(unittest.TestCase):
         assert reset_res['session']['epoch_history'] == []
         assert reset_res['data_ready']
 
+    def test_save_finetune_checkpoint_to_inventory(self) -> None:
+        """Verify saving an epoch checkpoint adds it to both inventories."""
+        _upload_all_test_csvs(self._USER, TEST_BASIN, num_days=75)
+        finetune_service.run_finetune_epochs(
+            username=self._USER,
+            basin_id=TEST_BASIN,
+            model_id=SYNTH_MODEL_ID,
+            epochs=2,
+            learning_rate=5e-3,
+            loss='MSE',
+            learning_rate_strategy='ConstantLR',
+            batch_size=16,
+            finetune_modules=['head', 'shared_embeddings_fc.local_forcing'],
+            split_ratio=0.70,
+        )
+        pm = profile_manager.get_profile_manager()
+        ft_ckpt_2 = (
+            pm.get_profile_dir(self._USER)
+            / 'finetune_workspace'
+            / TEST_BASIN
+            / SYNTH_MODEL_ID
+            / 'run'
+            / 'model_epoch002.pt'
+        )
+        ft_sd = torch.load(ft_ckpt_2, map_location='cpu', weights_only=True)
+
+        saved_info = finetune_service.save_finetune_checkpoint_to_inventory(
+            username=self._USER,
+            basin_id=TEST_BASIN,
+            model_id=SYNTH_MODEL_ID,
+            epoch=2,
+            model_name='My Saved Basin Model',
+        )
+        assert saved_info['status'] == 'saved'
+        saved_id = str(saved_info['saved_model_id'])
+        assert saved_id == 'user_my_saved_basin_model'
+
+        ft_models = finetune_service.list_finetune_models(self._USER)
+        ft_saved = next(
+            (m for m in ft_models if m['model_id'] == saved_id), None
+        )
+        assert ft_saved is not None
+        assert ft_saved['label'] == 'My Saved Basin Model (Epoch 2)'
+
+        fc_models = realtime_forecast_service.list_forecast_models(self._USER)
+        fc_saved = next((m for m in fc_models if m['id'] == saved_id), None)
+        assert fc_saved is not None
+        assert fc_saved['label'] == 'My Saved Basin Model (Epoch 2)'
+        assert fc_saved['available'] is True
+
+        bundle = realtime_forecast_service._load_forecast_model_bundle(  # noqa: SLF001
+            model_id=saved_id,
+            username=self._USER,
+        )
+        assert 'model_epoch002.pt' in bundle['checkpoint_path']
+        saved_head_w = bundle['model'].state_dict()['head.net.0.weight']
+        torch.testing.assert_close(
+            saved_head_w.cpu(),
+            ft_sd['head.net.0.weight'].cpu(),
+            rtol=0.0,
+            atol=0.0,
+        )
+
 
 @pytest.mark.integration
 class FineTuningHTTPServerTests(unittest.TestCase):
@@ -966,6 +1059,41 @@ class FineTuningHTTPServerTests(unittest.TestCase):
         assert status == HTTP_OK
         assert run_res['session']['current_epoch'] == 1
         assert len(run_res['session']['epoch_history']) == EXPECTED_STEP1_EPOCH
+
+        st_prog, prog_res = self._request(
+            'GET',
+            f'/api/finetune/run-progress?basin_id={TEST_BASIN}',
+        )
+        assert st_prog == HTTP_OK
+        assert prog_res['status'] == 'completed'
+        assert prog_res['step_epoch'] == 1
+        assert prog_res['total_step_epochs'] == 1
+        assert prog_res['percent'] == pytest.approx(100.0)
+
+        st_save, save_res = self._request(
+            'POST',
+            '/api/finetune/save-model',
+            {
+                'basin_id': TEST_BASIN,
+                'model_id': SYNTH_MODEL_ID,
+                'epoch': 1,
+                'model_name': 'Narraguagus Tuned Ep 1',
+            },
+        )
+        assert st_save == HTTP_OK
+        assert save_res['status'] == 'saved'
+        assert save_res['saved_model_id'] == 'user_narraguagus_tuned_ep_1'
+        ft_ids = [m['model_id'] for m in save_res.get('models', [])]
+        assert 'user_narraguagus_tuned_ep_1' in ft_ids
+        fc_ids = [m['id'] for m in save_res.get('forecast_models', [])]
+        assert 'user_narraguagus_tuned_ep_1' in fc_ids
+        fc_entry = next(
+            m
+            for m in save_res['forecast_models']
+            if m['id'] == 'user_narraguagus_tuned_ep_1'
+        )
+        assert fc_entry['label'] == 'Narraguagus Tuned Ep 1 (Epoch 1)'
+        assert fc_entry['available'] is True
 
         status, reset_res = self._request(
             'POST',

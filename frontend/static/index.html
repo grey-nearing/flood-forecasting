@@ -1511,6 +1511,7 @@
             <p id="ftGlobalCoverageSummaryText" class="text-[10px] text-[#5f6368] leading-snug">
               Select a catchment and upload target streamflow to verify historical global forcing coverage.
             </p>
+            <div id="ftGlobalProductBadgesList" class="flex flex-wrap items-center gap-1 pt-0.5"></div>
             <div class="flex items-center gap-1.5">
               <button type="button" id="ftExtractGlobalForcingBtn" class="flex-1 bg-[#e8f0fe] hover:bg-[#d2e3fc] border border-[#1a73e8]/40 text-[#174ea6] text-[11px] font-semibold py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
                 <i data-lucide="cloud-download" class="w-3.5 h-3.5"></i>
@@ -1753,7 +1754,7 @@
           </div>
 
           <!-- Epoch Inspector Scrubber (Active when epochs > 0) -->
-          <div id="ftEpochInspectorBar" class="flex items-center gap-2 bg-[#f8f9fa] border border-[#dadce0] rounded-xl px-3 py-2">
+          <div id="ftEpochInspectorBar" class="flex flex-wrap items-center gap-2 bg-[#f8f9fa] border border-[#dadce0] rounded-xl px-3 py-2">
             <span class="text-[10px] font-bold uppercase tracking-wider text-[#5f6368]">Inspect Epoch:</span>
             <button type="button" id="ftPrevEpochBtn" class="p-1 rounded hover:bg-[#e8eaed] text-[#3c4043] disabled:opacity-40" title="Previous Epoch">
               <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i>
@@ -1763,6 +1764,39 @@
               <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
             </button>
             <span id="ftInspectedEpochBadge" class="text-xs font-mono font-bold text-[#1a73e8] min-w-[68px] text-center">Epoch 0</span>
+            <div class="h-4 w-px bg-[#dadce0] mx-0.5"></div>
+            <button type="button" id="ftSaveEpochModelBtn" class="bg-[#1e8e3e] hover:bg-[#137333] disabled:bg-[#e8eaed] disabled:text-[#80868b] disabled:cursor-not-allowed text-white text-[11px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition shadow-2xs" title="Save the currently inspected epoch checkpoint to your Model Inventory for Forecasting &amp; Data Assimilation">
+              <i data-lucide="bookmark-plus" class="w-3.5 h-3.5"></i>
+              <span id="ftSaveEpochModelBtnText">Save Epoch 0 to Inventory</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Save Epoch Checkpoint to Model Inventory Prompt Banner -->
+        <div id="ftSaveModelPromptBox" class="hidden bg-[#e6f4ea]/90 border border-[#ceead6] rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="w-8 h-8 rounded-lg bg-[#1e8e3e] text-white flex items-center justify-center flex-shrink-0">
+              <i data-lucide="bookmark-plus" class="w-4 h-4"></i>
+            </div>
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-[#137333] flex items-center gap-1.5">
+                <span>Save Checkpoint to Model Inventory</span>
+                <span id="ftSaveModelEpochTag" class="text-[10px] font-mono bg-white text-[#137333] border border-[#ceead6] px-2 py-0.5 rounded-full">Epoch 0</span>
+              </div>
+              <p class="text-[11px] text-[#3c4043]">
+                Name this model checkpoint. It will be added to the Model Inventory on both the <b>Forecasting &amp; Data Assimilation</b> screen and the <b>Fine-Tuning</b> screen.
+              </p>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 flex-1 sm:flex-initial justify-end">
+            <input id="ftSaveModelNameInput" type="text" maxlength="120" placeholder="Enter custom model name (e.g. Basin Tuned Ep 3)" class="w-full sm:w-72 bg-white border border-[#1e8e3e] rounded-lg px-3 py-1.5 text-xs text-[#202124] font-medium focus:outline-none focus:ring-2 focus:ring-[#1e8e3e]" />
+            <button type="button" id="ftConfirmSaveModelBtn" class="bg-[#1e8e3e] hover:bg-[#137333] disabled:opacity-50 text-white text-xs font-semibold px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-2xs">
+              <i data-lucide="check" class="w-3.5 h-3.5"></i>
+              <span id="ftConfirmSaveModelBtnText">Save to Inventory</span>
+            </button>
+            <button type="button" id="ftCancelSaveModelBtn" class="bg-white hover:bg-[#f1f3f4] text-[#3c4043] border border-[#dadce0] text-xs font-medium px-2.5 py-1.5 rounded-lg transition">
+              Cancel
+            </button>
           </div>
         </div>
 
@@ -1790,16 +1824,41 @@
           </div>
         </div>
 
-        <!-- Primary Chart: Hydrograph + Hanging Hyetograph with Visual Train/Validation Partition -->
-        <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-3 min-h-[380px]">
+        <!-- Top Chart: Meteorological Input Data Visualization (Identical controls to Forecasting inputs graph) -->
+        <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-2.5 min-h-[290px]">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-xs font-bold text-[#202124] flex items-center gap-2">
+                <i data-lucide="cloud-rain" class="w-4 h-4 text-[#0284c7]"></i>
+                Meteorological Input Data Visualization (All Global &amp; Local Forcing Products)
+              </h3>
+              <p id="ftInputForcingSubtitle" class="text-[11px] text-[#5f6368]">
+                Historical &amp; forecast precipitation bars (mm/day, left axis) and 2m temperature lines (&deg;C, right axis) across the full fine-tuning period. Toggle products below to inspect on graph (does not alter model inputs).
+              </p>
+            </div>
+            <div id="ftGlobalProductsStatusStrip" class="flex flex-wrap items-center gap-1 text-[10px] font-mono"></div>
+          </div>
+
+          <!-- Grouped 4-Role Interactive Forcing Legend (Identical to Forecasting Page Inputs Graph) -->
+          <div id="ftForcingLegendContainer" class="hidden bg-[#f8f9fa] border border-[#e8eaed] rounded-lg p-2">
+            <div id="ftForcingLegendGrid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2"></div>
+          </div>
+
+          <div class="flex-1 relative min-h-[210px]">
+            <canvas id="ftInputForcingCanvas"></canvas>
+          </div>
+        </div>
+
+        <!-- Primary Chart: Basin Streamflow Hydrograph with Visual Train/Validation Partition -->
+        <div class="bg-white border border-[#dadce0] p-4 rounded-xl flex flex-col space-y-3 min-h-[360px]">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 class="text-xs font-bold text-[#202124] flex items-center gap-2">
                 <i data-lucide="activity" class="w-4 h-4 text-[#1e8e3e]"></i>
-                Basin Hydrograph &amp; Hanging Hyetograph (Train vs. Validation Partition)
+                Basin Streamflow Hydrograph (Train vs. Validation Partition)
               </h3>
               <p id="ftHydroChartSubtitle" class="text-[11px] text-[#5f6368]">
-                Inverted top bars show local precipitation (mm/day); bottom curves compare Observed vs. Baseline (Epoch 0) vs. Fine-Tuned Streamflow (mm/day).
+                Curves compare Observed Streamflow vs. Pretrained Base Model (Epoch 0) vs. Fine-Tuned Streamflow across the Training and Validation partitions.
               </p>
             </div>
             <div class="flex flex-wrap items-center gap-2.5 text-[11px] font-mono">
@@ -1818,7 +1877,7 @@
               </span>
             </div>
           </div>
-          <div class="flex-1 relative min-h-[320px]">
+          <div class="flex-1 relative min-h-[300px]">
             <canvas id="ftHydrographCanvas"></canvas>
             <!-- Basin / Model / Epoch Loading Overlay -->
             <div id="ftHydrographLoadingOverlay" class="hidden absolute inset-0 z-20 bg-white/85 backdrop-blur-[2px] rounded-lg flex flex-col items-center justify-center p-6 transition-opacity duration-150">
@@ -1833,8 +1892,11 @@
                 <div id="ftHydrographLoadingSubtitle" class="text-[11px] text-[#5f6368] leading-snug">
                   Inspecting global forcing archive, uploaded CSVs, and running Epoch 0 baseline evaluation
                 </div>
-                <div class="w-48 bg-[#e8f0fe] h-1.5 rounded-full overflow-hidden mt-1">
-                  <div class="bg-[#1a73e8] h-full w-1/2 rounded-full animate-pulse"></div>
+                <div id="ftHydrographLoadingEpochCounter" class="hidden text-[11px] font-mono font-bold text-[#174ea6] bg-[#e8f0fe] border border-[#d2e3fc] px-2.5 py-0.5 rounded-full">
+                  Epoch 0 / 5 (0%)
+                </div>
+                <div class="w-56 bg-[#e8f0fe] h-2 rounded-full overflow-hidden mt-1">
+                  <div id="ftHydrographLoadingBarFill" class="bg-[#1a73e8] h-full w-1/2 rounded-full animate-pulse transition-all duration-200"></div>
                 </div>
               </div>
             </div>
@@ -1864,7 +1926,7 @@
                 <i data-lucide="list-ordered" class="w-4 h-4 text-[#7627bb]"></i>
                 Epoch Checkpoint History &amp; Active Tuned Components
               </h3>
-              <span class="text-[10px] text-[#5f6368]">Click row to view hydrograph</span>
+              <span class="text-[10px] text-[#5f6368]">Click row to inspect or save model checkpoint</span>
             </div>
             <div class="flex-1 overflow-y-auto max-h-[215px] custom-scrollbar border border-[#dadce0] rounded-lg">
               <table class="w-full text-left border-collapse text-[11px] font-mono">
@@ -1877,11 +1939,12 @@
                     <th class="py-1.5 px-2">Val KGE</th>
                     <th class="py-1.5 px-2">LR</th>
                     <th class="py-1.5 px-2">Tuned Modules</th>
+                    <th class="py-1.5 px-2 text-right">Save</th>
                   </tr>
                 </thead>
                 <tbody id="ftEpochHistoryTableBody" class="divide-y divide-[#e8eaed] text-[#202124]">
                   <tr>
-                    <td colspan="7" class="py-6 text-center text-[#5f6368] font-sans">No epochs run yet. Upload CSVs or click "Load Sample Basin CSVs", then click "Run Epochs &amp; Pause".</td>
+                    <td colspan="8" class="py-6 text-center text-[#5f6368] font-sans">No epochs run yet. Upload CSVs or click "Load Sample Basin CSVs", then click "Run Epochs &amp; Pause".</td>
                   </tr>
                 </tbody>
               </table>
@@ -19015,19 +19078,23 @@
     // Interactive Per-Basin Fine-Tuning Controller
     // =========================================================
     let ftWorkspaceState = null;
+    let ftInputForcingChart = null;
     let ftHydroChart = null;
     let ftLossChart = null;
     let ftInspectedEpochIndex = 0;
     let ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'head']);
+    const ftHiddenForcingLegendKeys = new Set();
     let ftIsRunning = false;
     let ftIsLoadingWorkspace = false;
     let ftRefreshRequestSeq = 0;
 
-    function setFtWorkspaceLoading(active, { title = '', subtitle = '', badgeText = '' } = {}) {
+    function setFtWorkspaceLoading(active, { title = '', subtitle = '', badgeText = '', percent = null, epochText = '' } = {}) {
       ftIsLoadingWorkspace = Boolean(active);
       const overlay = document.getElementById('ftHydrographLoadingOverlay');
       const titleEl = document.getElementById('ftHydrographLoadingTitle');
       const subEl = document.getElementById('ftHydrographLoadingSubtitle');
+      const epochCounterEl = document.getElementById('ftHydrographLoadingEpochCounter');
+      const barFillEl = document.getElementById('ftHydrographLoadingBarFill');
       const badge = document.getElementById('ftBasinLoadingBadge');
       const badgeTxt = document.getElementById('ftBasinLoadingBadgeText');
       const statePill = document.getElementById('ftSessionStatePill');
@@ -19041,6 +19108,24 @@
       if (active && subEl && subtitle) {
         subEl.textContent = subtitle;
       }
+      if (epochCounterEl) {
+        if (active && epochText) {
+          epochCounterEl.textContent = epochText;
+          epochCounterEl.classList.remove('hidden');
+        } else {
+          epochCounterEl.classList.add('hidden');
+        }
+      }
+      if (barFillEl) {
+        if (active && percent !== null && Number.isFinite(Number(percent))) {
+          const clampedPct = Math.max(4, Math.min(100, Number(percent)));
+          barFillEl.style.width = clampedPct + '%';
+          barFillEl.classList.remove('animate-pulse', 'w-1/2');
+        } else {
+          barFillEl.style.width = '50%';
+          barFillEl.classList.add('animate-pulse');
+        }
+      }
       if (badge) {
         badge.classList.toggle('hidden', !active);
       }
@@ -19048,13 +19133,16 @@
         badgeTxt.textContent = badgeText;
       }
       if (active && statePill && title) {
-        statePill.textContent = title;
+        statePill.textContent = epochText ? `${badgeText || 'Training'} · ${epochText}` : title;
         statePill.className = 'text-[10px] bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] px-2.5 py-0.5 rounded-full font-mono font-semibold animate-pulse';
       }
       if (typeof syncAllTabActivityIndicators === 'function') {
         syncAllTabActivityIndicators();
       }
     }
+
+    const FT_SHARED_LEFT_AXIS_WIDTH = 68;
+    const FT_SHARED_RIGHT_AXIS_WIDTH = 58;
 
     const ftPartitionOverlayPlugin = {
       id: 'ftPartitionOverlay',
@@ -19078,6 +19166,7 @@
         const trainLeftX = trainStartIdx >= 0 ? xScale.getPixelForValue(trainStartIdx) : chartArea.left;
         const splitX = xScale.getPixelForValue(splitIdx);
         const valRightX = valEndIdx >= 0 ? xScale.getPixelForValue(valEndIdx) : chartArea.right;
+        chart.$ftSplitPixelX = splitX;
 
         // Shaded Training Partition
         if (splitX > trainLeftX) {
@@ -19092,7 +19181,7 @@
           ctx.fillRect(valStartX, chartArea.top, valRightX - valStartX, chartArea.bottom - chartArea.top);
         }
 
-        // Vertical Split Boundary Line
+        // Vertical Split Boundary Line + Grab Handle Pill
         ctx.beginPath();
         ctx.setLineDash([5, 4]);
         ctx.lineWidth = 2;
@@ -19101,6 +19190,20 @@
         ctx.lineTo(splitX, chartArea.bottom);
         ctx.stroke();
         ctx.setLineDash([]);
+
+        const midY = (chartArea.top + chartArea.bottom) / 2;
+        ctx.fillStyle = '#d93025';
+        ctx.beginPath();
+        ctx.roundRect(splitX - 4, midY - 12, 8, 24, 3);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(splitX - 1.5, midY - 6);
+        ctx.lineTo(splitX - 1.5, midY + 6);
+        ctx.moveTo(splitX + 1.5, midY - 6);
+        ctx.lineTo(splitX + 1.5, midY + 6);
+        ctx.stroke();
 
         // Partition Labels
         ctx.font = 'bold 10px Inter, sans-serif';
@@ -19508,6 +19611,9 @@
       const prevBtn = document.getElementById('ftPrevEpochBtn');
       const nextBtn = document.getElementById('ftNextEpochBtn');
       const inspBadge = document.getElementById('ftInspectedEpochBadge');
+      const saveEpBtn = document.getElementById('ftSaveEpochModelBtn');
+      const saveEpBtnTxt = document.getElementById('ftSaveEpochModelBtnText');
+      const inspectedEpochNum = inspectedEntry ? Number(inspectedEntry.epoch) : 0;
       if (scrubber) {
         scrubber.max = String(Math.max(0, history.length - 1));
         scrubber.value = String(ftInspectedEpochIndex);
@@ -19517,6 +19623,16 @@
       if (nextBtn) nextBtn.disabled = ftInspectedEpochIndex >= history.length - 1;
       if (inspBadge) {
         inspBadge.textContent = inspectedEntry ? ('Epoch ' + inspectedEntry.epoch) : 'Epoch 0 (Base)';
+      }
+      if (saveEpBtn) {
+        saveEpBtn.disabled = !getActiveFtBasinId() || ftIsRunning;
+      }
+      if (saveEpBtnTxt) {
+        saveEpBtnTxt.textContent = `Save Epoch ${inspectedEpochNum} to Inventory`;
+      }
+      const saveEpochTag = document.getElementById('ftSaveModelEpochTag');
+      if (saveEpochTag) {
+        saveEpochTag.textContent = `Epoch ${inspectedEpochNum}`;
       }
 
       // KPI Strip
@@ -19532,40 +19648,17 @@
       if (kpiValNse) kpiValNse.textContent = kpiEntry ? fmtVal(kpiEntry.val_nse, 3) : '—';
       if (kpiValKge) kpiValKge.textContent = kpiEntry ? fmtVal(kpiEntry.val_kge, 3) : '—';
 
-      // 1. Render Hydrograph + Hanging Hyetograph Chart
+      // 0. Render Top Meteorological Input Data Visualization Chart & Interactive 4-Group Legend
+      renderFtInputForcingChart(ts, part);
+
+      // 1. Render Basin Streamflow Hydrograph Chart (Clean Streamflow Curves + Train/Validation Partition)
       const hydroCanvas = document.getElementById('ftHydrographCanvas');
       if (hydroCanvas && typeof Chart !== 'undefined') {
         const dates = ts ? ts.dates : [];
-        const forcingMode = ftWorkspaceState.forcing_mode || 'global_only';
         const areaKm2 = getFtActiveAreaKm2();
         const reqUnits = getFtDisplayUnits();
         const useCms = reqUnits === 'm3/s' && areaKm2 && areaKm2 > 0;
         const unitLabel = useCms ? 'm³/s' : 'mm/day';
-
-        const precipPrimary = ts ? (ts.precip || []) : [];
-        const precipGlobal = ts && Array.isArray(ts.precip_global) ? ts.precip_global : null;
-        const precipLocal = ts && Array.isArray(ts.precip_local) ? ts.precip_local : null;
-        const globalProdName = (ts && ts.precip_global_product) ? ts.precip_global_product : 'Global';
-
-        let bar1Data = precipPrimary;
-        let bar1Label = forcingMode === 'local_only'
-          ? 'Uploaded Local Precip (mm/day)'
-          : `Global Precip (${globalProdName}, mm/day)`;
-        let bar2Data = [];
-        let showBar2 = false;
-
-        if (forcingMode === 'global_and_local' && precipGlobal && precipLocal) {
-          bar1Data = precipGlobal;
-          bar1Label = `Global Precip (${globalProdName}, mm/day)`;
-          bar2Data = precipLocal;
-          showBar2 = true;
-        } else if (forcingMode === 'global_only' && precipGlobal) {
-          bar1Data = precipGlobal;
-          bar1Label = `Global Precip (${globalProdName}, mm/day)`;
-        } else if (forcingMode === 'local_only' && precipLocal) {
-          bar1Data = precipLocal;
-          bar1Label = 'Uploaded Local Precip (mm/day)';
-        }
 
         const rawObs = ts ? (ts.streamflow_obs || []) : [];
         const rawBaseSim = baselineEntry
@@ -19579,17 +19672,11 @@
         const baseSim = convertFtFlowSeries(rawBaseSim, reqUnits, areaKm2);
         const activeSim = convertFtFlowSeries(rawActiveSim, reqUnits, areaKm2);
 
-        const maxPrecip1 = (bar1Data || []).reduce((m, v) => (v !== null && v > m ? v : m), 10);
-        const maxPrecip2 = (bar2Data || []).reduce((m, v) => (v !== null && v > m ? v : m), 0);
-        const maxPrecip = Math.max(maxPrecip1, maxPrecip2, 10);
         const maxFlow = [...obsFlow, ...baseSim, ...activeSim].reduce((m, v) => (v !== null && v > m ? v : m), 5);
 
         const subEl = document.getElementById('ftHydroChartSubtitle');
         if (subEl) {
-          const pDesc = showBar2
-            ? `global (${globalProdName}) and uploaded local precipitation (mm/day)`
-            : (forcingMode === 'local_only' ? 'uploaded local precipitation (mm/day)' : `global precipitation (${globalProdName}, mm/day)`);
-          subEl.textContent = `Inverted top bars show ${pDesc}; bottom curves compare Observed vs. Pretrained Base Model (Epoch 0) vs. Fine-Tuned Streamflow (${unitLabel}).`;
+          subEl.textContent = `Comparing Observed Streamflow vs. Pretrained Base Model (Epoch 0) vs. Fine-Tuned Streamflow (${unitLabel}) across Training and Validation partitions.`;
         }
 
         if (!ftHydroChart) {
@@ -19599,31 +19686,6 @@
             data: {
               labels: dates,
               datasets: [
-                {
-                  type: 'bar',
-                  label: bar1Label,
-                  data: bar1Data,
-                  yAxisID: 'yPrecip',
-                  backgroundColor: 'rgba(26, 115, 232, 0.38)',
-                  borderColor: 'rgba(26, 115, 232, 0.65)',
-                  borderWidth: 1,
-                  barPercentage: 1.0,
-                  categoryPercentage: 1.0,
-                  order: 5,
-                },
-                {
-                  type: 'bar',
-                  label: 'Uploaded Local Precip (mm/day)',
-                  data: bar2Data,
-                  hidden: !showBar2,
-                  yAxisID: 'yPrecip',
-                  backgroundColor: 'rgba(118, 39, 187, 0.38)',
-                  borderColor: 'rgba(118, 39, 187, 0.70)',
-                  borderWidth: 1,
-                  barPercentage: 1.0,
-                  categoryPercentage: 1.0,
-                  order: 4,
-                },
                 {
                   type: 'line',
                   label: `Observed Streamflow (${unitLabel})`,
@@ -19668,6 +19730,7 @@
             options: {
               responsive: true,
               maintainAspectRatio: false,
+              layout: { padding: { left: 0, right: 0 } },
               interaction: { mode: 'index', intersect: false },
               plugins: {
                 legend: {
@@ -19684,7 +19747,10 @@
               },
               scales: {
                 x: {
-                  ticks: { maxTicksLimit: 10, font: { size: 10 } },
+                  offset: true,
+                  min: 0,
+                  max: Math.max(0, dates.length - 1),
+                  ticks: { maxTicksLimit: 10, maxRotation: 0, autoSkip: true, font: { size: 10 } },
                   grid: { color: 'rgba(0,0,0,0.04)' },
                 },
                 yFlow: {
@@ -19694,40 +19760,47 @@
                   beginAtZero: true,
                   suggestedMax: Math.max(5, maxFlow * 1.25),
                   grid: { color: 'rgba(0,0,0,0.06)' },
+                  afterFit(scale) {
+                    scale.width = FT_SHARED_LEFT_AXIS_WIDTH;
+                  },
                 },
-                yPrecip: {
+                yRightAlign: {
                   type: 'linear',
                   position: 'right',
-                  reverse: true,
                   min: 0,
-                  suggestedMax: Math.max(25, maxPrecip * 3.0),
-                  title: { display: true, text: 'Hanging Hyetograph: Precip (mm/day)', font: { size: 10 } },
-                  grid: { drawOnChartArea: false },
+                  max: 1,
+                  grid: { drawOnChartArea: false, drawTicks: false },
+                  border: { display: false },
+                  ticks: { display: false },
+                  afterFit(scale) {
+                    scale.width = FT_SHARED_RIGHT_AXIS_WIDTH;
+                  },
                 },
               },
             },
           });
         } else {
           ftHydroChart.data.labels = dates;
-          ftHydroChart.data.datasets[0].data = bar1Data;
-          ftHydroChart.data.datasets[0].label = bar1Label;
-          ftHydroChart.data.datasets[1].data = bar2Data;
-          ftHydroChart.data.datasets[1].hidden = !showBar2;
-          ftHydroChart.data.datasets[2].data = obsFlow;
-          ftHydroChart.data.datasets[2].label = `Observed Streamflow (${unitLabel})`;
-          ftHydroChart.data.datasets[3].data = baseSim;
-          ftHydroChart.data.datasets[3].label = `Pretrained Base Model (Epoch 0, ${unitLabel})`;
-          ftHydroChart.data.datasets[4].data = activeSim;
-          ftHydroChart.data.datasets[4].hidden = !(inspectedEntry && inspectedEntry.epoch > 0);
-          ftHydroChart.data.datasets[4].label = (inspectedEntry && inspectedEntry.epoch > 0)
+          ftHydroChart.options.scales.x.min = 0;
+          ftHydroChart.options.scales.x.max = Math.max(0, dates.length - 1);
+          ftHydroChart.data.datasets[0].data = obsFlow;
+          ftHydroChart.data.datasets[0].label = `Observed Streamflow (${unitLabel})`;
+          ftHydroChart.data.datasets[1].data = baseSim;
+          ftHydroChart.data.datasets[1].label = `Pretrained Base Model (Epoch 0, ${unitLabel})`;
+          const showFineTuned = Boolean(inspectedEntry && inspectedEntry.epoch > 0);
+          ftHydroChart.data.datasets[2].data = activeSim;
+          ftHydroChart.data.datasets[2].hidden = !showFineTuned;
+          if (typeof ftHydroChart.setDatasetVisibility === 'function') {
+            ftHydroChart.setDatasetVisibility(2, showFineTuned);
+          }
+          ftHydroChart.data.datasets[2].label = showFineTuned
             ? `Fine-Tuned (Epoch ${inspectedEntry.epoch}, ${unitLabel})`
             : `Fine-Tuned Streamflow (${unitLabel})`;
           ftHydroChart.options.scales.yFlow.title.text = `Streamflow (${unitLabel})`;
           ftHydroChart.options.scales.yFlow.suggestedMax = Math.max(5, maxFlow * 1.25);
-          ftHydroChart.options.scales.yPrecip.suggestedMax = Math.max(25, maxPrecip * 3.0);
         }
         ftHydroChart.$ftPartition = part;
-        ftHydroChart.update();
+        ftHydroChart.update('none');
       }
 
       // 2. Render Epoch-by-Epoch Loss & NSE Curve
@@ -19829,7 +19902,7 @@
         if (!history.length) {
           const tr = document.createElement('tr');
           const td = document.createElement('td');
-          td.colSpan = 7;
+          td.colSpan = 8;
           td.className = 'py-6 text-center text-[#5f6368] font-sans';
           td.textContent = 'No epochs run yet. Upload local basin CSVs, then click "Run Epochs & Pause".';
           tr.appendChild(td);
@@ -19855,21 +19928,570 @@
             ];
             cells.forEach((txt, cIdx) => {
               const td = document.createElement('td');
-              td.className = 'py-1.5 px-2 ' + (cIdx === 6 ? 'truncate max-w-[150px]' : '');
+              td.className = 'py-1.5 px-2 ' + (cIdx === 6 ? 'truncate max-w-[130px]' : '');
               td.textContent = txt;
               if (cIdx === 6) td.title = txt;
               tr.appendChild(td);
             });
+
+            const actionTd = document.createElement('td');
+            actionTd.className = 'py-1 px-2 text-right whitespace-nowrap';
+            const saveRowBtn = document.createElement('button');
+            saveRowBtn.type = 'button';
+            saveRowBtn.dataset.saveEpoch = String(entry.epoch);
+            saveRowBtn.className = 'text-[10px] font-sans font-semibold bg-[#e6f4ea] hover:bg-[#1e8e3e] text-[#137333] hover:text-white border border-[#ceead6] px-2 py-0.5 rounded transition';
+            saveRowBtn.textContent = 'Save Model';
+            saveRowBtn.title = `Save Epoch ${entry.epoch} checkpoint to Model Inventory`;
+            saveRowBtn.addEventListener('click', (evt) => {
+              evt.stopPropagation();
+              ftInspectedEpochIndex = origIdx;
+              renderFtChartsAndKpis();
+              openFtSaveModelPrompt(entry.epoch);
+            });
+            actionTd.appendChild(saveRowBtn);
+            tr.appendChild(actionTd);
+
             tbody.appendChild(tr);
           });
         }
       }
     }
 
+    function renderFtForcingLegend() {
+      const container = document.getElementById('ftForcingLegendContainer');
+      const gridEl = document.getElementById('ftForcingLegendGrid');
+      if (!container || !gridEl) return;
+
+      const datasets = (ftInputForcingChart && ftInputForcingChart.data && Array.isArray(ftInputForcingChart.data.datasets))
+        ? ftInputForcingChart.data.datasets
+        : [];
+      if (datasets.length === 0) {
+        container.classList.add('hidden');
+        gridEl.innerHTML = '';
+        return;
+      }
+
+      const groupDefs = [
+        {
+          role: 'hindcast_precip',
+          title: 'Precip Hindcast',
+          windowBadge: '< t₀',
+          unitBadge: 'Bars · mm/d',
+          accentClass: 'border-l-4 border-l-[#0891b2]',
+          headerColor: 'text-[#0e7490]',
+          swatchKind: 'bar',
+        },
+        {
+          role: 'forecast_precip',
+          title: 'Precip Forecast',
+          windowBadge: '≥ t₀',
+          unitBadge: 'Bars · mm/d',
+          accentClass: 'border-l-4 border-l-[#1d4ed8]',
+          headerColor: 'text-[#1e3a8a]',
+          swatchKind: 'bar',
+        },
+        {
+          role: 'hindcast_temp',
+          title: '2m Temp Hindcast',
+          windowBadge: '< t₀',
+          unitBadge: 'Solid · °C',
+          accentClass: 'border-l-4 border-l-[#d97706]',
+          headerColor: 'text-[#b45309]',
+          swatchKind: 'solid_line',
+        },
+        {
+          role: 'forecast_temp',
+          title: '2m Temp Forecast',
+          windowBadge: '≥ t₀',
+          unitBadge: 'Dashed · °C',
+          accentClass: 'border-l-4 border-l-[#dc2626]',
+          headerColor: 'text-[#b91c1c]',
+          swatchKind: 'dashed_line',
+        },
+      ];
+
+      gridEl.innerHTML = '';
+      let activeGroupCount = 0;
+
+      groupDefs.forEach(group => {
+        const items = [];
+        datasets.forEach((ds, dsIdx) => {
+          if (ds && ds.$fcRole === group.role) {
+            items.push({ ds, dsIdx });
+          }
+        });
+        if (items.length === 0) return;
+        activeGroupCount++;
+
+        const card = document.createElement('div');
+        card.className = `bg-white rounded-lg border border-[#e0e3e7] ${group.accentClass} px-2.5 py-1.5 flex flex-col gap-1.5`;
+        card.dataset.legendRole = group.role;
+
+        const isDsVisible = (ds) => {
+          const lKey = `${ds.$fcRole}:${ds.$productKey}`;
+          if (ftHiddenForcingLegendKeys.has(lKey) || ds.hidden === true) return false;
+          return true;
+        };
+
+        const allVisible = items.every(it => isDsVisible(it.ds));
+
+        const header = document.createElement('div');
+        header.className = 'flex items-center justify-between gap-1.5 border-b border-[#f1f3f4] pb-1';
+
+        const titleWrap = document.createElement('div');
+        titleWrap.className = 'flex items-center gap-1 min-w-0';
+        titleWrap.innerHTML = `
+          <span class="text-[10px] font-bold uppercase tracking-wider ${group.headerColor} truncate">${group.title}</span>
+          <span class="text-[9px] font-mono font-semibold px-1 py-0.2 rounded bg-[#f1f3f4] text-[#3c4043] flex-shrink-0">${group.windowBadge}</span>
+        `;
+
+        const rightWrap = document.createElement('div');
+        rightWrap.className = 'flex items-center gap-1.5 flex-shrink-0';
+
+        const unitSpan = document.createElement('span');
+        unitSpan.className = 'text-[9px] font-mono text-[#5f6368]';
+        unitSpan.innerText = group.unitBadge;
+        rightWrap.appendChild(unitSpan);
+
+        if (items.length > 1) {
+          const toggleGroupBtn = document.createElement('button');
+          toggleGroupBtn.type = 'button';
+          toggleGroupBtn.className = 'text-[9px] font-semibold text-[#1a73e8] hover:underline px-1 rounded hover:bg-[#e8f0fe]/60 transition';
+          toggleGroupBtn.innerText = allVisible ? 'Hide All' : 'Show All';
+          toggleGroupBtn.title = allVisible
+            ? `Hide all ${group.title} series`
+            : `Show all ${group.title} series`;
+          toggleGroupBtn.addEventListener('click', () => {
+            const targetVisible = !allVisible;
+            items.forEach(({ ds, dsIdx }) => {
+              ds.hidden = !targetVisible;
+              if (typeof ftInputForcingChart.setDatasetVisibility === 'function') {
+                ftInputForcingChart.setDatasetVisibility(dsIdx, targetVisible);
+              }
+              const lKey = `${ds.$fcRole}:${ds.$productKey}`;
+              if (targetVisible) {
+                ftHiddenForcingLegendKeys.delete(lKey);
+              } else {
+                ftHiddenForcingLegendKeys.add(lKey);
+              }
+            });
+            ftInputForcingChart.update('none');
+            renderFtForcingLegend();
+          });
+          rightWrap.appendChild(toggleGroupBtn);
+        }
+
+        header.appendChild(titleWrap);
+        header.appendChild(rightWrap);
+        card.appendChild(header);
+
+        const chipsWrap = document.createElement('div');
+        chipsWrap.className = 'flex flex-wrap items-center gap-1';
+
+        items.forEach(({ ds, dsIdx }) => {
+          const isVisible = isDsVisible(ds);
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.dataset.datasetIndex = String(dsIdx);
+          chip.title = `${ds.label} — Click to ${isVisible ? 'hide' : 'show'} on graph (does not alter model)`;
+          chip.className = `inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[10px] font-mono transition cursor-pointer ${
+            isVisible
+              ? 'bg-[#f8f9fa] hover:bg-[#eef2f6] text-[#202124] border-[#dadce0] font-semibold shadow-2xs'
+              : 'bg-[#f8f9fa]/50 hover:bg-[#f1f3f4] text-[#9aa0a6] border-[#e8eaed] opacity-55 line-through'
+          }`;
+
+          const swatchBg = ds.$swatchBg || '#0891b2';
+          const swatchBorder = ds.$swatchBorder || '#0e7490';
+          let swatchHtml = '';
+          if (group.swatchKind === 'bar') {
+            swatchHtml = `<span class="inline-block w-3 h-2.5 rounded-[2px] flex-shrink-0" style="background:${swatchBg};border:1.5px solid ${swatchBorder};"></span>`;
+          } else if (group.swatchKind === 'solid_line') {
+            swatchHtml = `
+              <svg width="18" height="10" viewBox="0 0 18 10" class="flex-shrink-0" aria-hidden="true">
+                <line x1="1" y1="5" x2="17" y2="5" stroke="${swatchBorder}" stroke-width="2.2" stroke-linecap="round" />
+                <circle cx="9" cy="5" r="2.6" fill="${swatchBorder}" />
+              </svg>
+            `;
+          } else {
+            swatchHtml = `
+              <svg width="18" height="10" viewBox="0 0 18 10" class="flex-shrink-0" aria-hidden="true">
+                <line x1="1" y1="5" x2="17" y2="5" stroke="${swatchBorder}" stroke-width="2.2" stroke-dasharray="3,2" stroke-linecap="round" />
+                <circle cx="9" cy="5" r="2.6" fill="#ffffff" stroke="${swatchBorder}" stroke-width="1.8" />
+              </svg>
+            `;
+          }
+
+          const shortText = ds.$shortLabel || ds.$productKey || ds.label;
+          const labelSpan = document.createElement('span');
+          labelSpan.className = 'truncate max-w-[130px]';
+          labelSpan.textContent = shortText;
+
+          chip.innerHTML = swatchHtml;
+          chip.appendChild(labelSpan);
+
+          chip.addEventListener('click', () => {
+            const nextVisible = !isDsVisible(ds);
+            ds.hidden = !nextVisible;
+            if (typeof ftInputForcingChart.setDatasetVisibility === 'function') {
+              ftInputForcingChart.setDatasetVisibility(dsIdx, nextVisible);
+            }
+            const lKey = `${ds.$fcRole}:${ds.$productKey}`;
+            if (nextVisible) {
+              ftHiddenForcingLegendKeys.delete(lKey);
+            } else {
+              ftHiddenForcingLegendKeys.add(lKey);
+            }
+            ftInputForcingChart.update('none');
+            renderFtForcingLegend();
+          });
+
+          chipsWrap.appendChild(chip);
+        });
+
+        card.appendChild(chipsWrap);
+        gridEl.appendChild(card);
+      });
+
+      if (activeGroupCount > 0) {
+        container.classList.remove('hidden');
+      } else {
+        container.classList.add('hidden');
+      }
+    }
+
+    function renderFtInputForcingChart(ts, part) {
+      const inputCanvas = document.getElementById('ftInputForcingCanvas');
+      if (!inputCanvas || typeof Chart === 'undefined') return;
+
+      const dates = ts && Array.isArray(ts.dates) ? ts.dates : [];
+      const inputProducts = (ts && ts.input_products && typeof ts.input_products === 'object')
+        ? Object.assign({}, ts.input_products)
+        : {};
+
+      // Ensure fallback series if input_products is empty but legacy ts.precip/ts.temp exist
+      if (Object.keys(inputProducts).length === 0 && ts && dates.length > 0) {
+        const gProd = (ts.precip_global_product || 'HRES').toUpperCase();
+        if (Array.isArray(ts.precip_global) && ts.precip_global.some(v => v !== null)) {
+          inputProducts[gProd] = {
+            product: gProd,
+            label: gProd,
+            role: 'forecast',
+            has_precip: true,
+            has_temp: Array.isArray(ts.temp) && ts.temp.some(v => v !== null),
+            precip: ts.precip_global,
+            temp: ts.temp || [],
+          };
+        }
+        if (Array.isArray(ts.precip_local) && ts.precip_local.some(v => v !== null)) {
+          inputProducts.LOCAL_CSV = {
+            product: 'LOCAL_CSV',
+            label: 'LOCAL CSV',
+            role: 'hindcast',
+            has_precip: true,
+            has_temp: Array.isArray(ts.temp) && ts.temp.some(v => v !== null),
+            precip: ts.precip_local,
+            temp: ts.temp || [],
+          };
+        } else if (Object.keys(inputProducts).length === 0 && Array.isArray(ts.precip) && ts.precip.some(v => v !== null)) {
+          inputProducts.LOCAL_CSV = {
+            product: 'LOCAL_CSV',
+            label: 'LOCAL CSV',
+            role: 'hindcast',
+            has_precip: true,
+            has_temp: Array.isArray(ts.temp) && ts.temp.some(v => v !== null),
+            precip: ts.precip,
+            temp: ts.temp || [],
+          };
+        }
+      }
+
+      const prodKeys = Object.keys(inputProducts);
+      const hindcastKeys = prodKeys.filter(k => (inputProducts[k] && inputProducts[k].role === 'hindcast'));
+      const forecastKeys = prodKeys.filter(k => (inputProducts[k] && inputProducts[k].role !== 'hindcast'));
+
+      const datasets = [];
+      let maxPrecip = 10;
+      let minTemp = 0;
+      let maxTemp = 25;
+      let hasTempValues = false;
+
+      const trackPrecipRange = (arr) => {
+        (arr || []).forEach(v => {
+          if (v !== null && v !== undefined && Number.isFinite(v) && v > maxPrecip) {
+            maxPrecip = v;
+          }
+        });
+      };
+      const trackTempRange = (arr) => {
+        (arr || []).forEach(v => {
+          if (v !== null && v !== undefined && Number.isFinite(v)) {
+            if (!hasTempValues) {
+              minTemp = v;
+              maxTemp = v;
+              hasTempValues = true;
+            } else {
+              if (v < minTemp) minTemp = v;
+              if (v > maxTemp) maxTemp = v;
+            }
+          }
+        });
+      };
+
+      // 1. HINDCAST PRECIPITATION BARS
+      let addedHindcastPrecip = false;
+      hindcastKeys.forEach((hcKey, idx) => {
+        const item = inputProducts[hcKey];
+        if (!item || !item.has_precip || !Array.isArray(item.precip)) return;
+        if (!item.precip.some(v => v !== null && v !== undefined)) return;
+        addedHindcastPrecip = true;
+        trackPrecipRange(item.precip);
+        const pal = hcKey === 'LOCAL_CSV'
+          ? { bg: 'rgba(124, 58, 237, 0.72)', border: '#6d28d9' }
+          : (FC_NOWCAST_PRECIP_PALETTE[hcKey] || {
+              bg: idx % 2 === 0 ? 'rgba(8, 145, 178, 0.75)' : 'rgba(13, 148, 136, 0.75)',
+              border: idx % 2 === 0 ? '#0e7490' : '#0f766e',
+            });
+        const lKey = `hindcast_precip:${hcKey}`;
+        datasets.push({
+          type: 'bar',
+          label: `HINDCAST (< t₀): ${hcKey} Precip (mm/d)`,
+          data: item.precip,
+          $fcRole: 'hindcast_precip',
+          $productKey: hcKey,
+          $shortLabel: hcKey === 'LOCAL_CSV' ? 'LOCAL CSV' : hcKey,
+          $swatchBg: pal.bg,
+          $swatchBorder: pal.border,
+          $varKind: 'precip',
+          hidden: ftHiddenForcingLegendKeys.has(lKey),
+          yAxisID: 'yPrecip',
+          backgroundColor: pal.bg,
+          borderColor: pal.border,
+          borderWidth: 1,
+          borderRadius: 2,
+          order: 3,
+        });
+      });
+
+      // Fallback hindcast precip from forecast product Day-1 spin-up if no direct hindcast precip exists
+      if (!addedHindcastPrecip) {
+        forecastKeys.forEach((fcKey) => {
+          const item = inputProducts[fcKey];
+          if (!item || !item.has_precip || !Array.isArray(item.precip)) return;
+          if (!item.precip.some(v => v !== null && v !== undefined)) return;
+          trackPrecipRange(item.precip);
+          const lKey = `hindcast_precip:${fcKey}`;
+          datasets.push({
+            type: 'bar',
+            label: `HINDCAST (< t₀): ${fcKey} Day-1 Precip (mm/d)`,
+            data: item.precip,
+            $fcRole: 'hindcast_precip',
+            $productKey: fcKey,
+            $shortLabel: `${fcKey} (Day-1)`,
+            $swatchBg: 'rgba(8, 145, 178, 0.72)',
+            $swatchBorder: '#0e7490',
+            $varKind: 'precip',
+            hidden: ftHiddenForcingLegendKeys.has(lKey),
+            yAxisID: 'yPrecip',
+            backgroundColor: 'rgba(8, 145, 178, 0.72)',
+            borderColor: '#0e7490',
+            borderWidth: 1,
+            borderRadius: 2,
+            order: 3,
+          });
+        });
+      }
+
+      // 2. FORECAST PRECIPITATION BARS
+      forecastKeys.forEach((fcKey, idx) => {
+        const item = inputProducts[fcKey];
+        if (!item || !item.has_precip || !Array.isArray(item.precip)) return;
+        if (!item.precip.some(v => v !== null && v !== undefined)) return;
+        trackPrecipRange(item.precip);
+        const pal = FC_FORECAST_PRECIP_PALETTE[fcKey] || {
+          bg: idx % 2 === 0 ? 'rgba(29, 78, 216, 0.90)' : 'rgba(109, 40, 217, 0.86)',
+          border: idx % 2 === 0 ? '#1e3a8a' : '#4c1d95',
+        };
+        const lKey = `forecast_precip:${fcKey}`;
+        datasets.push({
+          type: 'bar',
+          label: `FORECAST (≥ t₀): ${fcKey} Precip (mm/d)`,
+          data: item.precip,
+          $fcRole: 'forecast_precip',
+          $productKey: fcKey,
+          $shortLabel: fcKey,
+          $swatchBg: pal.bg,
+          $swatchBorder: pal.border,
+          $varKind: 'precip',
+          hidden: ftHiddenForcingLegendKeys.has(lKey),
+          yAxisID: 'yPrecip',
+          backgroundColor: pal.bg,
+          borderColor: pal.border,
+          borderWidth: 1,
+          borderRadius: 2,
+          order: 2,
+        });
+      });
+
+      // 3. HINDCAST 2m TEMPERATURE LINES
+      let hcTempColorIdx = 0;
+      hindcastKeys.forEach((hcKey) => {
+        const item = inputProducts[hcKey];
+        if (!item || !item.has_temp || !Array.isArray(item.temp)) return;
+        if (!item.temp.some(v => v !== null && v !== undefined)) return;
+        trackTempRange(item.temp);
+        const strokeColor = FC_HINDCAST_TEMP_COLORS[hcTempColorIdx++ % FC_HINDCAST_TEMP_COLORS.length];
+        const lKey = `hindcast_temp:${hcKey}`;
+        datasets.push({
+          type: 'line',
+          label: `HINDCAST (< t₀): ${hcKey} 2m Temp (°C)`,
+          data: item.temp,
+          $fcRole: 'hindcast_temp',
+          $productKey: hcKey,
+          $shortLabel: hcKey === 'LOCAL_CSV' ? 'LOCAL CSV' : hcKey,
+          $swatchBg: 'rgba(217, 119, 6, 0.12)',
+          $swatchBorder: strokeColor,
+          $varKind: 'temp',
+          hidden: ftHiddenForcingLegendKeys.has(lKey),
+          yAxisID: 'yTemp',
+          borderColor: strokeColor,
+          backgroundColor: 'rgba(217, 119, 6, 0.12)',
+          borderWidth: 2.0,
+          pointRadius: 0,
+          tension: 0.25,
+          spanGaps: false,
+          order: 1,
+        });
+      });
+
+      forecastKeys.forEach((fcKey) => {
+        const item = inputProducts[fcKey];
+        if (!item || !item.has_temp || !Array.isArray(item.temp)) return;
+        if (!item.temp.some(v => v !== null && v !== undefined)) return;
+        trackTempRange(item.temp);
+        const strokeColor = FC_HINDCAST_TEMP_COLORS[hcTempColorIdx++ % FC_HINDCAST_TEMP_COLORS.length];
+        const lKey = `hindcast_temp:${fcKey}`;
+        datasets.push({
+          type: 'line',
+          label: `HINDCAST (< t₀): ${fcKey} Day-1 2m Temp (°C)`,
+          data: item.temp,
+          $fcRole: 'hindcast_temp',
+          $productKey: fcKey,
+          $shortLabel: `${fcKey} (Day-1)`,
+          $swatchBg: 'rgba(217, 119, 6, 0.12)',
+          $swatchBorder: strokeColor,
+          $varKind: 'temp',
+          hidden: ftHiddenForcingLegendKeys.has(lKey),
+          yAxisID: 'yTemp',
+          borderColor: strokeColor,
+          backgroundColor: 'rgba(217, 119, 6, 0.12)',
+          borderWidth: 2.0,
+          pointRadius: 0,
+          tension: 0.25,
+          spanGaps: false,
+          order: 1,
+        });
+      });
+
+      // 4. FORECAST 2m TEMPERATURE LINES
+      forecastKeys.forEach((fcKey, idx) => {
+        const item = inputProducts[fcKey];
+        if (!item || !item.has_temp || !Array.isArray(item.temp)) return;
+        if (!item.temp.some(v => v !== null && v !== undefined)) return;
+        trackTempRange(item.temp);
+        const strokeColor = FC_FORECAST_TEMP_PALETTE[fcKey] || (idx % 2 === 0 ? '#dc2626' : '#db2777');
+        const lKey = `forecast_temp:${fcKey}`;
+        datasets.push({
+          type: 'line',
+          label: `FORECAST (≥ t₀): ${fcKey} 2m Temp (°C)`,
+          data: item.temp,
+          $fcRole: 'forecast_temp',
+          $productKey: fcKey,
+          $shortLabel: fcKey,
+          $swatchBg: 'rgba(220, 38, 38, 0.12)',
+          $swatchBorder: strokeColor,
+          $varKind: 'temp',
+          hidden: ftHiddenForcingLegendKeys.has(lKey),
+          yAxisID: 'yTemp',
+          borderColor: strokeColor,
+          backgroundColor: 'rgba(220, 38, 38, 0.12)',
+          borderWidth: 1.9,
+          borderDash: [5, 3],
+          pointRadius: 0,
+          tension: 0.25,
+          spanGaps: false,
+          order: 1,
+        });
+      });
+
+      if (!ftInputForcingChart) {
+        ftInputForcingChart = new Chart(inputCanvas.getContext('2d'), {
+          type: 'bar',
+          plugins: [ftPartitionOverlayPlugin],
+          data: {
+            labels: dates,
+            datasets: datasets,
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: { padding: { left: 0, right: 0 } },
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: { display: false },
+            },
+            scales: {
+              x: {
+                offset: true,
+                min: 0,
+                max: Math.max(0, dates.length - 1),
+                ticks: { maxTicksLimit: 10, maxRotation: 0, autoSkip: true, font: { size: 10 } },
+                grid: { color: 'rgba(0,0,0,0.04)' },
+              },
+              yPrecip: {
+                type: 'linear',
+                position: 'left',
+                beginAtZero: true,
+                suggestedMax: Math.max(15, maxPrecip * 1.25),
+                title: { display: true, text: 'Precipitation (mm/day)', font: { size: 10, weight: 'bold' }, color: '#0284c7' },
+                grid: { color: 'rgba(0,0,0,0.05)' },
+                afterFit(scale) {
+                  scale.width = FT_SHARED_LEFT_AXIS_WIDTH;
+                },
+              },
+              yTemp: {
+                type: 'linear',
+                position: 'right',
+                suggestedMin: hasTempValues ? Math.floor(minTemp - 3) : 0,
+                suggestedMax: hasTempValues ? Math.ceil(maxTemp + 3) : 30,
+                title: { display: true, text: '2m Temp (°C)', font: { size: 10, weight: 'bold' }, color: '#d97706' },
+                grid: { drawOnChartArea: false },
+                afterFit(scale) {
+                  scale.width = FT_SHARED_RIGHT_AXIS_WIDTH;
+                },
+              },
+            },
+          },
+        });
+      } else {
+        ftInputForcingChart.data.labels = dates;
+        ftInputForcingChart.options.scales.x.min = 0;
+        ftInputForcingChart.options.scales.x.max = Math.max(0, dates.length - 1);
+        ftInputForcingChart.data.datasets = datasets;
+        ftInputForcingChart.options.scales.yPrecip.suggestedMax = Math.max(15, maxPrecip * 1.25);
+        ftInputForcingChart.options.scales.yTemp.suggestedMin = hasTempValues ? Math.floor(minTemp - 3) : 0;
+        ftInputForcingChart.options.scales.yTemp.suggestedMax = hasTempValues ? Math.ceil(maxTemp + 3) : 30;
+      }
+      ftInputForcingChart.$ftPartition = part;
+      ftInputForcingChart.update('none');
+      renderFtForcingLegend();
+    }
+
     function renderFtGlobalForcingStatusUI(payload) {
       const gf = (payload && payload.global_forcing_status) || {};
       const badgeEl = document.getElementById('ftGlobalArchiveBadge');
       const summaryEl = document.getElementById('ftGlobalCoverageSummaryText');
+      const prodBadgesList = document.getElementById('ftGlobalProductBadgesList');
+      const topStatusStrip = document.getElementById('ftGlobalProductsStatusStrip');
       const extractBtn = document.getElementById('ftExtractGlobalForcingBtn');
       const extractBtnLabel = document.getElementById('ftExtractGlobalForcingBtnLabel');
 
@@ -19888,6 +20510,43 @@
           badgeEl.textContent = 'Not Extracted';
         }
       }
+
+      // Render per-product availability pills in sidebar and top input graph header
+      const prodDetails = Array.isArray(gf.product_details) ? gf.product_details : [];
+      const renderProductPills = (targetEl, compact = false) => {
+        if (!targetEl) return;
+        targetEl.innerHTML = '';
+        prodDetails.forEach(item => {
+          if (!item || !item.product) return;
+          const avail = Boolean(item.available);
+          const req = Boolean(item.required_by_model);
+          const span = document.createElement('span');
+          if (avail) {
+            span.className = 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-mono font-semibold bg-[#e6f4ea] text-[#137333] border border-[#ceead6]';
+            const daysTxt = (!compact && item.num_days) ? ` (${item.num_days}d)` : '';
+            span.textContent = `✓ ${item.product}${daysTxt}`;
+            span.title = `${item.label || item.product}: Available in archive (${item.start_date || ''} → ${item.end_date || ''}, ${item.num_days || 0} days)`;
+          } else if (req) {
+            span.className = 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-mono font-semibold bg-[#fef7e0] text-[#b06000] border border-[#fde293]';
+            span.textContent = `✗ ${item.product}`;
+            span.title = `${item.label || item.product}: Used by selected model, not yet extracted for this catchment`;
+          } else {
+            span.className = 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-mono text-[#80868b] bg-[#f1f3f4] border border-[#e0e3e7]';
+            span.textContent = `○ ${item.product}`;
+            span.title = `${item.label || item.product}: Not extracted for this catchment`;
+          }
+          targetEl.appendChild(span);
+        });
+        if (payload && payload.has_local_forcing) {
+          const locSpan = document.createElement('span');
+          locSpan.className = 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-mono font-semibold bg-[#f3e8fd] text-[#681da8] border border-[#d7aefb]';
+          locSpan.textContent = '✓ LOCAL CSV';
+          locSpan.title = 'User-uploaded local precipitation and temperature CSVs available';
+          targetEl.appendChild(locSpan);
+        }
+      };
+      renderProductPills(prodBadgesList, false);
+      renderProductPills(topStatusStrip, true);
 
       if (summaryEl) {
         const prodsFound = Array.isArray(gf.products_found) && gf.products_found.length > 0
@@ -20090,13 +20749,16 @@
       refreshFineTuningTab();
     }
 
-    function applyFtWorkspacePayload(payload, { preserveComponentSelection = false } = {}) {
+    function applyFtWorkspacePayload(payload, { preserveComponentSelection = false, resetHyperparameters = false } = {}) {
       if (!payload) return;
       ftWorkspaceState = payload;
       syncFtBasinDropdown(payload.basin_id);
       syncFtBasinAreaInput(payload.basin_id);
       renderFtGlobalForcingStatusUI(payload);
       syncFtForcingModeUI(payload);
+
+      const sess = payload.session || {};
+      const lastHp = sess.last_hyperparameters || {};
 
       // 1. Model Inventory Dropdown
       const modelSel = document.getElementById('ftModelSelect');
@@ -20125,19 +20787,36 @@
         // Loss select options
         const lossSel = document.getElementById('ftLossSelect');
         if (lossSel && Array.isArray(selModel.allowed_losses)) {
-          const prevLoss = lossSel.value;
+          const targetLoss = resetHyperparameters
+            ? (selModel.default_loss || lastHp.loss)
+            : (lastHp.loss || lossSel.value || selModel.default_loss);
           while (lossSel.firstChild) lossSel.removeChild(lossSel.firstChild);
           selModel.allowed_losses.forEach(lName => {
             const opt = document.createElement('option');
             opt.value = lName;
             opt.textContent = lName;
-            if (lName === prevLoss || lName === selModel.default_loss) opt.selected = true;
+            if (lName === targetLoss) opt.selected = true;
             lossSel.appendChild(opt);
           });
         }
 
+        if (resetHyperparameters) {
+          const lrInp = document.getElementById('ftLearningRateInput');
+          if (lrInp && selModel.default_learning_rate !== undefined) {
+            lrInp.value = String(selModel.default_learning_rate);
+          }
+          const stratSel = document.getElementById('ftLrStrategySelect');
+          if (stratSel && selModel.default_lr_strategy) {
+            stratSel.value = String(selModel.default_lr_strategy);
+          }
+          const bsInp = document.getElementById('ftBatchSizeInput');
+          if (bsInp && selModel.default_batch_size !== undefined) {
+            bsInp.value = String(selModel.default_batch_size);
+          }
+        }
+
         if (!preserveComponentSelection) {
-          const savedMods = payload.session && payload.session.last_hyperparameters && payload.session.last_hyperparameters.finetune_modules;
+          const savedMods = lastHp.finetune_modules;
           if (Array.isArray(savedMods) && savedMods.length > 0) {
             ftSelectedModulesSet = new Set(savedMods);
           } else {
@@ -20180,7 +20859,6 @@
       }
 
       // 3. Session state & epoch badges
-      const sess = payload.session || {};
       const curEpoch = sess.current_epoch || 0;
       const curEpBadge = document.getElementById('ftCurrentEpochBadge');
       const statePill = document.getElementById('ftSessionStatePill');
@@ -20380,24 +21058,79 @@
         });
       }
 
+      const applyFtSplitPercent = (rawPct) => {
+        const pct = Math.max(20, Math.min(90, Math.round(rawPct)));
+        if (splitSlider) splitSlider.value = String(pct);
+        if (splitLabel) splitLabel.textContent = pct + '% Train / ' + (100 - pct) + '% Val';
+        if (ftWorkspaceState && ftWorkspaceState.timeseries && ftWorkspaceState.selected_model) {
+          const newPart = recomputeClientPartition(
+            ftWorkspaceState.timeseries.dates,
+            ftWorkspaceState.selected_model.seq_length || 60,
+            ftWorkspaceState.selected_model.lead_time || 7,
+            pct / 100.0
+          );
+          if (newPart) {
+            ftWorkspaceState.partition = newPart;
+            renderFtChartsAndKpis();
+          }
+        }
+      };
+
       if (splitSlider) {
         splitSlider.addEventListener('input', () => {
-          const pct = parseInt(splitSlider.value, 10) || 70;
-          if (splitLabel) splitLabel.textContent = pct + '% Train / ' + (100 - pct) + '% Val';
-          if (ftWorkspaceState && ftWorkspaceState.timeseries && ftWorkspaceState.selected_model) {
-            const newPart = recomputeClientPartition(
-              ftWorkspaceState.timeseries.dates,
-              ftWorkspaceState.selected_model.seq_length || 60,
-              ftWorkspaceState.selected_model.lead_time || 7,
-              pct / 100.0
-            );
-            if (newPart) {
-              ftWorkspaceState.partition = newPart;
-              renderFtChartsAndKpis();
-            }
-          }
+          applyFtSplitPercent(parseInt(splitSlider.value, 10) || 70);
         });
       }
+
+      // Allow dragging the red Train/Val boundary line directly on either plot
+      let ftDraggingSplitChart = null;
+      const wireFtSplitLineDragging = (canvasId, getChartFn) => {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        const getPointerX = (evt) => {
+          const rect = canvas.getBoundingClientRect();
+          return evt.clientX - rect.left;
+        };
+        canvas.addEventListener('pointerdown', (evt) => {
+          const chart = getChartFn();
+          if (!chart || !chart.$ftPartition || !Number.isFinite(chart.$ftSplitPixelX)) return;
+          const px = getPointerX(evt);
+          if (Math.abs(px - chart.$ftSplitPixelX) <= 12) {
+            ftDraggingSplitChart = chart;
+            canvas.setPointerCapture(evt.pointerId);
+            evt.preventDefault();
+          }
+        });
+        canvas.addEventListener('pointermove', (evt) => {
+          const chart = getChartFn();
+          if (!chart || !chart.$ftPartition || !chart.scales || !chart.scales.x) return;
+          const px = getPointerX(evt);
+          if (ftDraggingSplitChart === chart) {
+            const xScale = chart.scales.x;
+            const part = chart.$ftPartition;
+            const labels = chart.data.labels || [];
+            const firstIdx = labels.indexOf(part.train_start_date);
+            const valEndIdx = labels.indexOf(part.validation_end_date);
+            if (firstIdx >= 0 && valEndIdx > firstIdx) {
+              const leftPx = xScale.getPixelForValue(firstIdx);
+              const rightPx = xScale.getPixelForValue(valEndIdx);
+              if (rightPx > leftPx) {
+                const ratio = (px - leftPx) / (rightPx - leftPx);
+                applyFtSplitPercent(ratio * 100.0);
+              }
+            }
+          } else if (Number.isFinite(chart.$ftSplitPixelX)) {
+            canvas.style.cursor = Math.abs(px - chart.$ftSplitPixelX) <= 10 ? 'ew-resize' : '';
+          }
+        });
+        const stopDrag = () => {
+          ftDraggingSplitChart = null;
+        };
+        canvas.addEventListener('pointerup', stopDrag);
+        canvas.addEventListener('pointercancel', stopDrag);
+      };
+      wireFtSplitLineDragging('ftInputForcingCanvas', () => ftInputForcingChart);
+      wireFtSplitLineDragging('ftHydrographCanvas', () => ftHydroChart);
 
       if (epochsInput) {
         epochsInput.addEventListener('input', () => {
@@ -20538,6 +21271,159 @@
         });
       }
 
+      // Save Epoch Checkpoint to Model Inventory Prompt & Submission
+      let ftPendingSaveEpoch = null;
+      const saveEpBtn = document.getElementById('ftSaveEpochModelBtn');
+      const savePromptBox = document.getElementById('ftSaveModelPromptBox');
+      const saveNameInp = document.getElementById('ftSaveModelNameInput');
+      const saveEpochTag = document.getElementById('ftSaveModelEpochTag');
+      const confirmSaveBtn = document.getElementById('ftConfirmSaveModelBtn');
+      const confirmSaveBtnTxt = document.getElementById('ftConfirmSaveModelBtnText');
+      const cancelSaveBtn = document.getElementById('ftCancelSaveModelBtn');
+
+      window.openFtSaveModelPrompt = (explicitEpoch = null) => {
+        const hist = (ftWorkspaceState && ftWorkspaceState.session && ftWorkspaceState.session.epoch_history) || [];
+        const inspectedEntry = hist[ftInspectedEpochIndex] || null;
+        const targetEp = (explicitEpoch !== null && explicitEpoch !== undefined && Number.isFinite(Number(explicitEpoch)))
+          ? Number(explicitEpoch)
+          : (inspectedEntry ? Number(inspectedEntry.epoch) : 0);
+        ftPendingSaveEpoch = targetEp;
+        const basinLabel = getActiveFtBasinDisplayName() || getActiveFtBasinId() || 'Basin';
+        if (saveEpochTag) {
+          saveEpochTag.textContent = `Epoch ${targetEp}`;
+        }
+        if (saveNameInp) {
+          saveNameInp.value = `${basinLabel} Tuned Ep ${targetEp}`;
+        }
+        if (savePromptBox) {
+          savePromptBox.classList.remove('hidden');
+        }
+        if (saveNameInp) {
+          saveNameInp.focus();
+          saveNameInp.select();
+        }
+      };
+
+      const closeFtSaveModelPrompt = () => {
+        ftPendingSaveEpoch = null;
+        if (savePromptBox) {
+          savePromptBox.classList.add('hidden');
+        }
+      };
+
+      const submitFtSaveModelPrompt = async () => {
+        const basinId = getActiveFtBasinId();
+        if (!basinId) {
+          setFtStatusBanner('Please select or delineate a catchment first.', 'error');
+          return;
+        }
+        const rawName = saveNameInp ? saveNameInp.value.trim() : '';
+        if (!rawName) {
+          setFtStatusBanner('Please enter a name for the saved model.', 'error');
+          if (saveNameInp) saveNameInp.focus();
+          return;
+        }
+        const hist = (ftWorkspaceState && ftWorkspaceState.session && ftWorkspaceState.session.epoch_history) || [];
+        const inspectedEntry = hist[ftInspectedEpochIndex] || null;
+        const epochToSave = (ftPendingSaveEpoch !== null && Number.isFinite(Number(ftPendingSaveEpoch)))
+          ? Number(ftPendingSaveEpoch)
+          : (inspectedEntry ? Number(inspectedEntry.epoch) : 0);
+        const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+        const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
+        const headers = { 'Content-Type': 'application/json' };
+        if (u) headers['X-User-Profile'] = u;
+
+        if (confirmSaveBtn) confirmSaveBtn.disabled = true;
+        if (confirmSaveBtnTxt) confirmSaveBtnTxt.textContent = 'Saving...';
+
+        try {
+          const resp = await fetch('/api/finetune/save-model', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              username: u || undefined,
+              basin_id: basinId,
+              model_id: modelId,
+              epoch: epochToSave,
+              model_name: rawName,
+            }),
+          });
+          const payload = await safeParseJsonResponse(resp);
+          if (!resp.ok || payload.error || payload._nonJson) {
+            setFtStatusBanner(payload.error || payload.message || 'Failed to save model checkpoint', 'error');
+            return;
+          }
+
+          // Update Fine-Tuning model inventory dropdown while keeping current session active
+          if (Array.isArray(payload.models) && payload.models.length > 0) {
+            if (ftWorkspaceState) {
+              ftWorkspaceState.models = payload.models;
+            }
+            if (modelSel) {
+              const curActiveId = modelSel.value || modelId;
+              while (modelSel.firstChild) modelSel.removeChild(modelSel.firstChild);
+              payload.models.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.model_id;
+                opt.textContent = m.label + ' (' + m.architecture_class + ')';
+                if (m.model_id === curActiveId) opt.selected = true;
+                modelSel.appendChild(opt);
+              });
+            }
+          }
+
+          // Update Forecasting & Data Assimilation model inventory dropdown immediately
+          if (typeof updateForecastModelSelectorUI === 'function' && Array.isArray(payload.forecast_models)) {
+            updateForecastModelSelectorUI(payload.forecast_models);
+            const fcSel = document.getElementById('fcModelSelect');
+            if (fcSel && payload.saved_model_id) {
+              fcSel.value = payload.saved_model_id;
+              fcSelectedModelId = payload.saved_model_id;
+              updateForecastModelSelectorUI(payload.forecast_models);
+            }
+          }
+
+          closeFtSaveModelPrompt();
+          const savedLabel = (payload.meta && payload.meta.label) || `${rawName} (Epoch ${epochToSave})`;
+          setFtStatusBanner(
+            `Saved "${savedLabel}" to Model Inventory! It is now available in the model selector on both the Forecasting & Data Assimilation screen and the Fine-Tuning screen.`,
+            'success'
+          );
+        } catch (err) {
+          setFtStatusBanner('Save model error: ' + err.message, 'error');
+        } finally {
+          if (confirmSaveBtn) confirmSaveBtn.disabled = false;
+          if (confirmSaveBtnTxt) confirmSaveBtnTxt.textContent = 'Save to Inventory';
+        }
+      };
+
+      if (saveEpBtn) {
+        saveEpBtn.addEventListener('click', () => {
+          window.openFtSaveModelPrompt();
+        });
+      }
+      if (confirmSaveBtn) {
+        confirmSaveBtn.addEventListener('click', () => {
+          submitFtSaveModelPrompt();
+        });
+      }
+      if (cancelSaveBtn) {
+        cancelSaveBtn.addEventListener('click', () => {
+          closeFtSaveModelPrompt();
+        });
+      }
+      if (saveNameInp) {
+        saveNameInp.addEventListener('keydown', (evt) => {
+          if (evt.key === 'Enter') {
+            evt.preventDefault();
+            submitFtSaveModelPrompt();
+          } else if (evt.key === 'Escape') {
+            evt.preventDefault();
+            closeFtSaveModelPrompt();
+          }
+        });
+      }
+
       // Run / Continue Epochs Button
       const runBtn = document.getElementById('ftRunEpochsBtn');
       if (runBtn) {
@@ -20568,22 +21454,47 @@
             : 0;
 
           ftIsRunning = true;
+          const runTitle = 'Fine-Tuning ' + basinLabel + ' (' + epochs + ' Epoch' + (epochs === 1 ? '' : 's') + ')...';
           setFtWorkspaceLoading(true, {
-            title: 'Fine-Tuning ' + basinLabel + ' (' + epochs + ' Epoch' + (epochs === 1 ? '' : 's') + ')...',
+            title: runTitle,
             subtitle: 'Running backpropagation on selected model components and evaluating train & validation NSE/KGE...',
-            badgeText: 'Training...',
+            badgeText: `Epoch 0/${epochs}`,
+            percent: 2,
+            epochText: `Epoch 0 of ${epochs} (0%)`,
           });
           if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
           runBtn.disabled = true;
-          const statePill = document.getElementById('ftSessionStatePill');
-          if (statePill) {
-            statePill.textContent = 'Running ' + epochs + ' Epoch(s)...';
-            statePill.className = 'text-[10px] bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] px-2.5 py-0.5 rounded-full font-mono font-semibold animate-pulse';
-          }
           setFtStatusBanner('Fine-tuning ' + modelId + ' on ' + basinLabel + ' for ' + epochs + ' epoch(s)...', 'info');
 
           const headers = { 'Content-Type': 'application/json' };
           if (u) headers['X-User-Profile'] = u;
+
+          const pollHeaders = {};
+          if (u) pollHeaders['X-User-Profile'] = u;
+          const pollUrl = `/api/finetune/run-progress?basin_id=${encodeURIComponent(basinId)}`;
+          const progressTimer = setInterval(async () => {
+            if (!ftIsRunning) return;
+            try {
+              const pResp = await fetch(pollUrl, { headers: pollHeaders });
+              if (!pResp.ok) return;
+              const prog = await pResp.json();
+              if (!prog || !ftIsRunning) return;
+              const stepEp = Number(prog.step_epoch || 0);
+              const totalEp = Number(prog.total_step_epochs || epochs);
+              const pct = Number(prog.percent || 0);
+              const epText = `Epoch ${stepEp} of ${totalEp} (${Math.round(pct)}%)`;
+              setFtWorkspaceLoading(true, {
+                title: runTitle,
+                subtitle: prog.message || 'Training and evaluating fine-tuned model...',
+                badgeText: `Epoch ${stepEp}/${totalEp}`,
+                percent: pct,
+                epochText: epText,
+              });
+            } catch (_e) {
+              // Ignore transient poll errors while main POST request is active
+            }
+          }, 250);
+
           let resp;
           try {
             resp = await fetch('/api/finetune/run', {
@@ -20604,6 +21515,7 @@
               }),
             });
           } catch (netErr) {
+            clearInterval(progressTimer);
             ftIsRunning = false;
             setFtWorkspaceLoading(false);
             runBtn.disabled = false;
@@ -20611,6 +21523,7 @@
             setFtStatusBanner('Network error during fine-tuning: ' + netErr.message, 'error');
             return;
           }
+          clearInterval(progressTimer);
           ftIsRunning = false;
           setFtWorkspaceLoading(false);
           runBtn.disabled = false;
@@ -20646,20 +21559,57 @@
       const resetBtn = document.getElementById('ftResetSessionBtn');
       if (resetBtn) {
         resetBtn.addEventListener('click', async () => {
+          if (ftIsRunning) return;
           const basinId = getActiveFtBasinId();
+          if (!basinId) {
+            setFtStatusBanner('No active catchment selected to reset.', 'error');
+            return;
+          }
+          const basinLabel = getActiveFtBasinDisplayName() || basinId;
           const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+          const splitRatio = splitSlider ? (parseInt(splitSlider.value, 10) / 100.0) : 0.7;
+          const forcingMode = (forcingModeSel && forcingModeSel.value) || '';
           const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
           const headers = { 'Content-Type': 'application/json' };
           if (u) headers['X-User-Profile'] = u;
-          const resp = await fetch('/api/finetune/reset', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ username: u || undefined, basin_id: basinId, model_id: modelId }),
+
+          const reqSeq = ++ftRefreshRequestSeq;
+          resetBtn.disabled = true;
+          setFtWorkspaceLoading(true, {
+            title: 'Resetting ' + basinLabel + ' Session to Epoch 0...',
+            subtitle: 'Clearing fine-tuned checkpoints and restoring pretrained Epoch 0 baseline...',
+            badgeText: 'Resetting...',
           });
-          if (resp.ok) {
-            const payload = await resp.json();
-            applyFtWorkspacePayload(payload, { preserveComponentSelection: true });
-            setFtStatusBanner('Reset fine-tuning session to Epoch 0 (pretrained weights).', 'info');
+          try {
+            const resp = await fetch('/api/finetune/reset', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                username: u || undefined,
+                basin_id: basinId,
+                model_id: modelId,
+                split_ratio: splitRatio,
+                forcing_mode: forcingMode || undefined,
+              }),
+            });
+            const payload = await safeParseJsonResponse(resp);
+            if (!resp.ok || payload.error || payload._nonJson) {
+              setFtStatusBanner(payload.error || payload.message || 'Failed to reset fine-tuning session', 'error');
+              return;
+            }
+            ftInspectedEpochIndex = 0;
+            applyFtWorkspacePayload(payload, {
+              preserveComponentSelection: false,
+              resetHyperparameters: true,
+            });
+            setFtStatusBanner('Reset fine-tuning session for ' + basinLabel + ' back to Epoch 0 (pretrained weights).', 'info');
+          } catch (err) {
+            setFtStatusBanner('Reset error: ' + err.message, 'error');
+          } finally {
+            resetBtn.disabled = false;
+            if (reqSeq === ftRefreshRequestSeq) {
+              setFtWorkspaceLoading(false);
+            }
           }
         });
       }

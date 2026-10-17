@@ -136,6 +136,50 @@ PRETRAINED_FORECAST_MODELS: tuple[dict[str, Any], ...] = (
 )
 
 
+def _extract_forecast_and_hindcast_products_from_config(
+    config_path: Path,
+) -> tuple[list[str], list[str]]:
+    """Extract upper-case global forecast and hindcast product names."""
+    fc_prods: list[str] = []
+    hc_prods: list[str] = []
+    if config_path.is_file():
+        try:
+            cfg = Config(config_path, dev_mode=True)
+            if isinstance(cfg.forecast_inputs, dict):
+                fc_prods = [
+                    str(k).upper()
+                    for k in cfg.forecast_inputs
+                    if str(k).lower() != 'local_forcing'
+                ]
+            if isinstance(cfg.hindcast_inputs, dict):
+                hc_prods = [
+                    str(k).upper()
+                    for k in cfg.hindcast_inputs
+                    if str(k).lower() != 'local_forcing'
+                ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                'Could not read products from %s: %s', config_path, exc
+            )
+    if not fc_prods:
+        fc_prods = ['HRES']
+    if not hc_prods:
+        hc_prods = ['HRES', 'IMERG', 'CPC']
+    return fc_prods, hc_prods
+
+
+def _read_user_forecast_model_meta(run_dir: Path) -> dict[str, Any]:
+    """Read optional ``model_meta.json`` from a user model directory."""
+    meta_path = run_dir / 'model_meta.json'
+    if not meta_path.is_file():
+        return {}
+    try:
+        loaded = json.loads(meta_path.read_text(encoding='utf-8'))
+        return loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def list_forecast_models(
     username: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -170,16 +214,51 @@ def list_forecast_models(
                 continue
             ckpts = sorted(run_dir.glob('model_epoch*.pt'))
             if (run_dir / 'config.yml').is_file() and ckpts:
+                meta = _read_user_forecast_model_meta(run_dir)
+                custom_name = str(
+                    meta.get('name') or meta.get('label') or ''
+                ).strip()
+                label = (
+                    str(meta.get('label') or custom_name).strip()
+                    if custom_name
+                    else f'User Fine-Tuned: {run_dir.name}'
+                )
+                short_label = (
+                    str(meta.get('short_label') or custom_name).strip()
+                    if custom_name
+                    else run_dir.name
+                )
+                raw_fc = meta.get('forecast_products')
+                raw_hc = meta.get('hindcast_products')
+                if (
+                    isinstance(raw_fc, list)
+                    and raw_fc
+                    and isinstance(raw_hc, list)
+                    and raw_hc
+                ):
+                    fc_prods = [str(p).upper() for p in raw_fc if p]
+                    hc_prods = [str(p).upper() for p in raw_hc if p]
+                else:
+                    fc_prods, hc_prods = (
+                        _extract_forecast_and_hindcast_products_from_config(
+                            run_dir / 'config.yml'
+                        )
+                    )
                 models.append(
                     {
                         'id': f'user_{run_dir.name}',
-                        'label': f'User Fine-Tuned: {run_dir.name}',
-                        'short_label': run_dir.name,
-                        'forecast_products': ['HRES'],
-                        'hindcast_products': ['HRES', 'IMERG', 'CPC'],
+                        'name': custom_name or run_dir.name,
+                        'label': label,
+                        'short_label': short_label,
+                        'forecast_products': fc_prods,
+                        'hindcast_products': hc_prods,
                         'available': True,
                         'status': 'ready',
                         'is_pretrained': False,
+                        'is_user_model': True,
+                        'saved_from_epoch': meta.get('saved_from_epoch'),
+                        'source_basin_id': meta.get('source_basin_id'),
+                        'source_model_id': meta.get('source_model_id'),
                     }
                 )
     return models
@@ -3533,6 +3612,15 @@ def fetch_realtime_forcing_for_catchment(  # noqa: PLR0913
     return status_payload
 
 
+def evict_forecast_model_cache(run_dir: Path | None = None) -> None:
+    """Evict cached forecast model bundle(s) when a model is saved."""
+    if run_dir is None:
+        _MODEL_CACHE.clear()
+        return
+    cache_key = str(run_dir.resolve())
+    _MODEL_CACHE.pop(cache_key, None)
+
+
 def _load_forecast_model_bundle(
     run_dir: Path | None = None,
     *,
@@ -3568,7 +3656,7 @@ def _load_forecast_model_bundle(
         )
 
     ensure_flood_forecasting_on_sys_path()
-    cfg = Config(config_path)
+    cfg = Config(config_path, dev_mode=True)
     cfg.update_config(
         {
             'device': 'cpu',
@@ -3584,7 +3672,9 @@ def _load_forecast_model_bundle(
         raise FileNotFoundError(
             f'No model_epoch*.pt checkpoint found in {target_dir}'
         )
-    load_model_weights(model, ckpts[-1], torch.device('cpu'))
+    load_model_weights(
+        model, ckpts[-1], torch.device('cpu'), allow_new_embeddings=True
+    )
     model.eval()
 
     scaler = Scaler(scaler_dir=target_dir, calculate_scaler=False)

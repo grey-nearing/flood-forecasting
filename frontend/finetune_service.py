@@ -23,6 +23,7 @@ import logging
 import math
 import re
 import shutil
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -226,6 +227,63 @@ class _EpochEvalContext:
     val_mask: np.ndarray
     lead_time: int
     unfrozen_parts: list[str]
+    progress_key: tuple[str, str] | None = None
+
+
+_FINETUNE_RUN_PROGRESS_LOCK = threading.Lock()
+_FINETUNE_RUN_PROGRESS: dict[tuple[str, str], dict[str, object]] = {}
+
+
+def _update_finetune_run_progress(
+    progress_key: tuple[str, str] | None,
+    **fields: object,
+) -> None:
+    if progress_key is None:
+        return
+    clean_user = (progress_key[0] or 'guest').strip() or 'guest'
+    clean_basin = (progress_key[1] or '').strip()
+    if not clean_basin:
+        return
+    key = (clean_user, clean_basin)
+    with _FINETUNE_RUN_PROGRESS_LOCK:
+        cur = dict(_FINETUNE_RUN_PROGRESS.get(key, {}))
+        cur.update(fields)
+        cur['basin_id'] = clean_basin
+        cur['updated_at'] = datetime.now(UTC).isoformat()
+        _FINETUNE_RUN_PROGRESS[key] = cur
+
+
+def get_finetune_run_progress(
+    username: str,
+    basin_id: str,
+) -> dict[str, object]:
+    """Return live epoch progress for an active or completed fine-tuning run."""
+    clean_user = (username or 'guest').strip() or 'guest'
+    clean_basin = (basin_id or '').strip()
+    if not clean_basin or clean_basin == 'custom_basin_01':
+        user_basins = list_user_clipped_basins(clean_user)
+        if user_basins:
+            clean_basin = str(user_basins[0]['basin_id'])
+    clean_basin = clean_basin or 'custom_basin_01'
+    key = (clean_user, clean_basin)
+    with _FINETUNE_RUN_PROGRESS_LOCK:
+        state = dict(_FINETUNE_RUN_PROGRESS.get(key, {}))
+    if not state:
+        return {
+            'basin_id': clean_basin,
+            'active': False,
+            'status': 'idle',
+            'phase': 'idle',
+            'step_epoch': 0,
+            'completed_step_epochs': 0,
+            'total_step_epochs': 0,
+            'current_epoch': 0,
+            'start_epoch': 0,
+            'target_total_epoch': 0,
+            'percent': 0.0,
+            'message': 'Idle',
+        }
+    return state
 
 
 def _require_safe_id(value: str, field_name: str) -> str:
@@ -465,6 +523,50 @@ def _inspect_model_from_run_dir(
     return dict(result)
 
 
+def _read_user_model_meta(run_dir: Path) -> dict[str, object]:
+    """Read optional ``model_meta.json`` from a user-saved model directory."""
+    meta_path = run_dir / 'model_meta.json'
+    if not meta_path.is_file():
+        return {}
+    try:
+        raw = json.loads(meta_path.read_text(encoding='utf-8'))
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _build_user_finetune_model_entry(
+    run_dir: Path,
+    local_override: dict[str, list[str]],
+) -> dict[str, object] | None:
+    """Inspect a user model directory and attach optional metadata."""
+    if not run_dir.is_dir():
+        return None
+    ckpt_path, _ = _find_latest_checkpoint(run_dir)
+    if not (run_dir / 'config.yml').exists() or ckpt_path is None:
+        return None
+    model_id = f'user_{run_dir.name}'
+    meta = _read_user_model_meta(run_dir)
+    custom_label = str(
+        meta.get('label') or meta.get('name') or f'User Model: {run_dir.name}'
+    ).strip()
+    info = _inspect_model_from_run_dir(
+        model_id,
+        custom_label,
+        run_dir,
+        extra_local_products=local_override,
+    )
+    info['is_user_model'] = True
+    if isinstance(meta.get('name'), str) and meta['name'].strip():
+        info['saved_name'] = meta['name'].strip()
+    for key in ('source_basin_id', 'source_model_id', 'saved_at'):
+        if isinstance(meta.get(key), str):
+            info[key] = meta[key]
+    if isinstance(meta.get('source_epoch'), int):
+        info['source_epoch'] = meta['source_epoch']
+    return info
+
+
 def list_finetune_models(
     username: str = 'guest',
 ) -> list[dict[str, object]]:
@@ -483,23 +585,15 @@ def list_finetune_models(
                 run_dir,
                 extra_local_products=local_override,
             )
+            info['is_user_model'] = False
             inventory.append(info)
 
     user_runs_dir = get_profile_manager().get_model_runs_dir(username)
     if user_runs_dir.exists():
         for run_dir in sorted(user_runs_dir.iterdir()):
-            if not run_dir.is_dir():
-                continue
-            ckpt_path, _ = _find_latest_checkpoint(run_dir)
-            if (run_dir / 'config.yml').exists() and ckpt_path is not None:
-                model_id = f'user_{run_dir.name}'
-                info = _inspect_model_from_run_dir(
-                    model_id,
-                    f'User Model: {run_dir.name}',
-                    run_dir,
-                    extra_local_products=local_override,
-                )
-                inventory.append(info)
+            entry = _build_user_finetune_model_entry(run_dir, local_override)
+            if entry is not None:
+                inventory.append(entry)
 
     return inventory
 
@@ -534,7 +628,13 @@ def _resolve_model_dir(
         if candidate.parent != runs_dir:
             raise ValueError(f'Invalid user model_id: {model_id!r}')
         if (candidate / 'config.yml').is_file():
-            return f'User Model: {run_name}', candidate
+            meta = _read_user_model_meta(candidate)
+            custom_label = str(
+                meta.get('label')
+                or meta.get('name')
+                or f'User Model: {run_name}'
+            ).strip()
+            return custom_label, candidate
 
     raise FileNotFoundError(f'Unknown model_id: {model_id}')
 
@@ -2046,6 +2146,175 @@ def _populate_realtime_upload_meta(
             }
 
 
+_FINETUNE_INPUT_PRODUCT_SPECS: tuple[dict[str, object], ...] = (
+    {
+        'product': 'IMERG',
+        'label': 'IMERG',
+        'role': 'hindcast',
+        'model_keys': ('imerg',),
+        'folders': ('IMERG', 'DYNAMICAL_IMERG'),
+        'precip_vars': ('imerg_precipitation', 'precipitation'),
+        'temp_vars': (),
+    },
+    {
+        'product': 'CPC',
+        'label': 'CPC',
+        'role': 'hindcast',
+        'model_keys': ('cpc',),
+        'folders': ('CPC',),
+        'precip_vars': ('cpc_precipitation', 'cpc_precip', 'precipitation'),
+        'temp_vars': (),
+    },
+    {
+        'product': 'ERA5_LAND',
+        'label': 'ERA5-Land',
+        'role': 'hindcast',
+        'model_keys': ('era5', 'era5_land', 'era5land'),
+        'folders': ('ERA5_LAND', 'ERA5'),
+        'precip_vars': (
+            'era5land_total_precipitation_sum',
+            'era5_total_precipitation',
+            'total_precipitation_sum',
+        ),
+        'temp_vars': (
+            'era5land_temperature_2m',
+            'era5_temperature_2m',
+            'temperature_2m',
+        ),
+    },
+    {
+        'product': 'HRES',
+        'label': 'ECMWF HRES',
+        'role': 'forecast',
+        'model_keys': ('hres', 'ecmwf_hres'),
+        'folders': ('HRES', 'ECMWF_HRES'),
+        'precip_vars': ('hres_total_precipitation', 'hres_tp'),
+        'temp_vars': ('hres_temperature_2m', 'hres_2t'),
+    },
+    {
+        'product': 'GRAPHCAST',
+        'label': 'GraphCast',
+        'role': 'forecast',
+        'model_keys': ('graphcast',),
+        'folders': ('GRAPHCAST',),
+        'precip_vars': (
+            'graphcast_total_precipitation',
+            'graphcast_tp',
+            'total_precipitation',
+        ),
+        'temp_vars': (
+            'graphcast_temperature_2m',
+            'graphcast_2t',
+            'temperature_2m',
+        ),
+    },
+    {
+        'product': 'AIFS',
+        'label': 'ECMWF AIFS',
+        'role': 'forecast',
+        'model_keys': ('aifs', 'ecmwf_aifs'),
+        'folders': ('AIFS', 'ECMWF_AIFS'),
+        'precip_vars': ('aifs_total_precipitation', 'aifs_tp'),
+        'temp_vars': ('aifs_temperature_2m', 'aifs_2t'),
+    },
+    {
+        'product': 'GFS',
+        'label': 'NOAA GFS',
+        'role': 'forecast',
+        'model_keys': ('gfs', 'noaa_gfs'),
+        'folders': ('GFS', 'NOAA_GFS'),
+        'precip_vars': ('gfs_total_precipitation', 'gfs_tp'),
+        'temp_vars': ('gfs_temperature_2m', 'gfs_2t'),
+    },
+)
+
+
+def _collect_basin_global_products(
+    username: str,
+    basin_id: str,
+    selected_model: dict[str, object],
+    target_lead_time: int,
+) -> tuple[list[dict[str, object]], dict[str, dict[str, object]]]:
+    hc_groups = selected_model.get('base_hindcast_products')
+    fc_groups = selected_model.get('base_forecast_products')
+    model_prods_lower = {
+        str(x).strip().lower()
+        for x in (
+            (hc_groups if isinstance(hc_groups, list) else [])
+            + (fc_groups if isinstance(fc_groups, list) else [])
+        )
+        if str(x).strip().lower() != 'local_forcing'
+    }
+    product_details: list[dict[str, object]] = []
+    extracted_products: dict[str, dict[str, object]] = {}
+
+    for spec in _FINETUNE_INPUT_PRODUCT_SPECS:
+        prod_code = str(spec['product'])
+        label = str(spec['label'])
+        role = str(spec['role'])
+        m_keys = spec['model_keys']
+        folders = spec['folders']
+        p_vars = spec['precip_vars']
+        t_vars = spec['temp_vars']
+        assert isinstance(m_keys, tuple)
+        assert isinstance(folders, tuple)
+        assert isinstance(p_vars, tuple)
+        assert isinstance(t_vars, tuple)
+
+        p_cands = [(str(f), str(v)) for f in folders for v in p_vars]
+        t_cands = [(str(f), str(v)) for f in folders for v in t_vars]
+        p_res = (
+            _extract_realtime_forcing_matrix(
+                username, basin_id, p_cands, target_lead_time=target_lead_time
+            )
+            if p_cands
+            else None
+        )
+        t_res = (
+            _extract_realtime_forcing_matrix(
+                username, basin_id, t_cands, target_lead_time=target_lead_time
+            )
+            if t_cands
+            else None
+        )
+        available = p_res is not None or t_res is not None
+        if available:
+            d_list = [r[0] for r in (p_res, t_res) if r is not None]
+            p_start = min(d[0] for d in d_list)
+            p_end = max(d[-1] for d in d_list)
+            p_days = max(0, int((p_end - p_start).days) + 1)
+            start_str: str | None = p_start.strftime('%Y-%m-%d')
+            end_str: str | None = p_end.strftime('%Y-%m-%d')
+            extracted_products[prod_code] = {
+                'product': prod_code,
+                'label': label,
+                'role': role,
+                'precip': (p_res[0], p_res[1]) if p_res is not None else None,
+                'temp': (t_res[0], t_res[1]) if t_res is not None else None,
+            }
+        else:
+            p_days = 0
+            start_str = None
+            end_str = None
+
+        is_req = any(str(k) in model_prods_lower for k in m_keys)
+        product_details.append(
+            {
+                'product': prod_code,
+                'label': label,
+                'role': role,
+                'required_by_model': is_req,
+                'available': available,
+                'has_precip': p_res is not None,
+                'has_temp': t_res is not None,
+                'start_date': start_str,
+                'end_date': end_str,
+                'num_days': p_days,
+            }
+        )
+    return product_details, extracted_products
+
+
 def _check_model_global_products_for_basin(
     username: str,
     basin_id: str,
@@ -2109,6 +2378,7 @@ def _inspect_global_forcing_coverage(
     dict[str, object],
     tuple[pd.DatetimeIndex, np.ndarray, str] | None,
     tuple[pd.DatetimeIndex, np.ndarray, str] | None,
+    dict[str, dict[str, object]],
 ]:
     lead_val = int(str(selected_model['lead_time']))
     pred_last_val = int(str(selected_model['predict_last_n']))
@@ -2140,6 +2410,9 @@ def _inspect_global_forcing_coverage(
 
     products_found, products_missing = _check_model_global_products_for_basin(
         username, basin_id, selected_model
+    )
+    product_details, extracted_products = _collect_basin_global_products(
+        username, basin_id, selected_model, lead_val
     )
 
     target_horizon = max(lead_val, pred_last_val)
@@ -2200,9 +2473,71 @@ def _inspect_global_forcing_coverage(
         'coverage_ratio': coverage_ratio,
         'products_found': products_found,
         'products_missing': products_missing,
+        'product_details': product_details,
+        'available_global_products': [
+            str(d['product']) for d in product_details if d.get('available')
+        ],
+        'missing_global_products': [
+            str(d['product']) for d in product_details if not d.get('available')
+        ],
         'recommended_lookback_days': recommended_lookback_days,
     }
-    return status_info, rt_precip, rt_temp
+    return status_info, rt_precip, rt_temp, extracted_products
+
+
+def _build_input_products_payload(
+    common_dates: pd.DatetimeIndex,
+    extracted_products: dict[str, dict[str, object]] | None,
+    raw_local_precip: tuple[pd.DatetimeIndex, np.ndarray] | None,
+    raw_local_temp: tuple[pd.DatetimeIndex, np.ndarray] | None,
+) -> dict[str, dict[str, object]]:
+    def _align_pair(
+        pair: tuple[pd.DatetimeIndex, np.ndarray] | None,
+    ) -> list[float | None] | None:
+        if pair is None:
+            return None
+        d_idx, mat = pair
+        indexer = d_idx.get_indexer(common_dates)
+        return [
+            round(float(mat[pos, 0]), 4)
+            if pos >= 0 and np.isfinite(mat[pos, 0])
+            else None
+            for pos in indexer
+        ]
+
+    input_products: dict[str, dict[str, object]] = {}
+    for prod_code, pdata in (extracted_products or {}).items():
+        p_pair = pdata.get('precip')
+        t_pair = pdata.get('temp')
+        p_aligned = _align_pair(p_pair) if isinstance(p_pair, tuple) else None
+        t_aligned = _align_pair(t_pair) if isinstance(t_pair, tuple) else None
+        has_p = p_aligned is not None and any(x is not None for x in p_aligned)
+        has_t = t_aligned is not None and any(x is not None for x in t_aligned)
+        input_products[prod_code] = {
+            'product': prod_code,
+            'label': str(pdata.get('label', prod_code)),
+            'role': str(pdata.get('role', 'forecast')),
+            'has_precip': has_p,
+            'has_temp': has_t,
+            'precip': p_aligned if p_aligned is not None else [],
+            'temp': t_aligned if t_aligned is not None else [],
+        }
+
+    p_loc = _align_pair(raw_local_precip)
+    t_loc = _align_pair(raw_local_temp)
+    has_p_loc = p_loc is not None and any(x is not None for x in p_loc)
+    has_t_loc = t_loc is not None and any(x is not None for x in t_loc)
+    if has_p_loc or has_t_loc:
+        input_products['LOCAL_CSV'] = {
+            'product': 'LOCAL_CSV',
+            'label': 'LOCAL CSV',
+            'role': 'hindcast',
+            'has_precip': has_p_loc,
+            'has_temp': has_t_loc,
+            'precip': p_loc if p_loc is not None else [],
+            'temp': t_loc if t_loc is not None else [],
+        }
+    return input_products
 
 
 def _build_workspace_timeseries_and_partition(
@@ -2214,6 +2549,8 @@ def _build_workspace_timeseries_and_partition(
     extra_precip: tuple[
         tuple[pd.DatetimeIndex, np.ndarray] | None,
         tuple[pd.DatetimeIndex, np.ndarray, str] | None,
+        tuple[pd.DatetimeIndex, np.ndarray] | None,
+        dict[str, dict[str, object]] | None,
     ]
     | None = None,
 ) -> tuple[dict[str, object] | None, dict[str, object] | None]:
@@ -2273,13 +2610,23 @@ def _build_workspace_timeseries_and_partition(
         except ValueError:
             partition_info = None
 
-    raw_local_precip = extra_precip[0] if extra_precip is not None else None
-    rt_precip = extra_precip[1] if extra_precip is not None else None
+    (
+        raw_local_precip,
+        rt_precip,
+        raw_local_temp,
+        extracted_products,
+    ) = extra_precip if extra_precip is not None else (None, None, None, None)
     precip_local = _align_series(raw_local_precip)
     precip_global = (
         _align_series((rt_precip[0], rt_precip[1]))
         if rt_precip is not None
         else None
+    )
+    input_products = _build_input_products_payload(
+        common_dates,
+        extracted_products,
+        raw_local_precip,
+        raw_local_temp,
     )
 
     timeseries_payload: dict[str, object] = {
@@ -2291,39 +2638,19 @@ def _build_workspace_timeseries_and_partition(
             rt_precip[2] if rt_precip is not None else None
         ),
         'temp': _extract_lead1('temp'),
+        'input_products': input_products,
         'streamflow_obs': _extract_lead1('streamflow'),
     }
     return timeseries_payload, partition_info
 
 
-def _get_or_compute_baseline_eval(
-    username: str,
-    basin_id: str,
-    model_id: str,
+def _load_or_seed_baseline_cache(
+    sess_dir: Path,
+    meta_path: Path,
+    signature_prefix: str,
     partition_info: dict[str, object],
-    resolved_forcing_mode: str,
-) -> dict[str, object] | None:
-    common_dates = pd.date_range(
-        str(partition_info['record_start_date']),
-        str(partition_info['record_end_date']),
-        freq='D',
-    )
-    sess_dir = _session_root(username, basin_id, model_id)
-    state_path = sess_dir / 'session_state.json'
-    session_state: dict[str, object] = (
-        json.loads(state_path.read_text(encoding='utf-8'))
-        if state_path.exists()
-        else {}
-    )
-    raw_hist = session_state.get('epoch_history')
-    if isinstance(raw_hist, list) and raw_hist:
-        first_rec = raw_hist[0]
-        if isinstance(first_rec, dict) and first_rec.get('epoch') == 0:
-            sim1 = first_rec.get('streamflow_sim_lead1')
-            if isinstance(sim1, list) and len(sim1) == len(common_dates):
-                return first_rec
-
-    meta_path = _basin_data_root(username, basin_id) / 'upload_meta.json'
+    num_dates: int,
+) -> tuple[Path, str, dict[str, object] | None]:
     upload_meta: dict[str, object] = (
         json.loads(meta_path.read_text(encoding='utf-8'))
         if meta_path.exists()
@@ -2341,27 +2668,82 @@ def _get_or_compute_baseline_eval(
         else ''
     )
     signature = (
-        f'{model_id}|{basin_id}|{resolved_forcing_mode}|'
+        f'{signature_prefix}|'
         f'{partition_info.get("record_start_date")}|'
         f'{partition_info.get("record_end_date")}|'
         f'{partition_info.get("split_date")}|'
         f'{partition_info.get("effective_seq_length")}|'
         f'{sf_up}|{pr_up}'
     )
+    state_path = sess_dir / 'session_state.json'
+    session_state: dict[str, object] = (
+        json.loads(state_path.read_text(encoding='utf-8'))
+        if state_path.exists()
+        else {}
+    )
+    raw_hist = session_state.get('epoch_history')
+    if isinstance(raw_hist, list) and raw_hist:
+        first_rec = raw_hist[0]
+        if isinstance(first_rec, dict) and first_rec.get('epoch') == 0:
+            sim1 = first_rec.get('streamflow_sim_lead1')
+            if isinstance(sim1, list) and len(sim1) == num_dates:
+                if not cache_path.is_file():
+                    sess_dir.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_text(
+                        json.dumps(
+                            {'signature': signature, 'record': first_rec},
+                            indent=2,
+                        ),
+                        encoding='utf-8',
+                    )
+                return cache_path, signature, first_rec
+
     if cache_path.is_file():
         try:
             cached = json.loads(cache_path.read_text(encoding='utf-8'))
             rec = cached.get('record') if isinstance(cached, dict) else None
             if (
                 isinstance(cached, dict)
-                and cached.get('signature') == signature
+                and cached.get('signature') in {signature, '__reset_seed__'}
                 and isinstance(rec, dict)
                 and isinstance(rec.get('streamflow_sim_lead1'), list)
-                and len(rec['streamflow_sim_lead1']) == len(common_dates)
+                and len(rec['streamflow_sim_lead1']) == num_dates
             ):
-                return rec
+                if cached.get('signature') == '__reset_seed__':
+                    cache_path.write_text(
+                        json.dumps(
+                            {'signature': signature, 'record': rec}, indent=2
+                        ),
+                        encoding='utf-8',
+                    )
+                return cache_path, signature, rec
         except (OSError, ValueError, TypeError):
             pass
+    return cache_path, signature, None
+
+
+def _get_or_compute_baseline_eval(
+    username: str,
+    basin_id: str,
+    model_id: str,
+    partition_info: dict[str, object],
+    resolved_forcing_mode: str,
+) -> dict[str, object] | None:
+    common_dates = pd.date_range(
+        str(partition_info['record_start_date']),
+        str(partition_info['record_end_date']),
+        freq='D',
+    )
+    sess_dir = _session_root(username, basin_id, model_id)
+    cache_path, signature, cached_rec = _load_or_seed_baseline_cache(
+        sess_dir,
+        _basin_data_root(username, basin_id) / 'upload_meta.json',
+        f'{model_id}|{basin_id}|{resolved_forcing_mode}',
+        partition_info,
+        len(common_dates),
+    )
+    if cached_rec is not None:
+        return cached_rec
 
     _, base_run_dir = _resolve_model_dir(model_id, username)
     base_ckpt, _ = _find_latest_checkpoint(base_run_dir)
@@ -2498,7 +2880,12 @@ def get_finetune_workspace_status(
         else {}
     )
     raw_uploaded = _load_raw_uploaded_arrays(username, basin_id)
-    global_forcing_status, rt_precip, _ = _inspect_global_forcing_coverage(
+    (
+        global_forcing_status,
+        rt_precip,
+        _,
+        extracted_products,
+    ) = _inspect_global_forcing_coverage(
         username, basin_id, selected_model, raw_uploaded
     )
     has_local_forcing = 'precip' in raw_uploaded and 'temp' in raw_uploaded
@@ -2553,7 +2940,12 @@ def get_finetune_workspace_status(
             selected_model,
             data_ready=data_ready,
             active_split=active_split,
-            extra_precip=(raw_uploaded.get('precip'), rt_precip),
+            extra_precip=(
+                raw_uploaded.get('precip'),
+                rt_precip,
+                raw_uploaded.get('temp'),
+                extracted_products,
+            ),
         )
     )
     if partition_info is None:
@@ -2664,13 +3056,56 @@ def reset_finetune_session(
     username: str,
     basin_id: str,
     model_id: str = 'google-floodhub-settings-110-epochs',
+    *,
+    split_ratio: float | None = None,
+    forcing_mode: str | None = None,
 ) -> dict[str, object]:
     """Reset the interactive fine-tuning session back to Epoch 0."""
     _resolve_model_dir(model_id, username)
     sess_dir = _session_root(username, basin_id, model_id)
+    saved_split = split_ratio
+    saved_mode = forcing_mode
     if sess_dir.exists():
-        shutil.rmtree(sess_dir)
-    return get_finetune_workspace_status(username, basin_id, model_id)
+        state_path = sess_dir / 'session_state.json'
+        cache_path = sess_dir / 'baseline_eval_cache.json'
+        if state_path.is_file():
+            try:
+                st = json.loads(state_path.read_text(encoding='utf-8'))
+                if saved_split is None and isinstance(
+                    st.get('split_ratio'), (int, float)
+                ):
+                    saved_split = float(st['split_ratio'])
+                if not saved_mode and st.get('forcing_mode'):
+                    saved_mode = str(st['forcing_mode'])
+                hist = st.get('epoch_history')
+                if (
+                    not cache_path.is_file()
+                    and isinstance(hist, list)
+                    and hist
+                    and isinstance(hist[0], dict)
+                    and hist[0].get('epoch') == 0
+                ):
+                    cache_path.write_text(
+                        json.dumps(
+                            {
+                                'signature': '__reset_seed__',
+                                'record': hist[0],
+                            },
+                            indent=2,
+                        ),
+                        encoding='utf-8',
+                    )
+            except (OSError, ValueError, TypeError):
+                pass
+        shutil.rmtree(sess_dir / 'run', ignore_errors=True)
+        state_path.unlink(missing_ok=True)
+    return get_finetune_workspace_status(
+        username,
+        basin_id,
+        model_id,
+        split_ratio=saved_split,
+        forcing_mode=saved_mode,
+    )
 
 
 def _create_lr_scheduler(
@@ -3104,6 +3539,22 @@ def _execute_epoch_training_steps(
         )
 
     if current_epoch == 0 and not epoch_history:
+        _update_finetune_run_progress(
+            eval_ctx.progress_key,
+            active=True,
+            status='running',
+            phase='evaluating_baseline',
+            step_epoch=0,
+            completed_step_epochs=0,
+            total_step_epochs=epochs,
+            current_epoch=current_epoch,
+            start_epoch=current_epoch,
+            target_total_epoch=current_epoch + epochs,
+            percent=4.0,
+            message=(
+                f'Evaluating pretrained baseline (Epoch 0 of {epochs})...'
+            ),
+        )
         rec0, _ = _evaluate_and_build_epoch_record(
             eval_ctx,
             0,
@@ -3124,6 +3575,24 @@ def _execute_epoch_training_steps(
 
     for step_idx in range(1, epochs + 1):
         target_epoch = current_epoch + step_idx
+        pct_start = round(((step_idx - 1) / max(1, epochs)) * 90.0 + 6.0, 1)
+        _update_finetune_run_progress(
+            eval_ctx.progress_key,
+            active=True,
+            status='running',
+            phase='training',
+            step_epoch=step_idx,
+            completed_step_epochs=step_idx - 1,
+            total_step_epochs=epochs,
+            current_epoch=target_epoch,
+            start_epoch=current_epoch,
+            target_total_epoch=current_epoch + epochs,
+            percent=pct_start,
+            message=(
+                f'Training Epoch {step_idx} of {epochs} '
+                f'(Total Epoch {target_epoch})...'
+            ),
+        )
         mean_tr_loss = _train_single_epoch(
             eval_ctx.model,
             train_loader,
@@ -3134,6 +3603,25 @@ def _execute_epoch_training_steps(
 
         ckpt_out = run_dir / f'model_epoch{target_epoch:03d}.pt'
         torch.save(eval_ctx.model.state_dict(), ckpt_out)
+
+        pct_eval = round(((step_idx - 0.35) / max(1, epochs)) * 90.0 + 6.0, 1)
+        _update_finetune_run_progress(
+            eval_ctx.progress_key,
+            active=True,
+            status='running',
+            phase='evaluating',
+            step_epoch=step_idx,
+            completed_step_epochs=step_idx - 1,
+            total_step_epochs=epochs,
+            current_epoch=target_epoch,
+            start_epoch=current_epoch,
+            target_total_epoch=current_epoch + epochs,
+            percent=pct_eval,
+            message=(
+                f'Evaluating Epoch {step_idx} of {epochs} '
+                f'(Total Epoch {target_epoch})...'
+            ),
+        )
 
         active_lr = float(optimizer.param_groups[0]['lr'])
         rec_ep, val_loss = _evaluate_and_build_epoch_record(
@@ -3152,6 +3640,24 @@ def _execute_epoch_training_steps(
             eval_ctx.unfrozen_parts,
         )
         epoch_history.append(rec_ep)
+        pct_done = round((step_idx / max(1, epochs)) * 90.0 + 6.0, 1)
+        _update_finetune_run_progress(
+            eval_ctx.progress_key,
+            active=True,
+            status='running',
+            phase='training',
+            step_epoch=step_idx,
+            completed_step_epochs=step_idx,
+            total_step_epochs=epochs,
+            current_epoch=target_epoch,
+            start_epoch=current_epoch,
+            target_total_epoch=current_epoch + epochs,
+            percent=pct_done,
+            message=(
+                f'Completed Epoch {step_idx} of {epochs} '
+                f'(Total Epoch {target_epoch})'
+            ),
+        )
 
     return epoch_history
 
@@ -3169,20 +3675,20 @@ def _load_or_init_finetune_model(
         load_model_weights(
             model, latest_sess_ckpt, device='cpu', allow_new_embeddings=False
         )
-        shared_fc = getattr(model, 'shared_embeddings_fc', None)
-        if (
-            isinstance(model, BaseModel)
-            and isinstance(shared_fc, torch.nn.ModuleDict)
-            and 'local_forcing' in shared_fc
-        ):
-            model.set_newly_initialized_embeddings(
-                {('shared_embeddings_fc', 'local_forcing')}
-            )
     else:
         current_epoch = 0
         load_model_weights(
             model, base_ckpt, device='cpu', allow_new_embeddings=True
         )
+    shared_fc = getattr(model, 'shared_embeddings_fc', None)
+    if (
+        isinstance(model, BaseModel)
+        and isinstance(shared_fc, torch.nn.ModuleDict)
+        and 'local_forcing' in shared_fc
+    ):
+        existing_new = set(model.get_newly_initialized_embeddings())
+        existing_new.add(('shared_embeddings_fc', 'local_forcing'))
+        model.set_newly_initialized_embeddings(existing_new)
 
     ft_spec = _build_finetune_modules_spec(finetune_modules, model)
     unfrozen_parts = _apply_freeze_spec(model, ft_spec)
@@ -3241,6 +3747,103 @@ def _build_epoch_eval_context(
         lead_time=int(ft_cfg.lead_time),
         unfrozen_parts=unfrozen_parts,
     )
+
+
+def _run_finetune_training_phase(
+    prog_key: tuple[str, str],
+    ft_cfg: Config,
+    base_ckpt: Path,
+    finetune_modules: list[str] | dict[str, object] | None,
+    partition: dict[str, object],
+) -> tuple[int, list[str], list[dict[str, object]]]:
+    epochs = int(ft_cfg.epochs)
+    run_dir = Path(str(ft_cfg.run_dir))
+    state_path = run_dir.parent / 'session_state.json'
+    session_state: dict[str, object] = (
+        json.loads(state_path.read_text(encoding='utf-8'))
+        if state_path.exists()
+        else {}
+    )
+    _update_finetune_run_progress(
+        prog_key,
+        active=True,
+        status='running',
+        phase='preparing',
+        step_epoch=0,
+        completed_step_epochs=0,
+        total_step_epochs=epochs,
+        current_epoch=0,
+        start_epoch=0,
+        target_total_epoch=epochs,
+        percent=2.0,
+        message=f'Preparing dataset & model for {epochs} epoch(s)...',
+    )
+    try:
+        train_ds = get_dataset(
+            cfg=ft_cfg, is_train=True, period='train', compute_scaler=False
+        )
+        model, current_epoch, unfrozen_parts = _load_or_init_finetune_model(
+            ft_cfg, run_dir, base_ckpt, finetune_modules
+        )
+        eval_ctx = dataclasses.replace(
+            _build_epoch_eval_context(
+                model,
+                ft_cfg,
+                train_ds,
+                partition,
+                unfrozen_parts,
+            ),
+            progress_key=prog_key,
+        )
+        epoch_history = _execute_epoch_training_steps(
+            eval_ctx,
+            train_ds,
+            ft_cfg,
+            current_epoch,
+            list(session_state.get('epoch_history') or []),
+        )
+    except (NoTrainDataError, NoEvaluationDataError, AllNaNError) as exc:
+        _update_finetune_run_progress(
+            prog_key,
+            active=False,
+            status='error',
+            phase='error',
+            message=str(exc),
+        )
+        raise ValueError(
+            'No valid training or validation sequences found in the selected '
+            f'date partition for basin {prog_key[1]!r} ({exc}). Ensure forcing '
+            'and streamflow data have sufficient non-NaN coverage across both '
+            'train and validation windows.'
+        ) from exc
+    except Exception as exc:
+        _update_finetune_run_progress(
+            prog_key,
+            active=False,
+            status='error',
+            phase='error',
+            message=str(exc),
+        )
+        raise
+
+    _update_finetune_run_progress(
+        prog_key,
+        active=False,
+        status='completed',
+        phase='completed',
+        step_epoch=epochs,
+        completed_step_epochs=epochs,
+        total_step_epochs=epochs,
+        current_epoch=current_epoch + epochs,
+        start_epoch=current_epoch,
+        target_total_epoch=current_epoch + epochs,
+        percent=100.0,
+        message=(
+            f'Completed {epochs} of {epochs} tuning epoch(s) '
+            f'(Total Epoch {current_epoch + epochs})'
+        ),
+    )
+    return current_epoch, unfrozen_parts, epoch_history
 
 
 def run_finetune_epochs(
@@ -3378,36 +3981,13 @@ def run_finetune_epochs(
         )
     )
     ft_cfg.update_config({'epochs': epochs})
-
-    try:
-        train_ds = get_dataset(
-            cfg=ft_cfg, is_train=True, period='train', compute_scaler=False
-        )
-        model, current_epoch, unfrozen_parts = _load_or_init_finetune_model(
-            ft_cfg, run_dir, base_ckpt, finetune_modules
-        )
-        eval_ctx = _build_epoch_eval_context(
-            model,
-            ft_cfg,
-            train_ds,
-            partition,
-            unfrozen_parts,
-        )
-
-        epoch_history = _execute_epoch_training_steps(
-            eval_ctx,
-            train_ds,
-            ft_cfg,
-            current_epoch,
-            list(session_state.get('epoch_history') or []),
-        )
-    except (NoTrainDataError, NoEvaluationDataError, AllNaNError) as exc:
-        raise ValueError(
-            'No valid training or validation sequences found in the selected '
-            f'date partition for basin {basin_id!r} ({exc}). Ensure forcing '
-            'and streamflow data have sufficient non-NaN coverage across both '
-            'train and validation windows.'
-        ) from exc
+    current_epoch, unfrozen_parts, epoch_history = _run_finetune_training_phase(
+        (username, basin_id),
+        ft_cfg,
+        base_ckpt,
+        finetune_modules,
+        partition,
+    )
 
     session_state = {
         'basin_id': basin_id,
@@ -3437,3 +4017,184 @@ def run_finetune_epochs(
         split_ratio=float(str(partition['split_ratio'])),
         forcing_mode=resolved_forcing_mode,
     )
+
+
+def _copy_scaler_to_saved_model_dir(
+    target_dir: Path,
+    base_run_dir: Path,
+    sess_dir: Path,
+) -> None:
+    """Copy a valid ``scaler.zarr`` into ``target_dir``."""
+    dst_scaler = target_dir / 'scaler.zarr'
+    for candidate in (
+        base_run_dir / 'scaler.zarr',
+        sess_dir / 'run' / 'scaler.zarr',
+        sess_dir / 'baseline_eval_run' / 'scaler.zarr',
+    ):
+        if _is_valid_zarr_dir(candidate):
+            if candidate.resolve() == dst_scaler.resolve():
+                return
+            if dst_scaler.exists():
+                shutil.rmtree(dst_scaler)
+            shutil.copytree(candidate, dst_scaler)
+            return
+
+
+def _write_saved_model_config(
+    base_cfg: Config,
+    base_run_dir: Path,
+    target_dir: Path,
+    run_slug: str,
+) -> tuple[list[str], list[str]]:
+    """Write ``config.yml`` for a saved user model and return product lists."""
+    cfg_dict = base_cfg.as_dict().copy()
+    if isinstance(cfg_dict.get('hindcast_inputs'), dict):
+        hc_in = dict(cfg_dict['hindcast_inputs'])
+        hc_in.pop('local_forcing', None)
+        cfg_dict['hindcast_inputs'] = hc_in
+    if isinstance(cfg_dict.get('forecast_inputs'), dict):
+        fc_in = dict(cfg_dict['forecast_inputs'])
+        fc_in.pop('local_forcing', None)
+        cfg_dict['forecast_inputs'] = fc_in
+
+    cfg_dict['is_finetuning'] = False
+    cfg_dict['compile'] = False
+    cfg_dict['device'] = 'cpu'
+    cfg_dict['run_dir'] = str(target_dir)
+    cfg_dict['base_run_dir'] = str(base_run_dir)
+    cfg_dict['experiment_name'] = run_slug
+
+    cfg_yml = target_dir / 'config.yml'
+    if cfg_yml.exists():
+        cfg_yml.unlink()
+    Config(cfg_dict, dev_mode=True).dump_config(folder=target_dir)
+
+    fc_prods = [
+        p.upper()
+        for p in _extract_product_groups(cfg_dict.get('forecast_inputs'))
+        if p.lower() != 'local_forcing'
+    ]
+    hc_prods = [
+        p.upper()
+        for p in _extract_product_groups(cfg_dict.get('hindcast_inputs'))
+        if p.lower() != 'local_forcing'
+    ]
+    return fc_prods, hc_prods
+
+
+def _copy_epoch_ckpt_to_saved_model_dir(
+    base_ckpt: Path,
+    sess_dir: Path,
+    target_dir: Path,
+    epoch_val: int,
+) -> Path:
+    """Copy the requested epoch checkpoint into ``target_dir``."""
+    if epoch_val == 0:
+        src_ckpt = base_ckpt
+    else:
+        src_ckpt = sess_dir / 'run' / f'model_epoch{epoch_val:03d}.pt'
+        if not src_ckpt.is_file():
+            raise FileNotFoundError(
+                f'Checkpoint for epoch {epoch_val} was not found at '
+                f'{src_ckpt}. Run fine-tuning to reach epoch {epoch_val} first.'
+            )
+
+    dst_ckpt = target_dir / f'model_epoch{epoch_val:03d}.pt'
+    tmp_ckpt: Path | None = None
+    if src_ckpt.resolve() == dst_ckpt.resolve():
+        tmp_ckpt = target_dir / f'.tmp_model_epoch{epoch_val:03d}.pt'
+        shutil.copy2(src_ckpt, tmp_ckpt)
+    for existing_pt in target_dir.glob('model_epoch*.pt'):
+        existing_pt.unlink()
+    if tmp_ckpt is not None:
+        tmp_ckpt.replace(dst_ckpt)
+    else:
+        shutil.copy2(src_ckpt, dst_ckpt)
+    return dst_ckpt
+
+
+def save_finetune_checkpoint_to_inventory(
+    username: str,
+    basin_id: str,
+    model_id: str,
+    epoch: int,
+    model_name: str,
+) -> dict[str, object]:
+    """Save an epoch checkpoint to the user's model inventory.
+
+    The saved model is written to ``profile_dir/model_runs/<slug>`` with its
+    checkpoint, ``config.yml``, ``scaler.zarr``, and ``model_meta.json`` so it
+    is immediately selectable in both the Fine-Tuning and Forecasting/DA model
+    inventories.
+    """
+    clean_user = (username or 'guest').strip() or 'guest'
+    safe_basin = _require_safe_id(basin_id, 'basin_id')
+    epoch_val = _validate_positive_int(epoch, 'epoch', min_val=0)
+    clean_name = (model_name or '').strip()
+    if not clean_name:
+        raise ValueError('model_name must be a non-empty string.')
+    if len(clean_name) > 120:  # noqa: PLR2004
+        raise ValueError('model_name must be 120 characters or fewer.')
+
+    run_slug = _SAFE_ID_RE.sub('_', clean_name.lower()).strip('._-')
+    if not run_slug:
+        raise ValueError(
+            'model_name must contain at least one alphanumeric character.'
+        )
+
+    base_label, base_run_dir = _resolve_model_dir(model_id, clean_user)
+    base_ckpt, _ = _find_latest_checkpoint(base_run_dir)
+    if base_ckpt is None:
+        raise FileNotFoundError(f'No checkpoint found in {base_run_dir}.')
+
+    sess_dir = _session_root(clean_user, safe_basin, model_id)
+    runs_dir = get_profile_manager().get_model_runs_dir(clean_user).resolve()
+    target_dir = (runs_dir / run_slug).resolve()
+    if target_dir.parent != runs_dir:
+        raise ValueError(f'Invalid model_name: {model_name!r}')
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    _copy_epoch_ckpt_to_saved_model_dir(
+        base_ckpt, sess_dir, target_dir, epoch_val
+    )
+
+    base_cfg = Config(base_run_dir / 'config.yml', dev_mode=True)
+    fc_prods, hc_prods = _write_saved_model_config(
+        base_cfg, base_run_dir, target_dir, run_slug
+    )
+    _copy_scaler_to_saved_model_dir(target_dir, base_run_dir, sess_dir)
+
+    saved_model_id = f'user_{run_slug}'
+    display_label = f'{clean_name} (Epoch {epoch_val})'
+    meta_payload: dict[str, object] = {
+        'model_id': saved_model_id,
+        'name': clean_name,
+        'label': display_label,
+        'short_label': clean_name,
+        'source_model_id': model_id,
+        'source_model_label': base_label,
+        'source_basin_id': safe_basin,
+        'source_epoch': epoch_val,
+        'checkpoint_epoch': epoch_val,
+        'forecast_products': fc_prods,
+        'hindcast_products': hc_prods,
+        'saved_at': datetime.now(UTC).isoformat(),
+    }
+    (target_dir / 'model_meta.json').write_text(
+        json.dumps(meta_payload, indent=2),
+        encoding='utf-8',
+    )
+    _MODEL_INSPECTION_CACHE.clear()
+
+    models = list_finetune_models(clean_user)
+    saved_entry = next(
+        (m for m in models if m.get('model_id') == saved_model_id),
+        meta_payload,
+    )
+    return {
+        'status': 'saved',
+        'saved_model_id': saved_model_id,
+        'saved_model': saved_entry,
+        'meta': meta_payload,
+        'models': models,
+    }
