@@ -313,6 +313,7 @@ class FineTuningDOMTests(unittest.TestCase):
         required_ft_ids = [
             'ftModelSelect',
             'ftBasinSelect',
+            'ftBasinLoadingBadge',
             'ftGlobalForcingCard',
             'ftGlobalArchiveBadge',
             'ftGlobalCoverageSummaryText',
@@ -348,6 +349,9 @@ class FineTuningDOMTests(unittest.TestCase):
             'ftResetSessionBtn',
             'ftEpochScrubber',
             'ftHydrographCanvas',
+            'ftHydrographLoadingOverlay',
+            'ftHydrographLoadingTitle',
+            'ftHydrographLoadingSubtitle',
             'ftLossCurveCanvas',
             'ftEpochHistoryTableBody',
         ]
@@ -672,6 +676,24 @@ class FineTuneServiceUnitTests(unittest.TestCase):
                 },
             )
             ds_rt.to_zarr(rt_hres_zarr, mode='w', consolidated=True)
+
+            # First run a local_only evaluation so global_dyn_placeholders is
+            # populated with all-NaN placeholders and cached in _open_zarr, then
+            # switch to global_only and a shifted date range to verify that
+            # _open_zarr cache invalidation prevents stale NoTrainDataError.
+            _upload_all_test_csvs(
+                TEST_USER,
+                TEST_BASIN,
+                num_days=65,
+            )
+            ws_local = finetune_service.get_finetune_workspace_status(
+                username=TEST_USER,
+                basin_id=TEST_BASIN,
+                model_id=SYNTH_MODEL_ID,
+                forcing_mode='local_only',
+            )
+            assert ws_local['data_ready'] is True
+            finetune_service.clear_finetune_data(TEST_USER, TEST_BASIN)
 
             q_rows = ['basin,date,streamflow']
             for i, dt in enumerate(dates):

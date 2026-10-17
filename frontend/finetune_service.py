@@ -34,7 +34,7 @@ import xarray as xr
 
 from frontend.profile_manager import get_profile_manager
 from model.datasetzoo import get_dataset
-from model.datasetzoo.multimet import MultimetDataLoader
+from model.datasetzoo.multimet import MultimetDataLoader, _open_zarr
 from model.modelzoo import (
     BaseModel,
     get_model,
@@ -43,6 +43,11 @@ from model.modelzoo import (
 )
 from model.training import get_loss_obj, get_optimizer, get_regularization_obj
 from model.utils.config import Config
+from model.utils.errors import (
+    AllNaNError,
+    NoEvaluationDataError,
+    NoTrainDataError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -341,6 +346,9 @@ def _default_head_component_name(component_names: Sequence[str]) -> str:
     return component_names[-1] if component_names else 'head'
 
 
+_MODEL_INSPECTION_CACHE: dict[tuple[object, ...], dict[str, object]] = {}
+
+
 def _inspect_model_from_run_dir(
     model_id: str,
     label: str,
@@ -354,6 +362,23 @@ def _inspect_model_from_run_dir(
         raise FileNotFoundError(
             f'Model directory {run_dir} is missing config.yml or checkpoint.'
         )
+
+    cache_key = (
+        model_id,
+        label,
+        str(run_dir),
+        str(ckpt_path),
+        cfg_path.stat().st_mtime_ns,
+        ckpt_path.stat().st_mtime_ns,
+        tuple(
+            sorted((k, tuple(v)) for k, v in extra_local_products.items())
+            if extra_local_products
+            else ()
+        ),
+    )
+    cached_info = _MODEL_INSPECTION_CACHE.get(cache_key)
+    if cached_info is not None:
+        return dict(cached_info)
 
     cfg = Config(cfg_path, dev_mode=True)
     cfg_dict = cfg.as_dict().copy()
@@ -406,7 +431,7 @@ def _inspect_model_from_run_dir(
     )
     tunable_names = model_cls.get_tunable_component_names()
 
-    return {
+    result: dict[str, object] = {
         'model_id': model_id,
         'label': label,
         'run_dir': str(run_dir),
@@ -436,6 +461,8 @@ def _inspect_model_from_run_dir(
         'static_attributes': list(cfg.static_attributes or []),
         'target_variables': list(cfg.target_variables or ['streamflow']),
     }
+    _MODEL_INSPECTION_CACHE[cache_key] = result
+    return dict(result)
 
 
 def list_finetune_models(
@@ -1272,6 +1299,7 @@ def _rebuild_local_zarr_stores(
 
     basin_file = zarr_root / 'basin.txt'
     basin_file.write_text(f'{basin_id}\n', encoding='utf-8')
+    _open_zarr.cache_clear()
 
     return {
         'start_date': common_dates[0].strftime('%Y-%m-%d'),
@@ -1651,6 +1679,7 @@ def _prepare_finetune_zarr_stores(
     }
     attr_ds = xr.Dataset(static_vars, coords={'basin': [basin_id]})
     attr_ds.to_zarr(attr_path, mode='w')
+    _open_zarr.cache_clear()
     return global_dyn_dir, attr_path
 
 
@@ -2369,11 +2398,9 @@ def _get_or_compute_baseline_eval(
 
     eval_run_dir = sess_dir / 'baseline_eval_run'
     eval_run_dir.mkdir(parents=True, exist_ok=True)
+    if not include_local:
+        shutil.rmtree(eval_run_dir / 'scaler.zarr', ignore_errors=True)
     lr_val = float(base_cfg.initial_learning_rate or 5e-4)
-    loss_val = _resolve_and_validate_loss(None, base_cfg)
-    lr_strat_val = _resolve_and_validate_lr_strategy(None, base_cfg)
-    bs_val = int(base_cfg.batch_size or 16)
-
     ft_cfg = _build_finetune_config(
         _FinetuneConfigParams(
             base_cfg=base_cfg,
@@ -2385,14 +2412,17 @@ def _get_or_compute_baseline_eval(
             partition=partition_info,
             lead_time=lead_time,
             lr_val=lr_val,
-            loss_val=loss_val,
-            lr_strat_val=lr_strat_val,
-            bs_val=bs_val,
+            loss_val=_resolve_and_validate_loss(None, base_cfg),
+            lr_strat_val=_resolve_and_validate_lr_strategy(None, base_cfg),
+            bs_val=int(base_cfg.batch_size or 16),
             include_local_forcing=include_local,
         )
     )
     train_ds = get_dataset(
-        cfg=ft_cfg, is_train=True, period='train', compute_scaler=False
+        cfg=ft_cfg,
+        is_train=include_local,
+        period='train',
+        compute_scaler=False,
     )
     torch.manual_seed(int(ft_cfg.seed or 42))
     model = get_model(ft_cfg).to(torch.device('cpu'))
@@ -2565,7 +2595,16 @@ def get_finetune_workspace_status(
                         'val_rmse',
                     )
                 }
-        except (FileNotFoundError, KeyError, ValueError, RuntimeError):
+        except (
+            FileNotFoundError,
+            KeyError,
+            ValueError,
+            RuntimeError,
+            NoTrainDataError,
+            NoEvaluationDataError,
+            AllNaNError,
+            OSError,
+        ):
             baseline_metrics = None
 
     comp_names = selected_model.get('tunable_component_names')
@@ -3165,8 +3204,12 @@ def _build_epoch_eval_context(
     val_ds = get_dataset(
         cfg=ft_cfg, is_train=False, period='validation', compute_scaler=False
     )
-    train_eval_ds = get_dataset(
-        cfg=ft_cfg, is_train=False, period='train', compute_scaler=False
+    train_eval_ds = (
+        train_ds
+        if not getattr(train_ds, 'is_train', True)
+        else get_dataset(
+            cfg=ft_cfg, is_train=False, period='train', compute_scaler=False
+        )
     )
     loss_obj = get_loss_obj(ft_cfg)
     if ft_cfg.regularization:
@@ -3336,36 +3379,42 @@ def run_finetune_epochs(
     )
     ft_cfg.update_config({'epochs': epochs})
 
-    train_ds = get_dataset(
-        cfg=ft_cfg, is_train=True, period='train', compute_scaler=False
-    )
-    model, current_epoch, unfrozen_parts = _load_or_init_finetune_model(
-        ft_cfg, run_dir, base_ckpt, finetune_modules
-    )
-    eval_ctx = _build_epoch_eval_context(
-        model,
-        ft_cfg,
-        train_ds,
-        partition,
-        unfrozen_parts,
-    )
+    try:
+        train_ds = get_dataset(
+            cfg=ft_cfg, is_train=True, period='train', compute_scaler=False
+        )
+        model, current_epoch, unfrozen_parts = _load_or_init_finetune_model(
+            ft_cfg, run_dir, base_ckpt, finetune_modules
+        )
+        eval_ctx = _build_epoch_eval_context(
+            model,
+            ft_cfg,
+            train_ds,
+            partition,
+            unfrozen_parts,
+        )
 
-    raw_history = session_state.get('epoch_history')
-    epoch_history = _execute_epoch_training_steps(
-        eval_ctx,
-        train_ds,
-        ft_cfg,
-        current_epoch,
-        list(raw_history) if isinstance(raw_history, list) else [],
-    )
+        epoch_history = _execute_epoch_training_steps(
+            eval_ctx,
+            train_ds,
+            ft_cfg,
+            current_epoch,
+            list(session_state.get('epoch_history') or []),
+        )
+    except (NoTrainDataError, NoEvaluationDataError, AllNaNError) as exc:
+        raise ValueError(
+            'No valid training or validation sequences found in the selected '
+            f'date partition for basin {basin_id!r} ({exc}). Ensure forcing '
+            'and streamflow data have sufficient non-NaN coverage across both '
+            'train and validation windows.'
+        ) from exc
 
-    split_ratio_out = float(str(partition['split_ratio']))
     session_state = {
         'basin_id': basin_id,
         'model_id': model_id,
         'current_epoch': current_epoch + epochs,
         'status': 'paused',
-        'split_ratio': split_ratio_out,
+        'split_ratio': float(str(partition['split_ratio'])),
         'split_date': partition['split_date'],
         'forcing_mode': resolved_forcing_mode,
         'updated_at': datetime.now(UTC).isoformat(),
@@ -3385,6 +3434,6 @@ def run_finetune_epochs(
         username,
         basin_id,
         model_id,
-        split_ratio=split_ratio_out,
+        split_ratio=float(str(partition['split_ratio'])),
         forcing_mode=resolved_forcing_mode,
     )

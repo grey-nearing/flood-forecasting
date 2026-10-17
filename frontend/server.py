@@ -407,6 +407,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                 '/api/profile/',
                 '/api/account/',
                 '/api/forecast/',
+                '/api/finetune/',
                 '/api/watersheds',
                 '/api/archives',
             )
@@ -471,11 +472,17 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        if self._dispatch_simple_get(path, query):
+        try:
+            if self._dispatch_simple_get(path, query):
+                return
+            if self._dispatch_prefix_get(path, query):
+                return
+            self._send_error('Not Found', status=404)
+        except (BrokenPipeError, ConnectionResetError):
             return
-        if self._dispatch_prefix_get(path, query):
-            return
-        self._send_error('Not Found', status=404)
+        except Exception as exc:
+            logger.exception('Unhandled exception in GET %s', path)
+            self._send_error(str(exc), status=500)
 
     def _dispatch_simple_get(
         self,
@@ -1592,7 +1599,13 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         if handler is None:
             self._send_error('Not Found', status=404)
             return
-        handler(data)
+        try:
+            handler(data)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as exc:
+            logger.exception('Unhandled exception in POST %s', path)
+            self._send_error(str(exc), status=500)
 
     def _post_delineate(self, data: dict[str, Any]) -> None:
         raw_dataset = (

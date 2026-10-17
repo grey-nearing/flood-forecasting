@@ -1488,7 +1488,13 @@
           </div>
 
           <div>
-            <label for="ftBasinSelect" class="text-[11px] text-[#5f6368] block mb-1">Clipped Watershed Polygon (Account)</label>
+            <div class="flex items-center justify-between mb-1">
+              <label for="ftBasinSelect" class="text-[11px] text-[#5f6368]">Clipped Watershed Polygon (Account)</label>
+              <span id="ftBasinLoadingBadge" class="hidden inline-flex items-center gap-1 text-[10px] font-semibold text-[#1a73e8] bg-[#e8f0fe] border border-[#d2e3fc] px-2 py-0.5 rounded-full">
+                <span class="w-2.5 h-2.5 border-2 border-[#1a73e8] border-t-transparent rounded-full animate-spin"></span>
+                <span id="ftBasinLoadingBadgeText">Loading basin...</span>
+              </span>
+            </div>
             <select id="ftBasinSelect" class="w-full bg-white border border-[#dadce0] text-xs rounded-lg px-2 py-1.5 text-[#202124]">
               <option value="" selected>No clipped watersheds in account</option>
             </select>
@@ -1814,6 +1820,24 @@
           </div>
           <div class="flex-1 relative min-h-[320px]">
             <canvas id="ftHydrographCanvas"></canvas>
+            <!-- Basin / Model / Epoch Loading Overlay -->
+            <div id="ftHydrographLoadingOverlay" class="hidden absolute inset-0 z-20 bg-white/85 backdrop-blur-[2px] rounded-lg flex flex-col items-center justify-center p-6 transition-opacity duration-150">
+              <div class="bg-white border border-[#d2e3fc] shadow-md rounded-xl px-6 py-4 flex flex-col items-center gap-2.5 max-w-sm text-center">
+                <div class="relative flex items-center justify-center w-10 h-10">
+                  <span class="absolute inset-0 rounded-full border-4 border-[#e8f0fe]"></span>
+                  <span class="absolute inset-0 rounded-full border-4 border-[#1a73e8] border-t-transparent animate-spin"></span>
+                </div>
+                <div id="ftHydrographLoadingTitle" class="text-xs font-bold text-[#174ea6]">
+                  Loading Basin Data &amp; Baseline Simulation...
+                </div>
+                <div id="ftHydrographLoadingSubtitle" class="text-[11px] text-[#5f6368] leading-snug">
+                  Inspecting global forcing archive, uploaded CSVs, and running Epoch 0 baseline evaluation
+                </div>
+                <div class="w-48 bg-[#e8f0fe] h-1.5 rounded-full overflow-hidden mt-1">
+                  <div class="bg-[#1a73e8] h-full w-1/2 rounded-full animate-pulse"></div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -18836,7 +18860,10 @@
       const isGeoExtracting = (typeof geoActiveExtractionCount === 'number' && geoActiveExtractionCount > 0);
       const isWeatherRefreshing = Boolean(typeof activeWeatherRefreshJobId !== 'undefined' && activeWeatherRefreshJobId) || Boolean(serverDetectedActiveTabs['tab-weather']);
       const isHistRunning = Boolean(typeof activeHistJobId !== 'undefined' && activeHistJobId) || Boolean(serverDetectedActiveTabs['tab-training']);
-      const isFtActive = Boolean(typeof ftIsRunning !== 'undefined' && ftIsRunning) || Boolean(serverDetectedActiveTabs['tab-finetuning']);
+      const isFtActive = Boolean(typeof ftIsRunning !== 'undefined' && ftIsRunning)
+        || Boolean(typeof ftIsLoadingWorkspace !== 'undefined' && ftIsLoadingWorkspace)
+        || Boolean(typeof ftIsExtractingGlobal !== 'undefined' && ftIsExtractingGlobal)
+        || Boolean(serverDetectedActiveTabs['tab-finetuning']);
       const isFcFetching = Boolean(typeof fcIsFetchingRealtime !== 'undefined' && fcIsFetchingRealtime);
       const isFcModelRunning = Boolean(typeof fcIsRunningModels !== 'undefined' && fcIsRunningModels) || Boolean(typeof activeForecastJobId !== 'undefined' && activeForecastJobId);
       const isFcActive = isFcFetching || isFcModelRunning || isAnyVarDaRunning() || Boolean(serverDetectedActiveTabs['tab-forecasting']);
@@ -18993,6 +19020,41 @@
     let ftInspectedEpochIndex = 0;
     let ftSelectedModulesSet = new Set(['shared_embeddings_fc.local_forcing', 'head']);
     let ftIsRunning = false;
+    let ftIsLoadingWorkspace = false;
+    let ftRefreshRequestSeq = 0;
+
+    function setFtWorkspaceLoading(active, { title = '', subtitle = '', badgeText = '' } = {}) {
+      ftIsLoadingWorkspace = Boolean(active);
+      const overlay = document.getElementById('ftHydrographLoadingOverlay');
+      const titleEl = document.getElementById('ftHydrographLoadingTitle');
+      const subEl = document.getElementById('ftHydrographLoadingSubtitle');
+      const badge = document.getElementById('ftBasinLoadingBadge');
+      const badgeTxt = document.getElementById('ftBasinLoadingBadgeText');
+      const statePill = document.getElementById('ftSessionStatePill');
+
+      if (overlay) {
+        overlay.classList.toggle('hidden', !active);
+      }
+      if (active && titleEl && title) {
+        titleEl.textContent = title;
+      }
+      if (active && subEl && subtitle) {
+        subEl.textContent = subtitle;
+      }
+      if (badge) {
+        badge.classList.toggle('hidden', !active);
+      }
+      if (active && badgeTxt && badgeText) {
+        badgeTxt.textContent = badgeText;
+      }
+      if (active && statePill && title) {
+        statePill.textContent = title;
+        statePill.className = 'text-[10px] bg-[#e8f0fe] text-[#1a73e8] border border-[#d2e3fc] px-2.5 py-0.5 rounded-full font-mono font-semibold animate-pulse';
+      }
+      if (typeof syncAllTabActivityIndicators === 'function') {
+        syncAllTabActivityIndicators();
+      }
+    }
 
     const ftPartitionOverlayPlugin = {
       id: 'ftPartitionOverlay',
@@ -20158,6 +20220,7 @@
     async function refreshFineTuningTab(overrideForcingMode = null) {
       syncFtBasinDropdown();
       const basinId = getActiveFtBasinId();
+      const basinLabel = getActiveFtBasinDisplayName() || basinId || 'Catchment';
       const modelSel = document.getElementById('ftModelSelect');
       const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
       const slider = document.getElementById('ftSplitRatioSlider');
@@ -20166,17 +20229,32 @@
       const forcingMode = overrideForcingMode || (modeSel && modeSel.value) || '';
       const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
 
-      const resp = await fetch(
-        '/api/finetune/status?basin_id=' + encodeURIComponent(basinId) +
-        '&model_id=' + encodeURIComponent(modelId) +
-        '&split_ratio=' + encodeURIComponent(splitRatio) +
-        (forcingMode ? '&forcing_mode=' + encodeURIComponent(forcingMode) : '') +
-        (u ? '&username=' + encodeURIComponent(u) : ''),
-        u ? { headers: { 'X-User-Profile': u } } : undefined
-      );
-      if (resp.ok) {
-        const data = await resp.json();
-        applyFtWorkspacePayload(data);
+      const reqSeq = ++ftRefreshRequestSeq;
+      setFtWorkspaceLoading(true, {
+        title: 'Loading ' + basinLabel + ' Workspace...',
+        subtitle: 'Inspecting global forcing archive, uploaded CSVs, and evaluating Epoch 0 baseline simulation...',
+        badgeText: 'Loading basin...',
+      });
+
+      try {
+        const resp = await fetch(
+          '/api/finetune/status?basin_id=' + encodeURIComponent(basinId) +
+          '&model_id=' + encodeURIComponent(modelId) +
+          '&split_ratio=' + encodeURIComponent(splitRatio) +
+          (forcingMode ? '&forcing_mode=' + encodeURIComponent(forcingMode) : '') +
+          (u ? '&username=' + encodeURIComponent(u) : ''),
+          u ? { headers: { 'X-User-Profile': u } } : undefined
+        );
+        if (reqSeq !== ftRefreshRequestSeq) return;
+        if (resp.ok) {
+          const data = await resp.json();
+          if (reqSeq !== ftRefreshRequestSeq) return;
+          applyFtWorkspacePayload(data);
+        }
+      } finally {
+        if (reqSeq === ftRefreshRequestSeq) {
+          setFtWorkspaceLoading(false);
+        }
       }
     }
 
@@ -20189,6 +20267,7 @@
         setFtStatusBanner('Please clip or delineate a watershed polygon in your account before uploading CSVs.', 'error');
         return;
       }
+      const basinLabel = getActiveFtBasinDisplayName() || basinId;
       const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
       const modelSel = document.getElementById('ftModelSelect');
       const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
@@ -20206,23 +20285,36 @@
       }
 
       setFtStatusBanner('Uploading ' + file.name + '...', 'info');
+      setFtWorkspaceLoading(true, {
+        title: 'Uploading ' + file.name + ' to ' + basinLabel + '...',
+        subtitle: 'Aligning uploaded observations with catchment forcings and evaluating Epoch 0 baseline simulation...',
+        badgeText: 'Uploading CSV...',
+      });
       const headers = { 'Content-Type': 'application/json' };
       if (u) headers['X-User-Profile'] = u;
-      const resp = await fetch('/api/finetune/upload-csv', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          username: u || undefined,
-          basin_id: basinId,
-          model_id: modelId,
-          data_type: dataType,
-          filename: file.name,
-          csv_content: text,
-          units: selectedUnits,
-          area_km2: areaVal,
-        }),
-      });
+      let resp;
+      try {
+        resp = await fetch('/api/finetune/upload-csv', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            username: u || undefined,
+            basin_id: basinId,
+            model_id: modelId,
+            data_type: dataType,
+            filename: file.name,
+            csv_content: text,
+            units: selectedUnits,
+            area_km2: areaVal,
+          }),
+        });
+      } catch (err) {
+        setFtWorkspaceLoading(false);
+        setFtStatusBanner('Upload error: ' + err.message, 'error');
+        return;
+      }
       const payload = await safeParseJsonResponse(resp);
+      setFtWorkspaceLoading(false);
       if (!resp.ok || payload.error || payload._nonJson) {
         setFtStatusBanner(payload.error || payload.message || 'CSV upload failed', 'error');
         return;
@@ -20476,6 +20568,11 @@
             : 0;
 
           ftIsRunning = true;
+          setFtWorkspaceLoading(true, {
+            title: 'Fine-Tuning ' + basinLabel + ' (' + epochs + ' Epoch' + (epochs === 1 ? '' : 's') + ')...',
+            subtitle: 'Running backpropagation on selected model components and evaluating train & validation NSE/KGE...',
+            badgeText: 'Training...',
+          });
           if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
           runBtn.disabled = true;
           const statePill = document.getElementById('ftSessionStatePill');
@@ -20508,12 +20605,14 @@
             });
           } catch (netErr) {
             ftIsRunning = false;
+            setFtWorkspaceLoading(false);
             runBtn.disabled = false;
             if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
             setFtStatusBanner('Network error during fine-tuning: ' + netErr.message, 'error');
             return;
           }
           ftIsRunning = false;
+          setFtWorkspaceLoading(false);
           runBtn.disabled = false;
           if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
 
