@@ -12,7 +12,10 @@ precipitation data and save it in standardized daily Zarr archives.
    If you only want to train or evaluate flood-forecasting models using the
    published MultiMet dataset, **you do not need to run these tools**. Simply
    point ``dynamics_data_dir`` in your configuration file to
-   ``gs://caravan-multimet/v1.1`` (see :doc:`quickstart`).
+   ``gs://caravan-multimet/v1.1`` (see :doc:`quickstart`). Pre-built global
+   gridded Zarr archives are also available at
+   ``gs://open-multimet/gridded-data-archives/CPC/daily_surface.zarr`` and
+   ``gs://open-multimet/gridded-data-archives/IMERG/daily_surface.zarr``.
 
    Use these tools only if you want to download raw precipitation grids
    directly from NOAA or NASA and build or update your own Zarr archives.
