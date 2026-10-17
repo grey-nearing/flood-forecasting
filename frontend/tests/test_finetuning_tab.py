@@ -313,6 +313,14 @@ class FineTuningDOMTests(unittest.TestCase):
         required_ft_ids = [
             'ftModelSelect',
             'ftBasinSelect',
+            'ftGlobalForcingCard',
+            'ftGlobalArchiveBadge',
+            'ftGlobalCoverageSummaryText',
+            'ftExtractGlobalForcingBtn',
+            'ftCancelGlobalExtractBtn',
+            'ftGlobalExtractProgressBox',
+            'ftForcingModeSelect',
+            'ftDisplayUnitsSelect',
             'ftPrecipFileInput',
             'ftUploadPrecipBtn',
             'ftTempFileInput',
@@ -637,19 +645,22 @@ class FineTuneServiceUnitTests(unittest.TestCase):
         try:
             dates = pd.date_range('2025-01-01', periods=70, freq='D')
             leads = np.arange(1, EXPECTED_LEAD_TIME + 1, dtype=np.int64)
+            t_idx = np.arange(len(dates), dtype=np.float32)[
+                np.newaxis, :, np.newaxis
+            ]
             p_mm = np.full(
                 (1, len(dates), EXPECTED_LEAD_TIME), 5.0, dtype=np.float32
-            )
+            ) + 0.008 * np.sin(0.3 * t_idx)
             t_degc = np.full(
                 (1, len(dates), EXPECTED_LEAD_TIME), 15.0, dtype=np.float32
-            )
+            ) + 2.0 * np.cos(0.2 * t_idx)
             ds_rt = xr.Dataset(
                 {
-                    'hres_tp': (
+                    'hres_total_precipitation': (
                         ('basin', 'date', 'lead_time'),
                         p_mm,
                     ),
-                    'hres_2t': (
+                    'hres_temperature_2m': (
                         ('basin', 'date', 'lead_time'),
                         t_degc,
                     ),
@@ -681,9 +692,32 @@ class FineTuneServiceUnitTests(unittest.TestCase):
                 model_id=SYNTH_MODEL_ID,
             )
             assert ws['data_ready'] is True
+            assert ws['forcing_mode'] == 'global_only'
+            assert ws['global_forcing_status']['has_basin_archive'] is True
+            assert (
+                ws['global_forcing_status']['fully_covers_streamflow'] is True
+            )
             assert len(ws['timeseries']['dates']) == len(dates)
             assert np.allclose(ws['timeseries']['precip'], 5.0, atol=1e-2)
+            assert np.allclose(
+                ws['timeseries']['precip_global'], 5.0, atol=1e-2
+            )
+            assert ws['timeseries']['precip_local'] == []
+            assert len(ws['timeseries']['streamflow_sim_base']) == len(dates)
+            assert ws['session']['epoch_history'] == []
             assert ws['partition']['total_days'] == len(dates)
+
+            step_global = finetune_service.run_finetune_epochs(
+                username=TEST_USER,
+                basin_id=TEST_BASIN,
+                model_id=SYNTH_MODEL_ID,
+                epochs=1,
+                forcing_mode='global_only',
+            )
+            assert step_global['session']['current_epoch'] == 1
+            assert len(step_global['session']['epoch_history']) == (
+                EXPECTED_STEP1_EPOCH
+            )
         finally:
             shutil.rmtree(rt_dyn_dir, ignore_errors=True)
 

@@ -1060,12 +1060,24 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
             or 'google-floodhub-settings-110-epochs'
         ).strip()
         split_ratio = _parse_float(query.get('split_ratio', [''])[0] or None)
-        payload = get_finetune_workspace_status(
-            username=user,
-            basin_id=basin_id,
-            model_id=model_id,
-            split_ratio=split_ratio,
-        )
+        forcing_mode = query.get('forcing_mode', [''])[0].strip() or None
+        try:
+            payload = get_finetune_workspace_status(
+                username=user,
+                basin_id=basin_id,
+                model_id=model_id,
+                split_ratio=split_ratio,
+                forcing_mode=forcing_mode,
+            )
+        except (
+            ValueError,
+            FileNotFoundError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+        ) as exc:
+            self._send_error(str(exc), status=400)
+            return
         self._send_json(payload)
 
     def _get_forecast_status(self, query: dict[str, list[str]]) -> None:
@@ -2938,22 +2950,34 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         model_id = str(
             data.get('model_id') or 'google-floodhub-settings-110-epochs'
         )
-        upload_info = upload_finetune_csv(
-            username=user,
-            basin_id=basin_id,
-            data_type=data_type,
-            csv_content=csv_content,
-            filename=filename,
-            units=units,
-            area_km2=area_km2,
-            target_lead_time=lead_time,
-        )
-        target_basin_id = str(upload_info.get('basin_id') or basin_id)
-        status_payload = get_finetune_workspace_status(
-            username=user,
-            basin_id=target_basin_id,
-            model_id=model_id,
-        )
+        forcing_mode = str(data.get('forcing_mode') or '').strip() or None
+        try:
+            upload_info = upload_finetune_csv(
+                username=user,
+                basin_id=basin_id,
+                data_type=data_type,
+                csv_content=csv_content,
+                filename=filename,
+                units=units,
+                area_km2=area_km2,
+                target_lead_time=lead_time,
+            )
+            target_basin_id = str(upload_info.get('basin_id') or basin_id)
+            status_payload = get_finetune_workspace_status(
+                username=user,
+                basin_id=target_basin_id,
+                model_id=model_id,
+                forcing_mode=forcing_mode,
+            )
+        except (
+            ValueError,
+            FileNotFoundError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+        ) as exc:
+            self._send_error(str(exc), status=400)
+            return
         self._send_json(
             {
                 'status': 'uploaded',
@@ -2973,12 +2997,22 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         model_id = str(
             data.get('model_id') or 'google-floodhub-settings-110-epochs'
         )
-        clear_finetune_data(username=user, basin_id=basin_id)
-        status_payload = get_finetune_workspace_status(
-            username=user,
-            basin_id=basin_id,
-            model_id=model_id,
-        )
+        try:
+            clear_finetune_data(username=user, basin_id=basin_id)
+            status_payload = get_finetune_workspace_status(
+                username=user,
+                basin_id=basin_id,
+                model_id=model_id,
+            )
+        except (
+            ValueError,
+            FileNotFoundError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+        ) as exc:
+            self._send_error(str(exc), status=400)
+            return
         self._send_json(
             {
                 'status': 'cleared',
@@ -3008,18 +3042,32 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         batch_size = _parse_int(data.get('batch_size'))
         finetune_modules = data.get('finetune_modules')
         split_ratio = _parse_float(data.get('split_ratio'), default=0.7) or 0.7
-        payload = run_finetune_epochs(
-            username=user,
-            basin_id=basin_id,
-            model_id=model_id,
-            epochs=epochs,
-            learning_rate=learning_rate,
-            loss=str(loss) if loss else None,
-            learning_rate_strategy=(str(lr_strategy) if lr_strategy else None),
-            batch_size=batch_size,
-            finetune_modules=finetune_modules,
-            split_ratio=split_ratio,
-        )
+        forcing_mode = str(data.get('forcing_mode') or '').strip() or None
+        try:
+            payload = run_finetune_epochs(
+                username=user,
+                basin_id=basin_id,
+                model_id=model_id,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                loss=str(loss) if loss else None,
+                learning_rate_strategy=(
+                    str(lr_strategy) if lr_strategy else None
+                ),
+                batch_size=batch_size,
+                finetune_modules=finetune_modules,
+                split_ratio=split_ratio,
+                forcing_mode=forcing_mode,
+            )
+        except (
+            ValueError,
+            FileNotFoundError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+        ) as exc:
+            self._send_error(str(exc), status=400)
+            return
         self._send_json(payload)
 
     def _post_finetune_reset(self, data: dict[str, Any]) -> None:
@@ -3033,11 +3081,21 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
         model_id = str(
             data.get('model_id') or 'google-floodhub-settings-110-epochs'
         ).strip()
-        payload = reset_finetune_session(
-            username=user,
-            basin_id=basin_id,
-            model_id=model_id,
-        )
+        try:
+            payload = reset_finetune_session(
+                username=user,
+                basin_id=basin_id,
+                model_id=model_id,
+            )
+        except (
+            ValueError,
+            FileNotFoundError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+        ) as exc:
+            self._send_error(str(exc), status=400)
+            return
         self._send_json(payload)
 
     def _post_weather_refresh(self, data: dict[str, Any]) -> None:

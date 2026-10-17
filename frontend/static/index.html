@@ -1478,11 +1478,11 @@
           </div>
         </div>
 
-        <!-- Step 2: Per-Basin Local Data Upload (CSV: time x lead_time) -->
+        <!-- Step 2: Per-Basin Data & Global / Local Forcing Controls -->
         <div class="p-3.5 bg-[#f8f9fa] rounded-xl border border-[#dadce0] space-y-2.5">
           <div class="flex items-center justify-between">
             <span class="text-[10px] font-bold uppercase tracking-wider text-[#1e8e3e] flex items-center gap-1.5">
-              <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i> 2. Local Basin Data (CSV)
+              <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i> 2. Basin Data &amp; Forcings
             </span>
             <span id="ftDataReadyBadge" class="text-[10px] bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2 py-0.5 rounded font-mono">Awaiting CSVs</span>
           </div>
@@ -1494,53 +1494,68 @@
             </select>
           </div>
 
-          <p class="text-[10.5px] text-[#5f6368] leading-snug">
-            Upload per-basin CSVs structured as <code class="bg-white px-1 py-0.5 rounded border border-[#dadce0] font-mono">date, lead_1, ..., lead_7</code> (time &times; lead_time) or daily <code class="bg-white px-1 py-0.5 rounded border border-[#dadce0] font-mono">date, value</code>.
-          </p>
-
-          <!-- Local Precipitation CSV -->
-          <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-1.5">
-            <div class="flex items-center justify-between">
+          <!-- Global Forcing Archive Status & Extraction with Progress Bar -->
+          <div id="ftGlobalForcingCard" class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-2">
+            <div class="flex items-center justify-between gap-1.5">
               <span class="text-[11px] font-semibold text-[#202124] flex items-center gap-1.5">
-                <i data-lucide="cloud-rain" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Local Precipitation (mm/day)
+                <i data-lucide="globe" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Global Forcing Archive
               </span>
-              <span id="ftPrecipStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
+              <span id="ftGlobalArchiveBadge" class="text-[9.5px] font-mono px-1.5 py-0.5 rounded bg-[#f1f3f4] text-[#5f6368]">Checking...</span>
             </div>
+            <p id="ftGlobalCoverageSummaryText" class="text-[10px] text-[#5f6368] leading-snug">
+              Select a catchment and upload target streamflow to verify historical global forcing coverage.
+            </p>
             <div class="flex items-center gap-1.5">
-              <input type="file" id="ftPrecipFileInput" accept=".csv" class="hidden">
-              <button type="button" id="ftUploadPrecipBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
-                <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Choose Precip CSV
+              <button type="button" id="ftExtractGlobalForcingBtn" class="flex-1 bg-[#e8f0fe] hover:bg-[#d2e3fc] border border-[#1a73e8]/40 text-[#174ea6] text-[11px] font-semibold py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
+                <i data-lucide="cloud-download" class="w-3.5 h-3.5"></i>
+                <span id="ftExtractGlobalForcingBtnLabel">Extract Global Forcings for Catchment</span>
               </button>
+              <button type="button" id="ftCancelGlobalExtractBtn" class="hidden bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f] border border-[#f5c2c7] text-[11px] font-semibold py-1.5 px-2 rounded transition" title="Stop extraction">
+                Stop
+              </button>
+            </div>
+            <!-- Live Progress Bar for Global Forcing Extraction -->
+            <div id="ftGlobalExtractProgressBox" class="hidden pt-1 border-t border-[#f1f3f4] space-y-1.5">
+              <div class="flex items-center justify-between text-[10px] font-mono">
+                <span id="ftGlobalExtractStatusText" class="text-[#1a73e8] font-medium truncate">Extracting global forcings...</span>
+                <span id="ftGlobalExtractPctBadge" class="font-bold text-[#174ea6] bg-[#e8f0fe] px-1.5 py-0.5 rounded">0%</span>
+              </div>
+              <div class="w-full h-2 bg-[#e8eaed] rounded-full overflow-hidden">
+                <div id="ftGlobalExtractBarFill" class="h-full bg-[#1a73e8] rounded-full transition-all duration-300" style="width: 0%"></div>
+              </div>
+              <div id="ftGlobalExtractProductsList" class="grid grid-cols-2 gap-1 text-[9.5px] font-mono"></div>
             </div>
           </div>
 
-          <!-- Local Temperature CSV -->
+          <!-- Input Forcing Mode Selector -->
           <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-1.5">
-            <div class="flex items-center justify-between">
-              <span class="text-[11px] font-semibold text-[#202124] flex items-center gap-1.5">
-                <i data-lucide="thermometer" class="w-3.5 h-3.5 text-[#e65100]"></i> Local Temperature (&deg;C)
+            <label for="ftForcingModeSelect" class="text-[11px] font-semibold text-[#202124] flex items-center justify-between">
+              <span class="flex items-center gap-1.5">
+                <i data-lucide="git-merge" class="w-3.5 h-3.5 text-[#7627bb]"></i> Input Forcing Source
               </span>
-              <span id="ftTempStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <input type="file" id="ftTempFileInput" accept=".csv" class="hidden">
-              <button type="button" id="ftUploadTempBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
-                <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#e65100]"></i> Choose Temp CSV
-              </button>
-            </div>
+              <span id="ftForcingModeHintBadge" class="text-[9.5px] font-mono text-[#5f6368]">Auto</span>
+            </label>
+            <select id="ftForcingModeSelect" class="w-full bg-[#f8f9fa] border border-[#dadce0] text-[11px] rounded px-2 py-1.5 text-[#202124]">
+              <option value="global_only" selected>Global Data Only (HRES / IMERG / CPC / AIFS)</option>
+              <option value="global_and_local">Global Data + Uploaded Local Inputs</option>
+              <option value="local_only">Uploaded Local Inputs Only</option>
+            </select>
+            <p id="ftForcingModeHelpText" class="text-[10px] text-[#5f6368] leading-snug">
+              When only Streamflow CSV is uploaded, Global Data Only is used automatically. Upload Local Precip &amp; Temp CSVs to combine or use local-only inputs.
+            </p>
           </div>
 
-          <!-- Target Streamflow CSV -->
+          <!-- Target Streamflow CSV (Required) -->
           <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-1.5">
             <div class="flex items-center justify-between">
               <span class="text-[11px] font-semibold text-[#202124] flex items-center gap-1.5">
-                <i data-lucide="waves" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Target Streamflow
+                <i data-lucide="waves" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Target Streamflow (Required)
               </span>
               <span id="ftStreamflowStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
             </div>
             <div class="grid grid-cols-2 gap-1.5">
               <div>
-                <label for="ftStreamflowUnitsSelect" class="text-[10px] text-[#5f6368] block">Units</label>
+                <label for="ftStreamflowUnitsSelect" class="text-[10px] text-[#5f6368] block">CSV / Display Units</label>
                 <select id="ftStreamflowUnitsSelect" class="w-full bg-[#f8f9fa] border border-[#dadce0] text-[11px] rounded px-1.5 py-1 text-[#202124]">
                   <option value="m3/s" selected>m&sup3;/s (CMS)</option>
                   <option value="mm/day">mm/day</option>
@@ -1556,6 +1571,45 @@
               <button type="button" id="ftUploadStreamflowBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1.5 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
                 <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#1e8e3e]"></i> Choose Streamflow CSV
               </button>
+            </div>
+          </div>
+
+          <!-- Optional Local Precipitation & Temperature CSVs -->
+          <div class="bg-white border border-[#dadce0] rounded-lg p-2.5 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-[10.5px] font-semibold text-[#5f6368] uppercase tracking-wider">Optional Local Input CSVs</span>
+              <span class="text-[9.5px] font-mono text-[#80868b]">time &times; lead_time</span>
+            </div>
+            <!-- Local Precipitation CSV -->
+            <div class="space-y-1">
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] font-medium text-[#202124] flex items-center gap-1.5">
+                  <i data-lucide="cloud-rain" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Local Precipitation (mm/day)
+                </span>
+                <span id="ftPrecipStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <input type="file" id="ftPrecipFileInput" accept=".csv" class="hidden">
+                <button type="button" id="ftUploadPrecipBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
+                  <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#1a73e8]"></i> Choose Precip CSV
+                </button>
+              </div>
+            </div>
+
+            <!-- Local Temperature CSV -->
+            <div class="space-y-1 pt-1 border-t border-[#f1f3f4]">
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] font-medium text-[#202124] flex items-center gap-1.5">
+                  <i data-lucide="thermometer" class="w-3.5 h-3.5 text-[#e65100]"></i> Local Temperature (&deg;C)
+                </span>
+                <span id="ftTempStatusBadge" class="text-[10px] font-mono text-[#5f6368]">Not uploaded</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <input type="file" id="ftTempFileInput" accept=".csv" class="hidden">
+                <button type="button" id="ftUploadTempBtn" class="flex-1 bg-[#f1f3f4] hover:bg-[#e8eaed] border border-[#dadce0] text-[#202124] text-[11px] font-medium py-1 px-2.5 rounded flex items-center justify-center gap-1.5 transition">
+                  <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-[#e65100]"></i> Choose Temp CSV
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1742,7 +1796,14 @@
                 Inverted top bars show local precipitation (mm/day); bottom curves compare Observed vs. Baseline (Epoch 0) vs. Fine-Tuned Streamflow (mm/day).
               </p>
             </div>
-            <div class="flex items-center gap-3 text-[11px] font-mono">
+            <div class="flex flex-wrap items-center gap-2.5 text-[11px] font-mono">
+              <div class="inline-flex items-center gap-1.5 bg-[#f8f9fa] border border-[#dadce0] rounded-lg px-2 py-1">
+                <label for="ftDisplayUnitsSelect" class="text-[10px] font-bold uppercase text-[#5f6368]">Display Units:</label>
+                <select id="ftDisplayUnitsSelect" class="bg-white border border-[#dadce0] text-[11px] rounded px-1.5 py-0.5 text-[#202124] font-semibold">
+                  <option value="m3/s" selected>m&sup3;/s (CMS)</option>
+                  <option value="mm/day">mm/day</option>
+                </select>
+              </div>
               <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#e8f0fe] text-[#174ea6] border border-[#d2e3fc]">
                 <span class="w-2 h-2 rounded-full bg-[#1a73e8]"></span> Training Partition
               </span>
@@ -19320,11 +19381,44 @@
       };
     }
 
+    let ftIsExtractingGlobal = false;
+    let ftGlobalExtractPollTimer = null;
+
+    function getFtDisplayUnits() {
+      const dispSel = document.getElementById('ftDisplayUnitsSelect');
+      if (dispSel && dispSel.value) return dispSel.value;
+      const sfSel = document.getElementById('ftStreamflowUnitsSelect');
+      return (sfSel && sfSel.value) ? sfSel.value : 'm3/s';
+    }
+
+    function getFtActiveAreaKm2() {
+      const areaInp = document.getElementById('ftBasinAreaInput');
+      if (areaInp && areaInp.value) {
+        const v = parseFloat(areaInp.value);
+        if (Number.isFinite(v) && v > 0) return v;
+      }
+      if (ftWorkspaceState && Number.isFinite(Number(ftWorkspaceState.basin_area_km2)) && Number(ftWorkspaceState.basin_area_km2) > 0) {
+        return Number(ftWorkspaceState.basin_area_km2);
+      }
+      return null;
+    }
+
+    function convertFtFlowSeries(seriesMmDay, displayUnits, areaKm2) {
+      if (!Array.isArray(seriesMmDay)) return [];
+      const useCms = displayUnits === 'm3/s' && areaKm2 && Number.isFinite(areaKm2) && areaKm2 > 0;
+      const factor = useCms ? (areaKm2 / 86.4) : 1.0;
+      return seriesMmDay.map(v => (v !== null && v !== undefined && Number.isFinite(Number(v)))
+        ? Number((Number(v) * factor).toFixed(3))
+        : null
+      );
+    }
+
     function renderFtChartsAndKpis() {
       if (!ftWorkspaceState) return;
       const ts = ftWorkspaceState.timeseries;
       const part = ftWorkspaceState.partition;
       const history = (ftWorkspaceState.session && ftWorkspaceState.session.epoch_history) || [];
+      const baselineMetrics = ftWorkspaceState.baseline_metrics || null;
 
       // Update partition date labels
       const trainRangeEl = document.getElementById('ftTrainDateRangeText');
@@ -19333,8 +19427,8 @@
         if (trainRangeEl) trainRangeEl.textContent = part.train_start_date + ' → ' + part.train_end_date + ' (' + part.train_sample_days + 'd)';
         if (valRangeEl) valRangeEl.textContent = part.validation_start_date + ' → ' + part.validation_end_date + ' (' + part.validation_sample_days + 'd)';
       } else {
-        if (trainRangeEl) trainRangeEl.textContent = 'Upload CSVs first';
-        if (valRangeEl) valRangeEl.textContent = 'Upload CSVs first';
+        if (trainRangeEl) trainRangeEl.textContent = 'Upload Streamflow CSV first';
+        if (valRangeEl) valRangeEl.textContent = 'Upload Streamflow CSV first';
       }
 
       // Clamp inspected epoch index
@@ -19345,6 +19439,7 @@
       }
       const inspectedEntry = history[ftInspectedEpochIndex] || null;
       const baselineEntry = history[0] || null;
+      const kpiEntry = inspectedEntry || baselineMetrics;
 
       // Scrubber controls
       const scrubber = document.getElementById('ftEpochScrubber');
@@ -19359,7 +19454,7 @@
       if (prevBtn) prevBtn.disabled = ftInspectedEpochIndex <= 0;
       if (nextBtn) nextBtn.disabled = ftInspectedEpochIndex >= history.length - 1;
       if (inspBadge) {
-        inspBadge.textContent = inspectedEntry ? ('Epoch ' + inspectedEntry.epoch) : 'Epoch 0';
+        inspBadge.textContent = inspectedEntry ? ('Epoch ' + inspectedEntry.epoch) : 'Epoch 0 (Base)';
       }
 
       // KPI Strip
@@ -19369,22 +19464,71 @@
       const kpiTrNse = document.getElementById('ftKpiTrainNse');
       const kpiValNse = document.getElementById('ftKpiValNse');
       const kpiValKge = document.getElementById('ftKpiValKge');
-      if (kpiTrLoss) kpiTrLoss.textContent = inspectedEntry ? fmtVal(inspectedEntry.train_loss, 4) : '—';
-      if (kpiValLoss) kpiValLoss.textContent = inspectedEntry ? fmtVal(inspectedEntry.val_loss, 4) : '—';
-      if (kpiTrNse) kpiTrNse.textContent = inspectedEntry ? fmtVal(inspectedEntry.train_nse, 3) : '—';
-      if (kpiValNse) kpiValNse.textContent = inspectedEntry ? fmtVal(inspectedEntry.val_nse, 3) : '—';
-      if (kpiValKge) kpiValKge.textContent = inspectedEntry ? fmtVal(inspectedEntry.val_kge, 3) : '—';
+      if (kpiTrLoss) kpiTrLoss.textContent = kpiEntry ? fmtVal(kpiEntry.train_loss, 4) : '—';
+      if (kpiValLoss) kpiValLoss.textContent = kpiEntry ? fmtVal(kpiEntry.val_loss, 4) : '—';
+      if (kpiTrNse) kpiTrNse.textContent = kpiEntry ? fmtVal(kpiEntry.train_nse, 3) : '—';
+      if (kpiValNse) kpiValNse.textContent = kpiEntry ? fmtVal(kpiEntry.val_nse, 3) : '—';
+      if (kpiValKge) kpiValKge.textContent = kpiEntry ? fmtVal(kpiEntry.val_kge, 3) : '—';
 
       // 1. Render Hydrograph + Hanging Hyetograph Chart
       const hydroCanvas = document.getElementById('ftHydrographCanvas');
       if (hydroCanvas && typeof Chart !== 'undefined') {
         const dates = ts ? ts.dates : [];
-        const precip = ts ? ts.precip : [];
-        const obsFlow = ts ? ts.streamflow_obs : [];
-        const baseSim = baselineEntry ? baselineEntry.streamflow_sim_lead1 : [];
-        const activeSim = inspectedEntry ? inspectedEntry.streamflow_sim_lead1 : [];
+        const forcingMode = ftWorkspaceState.forcing_mode || 'global_only';
+        const areaKm2 = getFtActiveAreaKm2();
+        const reqUnits = getFtDisplayUnits();
+        const useCms = reqUnits === 'm3/s' && areaKm2 && areaKm2 > 0;
+        const unitLabel = useCms ? 'm³/s' : 'mm/day';
 
-        const maxPrecip = precip.reduce((m, v) => (v !== null && v > m ? v : m), 10);
+        const precipPrimary = ts ? (ts.precip || []) : [];
+        const precipGlobal = ts && Array.isArray(ts.precip_global) ? ts.precip_global : null;
+        const precipLocal = ts && Array.isArray(ts.precip_local) ? ts.precip_local : null;
+        const globalProdName = (ts && ts.precip_global_product) ? ts.precip_global_product : 'Global';
+
+        let bar1Data = precipPrimary;
+        let bar1Label = forcingMode === 'local_only'
+          ? 'Uploaded Local Precip (mm/day)'
+          : `Global Precip (${globalProdName}, mm/day)`;
+        let bar2Data = [];
+        let showBar2 = false;
+
+        if (forcingMode === 'global_and_local' && precipGlobal && precipLocal) {
+          bar1Data = precipGlobal;
+          bar1Label = `Global Precip (${globalProdName}, mm/day)`;
+          bar2Data = precipLocal;
+          showBar2 = true;
+        } else if (forcingMode === 'global_only' && precipGlobal) {
+          bar1Data = precipGlobal;
+          bar1Label = `Global Precip (${globalProdName}, mm/day)`;
+        } else if (forcingMode === 'local_only' && precipLocal) {
+          bar1Data = precipLocal;
+          bar1Label = 'Uploaded Local Precip (mm/day)';
+        }
+
+        const rawObs = ts ? (ts.streamflow_obs || []) : [];
+        const rawBaseSim = baselineEntry
+          ? (baselineEntry.streamflow_sim_lead1 || [])
+          : (ts && Array.isArray(ts.streamflow_sim_base) ? ts.streamflow_sim_base : []);
+        const rawActiveSim = (inspectedEntry && inspectedEntry.epoch > 0)
+          ? (inspectedEntry.streamflow_sim_lead1 || [])
+          : [];
+
+        const obsFlow = convertFtFlowSeries(rawObs, reqUnits, areaKm2);
+        const baseSim = convertFtFlowSeries(rawBaseSim, reqUnits, areaKm2);
+        const activeSim = convertFtFlowSeries(rawActiveSim, reqUnits, areaKm2);
+
+        const maxPrecip1 = (bar1Data || []).reduce((m, v) => (v !== null && v > m ? v : m), 10);
+        const maxPrecip2 = (bar2Data || []).reduce((m, v) => (v !== null && v > m ? v : m), 0);
+        const maxPrecip = Math.max(maxPrecip1, maxPrecip2, 10);
+        const maxFlow = [...obsFlow, ...baseSim, ...activeSim].reduce((m, v) => (v !== null && v > m ? v : m), 5);
+
+        const subEl = document.getElementById('ftHydroChartSubtitle');
+        if (subEl) {
+          const pDesc = showBar2
+            ? `global (${globalProdName}) and uploaded local precipitation (mm/day)`
+            : (forcingMode === 'local_only' ? 'uploaded local precipitation (mm/day)' : `global precipitation (${globalProdName}, mm/day)`);
+          subEl.textContent = `Inverted top bars show ${pDesc}; bottom curves compare Observed vs. Pretrained Base Model (Epoch 0) vs. Fine-Tuned Streamflow (${unitLabel}).`;
+        }
 
         if (!ftHydroChart) {
           ftHydroChart = new Chart(hydroCanvas.getContext('2d'), {
@@ -19395,11 +19539,24 @@
               datasets: [
                 {
                   type: 'bar',
-                  label: 'Local Precip (mm/day)',
-                  data: precip,
+                  label: bar1Label,
+                  data: bar1Data,
                   yAxisID: 'yPrecip',
                   backgroundColor: 'rgba(26, 115, 232, 0.38)',
                   borderColor: 'rgba(26, 115, 232, 0.65)',
+                  borderWidth: 1,
+                  barPercentage: 1.0,
+                  categoryPercentage: 1.0,
+                  order: 5,
+                },
+                {
+                  type: 'bar',
+                  label: 'Uploaded Local Precip (mm/day)',
+                  data: bar2Data,
+                  hidden: !showBar2,
+                  yAxisID: 'yPrecip',
+                  backgroundColor: 'rgba(118, 39, 187, 0.38)',
+                  borderColor: 'rgba(118, 39, 187, 0.70)',
                   borderWidth: 1,
                   barPercentage: 1.0,
                   categoryPercentage: 1.0,
@@ -19407,7 +19564,7 @@
                 },
                 {
                   type: 'line',
-                  label: 'Observed Streamflow (mm/day)',
+                  label: `Observed Streamflow (${unitLabel})`,
                   data: obsFlow,
                   yAxisID: 'yFlow',
                   borderColor: '#202124',
@@ -19419,20 +19576,23 @@
                 },
                 {
                   type: 'line',
-                  label: 'Pretrained Baseline (Epoch 0)',
+                  label: `Pretrained Base Model (Epoch 0, ${unitLabel})`,
                   data: baseSim,
                   yAxisID: 'yFlow',
-                  borderColor: '#80868b',
-                  borderDash: [4, 4],
-                  borderWidth: 1.5,
+                  borderColor: '#1a73e8',
+                  borderDash: [5, 4],
+                  borderWidth: 1.8,
                   pointRadius: 0,
                   tension: 0.2,
                   order: 3,
                 },
                 {
                   type: 'line',
-                  label: inspectedEntry ? ('Fine-Tuned (Epoch ' + inspectedEntry.epoch + ')') : 'Fine-Tuned Streamflow',
+                  label: (inspectedEntry && inspectedEntry.epoch > 0)
+                    ? `Fine-Tuned (Epoch ${inspectedEntry.epoch}, ${unitLabel})`
+                    : `Fine-Tuned Streamflow (${unitLabel})`,
                   data: activeSim,
+                  hidden: !(inspectedEntry && inspectedEntry.epoch > 0),
                   yAxisID: 'yFlow',
                   borderColor: '#1e8e3e',
                   backgroundColor: 'rgba(30, 142, 62, 0.1)',
@@ -19450,7 +19610,14 @@
               plugins: {
                 legend: {
                   position: 'top',
-                  labels: { boxWidth: 12, font: { size: 11 } },
+                  labels: {
+                    boxWidth: 12,
+                    font: { size: 11 },
+                    filter: (item, chartData) => {
+                      const ds = chartData.datasets[item.datasetIndex];
+                      return !(ds && ds.hidden);
+                    },
+                  },
                 },
               },
               scales: {
@@ -19461,9 +19628,9 @@
                 yFlow: {
                   type: 'linear',
                   position: 'left',
-                  title: { display: true, text: 'Streamflow (mm/day)', font: { size: 11, weight: 'bold' } },
+                  title: { display: true, text: `Streamflow (${unitLabel})`, font: { size: 11, weight: 'bold' } },
                   beginAtZero: true,
-                  suggestedMax: 15,
+                  suggestedMax: Math.max(5, maxFlow * 1.25),
                   grid: { color: 'rgba(0,0,0,0.06)' },
                 },
                 yPrecip: {
@@ -19480,13 +19647,21 @@
           });
         } else {
           ftHydroChart.data.labels = dates;
-          ftHydroChart.data.datasets[0].data = precip;
-          ftHydroChart.data.datasets[1].data = obsFlow;
-          ftHydroChart.data.datasets[2].data = baseSim;
-          ftHydroChart.data.datasets[3].data = activeSim;
-          ftHydroChart.data.datasets[3].label = inspectedEntry
-            ? ('Fine-Tuned (Epoch ' + inspectedEntry.epoch + ')')
-            : 'Fine-Tuned Streamflow';
+          ftHydroChart.data.datasets[0].data = bar1Data;
+          ftHydroChart.data.datasets[0].label = bar1Label;
+          ftHydroChart.data.datasets[1].data = bar2Data;
+          ftHydroChart.data.datasets[1].hidden = !showBar2;
+          ftHydroChart.data.datasets[2].data = obsFlow;
+          ftHydroChart.data.datasets[2].label = `Observed Streamflow (${unitLabel})`;
+          ftHydroChart.data.datasets[3].data = baseSim;
+          ftHydroChart.data.datasets[3].label = `Pretrained Base Model (Epoch 0, ${unitLabel})`;
+          ftHydroChart.data.datasets[4].data = activeSim;
+          ftHydroChart.data.datasets[4].hidden = !(inspectedEntry && inspectedEntry.epoch > 0);
+          ftHydroChart.data.datasets[4].label = (inspectedEntry && inspectedEntry.epoch > 0)
+            ? `Fine-Tuned (Epoch ${inspectedEntry.epoch}, ${unitLabel})`
+            : `Fine-Tuned Streamflow (${unitLabel})`;
+          ftHydroChart.options.scales.yFlow.title.text = `Streamflow (${unitLabel})`;
+          ftHydroChart.options.scales.yFlow.suggestedMax = Math.max(5, maxFlow * 1.25);
           ftHydroChart.options.scales.yPrecip.suggestedMax = Math.max(25, maxPrecip * 3.0);
         }
         ftHydroChart.$ftPartition = part;
@@ -19629,11 +19804,237 @@
       }
     }
 
+    function renderFtGlobalForcingStatusUI(payload) {
+      const gf = (payload && payload.global_forcing_status) || {};
+      const badgeEl = document.getElementById('ftGlobalArchiveBadge');
+      const summaryEl = document.getElementById('ftGlobalCoverageSummaryText');
+      const extractBtn = document.getElementById('ftExtractGlobalForcingBtn');
+      const extractBtnLabel = document.getElementById('ftExtractGlobalForcingBtnLabel');
+
+      if (badgeEl) {
+        if (gf.archive_exists_for_basin && gf.full_coverage) {
+          badgeEl.className = 'text-[9.5px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#e6f4ea] text-[#137333] border border-[#ceead6]';
+          badgeEl.textContent = `✓ Archive Ready (${gf.overlap_days || gf.global_days || 0}d)`;
+        } else if (gf.archive_exists_for_basin && gf.has_sufficient_overlap) {
+          badgeEl.className = 'text-[9.5px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#e6f4ea] text-[#137333] border border-[#ceead6]';
+          badgeEl.textContent = `✓ Ready (${gf.overlap_days}/${gf.streamflow_days || gf.global_days}d)`;
+        } else if (gf.archive_exists_for_basin) {
+          badgeEl.className = 'text-[9.5px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#fef7e0] text-[#b06000] border border-[#fde293]';
+          badgeEl.textContent = `⚠ Partial (${gf.overlap_days || 0}/${gf.streamflow_days || 0}d)`;
+        } else {
+          badgeEl.className = 'text-[9.5px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#fce8e6] text-[#c5221f] border border-[#fad2cf]';
+          badgeEl.textContent = 'Not Extracted';
+        }
+      }
+
+      if (summaryEl) {
+        const prodsFound = Array.isArray(gf.products_found) && gf.products_found.length > 0
+          ? gf.products_found.map(p => String(p).toUpperCase()).join(', ')
+          : (gf.precip_product || 'None');
+        if (gf.archive_exists_for_basin) {
+          if (gf.streamflow_days > 0) {
+            summaryEl.textContent = `Global Zarr (${prodsFound}): ${gf.global_start_date} → ${gf.global_end_date} · Overlaps ${gf.overlap_days} of ${gf.streamflow_days} uploaded streamflow days (${gf.streamflow_start_date} → ${gf.streamflow_end_date}).`;
+          } else {
+            summaryEl.textContent = `Global Zarr (${prodsFound}): ${gf.global_start_date} → ${gf.global_end_date} (${gf.global_days} days). Upload target streamflow CSV to align.`;
+          }
+        } else if (gf.streamflow_days > 0) {
+          summaryEl.textContent = `No global forcing archive found for this catchment covering your uploaded streamflow period (${gf.streamflow_start_date} → ${gf.streamflow_end_date}, ${gf.streamflow_days}d). Click below to extract global forcings before tuning.`;
+        } else {
+          summaryEl.textContent = 'No global forcing archive extracted for this catchment yet. Click below to extract global forcings for your catchment.';
+        }
+      }
+
+      if (extractBtn && extractBtnLabel && !ftIsExtractingGlobal) {
+        const lookback = gf.recommended_lookback_days || 365;
+        extractBtnLabel.textContent = gf.archive_exists_for_basin
+          ? `Re-Extract / Extend Global Forcings (${lookback}d)`
+          : `Extract Global Forcings for Catchment (${lookback}d)`;
+      }
+    }
+
+    function syncFtForcingModeUI(payload) {
+      const modeSel = document.getElementById('ftForcingModeSelect');
+      const hintBadge = document.getElementById('ftForcingModeHintBadge');
+      const helpText = document.getElementById('ftForcingModeHelpText');
+      if (!modeSel || !payload) return;
+
+      const hasLocal = Boolean(payload.has_local_forcing);
+      const activeMode = payload.forcing_mode || 'global_only';
+      Array.from(modeSel.options).forEach(opt => {
+        if (opt.value === 'global_and_local' || opt.value === 'local_only') {
+          opt.disabled = !hasLocal;
+        }
+      });
+      modeSel.value = activeMode;
+      if (hintBadge) {
+        hintBadge.textContent = activeMode === 'global_only'
+          ? 'Global Zarr'
+          : (activeMode === 'global_and_local' ? 'Global + Local' : 'Local CSV Only');
+      }
+      if (helpText) {
+        if (!hasLocal) {
+          helpText.textContent = 'Using Global Data Only (only Streamflow CSV is uploaded). Upload Local Precip & Temp CSVs below if you want to include local inputs.';
+        } else if (activeMode === 'global_and_local') {
+          helpText.textContent = 'Combining global satellite/NWP forcings with your uploaded local Precipitation & Temperature CSVs.';
+        } else if (activeMode === 'local_only') {
+          helpText.textContent = 'Using only your uploaded local Precipitation & Temperature CSVs (global forcings masked).';
+        } else {
+          helpText.textContent = 'Using only global satellite/NWP forcings from the profile Zarr archive.';
+        }
+      }
+    }
+
+    function renderFtGlobalExtractProgressUI(prog) {
+      const box = document.getElementById('ftGlobalExtractProgressBox');
+      const statusText = document.getElementById('ftGlobalExtractStatusText');
+      const pctBadge = document.getElementById('ftGlobalExtractPctBadge');
+      const barFill = document.getElementById('ftGlobalExtractBarFill');
+      const listEl = document.getElementById('ftGlobalExtractProductsList');
+      const cancelBtn = document.getElementById('ftCancelGlobalExtractBtn');
+      const extractBtn = document.getElementById('ftExtractGlobalForcingBtn');
+      if (!box) return;
+
+      const isActive = Boolean((prog && prog.active) || ftIsExtractingGlobal);
+      if (cancelBtn) cancelBtn.classList.toggle('hidden', !isActive);
+      if (extractBtn) extractBtn.disabled = isActive;
+
+      if (!prog || (!isActive && prog.status !== 'completed' && prog.status !== 'error' && prog.status !== 'cancelled')) {
+        box.classList.add('hidden');
+        return;
+      }
+
+      box.classList.remove('hidden');
+      const overallPct = Math.max(0, Math.min(100, Number(prog.overall_percent || 0)));
+      if (statusText) {
+        statusText.textContent = prog.message || (isActive ? 'Extracting global forcings...' : 'Extraction complete');
+      }
+      if (pctBadge) {
+        pctBadge.textContent = `${overallPct.toFixed(0)}%`;
+      }
+      if (barFill) {
+        barFill.style.width = `${prog.status === 'completed' ? 100 : Math.max(4, overallPct)}%`;
+      }
+      if (listEl) {
+        const activeProds = prog.products || {};
+        const order = Array.isArray(prog.products_order) && prog.products_order.length > 0
+          ? prog.products_order
+          : Object.keys(activeProds);
+        listEl.innerHTML = order.map(prod => {
+          const p = activeProds[prod] || {};
+          const pct = Math.max(0, Math.min(100, Number(p.percent || 0)));
+          const st = p.status || 'queued';
+          const stepTxt = st === 'completed'
+            ? '✓ 100%'
+            : (st === 'downloading' ? `${pct.toFixed(0)}%` : (st === 'writing_zarr' ? 'Saving…' : st));
+          return `<div class="bg-[#f8f9fa] border border-[#e8eaed] rounded px-1.5 py-1 flex items-center justify-between gap-1">
+            <span class="font-bold text-[#202124] truncate">${prod}</span>
+            <span class="text-[#5f6368]">${stepTxt}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    async function triggerFtGlobalForcingExtraction() {
+      if (ftIsExtractingGlobal) return;
+      const basinId = getActiveFtBasinId();
+      if (!basinId) {
+        setFtStatusBanner('Please clip or delineate a watershed polygon in your account first.', 'error');
+        return;
+      }
+      const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+      const gf = (ftWorkspaceState && ftWorkspaceState.global_forcing_status) || {};
+      const lookbackDays = gf.recommended_lookback_days || 365;
+      const modelSel = document.getElementById('ftModelSelect');
+      const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
+
+      ftIsExtractingGlobal = true;
+      renderFtGlobalExtractProgressUI({
+        active: true,
+        overall_percent: 2,
+        message: `Starting global forcing extraction (${lookbackDays}d) for ${getActiveFtBasinDisplayName()}...`,
+        products: {},
+      });
+      setFtStatusBanner(`Extracting global forcings (${lookbackDays} days) for ${getActiveFtBasinDisplayName()}...`, 'info');
+
+      try {
+        const res = await fetch('/api/forecast/fetch-realtime', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Profile': u,
+          },
+          body: JSON.stringify({
+            username: u,
+            catchment_id: basinId,
+            catchment_ids: [basinId],
+            mode: 'coldstart',
+            model_id: modelId,
+            nowcast_lookback_days: lookbackDays,
+            async_poll: true,
+          }),
+        });
+        const startData = await safeParseJsonResponse(res);
+        if (!res.ok || startData.status === 'error') {
+          throw new Error(startData.message || startData.error || `HTTP ${res.status}`);
+        }
+
+        while (ftIsExtractingGlobal) {
+          await new Promise(r => setTimeout(r, 1000));
+          if (!ftIsExtractingGlobal) break;
+          const pRes = await fetch(
+            `/api/forecast/fetch-progress?catchment_id=${encodeURIComponent(basinId)}&username=${encodeURIComponent(u)}`,
+            { headers: { 'X-User-Profile': u } }
+          );
+          if (!pRes.ok) continue;
+          const prog = await safeParseJsonResponse(pRes);
+          if (prog && !prog._nonJson) {
+            renderFtGlobalExtractProgressUI(prog);
+            if (!prog.active) {
+              if (prog.status === 'error') {
+                throw new Error(prog.error || prog.message || 'Global forcing extraction failed');
+              }
+              break;
+            }
+          }
+        }
+        ftIsExtractingGlobal = false;
+        await refreshFineTuningTab();
+        setFtStatusBanner('Global forcing archive extracted and aligned with catchment!', 'success');
+      } catch (err) {
+        ftIsExtractingGlobal = false;
+        renderFtGlobalExtractProgressUI(null);
+        setFtStatusBanner('Global forcing extraction failed: ' + err.message, 'error');
+      }
+    }
+
+    async function cancelFtGlobalForcingExtraction() {
+      const basinId = getActiveFtBasinId();
+      const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
+      ftIsExtractingGlobal = false;
+      try {
+        await fetch('/api/forecast/cancel-fetch', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Profile': u,
+          },
+          body: JSON.stringify({ username: u, catchment_id: basinId }),
+        });
+      } catch (_e) {
+        // Ignore
+      }
+      renderFtGlobalExtractProgressUI(null);
+      setFtStatusBanner('Stopped global forcing extraction.', 'info');
+      refreshFineTuningTab();
+    }
+
     function applyFtWorkspacePayload(payload, { preserveComponentSelection = false } = {}) {
       if (!payload) return;
       ftWorkspaceState = payload;
       syncFtBasinDropdown(payload.basin_id);
       syncFtBasinAreaInput(payload.basin_id);
+      renderFtGlobalForcingStatusUI(payload);
+      syncFtForcingModeUI(payload);
 
       // 1. Model Inventory Dropdown
       const modelSel = document.getElementById('ftModelSelect');
@@ -19711,7 +20112,7 @@
           readyBadge.textContent = 'Zarr Ready (' + (payload.partition ? payload.partition.total_days : 0) + 'd)';
           readyBadge.className = 'text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2 py-0.5 rounded font-mono font-semibold';
         } else {
-          readyBadge.textContent = 'Awaiting CSVs';
+          readyBadge.textContent = 'Awaiting Data';
           readyBadge.className = 'text-[10px] bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2 py-0.5 rounded font-mono';
         }
       }
@@ -19721,20 +20122,24 @@
       const curEpoch = sess.current_epoch || 0;
       const curEpBadge = document.getElementById('ftCurrentEpochBadge');
       const statePill = document.getElementById('ftSessionStatePill');
+      const runBtn = document.getElementById('ftRunEpochsBtn');
       const runBtnText = document.getElementById('ftRunEpochsBtnText');
       const epochsInput = document.getElementById('ftEpochsPerStepInput');
       const nextN = (epochsInput && parseInt(epochsInput.value, 10)) || 3;
 
+      if (runBtn && !ftIsRunning) {
+        runBtn.disabled = !payload.data_ready;
+      }
       if (curEpBadge) curEpBadge.textContent = 'Epoch ' + curEpoch;
       if (statePill) {
         if (curEpoch > 0) {
           statePill.textContent = 'Paused at Epoch ' + curEpoch + ' (Inspect & Continue)';
           statePill.className = 'text-[10px] bg-[#fef7e0] text-[#b06000] border border-[#fde293] px-2.5 py-0.5 rounded-full font-mono font-semibold';
         } else if (payload.data_ready) {
-          statePill.textContent = 'Ready to Fine-Tune (Epoch 0)';
+          statePill.textContent = 'Ready to Fine-Tune (Epoch 0 Baseline Shown)';
           statePill.className = 'text-[10px] bg-[#e6f4ea] text-[#137333] border border-[#ceead6] px-2.5 py-0.5 rounded-full font-mono font-semibold';
         } else {
-          statePill.textContent = 'Awaiting Local Basin Data';
+          statePill.textContent = 'Awaiting Streamflow / Global Forcings';
           statePill.className = 'text-[10px] bg-[#f1f3f4] text-[#5f6368] border border-[#dadce0] px-2.5 py-0.5 rounded-full font-mono';
         }
       }
@@ -19750,19 +20155,22 @@
       renderFtChartsAndKpis();
     }
 
-    async function refreshFineTuningTab() {
+    async function refreshFineTuningTab(overrideForcingMode = null) {
       syncFtBasinDropdown();
       const basinId = getActiveFtBasinId();
       const modelSel = document.getElementById('ftModelSelect');
       const modelId = (modelSel && modelSel.value) || 'google-floodhub-settings-110-epochs';
       const slider = document.getElementById('ftSplitRatioSlider');
       const splitRatio = slider ? (parseInt(slider.value, 10) / 100.0) : 0.7;
+      const modeSel = document.getElementById('ftForcingModeSelect');
+      const forcingMode = overrideForcingMode || (modeSel && modeSel.value) || '';
       const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : '';
 
       const resp = await fetch(
         '/api/finetune/status?basin_id=' + encodeURIComponent(basinId) +
         '&model_id=' + encodeURIComponent(modelId) +
         '&split_ratio=' + encodeURIComponent(splitRatio) +
+        (forcingMode ? '&forcing_mode=' + encodeURIComponent(forcingMode) : '') +
         (u ? '&username=' + encodeURIComponent(u) : ''),
         u ? { headers: { 'X-User-Profile': u } } : undefined
       );
@@ -19814,9 +20222,9 @@
           area_km2: areaVal,
         }),
       });
-      const payload = await resp.json();
-      if (!resp.ok) {
-        setFtStatusBanner(payload.error || 'CSV upload failed', 'error');
+      const payload = await safeParseJsonResponse(resp);
+      if (!resp.ok || payload.error || payload._nonJson) {
+        setFtStatusBanner(payload.error || payload.message || 'CSV upload failed', 'error');
         return;
       }
       const numBasins = (payload.upload && Array.isArray(payload.upload.basins_uploaded))
@@ -19832,6 +20240,11 @@
     function initFineTuningInteractivity() {
       const modelSel = document.getElementById('ftModelSelect');
       const basinSel = document.getElementById('ftBasinSelect');
+      const forcingModeSel = document.getElementById('ftForcingModeSelect');
+      const extractGlobalBtn = document.getElementById('ftExtractGlobalForcingBtn');
+      const cancelGlobalBtn = document.getElementById('ftCancelGlobalExtractBtn');
+      const dispUnitsSel = document.getElementById('ftDisplayUnitsSelect');
+      const sfUnitsSel = document.getElementById('ftStreamflowUnitsSelect');
       const splitSlider = document.getElementById('ftSplitRatioSlider');
       const splitLabel = document.getElementById('ftSplitRatioLabel');
       const epochsInput = document.getElementById('ftEpochsPerStepInput');
@@ -19845,6 +20258,33 @@
         basinSel.addEventListener('change', () => {
           syncFtBasinAreaInput(basinSel.value);
           refreshFineTuningTab();
+        });
+      }
+      if (forcingModeSel) {
+        forcingModeSel.addEventListener('change', () => {
+          refreshFineTuningTab(forcingModeSel.value);
+        });
+      }
+      if (extractGlobalBtn) {
+        extractGlobalBtn.addEventListener('click', () => {
+          triggerFtGlobalForcingExtraction();
+        });
+      }
+      if (cancelGlobalBtn) {
+        cancelGlobalBtn.addEventListener('click', () => {
+          cancelFtGlobalForcingExtraction();
+        });
+      }
+      if (dispUnitsSel) {
+        dispUnitsSel.addEventListener('change', () => {
+          if (sfUnitsSel) sfUnitsSel.value = dispUnitsSel.value;
+          renderFtChartsAndKpis();
+        });
+      }
+      if (sfUnitsSel) {
+        sfUnitsSel.addEventListener('change', () => {
+          if (dispUnitsSel) dispUnitsSel.value = sfUnitsSel.value;
+          renderFtChartsAndKpis();
         });
       }
 
@@ -20029,6 +20469,7 @@
           const bsInp = document.getElementById('ftBatchSizeInput');
           const batchSize = (bsInp && parseInt(bsInp.value, 10)) || 16;
           const splitRatio = splitSlider ? (parseInt(splitSlider.value, 10) / 100.0) : 0.7;
+          const forcingMode = (forcingModeSel && forcingModeSel.value) || 'global_only';
 
           const prevHistoryLen = (ftWorkspaceState && ftWorkspaceState.session && ftWorkspaceState.session.epoch_history)
             ? ftWorkspaceState.session.epoch_history.length
@@ -20062,17 +20503,23 @@
                 batch_size: batchSize,
                 finetune_modules: Array.from(ftSelectedModulesSet),
                 split_ratio: splitRatio,
+                forcing_mode: forcingMode,
               }),
             });
-          } finally {
+          } catch (netErr) {
             ftIsRunning = false;
             runBtn.disabled = false;
             if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
+            setFtStatusBanner('Network error during fine-tuning: ' + netErr.message, 'error');
+            return;
           }
+          ftIsRunning = false;
+          runBtn.disabled = false;
+          if (typeof syncAllTabActivityIndicators === 'function') syncAllTabActivityIndicators();
 
-          const payload = await resp.json();
-          if (!resp.ok) {
-            setFtStatusBanner(payload.error || 'Fine-tuning failed', 'error');
+          const payload = await safeParseJsonResponse(resp);
+          if (!resp.ok || payload.error || payload._nonJson) {
+            setFtStatusBanner(payload.error || payload.message || 'Fine-tuning failed', 'error');
             return;
           }
 

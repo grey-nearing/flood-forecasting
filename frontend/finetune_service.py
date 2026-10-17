@@ -71,22 +71,41 @@ _BASIN_COLUMN_ALIASES = frozenset(
     {'basin', 'basin_id', 'catchment_id', 'gauge_id', 'site_no', 'station_id'}
 )
 _REALTIME_PRECIP_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ('HRES', 'hres_total_precipitation'),
     ('HRES', 'hres_tp'),
+    ('GFS', 'gfs_total_precipitation'),
     ('GFS', 'gfs_tp'),
+    ('NOAA_GFS', 'gfs_total_precipitation'),
     ('NOAA_GFS', 'gfs_tp'),
+    ('AIFS', 'aifs_total_precipitation'),
     ('AIFS', 'aifs_tp'),
+    ('ECMWF_AIFS', 'aifs_total_precipitation'),
     ('ECMWF_AIFS', 'aifs_tp'),
     ('IMERG', 'imerg_precipitation'),
+    ('DYNAMICAL_IMERG', 'imerg_precipitation'),
+    ('CPC', 'cpc_precipitation'),
     ('CPC', 'cpc_precip'),
     ('ERA5_LAND', 'era5land_total_precipitation_sum'),
+    ('ERA5', 'era5_total_precipitation'),
 )
 _REALTIME_TEMP_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ('HRES', 'hres_temperature_2m'),
     ('HRES', 'hres_2t'),
+    ('GFS', 'gfs_temperature_2m'),
     ('GFS', 'gfs_2t'),
+    ('NOAA_GFS', 'gfs_temperature_2m'),
     ('NOAA_GFS', 'gfs_2t'),
+    ('AIFS', 'aifs_temperature_2m'),
     ('AIFS', 'aifs_2t'),
+    ('ECMWF_AIFS', 'aifs_temperature_2m'),
     ('ECMWF_AIFS', 'aifs_2t'),
     ('ERA5_LAND', 'era5land_temperature_2m'),
+    ('ERA5', 'era5_temperature_2m'),
+)
+SUPPORTED_FORCING_MODES: tuple[str, ...] = (
+    'global_only',
+    'global_and_local',
+    'local_only',
 )
 _NA_STRINGS = frozenset({'', 'nan', 'null', 'none', 'na', 'n/a'})
 _SUPPORTED_DATA_TYPES = frozenset(
@@ -184,6 +203,7 @@ class _FinetuneConfigParams:
     loss_val: str
     lr_strat_val: str
     bs_val: int
+    include_local_forcing: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1034,19 +1054,34 @@ def _read_zarr_basin_lead_matrix(
     return dates, mat
 
 
+_PRODUCT_DIR_ALIASES: dict[str, tuple[str, ...]] = {
+    'HRES': ('HRES', 'ECMWF_HRES'),
+    'AIFS': ('AIFS', 'ECMWF_AIFS'),
+    'IMERG': ('IMERG', 'DYNAMICAL_IMERG'),
+    'CPC': ('CPC',),
+    'GFS': ('GFS', 'NOAA_GFS'),
+    'ERA5': ('ERA5', 'ERA5_LAND'),
+    'GRAPHCAST': ('GRAPHCAST',),
+}
+
+
+def _profile_dynamics_dirs(username: str) -> tuple[Path, ...]:
+    pm = get_profile_manager()
+    profile_dir = pm.get_profile_dir(username)
+    return (
+        pm.get_realtime_dir(username) / 'dynamics',
+        profile_dir / 'realtime' / 'dynamics',
+        profile_dir / 'dynamics',
+    )
+
+
 def _extract_realtime_forcing_matrix(
     username: str,
     basin_id: str,
     candidates: Sequence[tuple[str, str]],
     target_lead_time: int = 7,
 ) -> tuple[pd.DatetimeIndex, np.ndarray, str] | None:
-    pm = get_profile_manager()
-    profile_dir = pm.get_profile_dir(username)
-    for base_dir in (
-        pm.get_realtime_dir(username) / 'dynamics',
-        profile_dir / 'realtime' / 'dynamics',
-        profile_dir / 'dynamics',
-    ):
+    for base_dir in _profile_dynamics_dirs(username):
         if not base_dir.is_dir():
             continue
         for prod_name, var_name in candidates:
@@ -1085,11 +1120,9 @@ def _attach_overlapping_realtime_forcing(
             loaded[key] = (rt[0], rt[1])
 
 
-def _load_uploaded_arrays(
+def _load_raw_uploaded_arrays(
     username: str,
     basin_id: str,
-    *,
-    target_lead_time: int = 7,
 ) -> dict[str, tuple[pd.DatetimeIndex, np.ndarray]]:
     raw_dir = _basin_data_root(username, basin_id) / 'raw_arrays'
     loaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]] = {}
@@ -1102,6 +1135,47 @@ def _load_uploaded_arrays(
                 dates = pd.to_datetime(archive['dates'])
                 matrix = archive['matrix'].astype(np.float32)
                 loaded[key] = (pd.DatetimeIndex(dates), matrix)
+    return loaded
+
+
+def _resolve_forcing_mode(
+    requested_mode: str | None,
+    *,
+    has_local_forcing: bool,
+    has_global_forcing: bool,
+) -> str:
+    clean = (requested_mode or '').strip().lower()
+    if clean in SUPPORTED_FORCING_MODES:
+        if clean == 'local_only' and not has_local_forcing:
+            return 'global_only'
+        return clean
+    if has_local_forcing and has_global_forcing:
+        return 'global_and_local'
+    if has_local_forcing:
+        return 'local_only'
+    return 'global_only'
+
+
+def _load_uploaded_arrays(
+    username: str,
+    basin_id: str,
+    *,
+    target_lead_time: int = 7,
+    forcing_mode: str | None = None,
+) -> dict[str, tuple[pd.DatetimeIndex, np.ndarray]]:
+    raw = _load_raw_uploaded_arrays(username, basin_id)
+    mode_clean = (forcing_mode or '').strip().lower()
+    if mode_clean == 'local_only':
+        return raw
+    if mode_clean == 'global_only':
+        loaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]] = {}
+        if 'streamflow' in raw:
+            loaded['streamflow'] = raw['streamflow']
+        _attach_overlapping_realtime_forcing(
+            loaded, username, basin_id, target_lead_time
+        )
+        return loaded
+    loaded = dict(raw)
     _attach_overlapping_realtime_forcing(
         loaded, username, basin_id, target_lead_time
     )
@@ -1113,10 +1187,14 @@ def _rebuild_local_zarr_stores(
     basin_id: str,
     *,
     target_lead_time: int = 7,
+    forcing_mode: str | None = None,
 ) -> dict[str, object] | None:
     """Write ``LOCAL_FORCING/timeseries.zarr`` and ``streamflow.zarr``."""
     loaded = _load_uploaded_arrays(
-        username, basin_id, target_lead_time=target_lead_time
+        username,
+        basin_id,
+        target_lead_time=target_lead_time,
+        forcing_mode=forcing_mode,
     )
     if not all(k in loaded for k in ('precip', 'temp', 'streamflow')):
         return None
@@ -1388,14 +1466,128 @@ def _resolve_basin_area_km2(username: str, basin_id: str) -> float | None:
     return None
 
 
+def _read_profile_product_band(
+    username: str,
+    prod_upper: str,
+    basin_id: str,
+    var_name: str,
+    target_lead_time: int,
+) -> tuple[pd.DatetimeIndex, np.ndarray] | None:
+    aliases = _PRODUCT_DIR_ALIASES.get(prod_upper, (prod_upper,))
+    for base_dir in _profile_dynamics_dirs(username):
+        if not base_dir.is_dir():
+            continue
+        for folder_name in aliases:
+            zpath = base_dir / folder_name / 'timeseries.zarr'
+            res = _read_zarr_basin_lead_matrix(
+                zpath, basin_id, var_name, target_lead_time
+            )
+            if res is not None:
+                return res
+    return None
+
+
+def _build_product_dataset_for_finetune(
+    user_basin: tuple[str, str],
+    prod_bands: tuple[str, list[str]],
+    time_coords: tuple[pd.DatetimeIndex, pd.TimedeltaIndex],
+    *,
+    is_forecast: bool,
+    use_global_data: bool,
+) -> xr.Dataset:
+    username, basin_id = user_basin
+    prod, bands = prod_bands
+    dates, lead_coords = time_coords
+    prod_upper = prod.upper()
+    lead_time = len(lead_coords)
+    data_vars: dict[str, tuple[tuple[str, ...], np.ndarray]] = {}
+    for var_name in bands:
+        band_res = (
+            _read_profile_product_band(
+                username,
+                prod_upper,
+                basin_id,
+                var_name,
+                lead_time if is_forecast else 1,
+            )
+            if use_global_data
+            else None
+        )
+        if is_forecast:
+            arr_3d = np.full(
+                (1, len(dates), lead_time), np.nan, dtype=np.float32
+            )
+            if band_res is not None:
+                src_dates, src_mat = band_res
+                idx = src_dates.get_indexer(dates)
+                valid = idx >= 0
+                cols = min(src_mat.shape[1], lead_time)
+                arr_3d[0, valid, :cols] = src_mat[idx[valid], :cols]
+            data_vars[var_name] = (('basin', 'date', 'lead_time'), arr_3d)
+        else:
+            arr_2d = np.full((1, len(dates)), np.nan, dtype=np.float32)
+            if band_res is not None:
+                src_dates, src_mat = band_res
+                idx = src_dates.get_indexer(dates)
+                valid = idx >= 0
+                arr_2d[0, valid] = src_mat[idx[valid], 0]
+            data_vars[var_name] = (('basin', 'date'), arr_2d)
+
+    coords: dict[str, object] = {'basin': [basin_id], 'date': dates}
+    if is_forecast:
+        coords['lead_time'] = lead_coords
+    return xr.Dataset(data_vars, coords=coords)
+
+
+def _has_native_global_inputs(global_dyn_dir: Path, base_cfg: Config) -> bool:
+    hindcast_in = (
+        base_cfg.hindcast_inputs
+        if isinstance(base_cfg.hindcast_inputs, dict)
+        else {}
+    )
+    forecast_in = (
+        base_cfg.forecast_inputs
+        if isinstance(base_cfg.forecast_inputs, dict)
+        else {}
+    )
+    has_hc = False
+    for prod, bands in hindcast_in.items():
+        zpath = global_dyn_dir / prod.upper() / 'timeseries.zarr'
+        if not _is_valid_zarr_dir(zpath):
+            continue
+        ds = xr.open_zarr(str(zpath), decode_timedelta=False)
+        if bands and all(
+            b in ds.data_vars and bool(np.isfinite(ds[b].to_numpy()).any())
+            for b in bands
+        ):
+            has_hc = True
+            break
+
+    has_fc = False
+    for prod, bands in forecast_in.items():
+        zpath = global_dyn_dir / prod.upper() / 'timeseries.zarr'
+        if not _is_valid_zarr_dir(zpath):
+            continue
+        ds = xr.open_zarr(str(zpath), decode_timedelta=False)
+        if bands and all(
+            b in ds.data_vars and bool(np.isfinite(ds[b].to_numpy()).any())
+            for b in bands
+        ):
+            has_fc = True
+            break
+    return has_hc and has_fc
+
+
 def _prepare_finetune_zarr_stores(
     username: str,
     base_cfg: Config,
     basin_id: str,
     dates: pd.DatetimeIndex,
-    zarr_root: Path,
+    *,
+    use_global_data: bool = True,
 ) -> tuple[Path, Path]:
-    """Write NaN stores for unused global products and real basin statics."""
+    """Write global product Zarr stores and real basin static attributes."""
+    zarr_root = _basin_data_root(username, basin_id) / 'zarr_store'
     global_dyn_dir = zarr_root / 'global_dyn_placeholders'
     lead_time = int(base_cfg.lead_time)
     lead_coords = pd.timedelta_range(start='1D', periods=lead_time, freq='D')
@@ -1421,24 +1613,13 @@ def _prepare_finetune_zarr_stores(
         bands = sorted(
             set(hindcast_in.get(prod, [])) | set(forecast_in.get(prod, []))
         )
-        if prod in forecast_in:
-            nan_arr = np.full(
-                (1, len(dates), lead_time), np.nan, dtype=np.float32
-            )
-            ds = xr.Dataset(
-                dict.fromkeys(bands, (('basin', 'date', 'lead_time'), nan_arr)),
-                coords={
-                    'basin': [basin_id],
-                    'date': dates,
-                    'lead_time': lead_coords,
-                },
-            )
-        else:
-            nan_arr_2d = np.full((1, len(dates)), np.nan, dtype=np.float32)
-            ds = xr.Dataset(
-                dict.fromkeys(bands, (('basin', 'date'), nan_arr_2d)),
-                coords={'basin': [basin_id], 'date': dates},
-            )
+        ds = _build_product_dataset_for_finetune(
+            (username, basin_id),
+            (prod, bands),
+            (dates, lead_coords),
+            is_forecast=(prod in forecast_in),
+            use_global_data=use_global_data,
+        )
         ds.to_zarr(pdir, mode='w')
 
     attr_path = zarr_root / 'attributes.zarr'
@@ -1612,6 +1793,25 @@ def _append_subkey_to_spec(spec: dict[str, object], grp: str, sub: str) -> None:
     spec[grp] = sub_list
 
 
+def _prune_missing_local_forcing_from_spec(
+    spec: dict[str, object],
+    target_model: torch.nn.Module,
+) -> None:
+    for grp, subspec in list(spec.items()):
+        grp_mod = getattr(target_model, grp, None)
+        if (
+            isinstance(grp_mod, torch.nn.ModuleDict)
+            and isinstance(subspec, list)
+            and 'local_forcing' in subspec
+            and 'local_forcing' not in grp_mod
+        ):
+            filtered = [k for k in subspec if k != 'local_forcing']
+            if filtered:
+                spec[grp] = filtered
+            else:
+                del spec[grp]
+
+
 def _build_finetune_modules_spec(
     selected_components: list[str] | dict[str, object] | None,
     model: torch.nn.Module,
@@ -1638,6 +1838,8 @@ def _build_finetune_modules_spec(
                 _append_subkey_to_spec(spec, grp, sub)
             else:
                 spec[token] = True
+
+    _prune_missing_local_forcing_from_spec(spec, target_model)
 
     if not spec:
         module_parts = list(getattr(target_model, 'module_parts', []))
@@ -1815,12 +2017,176 @@ def _populate_realtime_upload_meta(
             }
 
 
+def _check_model_global_products_for_basin(
+    username: str,
+    basin_id: str,
+    selected_model: dict[str, object],
+) -> tuple[list[str], list[str]]:
+    hc_groups = selected_model.get('base_hindcast_products')
+    fc_groups = selected_model.get('base_forecast_products')
+    model_prods = sorted(
+        (
+            set(hc_groups if isinstance(hc_groups, list) else [])
+            | set(fc_groups if isinstance(fc_groups, list) else [])
+        )
+        - {'local_forcing'}
+    )
+    products_found: list[str] = []
+    products_missing: list[str] = []
+    for prod in model_prods:
+        prod_upper = str(prod).upper()
+        aliases = _PRODUCT_DIR_ALIASES.get(prod_upper, (prod_upper,))
+        found_prod = False
+        for base_dir in _profile_dynamics_dirs(username):
+            if not base_dir.is_dir():
+                continue
+            for folder_name in aliases:
+                zpath = base_dir / folder_name / 'timeseries.zarr'
+                if _is_valid_zarr_dir(zpath):
+                    ds = xr.open_zarr(str(zpath), decode_timedelta=False)
+                    b_coord = next(
+                        (
+                            c
+                            for c in (
+                                'basin',
+                                'basin_id',
+                                'catchment_id',
+                                'gauge_id',
+                            )
+                            if c in ds.coords
+                        ),
+                        None,
+                    )
+                    if b_coord is not None and basin_id in [
+                        str(x) for x in ds.coords[b_coord].to_numpy()
+                    ]:
+                        found_prod = True
+                        break
+            if found_prod:
+                break
+        if found_prod:
+            products_found.append(str(prod))
+        else:
+            products_missing.append(str(prod))
+    return products_found, products_missing
+
+
+def _inspect_global_forcing_coverage(
+    username: str,
+    basin_id: str,
+    selected_model: dict[str, object],
+    raw_uploaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]],
+) -> tuple[
+    dict[str, object],
+    tuple[pd.DatetimeIndex, np.ndarray, str] | None,
+    tuple[pd.DatetimeIndex, np.ndarray, str] | None,
+]:
+    lead_val = int(str(selected_model['lead_time']))
+    pred_last_val = int(str(selected_model['predict_last_n']))
+    rt_precip = _extract_realtime_forcing_matrix(
+        username,
+        basin_id,
+        _REALTIME_PRECIP_CANDIDATES,
+        target_lead_time=lead_val,
+    )
+    rt_temp = _extract_realtime_forcing_matrix(
+        username,
+        basin_id,
+        _REALTIME_TEMP_CANDIDATES,
+        target_lead_time=lead_val,
+    )
+    archive_exists = rt_precip is not None and rt_temp is not None
+    if archive_exists and rt_precip is not None and rt_temp is not None:
+        g_start = max(rt_precip[0][0], rt_temp[0][0])
+        g_end = min(rt_precip[0][-1], rt_temp[0][-1])
+        g_days = max(0, int((g_end - g_start).days) + 1)
+        g_start_str: str | None = g_start.strftime('%Y-%m-%d')
+        g_end_str: str | None = g_end.strftime('%Y-%m-%d')
+    else:
+        g_start = pd.Timestamp.min
+        g_end = pd.Timestamp.min
+        g_days = 0
+        g_start_str = None
+        g_end_str = None
+
+    products_found, products_missing = _check_model_global_products_for_basin(
+        username, basin_id, selected_model
+    )
+
+    target_horizon = max(lead_val, pred_last_val)
+    min_seq = max(_MIN_SEQ_LENGTH, target_horizon)
+    min_req_days = min_seq + lead_val + target_horizon + (_MIN_SAMPLE_DAYS - 2)
+    today_utc = pd.Timestamp.now('UTC').tz_localize(None).floor('D')
+
+    if 'streamflow' in raw_uploaded:
+        sf_dates = raw_uploaded['streamflow'][0]
+        sf_start, sf_end = sf_dates[0], sf_dates[-1]
+        sf_days = len(sf_dates)
+        sf_start_str: str | None = sf_start.strftime('%Y-%m-%d')
+        sf_end_str: str | None = sf_end.strftime('%Y-%m-%d')
+        ov_start = max(sf_start, g_start)
+        ov_end = min(sf_end, g_end)
+        overlap_days = (
+            max(0, int((ov_end - ov_start).days) + 1)
+            if archive_exists and ov_start <= ov_end
+            else 0
+        )
+        coverage_ratio = (
+            round(min(1.0, overlap_days / max(1, sf_days)), 3)
+            if sf_days > 0
+            else 0.0
+        )
+        has_sufficient_overlap = overlap_days >= min_req_days
+        full_coverage = archive_exists and overlap_days >= max(1, sf_days - 3)
+        recommended_lookback_days = max(
+            365, int((today_utc - sf_start).days) + 14
+        )
+    else:
+        sf_start_str = None
+        sf_end_str = None
+        sf_days = 0
+        overlap_days = g_days
+        coverage_ratio = 1.0 if archive_exists else 0.0
+        has_sufficient_overlap = archive_exists and g_days >= min_req_days
+        full_coverage = has_sufficient_overlap
+        recommended_lookback_days = 365
+
+    status_info: dict[str, object] = {
+        'archive_exists_for_basin': archive_exists,
+        'has_basin_archive': archive_exists,
+        'has_sufficient_overlap': has_sufficient_overlap,
+        'full_coverage': full_coverage,
+        'fully_covers_streamflow': full_coverage,
+        'needs_extraction': not (archive_exists and has_sufficient_overlap),
+        'precip_product': rt_precip[2] if rt_precip is not None else None,
+        'temp_product': rt_temp[2] if rt_temp is not None else None,
+        'global_start_date': g_start_str,
+        'global_end_date': g_end_str,
+        'global_days': g_days,
+        'streamflow_start_date': sf_start_str,
+        'streamflow_end_date': sf_end_str,
+        'streamflow_days': sf_days,
+        'overlap_days': overlap_days,
+        'min_required_days': min_req_days,
+        'coverage_ratio': coverage_ratio,
+        'products_found': products_found,
+        'products_missing': products_missing,
+        'recommended_lookback_days': recommended_lookback_days,
+    }
+    return status_info, rt_precip, rt_temp
+
+
 def _build_workspace_timeseries_and_partition(
     loaded: dict[str, tuple[pd.DatetimeIndex, np.ndarray]],
     selected_model: dict[str, object],
     *,
     data_ready: bool,
     active_split: float,
+    extra_precip: tuple[
+        tuple[pd.DatetimeIndex, np.ndarray] | None,
+        tuple[pd.DatetimeIndex, np.ndarray, str] | None,
+    ]
+    | None = None,
 ) -> tuple[dict[str, object] | None, dict[str, object] | None]:
     if not loaded:
         return None, None
@@ -1839,10 +2205,12 @@ def _build_workspace_timeseries_and_partition(
 
     common_dates = pd.date_range(start_d, end_d, freq='D')
 
-    def _extract_lead1(key: str) -> list[float | None]:
-        if key not in loaded:
-            return [None] * len(common_dates)
-        d_idx, mat = loaded[key]
+    def _align_series(
+        pair: tuple[pd.DatetimeIndex, np.ndarray] | None,
+    ) -> list[float | None] | None:
+        if pair is None:
+            return None
+        d_idx, mat = pair
         indexer = d_idx.get_indexer(common_dates)
         return [
             round(float(mat[pos, 0]), 4)
@@ -1850,6 +2218,10 @@ def _build_workspace_timeseries_and_partition(
             else None
             for pos in indexer
         ]
+
+    def _extract_lead1(key: str) -> list[float | None]:
+        res = _align_series(loaded.get(key))
+        return res if res is not None else [None] * len(common_dates)
 
     partition_info: dict[str, object] | None = None
     if data_ready:
@@ -1872,13 +2244,176 @@ def _build_workspace_timeseries_and_partition(
         except ValueError:
             partition_info = None
 
+    raw_local_precip = extra_precip[0] if extra_precip is not None else None
+    rt_precip = extra_precip[1] if extra_precip is not None else None
+    precip_local = _align_series(raw_local_precip)
+    precip_global = (
+        _align_series((rt_precip[0], rt_precip[1]))
+        if rt_precip is not None
+        else None
+    )
+
     timeseries_payload: dict[str, object] = {
         'dates': [d.strftime('%Y-%m-%d') for d in common_dates],
         'precip': _extract_lead1('precip'),
+        'precip_local': precip_local if precip_local is not None else [],
+        'precip_global': precip_global if precip_global is not None else [],
+        'precip_global_product': (
+            rt_precip[2] if rt_precip is not None else None
+        ),
         'temp': _extract_lead1('temp'),
         'streamflow_obs': _extract_lead1('streamflow'),
     }
     return timeseries_payload, partition_info
+
+
+def _get_or_compute_baseline_eval(
+    username: str,
+    basin_id: str,
+    model_id: str,
+    partition_info: dict[str, object],
+    resolved_forcing_mode: str,
+) -> dict[str, object] | None:
+    common_dates = pd.date_range(
+        str(partition_info['record_start_date']),
+        str(partition_info['record_end_date']),
+        freq='D',
+    )
+    sess_dir = _session_root(username, basin_id, model_id)
+    state_path = sess_dir / 'session_state.json'
+    session_state: dict[str, object] = (
+        json.loads(state_path.read_text(encoding='utf-8'))
+        if state_path.exists()
+        else {}
+    )
+    raw_hist = session_state.get('epoch_history')
+    if isinstance(raw_hist, list) and raw_hist:
+        first_rec = raw_hist[0]
+        if isinstance(first_rec, dict) and first_rec.get('epoch') == 0:
+            sim1 = first_rec.get('streamflow_sim_lead1')
+            if isinstance(sim1, list) and len(sim1) == len(common_dates):
+                return first_rec
+
+    meta_path = _basin_data_root(username, basin_id) / 'upload_meta.json'
+    upload_meta: dict[str, object] = (
+        json.loads(meta_path.read_text(encoding='utf-8'))
+        if meta_path.exists()
+        else {}
+    )
+    cache_path = sess_dir / 'baseline_eval_cache.json'
+    sf_up = (
+        upload_meta.get('streamflow', {}).get('uploaded_at', '')
+        if isinstance(upload_meta.get('streamflow'), dict)
+        else ''
+    )
+    pr_up = (
+        upload_meta.get('precip', {}).get('uploaded_at', '')
+        if isinstance(upload_meta.get('precip'), dict)
+        else ''
+    )
+    signature = (
+        f'{model_id}|{basin_id}|{resolved_forcing_mode}|'
+        f'{partition_info.get("record_start_date")}|'
+        f'{partition_info.get("record_end_date")}|'
+        f'{partition_info.get("split_date")}|'
+        f'{partition_info.get("effective_seq_length")}|'
+        f'{sf_up}|{pr_up}'
+    )
+    if cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text(encoding='utf-8'))
+            rec = cached.get('record') if isinstance(cached, dict) else None
+            if (
+                isinstance(cached, dict)
+                and cached.get('signature') == signature
+                and isinstance(rec, dict)
+                and isinstance(rec.get('streamflow_sim_lead1'), list)
+                and len(rec['streamflow_sim_lead1']) == len(common_dates)
+            ):
+                return rec
+        except (OSError, ValueError, TypeError):
+            pass
+
+    _, base_run_dir = _resolve_model_dir(model_id, username)
+    base_ckpt, _ = _find_latest_checkpoint(base_run_dir)
+    if base_ckpt is None:
+        return None
+    base_cfg = Config(base_run_dir / 'config.yml', dev_mode=True)
+    lead_time = int(base_cfg.lead_time)
+    if (
+        _rebuild_local_zarr_stores(
+            username,
+            basin_id,
+            target_lead_time=lead_time,
+            forcing_mode=resolved_forcing_mode,
+        )
+        is None
+    ):
+        return None
+
+    zarr_root = _basin_data_root(username, basin_id) / 'zarr_store'
+    use_global = resolved_forcing_mode != 'local_only'
+    global_dyn_dir, attr_path = _prepare_finetune_zarr_stores(
+        username,
+        base_cfg,
+        basin_id,
+        common_dates,
+        use_global_data=use_global,
+    )
+    has_native_global = use_global and _has_native_global_inputs(
+        global_dyn_dir, base_cfg
+    )
+    include_local = (resolved_forcing_mode != 'global_only') or (
+        not has_native_global
+    )
+
+    eval_run_dir = sess_dir / 'baseline_eval_run'
+    eval_run_dir.mkdir(parents=True, exist_ok=True)
+    lr_val = float(base_cfg.initial_learning_rate or 5e-4)
+    loss_val = _resolve_and_validate_loss(None, base_cfg)
+    lr_strat_val = _resolve_and_validate_lr_strategy(None, base_cfg)
+    bs_val = int(base_cfg.batch_size or 16)
+
+    ft_cfg = _build_finetune_config(
+        _FinetuneConfigParams(
+            base_cfg=base_cfg,
+            base_run_dir=base_run_dir,
+            run_dir=eval_run_dir,
+            zarr_root=zarr_root,
+            global_dyn_dir=global_dyn_dir,
+            attr_path=attr_path,
+            partition=partition_info,
+            lead_time=lead_time,
+            lr_val=lr_val,
+            loss_val=loss_val,
+            lr_strat_val=lr_strat_val,
+            bs_val=bs_val,
+            include_local_forcing=include_local,
+        )
+    )
+    train_ds = get_dataset(
+        cfg=ft_cfg, is_train=True, period='train', compute_scaler=False
+    )
+    torch.manual_seed(int(ft_cfg.seed or 42))
+    model = get_model(ft_cfg).to(torch.device('cpu'))
+    load_model_weights(
+        model, base_ckpt, device='cpu', allow_new_embeddings=True
+    )
+    eval_ctx = _build_epoch_eval_context(
+        model, ft_cfg, train_ds, partition_info, []
+    )
+    rec0, _ = _evaluate_and_build_epoch_record(
+        eval_ctx,
+        0,
+        'Epoch 0 (Pretrained Initial)',
+        lr_val,
+    )
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps({'signature': signature, 'record': rec0}, indent=2),
+        encoding='utf-8',
+    )
+    return rec0
 
 
 def get_finetune_workspace_status(
@@ -1887,6 +2422,7 @@ def get_finetune_workspace_status(
     model_id: str = 'google-floodhub-settings-110-epochs',
     *,
     split_ratio: float | None = None,
+    forcing_mode: str | None = None,
 ) -> dict[str, object]:
     """Return full status of the per-basin fine-tuning workspace."""
     _resolve_model_dir(model_id, username)
@@ -1931,11 +2467,14 @@ def get_finetune_workspace_status(
         if meta_path.exists()
         else {}
     )
-    loaded = _load_uploaded_arrays(
-        username, basin_id, target_lead_time=lead_val
+    raw_uploaded = _load_raw_uploaded_arrays(username, basin_id)
+    global_forcing_status, rt_precip, _ = _inspect_global_forcing_coverage(
+        username, basin_id, selected_model, raw_uploaded
     )
-    data_ready = all(k in loaded for k in ('precip', 'temp', 'streamflow'))
-    _populate_realtime_upload_meta(loaded, upload_meta)
+    has_local_forcing = 'precip' in raw_uploaded and 'temp' in raw_uploaded
+    has_global_forcing = bool(
+        global_forcing_status.get('archive_exists_for_basin')
+    )
 
     sess_dir = _session_root(
         username, basin_id, str(selected_model['model_id'])
@@ -1946,6 +2485,26 @@ def get_finetune_workspace_status(
         if state_path.exists()
         else {}
     )
+
+    saved_mode = (
+        str(session_state.get('forcing_mode'))
+        if session_state.get('forcing_mode')
+        else None
+    )
+    resolved_forcing_mode = _resolve_forcing_mode(
+        forcing_mode or saved_mode,
+        has_local_forcing=has_local_forcing,
+        has_global_forcing=has_global_forcing,
+    )
+
+    loaded = _load_uploaded_arrays(
+        username,
+        basin_id,
+        target_lead_time=lead_val,
+        forcing_mode=resolved_forcing_mode,
+    )
+    data_ready = all(k in loaded for k in ('precip', 'temp', 'streamflow'))
+    _populate_realtime_upload_meta(loaded, upload_meta)
 
     active_split = (
         _validate_finite_float(
@@ -1964,8 +2523,50 @@ def get_finetune_workspace_status(
             selected_model,
             data_ready=data_ready,
             active_split=active_split,
+            extra_precip=(raw_uploaded.get('precip'), rt_precip),
         )
     )
+    if partition_info is None:
+        data_ready = False
+
+    baseline_metrics: dict[str, object] | None = None
+    if (
+        data_ready
+        and partition_info is not None
+        and timeseries_payload is not None
+    ):
+        try:
+            rec0 = _get_or_compute_baseline_eval(
+                username,
+                basin_id,
+                str(selected_model['model_id']),
+                partition_info,
+                resolved_forcing_mode,
+            )
+            if rec0 is not None:
+                timeseries_payload['streamflow_sim_base'] = rec0.get(
+                    'streamflow_sim_lead1'
+                )
+                timeseries_payload['streamflow_sim_base_lead_last'] = rec0.get(
+                    'streamflow_sim_lead_last'
+                )
+                baseline_metrics = {
+                    k: rec0.get(k)
+                    for k in (
+                        'epoch',
+                        'label',
+                        'train_loss',
+                        'val_loss',
+                        'train_nse',
+                        'val_nse',
+                        'train_kge',
+                        'val_kge',
+                        'train_rmse',
+                        'val_rmse',
+                    )
+                }
+        except (FileNotFoundError, KeyError, ValueError, RuntimeError):
+            baseline_metrics = None
 
     comp_names = selected_model.get('tunable_component_names')
     default_head = _default_head_component_name(
@@ -1981,9 +2582,13 @@ def get_finetune_workspace_status(
         'selected_model': selected_model,
         'models': models,
         'upload_meta': upload_meta,
+        'has_local_forcing': has_local_forcing,
+        'forcing_mode': resolved_forcing_mode,
+        'global_forcing_status': global_forcing_status,
         'data_ready': data_ready,
         'partition': partition_info,
         'timeseries': timeseries_payload,
+        'baseline_metrics': baseline_metrics,
         'session': {
             'current_epoch': int(str(session_state.get('current_epoch', 0))),
             'status': session_state.get(
@@ -1994,6 +2599,7 @@ def get_finetune_workspace_status(
                 if partition_info
                 else active_split
             ),
+            'forcing_mode': resolved_forcing_mode,
             'epoch_history': session_state.get('epoch_history', []),
             'last_hyperparameters': session_state.get(
                 'last_hyperparameters',
@@ -2111,16 +2717,18 @@ def _build_finetune_config(params: _FinetuneConfigParams) -> Config:
 
     cfg_dict['statics_data_dir'] = str(params.attr_path)
     cfg_dict['targets_data_dir'] = str(params.zarr_root / 'streamflow.zarr')
-    cfg_dict['dynamics_data_dir'] = [
-        str(params.global_dyn_dir),
-        str(params.zarr_root / 'local_dyn'),
-    ]
-
     hindcast_in = dict(cfg_dict.get('hindcast_inputs', {}))
     forecast_in = dict(cfg_dict.get('forecast_inputs', {}))
-    local_bands = ['local_precipitation', 'local_temperature']
-    hindcast_in['local_forcing'] = list(local_bands)
-    forecast_in['local_forcing'] = list(local_bands)
+    if params.include_local_forcing:
+        cfg_dict['dynamics_data_dir'] = [
+            str(params.global_dyn_dir),
+            str(params.zarr_root / 'local_dyn'),
+        ]
+        local_bands = ['local_precipitation', 'local_temperature']
+        hindcast_in['local_forcing'] = list(local_bands)
+        forecast_in['local_forcing'] = list(local_bands)
+    else:
+        cfg_dict['dynamics_data_dir'] = [str(params.global_dyn_dir)]
     cfg_dict['hindcast_inputs'] = hindcast_in
     cfg_dict['forecast_inputs'] = forecast_in
     return Config(cfg_dict, dev_mode=True)
@@ -2353,6 +2961,7 @@ def _parse_run_options(
     int,
     list[str] | dict[str, object] | None,
     float,
+    str | None,
 ]:
     allowed_opts = {
         'epochs',
@@ -2362,6 +2971,7 @@ def _parse_run_options(
         'batch_size',
         'finetune_modules',
         'split_ratio',
+        'forcing_mode',
     }
     unknown = set(options) - allowed_opts
     if unknown:
@@ -2403,6 +3013,21 @@ def _parse_run_options(
         min_val=_MIN_SPLIT_RATIO,
         max_val=_MAX_SPLIT_RATIO,
     )
+    raw_fmode = options.get('forcing_mode')
+    forcing_mode = (
+        str(raw_fmode).strip().lower()
+        if raw_fmode is not None and str(raw_fmode).strip()
+        else None
+    )
+    if (
+        forcing_mode is not None
+        and forcing_mode != 'auto'
+        and forcing_mode not in SUPPORTED_FORCING_MODES
+    ):
+        raise ValueError(
+            f"Unsupported forcing_mode '{forcing_mode}'. "
+            f'Supported modes: {list(SUPPORTED_FORCING_MODES)}'
+        )
     return (
         epochs,
         lr_val,
@@ -2411,6 +3036,7 @@ def _parse_run_options(
         bs_val,
         ft_modules,
         split_ratio,
+        forcing_mode,
     )
 
 
@@ -2504,7 +3130,12 @@ def _load_or_init_finetune_model(
         load_model_weights(
             model, latest_sess_ckpt, device='cpu', allow_new_embeddings=False
         )
-        if isinstance(model, BaseModel):
+        shared_fc = getattr(model, 'shared_embeddings_fc', None)
+        if (
+            isinstance(model, BaseModel)
+            and isinstance(shared_fc, torch.nn.ModuleDict)
+            and 'local_forcing' in shared_fc
+        ):
             model.set_newly_initialized_embeddings(
                 {('shared_embeddings_fc', 'local_forcing')}
             )
@@ -2591,21 +3222,51 @@ def run_finetune_epochs(
         bs_val,
         finetune_modules,
         split_ratio,
+        requested_forcing_mode,
     ) = _parse_run_options(options, base_cfg)
+
+    raw_uploaded = _load_raw_uploaded_arrays(username, basin_id)
+    has_local_forcing = 'precip' in raw_uploaded and 'temp' in raw_uploaded
+    rt_p = _extract_realtime_forcing_matrix(
+        username,
+        basin_id,
+        _REALTIME_PRECIP_CANDIDATES,
+        target_lead_time=lead_time,
+    )
+    rt_t = _extract_realtime_forcing_matrix(
+        username,
+        basin_id,
+        _REALTIME_TEMP_CANDIDATES,
+        target_lead_time=lead_time,
+    )
+    has_global_forcing = rt_p is not None and rt_t is not None
+    resolved_forcing_mode = _resolve_forcing_mode(
+        requested_forcing_mode,
+        has_local_forcing=has_local_forcing,
+        has_global_forcing=has_global_forcing,
+    )
 
     if (
         _rebuild_local_zarr_stores(
-            username, basin_id, target_lead_time=lead_time
+            username,
+            basin_id,
+            target_lead_time=lead_time,
+            forcing_mode=resolved_forcing_mode,
         )
         is None
     ):
         raise ValueError(
-            'Please upload local precipitation, temperature, and streamflow '
-            'CSVs before fine-tuning.'
+            'Streamflow and input forcing data (global archive or uploaded '
+            'local precipitation/temperature CSVs) are required before '
+            'fine-tuning. Extract global forcings for this catchment or '
+            'upload local CSVs.'
         )
 
     loaded = _load_uploaded_arrays(
-        username, basin_id, target_lead_time=lead_time
+        username,
+        basin_id,
+        target_lead_time=lead_time,
+        forcing_mode=resolved_forcing_mode,
     )
     _validate_uploaded_forecast_leads(loaded, lead_time)
 
@@ -2622,8 +3283,19 @@ def run_finetune_epochs(
     )
 
     zarr_root = _basin_data_root(username, basin_id) / 'zarr_store'
+    use_global = resolved_forcing_mode != 'local_only'
     global_dyn_dir, attr_path = _prepare_finetune_zarr_stores(
-        username, base_cfg, basin_id, common_dates, zarr_root
+        username,
+        base_cfg,
+        basin_id,
+        common_dates,
+        use_global_data=use_global,
+    )
+    has_native_global = use_global and _has_native_global_inputs(
+        global_dyn_dir, base_cfg
+    )
+    include_local = (resolved_forcing_mode != 'global_only') or (
+        not has_native_global
     )
 
     sess_dir = _session_root(username, basin_id, model_id)
@@ -2637,7 +3309,10 @@ def run_finetune_epochs(
     )
 
     prev_split = session_state.get('split_date')
-    if prev_split is not None and prev_split != partition['split_date']:
+    prev_mode = session_state.get('forcing_mode')
+    if (prev_split is not None and prev_split != partition['split_date']) or (
+        prev_mode is not None and prev_mode != resolved_forcing_mode
+    ):
         shutil.rmtree(run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
         session_state = {}
@@ -2656,6 +3331,7 @@ def run_finetune_epochs(
             loss_val=loss_val,
             lr_strat_val=lr_strat_val,
             bs_val=bs_val,
+            include_local_forcing=include_local,
         )
     )
     ft_cfg.update_config({'epochs': epochs})
@@ -2691,6 +3367,7 @@ def run_finetune_epochs(
         'status': 'paused',
         'split_ratio': split_ratio_out,
         'split_date': partition['split_date'],
+        'forcing_mode': resolved_forcing_mode,
         'updated_at': datetime.now(UTC).isoformat(),
         'last_hyperparameters': {
             'epochs_per_step': epochs,
@@ -2705,5 +3382,9 @@ def run_finetune_epochs(
     state_path.write_text(json.dumps(session_state, indent=2), encoding='utf-8')
 
     return get_finetune_workspace_status(
-        username, basin_id, model_id, split_ratio=split_ratio_out
+        username,
+        basin_id,
+        model_id,
+        split_ratio=split_ratio_out,
+        forcing_mode=resolved_forcing_mode,
     )
