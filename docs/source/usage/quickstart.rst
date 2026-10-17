@@ -121,8 +121,8 @@ Example Configs & Pre-Trained Global Models
 
 Every model run is controlled by a YAML configuration file:
 
-* **Example Configurations (`model/example-configs/`):** Includes configurations reproducing former operational Google FloodHub model generations (`floodhub-settings-config.yml` for the 2025 `MeanEmbeddingForecastLSTM` generation and `handoff-forecast-lstm-config.yml` for the 2024 `HandoffForecastLSTM` generation), 531-basin CAMELS-US benchmarks, stream-gauge data assimilation (`camels-multimet-mean-embedding-forecast-lstm-assimilation-config.yml`), and hot-start inference (`template_hot_start_config.yml`). See :doc:`Example Configuration Files <../example-configs/example-configs>` for details.
-* **Pre-Trained Global Checkpoints (`model/pretrained-models/`):** Three pre-trained global ``MeanEmbeddingForecastLSTM`` checkpoints (trained on 4,888 global Caravan basins from 1982 to 2022) are included in the repository:
+* **Example Configurations (``model/example-configs/``):** Includes configurations reproducing former operational Google FloodHub model generations (``floodhub-settings-config.yml`` for the 2025 ``MeanEmbeddingForecastLSTM`` generation and ``handoff-forecast-lstm-config.yml`` for the 2024 ``HandoffForecastLSTM`` generation), 531-basin CAMELS-US benchmarks, stream-gauge data assimilation (``camels-multimet-mean-embedding-forecast-lstm-assimilation-config.yml``), and hot-start inference (``template_hot_start_config.yml``). See :doc:`Example Configuration Files <../example-configs/example-configs>` for details.
+* **Pre-Trained Global Checkpoints (``model/pretrained-models/``):** Three pre-trained global ``MeanEmbeddingForecastLSTM`` checkpoints (trained from ``01/01/1982`` to ``30/09/2023`` on the basins listed in ``model/example-configs/multimet-basins-list-without-chirps.txt``) are included in the repository:
 
   .. list-table::
      :header-rows: 1
@@ -135,10 +135,10 @@ Every model run is controlled by a YAML configuration file:
        - ``model_epoch110.pt``
        - **Hindcast:** HRES, GraphCast, IMERG, CPC (with ERA5-Land fallback). **Forecast:** HRES + GraphCast.
      * - ``google-floodhub-settings-aifs-110-epochs``
-       - ``model_epoch026.pt``
+       - ``model_epoch110.pt``
        - **Hindcast:** HRES, AIFS, IMERG, CPC (with ERA5-Land fallback). **Forecast:** HRES + AIFS.
      * - ``google-floodhub-settings-no-graphcast-110-epochs``
-       - ``model_epoch027.pt``
+       - ``model_epoch110.pt``
        - **Hindcast:** HRES, IMERG, CPC (with ERA5-Land fallback). **Forecast:** HRES only (no AI weather model).
 
   See ``model/pretrained-models/Pretrained-Models-README.md`` for step-by-step instructions on evaluating or fine-tuning these checkpoints.
@@ -196,20 +196,20 @@ In your fine-tuning YAML file, set ``base_run_dir`` to a pre-trained run directo
 Evaluate on a Test Set
 ^^^^^^^^^^^^^^^^^^^^^^
 
-Compute verification metrics (such as Nash-Sutcliffe Efficiency ``NSE`` and Kling-Gupta Efficiency ``KGE``) on the configured split (default ``--split test``). Add ``--assimilate`` to enable gradient-based streamflow data assimilation when ``assimilation_config`` is present in the run configuration:
+Compute verification metrics (such as Nash-Sutcliffe Efficiency ``NSE`` and Kling-Gupta Efficiency ``KGE``) on one period of the run configuration (``--period``: ``train``, ``validation``, or ``test``; default ``test``). Add ``--assimilate`` to enable gradient-based streamflow data assimilation when ``assimilation_config`` is present in the run configuration:
 
 .. code-block:: bash
 
-   run evaluate --run-dir /path/to/your/model_run/ --split test --epoch 110
+   run evaluate --run-dir /path/to/your/model_run/ --period test --epoch 110
 
 Run Operational Inference
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Generate forecast trajectories across all dates in the configured split without skipping dates that lack observed streamflow:
+Generate forecast trajectories across all dates in the selected period without skipping dates that lack observed streamflow:
 
 .. code-block:: bash
 
-   run infer --run-dir /path/to/your/model_run/ --split test
+   run infer --run-dir /path/to/your/model_run/ --period test
 
 Schedule Multiple Runs Across GPUs (``schedule-runs``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

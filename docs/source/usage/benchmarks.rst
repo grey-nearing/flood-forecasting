@@ -26,22 +26,22 @@ Installing OpenHydroNet (``pip install -e .``) registers six benchmark commands:
      - What It Verifies
    * - ``benchmark-catchment``
      - :mod:`benchmarks.catchment_delineation`
-     - Evaluates 90 m (3-arc-second) D8 watershed delineation and pour-point snapping against published Caravan and GRDC reference polygons (`IoU`, `Dice`, and relative area error in :math:`\text{km}^2`).
+     - Evaluates 90 m (3-arc-second) D8 watershed delineation and pour-point snapping against published Caravan and GRDC reference polygons (``IoU``, ``Dice``, and relative area error in :math:`\text{km}^2`).
    * - ``benchmark-static-extractor``
      - :mod:`benchmarks.static_extractor`
      - Compares extracted HydroATLAS Level 12 (196 variables) and ERA5-Land climate (14 variables) attributes against the 210 published Caravan reference attributes.
    * - ``benchmark-gridded-archive``
      - :mod:`benchmarks.gridded_archive_builders`
-     - Rebuilds a date window of NOAA CPC (`0.5°`) or NASA IMERG (`0.1°`) gridded precipitation archives from upstream files and checks cell-by-cell parity against a reference ``daily_surface.zarr`` store.
+     - Rebuilds a date window of NOAA CPC (``0.5°``) or NASA IMERG (``0.1°``) gridded precipitation archives from upstream files and checks cell-by-cell parity against a reference ``daily_surface.zarr`` store.
    * - ``benchmark-timeseries-extractor``
      - :mod:`benchmarks.timeseries_extractors`
-     - Reconstructs catchment-averaged MultiMet weather time series (`CPC`, `IMERG`, `HRES`) from gridded Zarr archives and compares them against canonical ``gs://caravan-multimet/v1.1`` stores.
+     - Reconstructs catchment-averaged MultiMet weather time series (``CPC``, ``IMERG``, ``HRES``) from gridded Zarr archives and compares them against canonical ``gs://caravan-multimet/v1.1`` stores.
    * - ``benchmark-return-periods``
      - :mod:`benchmarks.return_periods`
-     - Verifies ``MultipleGrubbsBeckTester`` (`MGBT`) and ``GEMAFitter`` (`EMA` Log-Pearson Type III) unit-conversion invariance (`live` mode) and 4-way numerical parity against USGS Fortran ``peakfqr`` v8.0 and CRAN R ``MGBT`` v1.1.6 (`external-usgs` mode).
+     - Verifies ``MultipleGrubbsBeckTester`` (``MGBT``) and ``GEMAFitter`` (``EMA`` Log-Pearson Type III) unit-conversion invariance (``live`` mode) and 4-way numerical parity against USGS Fortran ``peakfqr`` v8.0 and CRAN R ``MGBT`` v1.1.6 (``external-usgs`` mode).
    * - ``benchmark-model``
      - :mod:`benchmarks.model`
-     - Compares forecasting model skill (`NSE`, `KGE`) across canonical vs. reconstructed weather forcings, evaluates model architectures (`MeanEmbeddingForecastLSTM`, `HandoffForecastLSTM`), and verifies cold-start vs. hot-start LSTM state handoff.
+     - Compares forecasting model skill (``NSE``, ``KGE``) across canonical vs. reconstructed weather forcings, evaluates model architectures (``MeanEmbeddingForecastLSTM``, ``HandoffForecastLSTM``), and verifies cold-start vs. hot-start LSTM state handoff.
 
 Benchmark Evaluation Principles
 -------------------------------
@@ -49,9 +49,9 @@ Benchmark Evaluation Principles
 Every benchmark in ``benchmarks`` follows four strict rules so errors are never hidden:
 
 1. **No Fallback to Reference Data:** Benchmarks never substitute reference polygons, reference attributes, or ``union_mapping`` fallback variables when a component fails or outputs ``NaN``.
-2. **Explicit Missing-Data (`NaN`) Accounting:** Every benchmark counts and flags any case where the tested component outputs ``NaN`` while the reference value is valid.
+2. **Explicit Missing-Data (``NaN``) Accounting:** Every benchmark counts and flags any case where the tested component outputs ``NaN`` while the reference value is valid.
 3. **Both Conditional and Unconditional Metrics:** Reports show both *conditional* accuracy (scored on valid outputs) and *unconditional* accuracy (where unexpected failures or ``NaN`` outputs are penalized across 100% of in-coverage basins).
-4. **Full Percentile Distributions:** Instead of reporting only a single mean or median, reports include lower-tail skill percentiles (`Min, P1, P5, P10, P25, P50`) and upper-tail error percentiles (`P50, P75, P90, P95, P99, Max`).
+4. **Full Percentile Distributions:** Instead of reporting only a single mean or median, reports include lower-tail skill percentiles (``Min, P1, P5, P10, P25, P50``) and upper-tail error percentiles (``P50, P75, P90, P95, P99, Max``).
 
 CLI Reference & Quick-Start Examples
 ------------------------------------
@@ -123,18 +123,18 @@ CLI Reference & Quick-Start Examples
    * - Flag
      - Required
      - Description
-   * - ``--dataset``, ``-d``
+   * - ``--dataset``
      - Yes
      - Path to benchmark Parquet dataset containing ``geometry_wkt`` and ``ref_*`` Caravan columns.
    * - ``--output-dir``, ``-o``
      - Yes
      - Directory to write ``benchmark_attribute_metrics.csv``, ``benchmark_basin_metrics.csv``, and ``benchmark_report.md``.
-   * - ``--gdb-path``, ``-g``
+   * - ``--gdb-path``
      - Conditional
      - Local path to ``BasinATLAS_v10.gdb`` (or pass ``--gcs-gdb-uri`` with ``--no-download``).
    * - ``--era5-source``
-     - No
-     - Climate extraction mode: ``hybas`` (default), ``gridded``, or ``none`` (196 HydroATLAS attributes only).
+     - Yes
+     - Climate extraction mode: ``hybas``, ``gridded``, or ``none`` (196 HydroATLAS attributes only).
    * - ``--era5-cache-dir``
      - Conditional
      - Local directory containing ``{continent}_climate_indices.txt`` tables when ``--era5-source hybas``.
@@ -263,7 +263,7 @@ CLI Reference & Quick-Start Examples
    * - ``--peakfq-so``
      - No
      - Optional explicit path to compiled ``peakfq.so`` shared library.
-   * - ``--setup-usgs``
+   * - ``--print-setup-instructions``
      - No
      - Print step-by-step instructions for cloning and compiling the USGS Fortran and R repositories and exit.
 

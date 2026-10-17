@@ -8,7 +8,7 @@ The ``maas`` package downloads live and historical river discharge forecasts fro
 2. **Copernicus GloFAS v4** (:py:class:`maas.glofas.GloFASClient`): Daily river discharge on a global ``0.05°`` grid (about ``5 km``), read from the Open-Meteo Flood API or from a GloFAS v4 Zarr archive. Each forecast includes the unperturbed control run, the ensemble median, the ensemble mean, the 25th/75th percentiles, the min/max range, and all 50 ensemble members.
 3. **GEOGLOWS ECMWF v2** (:py:class:`maas.geoglows.GeoGLOWSClient`): 3-hourly river forecasts across roughly 6.8 million global river reaches (identified by ``LINKNO`` reach IDs).
 
-All river discharge values are in cubic meters per second (``m³/s``), and all timestamps are in UTC (``YYYY-MM-DD``). You can also explore these forecasts visually in the **MaaS Forecast Hub** tab of :doc:`openhydronet-ui <frontend>`.
+All river discharge values are in cubic meters per second (``m³/s``), and all timestamps are in UTC (``YYYY-MM-DD``). You can also explore these forecasts visually in the **Models-as-a-Service** tab of :doc:`openhydronet-ui <frontend>`.
 
 .. contents:: On this page
    :local:
@@ -79,7 +79,7 @@ Quick Start (Python)
 Choosing the GloFAS Reference Series
 ------------------------------------
 
-GloFAS publishes three summary curves for each grid cell and day. The ``glofas_reference`` argument (default ``'control'``) selects which curve is used for the primary GloFAS daily series, its peak discharge (`m³/s`), and its return-period threshold comparison:
+GloFAS publishes three summary curves for each grid cell and day. The ``glofas_reference`` argument (default ``'control'``) selects which curve is used for the primary GloFAS daily series, its peak discharge (``m³/s``), and its return-period threshold comparison:
 
 .. list-table::
    :header-rows: 1
@@ -93,12 +93,12 @@ GloFAS publishes three summary curves for each grid cell and day. The ``glofas_r
      - Control (unperturbed) forecast run forced by the single ECMWF control weather forecast.
    * - ``median``
      - ``discharge_median``
-     - Median (`50th percentile`) across the 50 perturbed ensemble members on each day.
+     - Median (50th percentile) across the 50 perturbed ensemble members on each day.
    * - ``mean``
      - ``discharge_mean``
      - Arithmetic mean across the 50 perturbed ensemble members on each day.
 
-Every GloFAS record always includes all three fields (`discharge_deterministic`, `discharge_median`, and `discharge_mean`), so you can switch between them without re-downloading. Passing an unrecognized key raises ``ValueError``.
+Every GloFAS record always includes all three fields (``discharge_deterministic``, ``discharge_median``, and ``discharge_mean``), so you can switch between them without re-downloading. Passing an unrecognized key raises ``ValueError``.
 
 In the web UI (:doc:`openhydronet-ui <frontend>`), the **GloFAS Reference** drop-down in the Forecast View updates both the plotted curve and the multi-model consensus summary:
 
@@ -106,13 +106,10 @@ In the web UI (:doc:`openhydronet-ui <frontend>`), the **GloFAS Reference** drop
 
    GET /api/maas/forecast?lat=38.627&lon=-90.199&glofas_reference=median
 
-Reading Cloud or Local GloFAS v4 Zarr Archives
-----------------------------------------------
+Reading Local GloFAS v4 Zarr or NetCDF Archives
+-----------------------------------------------
 
-Instead of querying the Open-Meteo HTTP API, ``fetch_historical(..., zarr_path=...)`` and :py:func:`maas.extract_glofas_zarr_series` can read a GloFAS v4 Zarr or NetCDF archive directly:
-
-* **Canonical Copernicus GloFAS v4 historical reanalysis Zarr store on GCS:** ``gs://open-multimet/glofas_v4/river_discharge_v4_0/`` (daily ``dis24`` in ``m³/s`` on the ``0.05°`` global grid).
-* **Local Zarr or NetCDF forecast/reanalysis archives:** Any local Zarr or NetCDF store with ``time``, ``latitude``, and ``longitude`` coordinates and a discharge variable (default ``dis24``). If the archive also has a forecast lead-time dimension (``step``) or an ensemble member dimension (``number``), pass ``step_index`` and ``member_index`` explicitly:
+Instead of querying the Open-Meteo HTTP API, ``fetch_historical(..., zarr_path=...)`` and :py:func:`maas.extract_glofas_zarr_series` can read a GloFAS v4 Zarr or NetCDF archive that is stored on your local disk. The archive needs ``time``, ``latitude``, and ``longitude`` coordinates and a discharge variable (default ``dis24``, in ``m³/s``). If the archive also has a forecast lead-time dimension (``step``) or an ensemble member dimension (``number``), pass ``step_index`` and ``member_index`` explicitly:
 
 .. code-block:: python
 
@@ -191,9 +188,9 @@ Command-Line Flags
 What to Watch Out For
 ---------------------
 
-* **Daily mean vs. 3-hourly instantaneous flow:** FloodHub and GloFAS (`dis24`) report daily mean river discharge at ``00:00 UTC``, whereas GEOGLOWS reports 3-hourly instantaneous discharge.
+* **Daily mean vs. 3-hourly instantaneous flow:** FloodHub and GloFAS (``dis24``) report daily mean river discharge at ``00:00 UTC``, whereas GEOGLOWS reports 3-hourly instantaneous discharge.
 * **No silent interpolation:** Missing values remain ``None`` in JSON output and ``NaN`` in ``pandas`` DataFrames.
-* **Return period calculation:** When return periods are computed from a provider's historical reanalysis series, ``maas`` uses the USGS Bulletin 17C Expected Moments Algorithm (`EMA`) from :doc:`return_periods`.
+* **Return period calculation:** When return periods are computed from a provider's historical reanalysis series, ``maas`` uses the USGS Bulletin 17C Expected Moments Algorithm (``EMA``) from :doc:`return_periods`.
 
 Testing
 -------

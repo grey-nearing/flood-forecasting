@@ -2,7 +2,7 @@
 MultiMet Forcing Extractor
 ==========================
 
-The **MultiMet Forcing Extractor** (``multimet.timeseries_extractors``) calculates daily area-weighted weather time series over watershed boundary polygons (`EPSG:4326`). It reads either **gridded Zarr weather archives** (local or on Google Cloud Storage ``gs://``) or **live upstream agency feeds** and writes standardized ``<PRODUCT>/timeseries.zarr`` stores ready for OpenHydroNet model training and inference (`Kratzert et al., 2023 <https://www.nature.com/articles/s41597-023-01975-w>`__).
+The **MultiMet Forcing Extractor** (``multimet.timeseries_extractors``) calculates daily area-weighted weather time series over watershed boundary polygons (``EPSG:4326``). It reads either **gridded Zarr weather archives** (local or on Google Cloud Storage ``gs://``) or **live upstream agency feeds** and writes standardized ``<PRODUCT>/timeseries.zarr`` stores ready for OpenHydroNet model training and inference (`Kratzert et al., 2023 <https://www.nature.com/articles/s41597-023-01975-w>`__).
 
 .. contents:: On this page
    :local:
@@ -29,7 +29,7 @@ The extractor supports **4 core historical/operational products** plus **6 dynam
 How Area-Weighted Extraction Works
 ----------------------------------
 
-1. **Exact Spherical Intersection Weights:** For each watershed polygon, the extractor intersects the polygon with the weather product's latitude/longitude grid and weights each overlapping grid cell by its spherical surface area (:math:`\cos(\text{lat})`). Small watersheds that sit inside a single grid cell receive full weight (`1.0`) on that cell.
+1. **Exact Spherical Intersection Weights:** For each watershed polygon, the extractor intersects the polygon with the weather product's latitude/longitude grid and weights each overlapping grid cell by its spherical surface area (:math:`\cos(\text{lat})`). Small watersheds that sit inside a single grid cell receive full weight (``1.0``) on that cell.
 2. **Missing Data Transparency:** Missing grid cells or missing dates are never filled with zeros or interpolated. Instead, missing values remain ``NaN`` and the fraction of missing watershed area is recorded in ``<prefix>_missing_fraction`` (from ``0.0`` when 100% of the watershed has valid data to ``1.0`` when the entire watershed is missing).
 
 Quick Start: Historical & Archive Extraction
@@ -38,7 +38,7 @@ Quick Start: Historical & Archive Extraction
 1. Command-Line: Serial Extraction (``extract-multimet``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Use ``extract-multimet`` to extract one or more products over a date range (`YYYY-MM-DD`):
+Use ``extract-multimet`` to extract one or more products over a date range (``YYYY-MM-DD``):
 
 .. code-block:: bash
 
@@ -106,8 +106,8 @@ Real-Time Operational Forcing Fetcher (``multimet-realtime``)
 
 It supports two operational modes:
 
-* **Cold-Start (`--mode coldstart`):** Downloads a 365-day historical spin-up window (`[t0 - 365 days, t0]`) plus the 10-day weather forecast issued on `t0`. By default, historical spin-up dates before the forecast issue window download only the first lead day (`lead_time = 1 day` / `24h`), reducing HRES download volume by 10x.
-* **Hot-Start (`--mode hotstart`):** Checks your existing `<PRODUCT>/timeseries.zarr` stores (or a saved OpenHydroNet `.npz` state file) to find the last valid date, automatically re-fetches any trailing `NaN` dates caused by upstream publication delays, and appends new days up to `t0`.
+* **Cold-Start (``--mode coldstart``):** Downloads a 365-day historical spin-up window (``[t0 - 365 days, t0]``) plus the 10-day weather forecast issued on ``t0``. By default, historical spin-up dates before the forecast issue window download only the first lead day (``lead_time = 1 day`` / ``24h``), reducing HRES download volume by 10x.
+* **Hot-Start (``--mode hotstart``):** Checks your existing ``<PRODUCT>/timeseries.zarr`` stores (or a saved OpenHydroNet ``.npz`` state file) to find the last valid date, automatically re-fetches any trailing ``NaN`` dates caused by upstream publication delays, and appends new days up to ``t0``.
 
 .. code-block:: bash
 
@@ -141,6 +141,8 @@ Command-Line Reference
 
 ``extract-multimet`` & ``extract-multimet-dask`` Flags
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``extract-multimet`` uses the underscore spelling for most multi-word flags (for example ``--output_dir`` and ``--start_date``). ``extract-multimet-dask`` accepts both spellings (for example ``--output_dir`` or ``--output-dir``).
 
 .. list-table::
    :header-rows: 1

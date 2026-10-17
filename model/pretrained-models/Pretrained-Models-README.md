@@ -17,8 +17,8 @@ We provide three pre-trained global baseline checkpoints trained on the Caravan-
 | Checkpoint Directory | Weights File | Hindcast Weather Inputs | Forecast Weather Inputs |
 | :--- | :--- | :--- | :--- |
 | **`google-floodhub-settings-110-epochs/`** | `model_epoch110.pt` | `hres`, `graphcast`, `imerg`, `cpc` | `hres`, `graphcast` |
-| **`google-floodhub-settings-no-graphcast-110-epochs/`** | `model_epoch027.pt` | `hres`, `imerg`, `cpc` | `hres` |
-| **`google-floodhub-settings-aifs-110-epochs/`** | `model_epoch026.pt` | `hres`, `aifs`, `imerg`, `cpc` | `hres`, `aifs` |
+| **`google-floodhub-settings-no-graphcast-110-epochs/`** | `model_epoch110.pt` | `hres`, `imerg`, `cpc` | `hres` |
+| **`google-floodhub-settings-aifs-110-epochs/`** | `model_epoch110.pt` | `hres`, `aifs`, `imerg`, `cpc` | `hres`, `aifs` |
 
 - **Model Architecture:** `mean_embedding_forecast_lstm` (`model.modelzoo.mean_embedding_forecast_lstm.MeanEmbeddingForecastLSTM`, Gauch et al., 2025)
 - **Reference Configuration:** [`model/example-configs/floodhub-settings-config.yml`](../example-configs/floodhub-settings-config.yml)
@@ -31,10 +31,10 @@ We provide three pre-trained global baseline checkpoints trained on the Caravan-
 
 Each checkpoint folder in `model/pretrained-models/` includes all files required by the `openhydronet` (`model`) package:
 
-- **Model Weights (`model_epoch*.pt`):** Trained neural network parameters (`model_epoch110.pt`, `model_epoch027.pt`, or `model_epoch026.pt`).
+- **Model Weights (`model_epoch110.pt`):** Trained neural network parameters saved at epoch 110.
 - **Pre-Computed Scalers (`scaler.zarr/`):** Feature and target normalization statistics (`center`, `scale`, `mean`, `std`) computed across the global training dataset. When you fine-tune one of these models, `model` automatically loads `scaler.zarr` so your local inputs are normalized identically to the pre-trained features.
 - **Run Configuration (`config.yml`):** Exact hyperparameters, dynamic input products, and static catchment attributes used for the run.
-- **In-Sample Evaluation Metrics (`test/model_epoch*/test_metrics.csv`):** Full-dataset (`10,137`-basin) in-sample metrics for verification.
+- **In-Sample Evaluation Metrics (`test/model_epoch110/test_metrics.csv`):** Full-dataset (`10,137`-basin) in-sample metrics for verification.
 
 ---
 

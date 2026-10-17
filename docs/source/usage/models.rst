@@ -6,7 +6,7 @@ This section describes the deep learning flood forecasting models and output hea
 Model Heads
 -----------
 
-A **model head** sits on top of the recurrent neural network (LSTM) and maps the hidden state to the predicted river discharge (`m³/s`, normalized by watershed area to `mm/day` during training).
+A **model head** sits on top of the recurrent neural network (LSTM) and maps the hidden state to the predicted streamflow (in ``mm/day``, the unit of Caravan streamflow).
 
 Regression
 ^^^^^^^^^^
@@ -34,7 +34,7 @@ Handoff-Forecast-LSTM
 :py:class:`model.modelzoo.handoff_forecast_lstm.HandoffForecastLSTM` (config key ``handoff_forecast_lstm``) splits each prediction into two time windows:
 
 1. **Hindcast window (past weather):** A hindcast LSTM reads historical weather observations (such as satellite and gauge precipitation, temperature, and solar radiation) up to the forecast issue date.
-2. **State handoff:** At the forecast issue date, a feed-forward neural network (`state_handoff_network`) transforms the final hidden state and cell state of the hindcast LSTM into the initial states of a second LSTM.
+2. **State handoff:** At the forecast issue date, a feed-forward neural network (configured by ``state_handoff_network``) transforms the final hidden state and cell state of the hindcast LSTM into the initial states of a second LSTM.
 3. **Forecast window (future weather):** The forecast LSTM rolls forward over the forecast lead time (for example, 7 days ahead) using numerical or AI weather forecasts as inputs.
 
 ``HandoffForecastLSTM`` is a **former operational model** used in an earlier (2024) release of `Google FloodHub <https://sites.research.google/floods/>`__. The architecture and global ungauged evaluation are described in [Nearing2024]_.
@@ -60,7 +60,7 @@ The code block below shows the template for adding a custom model architecture t
 **Required steps:**
 
 1. **Inherit from BaseModel:** Subclass :py:class:`model.modelzoo.basemodel.BaseModel`.
-2. **Define ``module_parts``:** List the attribute names of all trainable sub-modules in ``module_parts``. Fine-tuning (`run finetune`) uses this list to know which layers to freeze or update.
+2. **List the model parts:** Put the attribute names of all trainable sub-modules in ``module_parts``. Fine-tuning (``run finetune``) uses this list to know which layers to freeze or update.
 3. **Register the model:** Add your model name and class to :py:func:`model.modelzoo.get_model` in ``model/modelzoo/__init__.py``.
 
 .. code-block:: python

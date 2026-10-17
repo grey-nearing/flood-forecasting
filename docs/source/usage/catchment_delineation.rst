@@ -180,8 +180,8 @@ Please keep these five points in mind when running the tool:
    * If you provide an expected area and no river within ``~7.2 km`` matches that area, the tool logs an ``[AREA HINT FAILURE]`` error and raises ``CatchmentAreaMismatchError`` rather than outputting a mismatched polygon.
 
 3. **Latitude coverage**
-   * **HydroSHEDS 90 m (`--dem hydrosheds_90m`):** Covers latitudes from ``-56°S`` to ``60°N``. If a gauge is north of ``60°N`` or its upstream river reaches north across ``60°N``, the tool stops rather than cutting the river off at the ``60°N`` border. In batch runs, these basins are recorded with ``status: "MISSING_DATA: ..."`` and ``geometry: null``.
-   * **MERIT-Hydro 90 m (`--dem merit_hydro_90m`):** Extends high-latitude coverage up to ``85°N`` when MERIT-Hydro 5° × 5° D8 tiles are used.
+   * **HydroSHEDS 90 m (``--dem hydrosheds_90m``):** Covers latitudes from ``-56°S`` to ``60°N``. If a gauge is north of ``60°N`` or its upstream river reaches north across ``60°N``, the tool stops rather than cutting the river off at the ``60°N`` border. In batch runs, these basins are recorded with ``status: "MISSING_DATA: ..."`` and ``geometry: null``.
+   * **MERIT-Hydro 90 m (``--dem merit_hydro_90m``):** Extends high-latitude coverage up to ``90°N`` when MERIT-Hydro 5° × 5° D8 tiles are used.
 
 4. **All upstream map tiles must be present**
    Large rivers can start hundreds of kilometers away from the gauge and cross several 5° × 5° map tiles (named ``{lat_top}{lon_left}.npy``, such as ``n40w090.npy`` and ``n45w090.npy``). If your ``--tiles-dir`` has the tile for the gauge location but is missing an upstream tile that flows into that river, the tool raises ``FileNotFoundError`` instead of returning a truncated polygon.

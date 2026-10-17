@@ -112,8 +112,8 @@ Pre-extracted MultiMet Zarr archives for global Caravan basins are available in 
 The repository includes three pre-trained `MeanEmbeddingForecastLSTM` checkpoints inside `model/pretrained-models/`:
 
 1. `model/pretrained-models/google-floodhub-settings-110-epochs/` (`model_epoch110.pt`) — Uses `hres`, `graphcast`, `imerg`, and `cpc`.
-2. `model/pretrained-models/google-floodhub-settings-no-graphcast-110-epochs/` (`model_epoch027.pt`) — Uses `hres`, `imerg`, and `cpc` (no GraphCast required).
-3. `model/pretrained-models/google-floodhub-settings-aifs-110-epochs/` (`model_epoch026.pt`) — Uses `hres`, `aifs`, `imerg`, and `cpc`.
+2. `model/pretrained-models/google-floodhub-settings-no-graphcast-110-epochs/` (`model_epoch110.pt`) — Uses `hres`, `imerg`, and `cpc` (no GraphCast required).
+3. `model/pretrained-models/google-floodhub-settings-aifs-110-epochs/` (`model_epoch110.pt`) — Uses `hres`, `aifs`, `imerg`, and `cpc`.
 
 Each folder contains the model weights (`model_epoch*.pt`), normalization statistics (`scaler.zarr`), and configuration (`config.yml`). These checkpoints replicate the 2025 generation of Google FloodHub (a former operational model that has since been superseded by a newer model release).
 
@@ -123,7 +123,7 @@ Each folder contains the model weights (`model_epoch*.pt`), normalization statis
 
 You can run every step of the flood forecasting workflow from the terminal or from a Python script.
 
-Below is a summary of all 18 command-line tools installed by `pip install -e .`:
+Below is a summary of the command-line tools installed by `pip install -e .`:
 
 | Category | CLI Command | Purpose |
 | :--- | :--- | :--- |
@@ -236,12 +236,14 @@ feature = delineator.delineate_point(
 print("Area (km²):", feature["properties"]["area_km2"])
 
 # 2. Hybrid vector-river + 90m DEM delineation
-rivers = RiverNetwork(Path("~/.cache/openhydronet/data/HydroRIVERS_v10_shp/HydroRIVERS_v10.shp").expanduser())
+rivers = RiverNetwork.from_hydrorivers(
+    "~/.cache/openhydronet/data/HydroRIVERS_v10_shp/HydroRIVERS_v10.shp"
+)
 hybrid_feature = delineate_hybrid(
+    dem=delineator,
+    network=rivers,
     lat=38.85,
     lon=-121.05,
-    delineator=delineator,
-    river_network=rivers,
     catchment_id="my_basin_01",
 )
 ```
@@ -368,10 +370,8 @@ build-imerg-archive \
 #### Python API
 
 ```python
-from multimet.gridded_archive_builders import (
-    build_cpc_archive,
-    build_imerg_archive,
-)
+from multimet.gridded_archive_builders.build_cpc_archive import build_cpc_archive
+from multimet.gridded_archive_builders.build_imerg_archive import build_imerg_archive
 
 # 1. Build or extend a NOAA CPC 0.5-degree daily precipitation Zarr archive
 build_cpc_archive(
@@ -585,7 +585,7 @@ print("Number of low outliers (klow):", tester.klow)
 The **Models-as-a-Service (`maas`)** package fetches operational river discharge forecasts, historical reanalysis, and flood return-period thresholds from three global flood forecasting systems for any `(latitude, longitude)` point:
 
 1. **Google FloodHub** (`floodhub`, `FloodHubClient`) — Gauge- and reach-level streamflow forecasts and severity levels via `https://floodforecasting.googleapis.com/v1`.
-2. **Copernicus GloFAS v4** (`glofas`, `GloFASClient`) — ECMWF-forced LISFLOOD global `0.05°` river discharge forecasts (deterministic control run, ensemble mean/median/percentiles, and all 50 ensemble members) via the Open-Meteo Flood API (`https://flood-api.open-meteo.com/v1/flood`) and local/cloud Zarr archives.
+2. **Copernicus GloFAS v4** (`glofas`, `GloFASClient`) — ECMWF-forced LISFLOOD global `0.05°` river discharge forecasts (deterministic control run, ensemble mean/median/percentiles, and all 50 ensemble members) via the Open-Meteo Flood API (`https://flood-api.open-meteo.com/v1/flood`) and local Zarr or NetCDF archives.
 3. **GEOGLOWS ECMWF v2** (`geoglows`, `GeoGLOWSClient`) — Reach-level streamflow forecasts on ~6.8M global TDX-Hydro reaches (`LINKNO`) via `https://geoglows.ecmwf.int/api/v2` and AWS S3 retrospective Zarr (`s3://geoglows-v2/retrospective.zarr`).
 
 All models return river discharge in cubic meters per second (**`m³/s`**).
@@ -662,7 +662,7 @@ The `model` package trains, fine-tunes, evaluates, and runs inference with deep 
 
 #### Supported Model Architectures (`model:` in `config.yml`)
 - **`mean_embedding_forecast_lstm`** (`MeanEmbeddingForecastLSTM`) — Encodes static attributes, hindcast weather products, and forecast weather products with separate multilayer perceptrons (`statics_embedding`, `hindcast_embedding`, `forecast_embedding`). At each day, it averages the available weather product embeddings so the model keeps working even when one weather source is missing, then runs a sequential hindcast-to-forecast LSTM with a probabilistic CMAL output head (`CountableMixtureAsymmetricLaplace`). Replicates the 2025 generation of Google FloodHub (a former operational model).
-- **`handoff_forecast_lstm`** (`HandoffForecastLSTM`) — Runs a hindcast LSTM over lookback weather (`seq_length` days) and passes its final hidden and cell states through a linear handoff network to initialize a separate forecast LSTM over the future `lead_time` days. Replicates the 2024 generation of Google FloodHub (a former operational model).
+- **`handoff_forecast_lstm`** (`HandoffForecastLSTM`) — Runs a hindcast LSTM over lookback weather (`seq_length` days) and passes its final hidden and cell states through a small feed-forward handoff network to initialize a separate forecast LSTM over the future `lead_time` days. Replicates the 2024 generation of Google FloodHub (a former operational model).
 
 #### CLI Commands (`run` and `schedule-runs`)
 
@@ -707,20 +707,21 @@ run evaluate \
   --gpu 0
 ```
 
-This computes evaluation metrics (`NSE`, `KGE`, `Alpha-NSE`, `Beta-NSE`, `Beta-KGE`, `Pearson-r`) on days with observed streamflow and writes predictions and metrics to `<run-dir>/test/model_epoch110/`. Pass `--assimilate` to enable variational data assimilation during evaluation.
+This computes the evaluation metrics listed under `metrics:` in the run configuration (for example `NSE` and `KGE`) on days with observed streamflow and writes predictions and metrics to `<run-dir>/test/model_epoch110/`. Pass `--assimilate` to enable variational data assimilation during evaluation.
 
 **5. Run operational inference on all dates (`run infer`)**:
 
 ```bash
 # Standard forecast inference (runs even when target streamflow observations are NaN)
 run infer \
-  --run-dir model/pretrained-models/google-floodhub-settings-no-graphcast-110-epochs \
-  --epoch 27
+  --run-dir ./runs/my_experiment_run \
+  --epoch 110
 
-# Forecast inference with real-time variational streamflow data assimilation enabled
+# Forecast inference with variational streamflow data assimilation enabled
+# (the run's config.yml must contain an `assimilation_config` section)
 run infer \
-  --run-dir model/pretrained-models/google-floodhub-settings-no-graphcast-110-epochs \
-  --epoch 27 \
+  --run-dir ./runs/my_experiment_run \
+  --epoch 110 \
   --assimilate
 ```
 
@@ -751,7 +752,10 @@ from model.run import start_run, continue_run, finetune, eval_run
 from model.datautils.convert import convert_caravan_to_zarr
 
 # 1. Convert Caravan NetCDF archive to Zarr from Python
-convert_caravan_to_zarr("~/data/Caravan-nc", "~/data/Caravan-zarr")
+convert_caravan_to_zarr(
+    Path("~/data/Caravan-nc").expanduser(),
+    Path("~/data/Caravan-zarr").expanduser(),
+)
 
 # 2. Load and customize a YAML configuration in Python
 cfg = Config(Path("model/example-configs/floodhub-settings-config.yml"))
@@ -764,15 +768,15 @@ start_run(config=cfg, gpu=-1)
 finetune(config_file=Path("finetune_config.yml"), gpu=-1)
 
 # 5. Evaluate or run inference on a trained run directory
-run_dir = Path("model/pretrained-models/google-floodhub-settings-no-graphcast-110-epochs")
+run_dir = Path("./runs/my_experiment_run")
 run_cfg = Config(run_dir / "config.yml")
 run_cfg.inference_mode = True
 run_cfg.tester_skip_obs_all_nan = False
 eval_run(
-    cfg=run_cfg,
+    config=run_cfg,
     run_dir=run_dir,
     period="test",
-    epoch=27,
+    epoch=110,
     gpu=-1,
     assimilate=False,
 )
@@ -856,260 +860,271 @@ Then open **`http://127.0.0.1:8080`** in your web browser.
 
 ### 3.2 Workspace Layout and Navigation
 
-When the page loads, you will see three main areas:
+When the page loads, you see three main areas:
 
-1. **Top Navigation Bar**:
-   - Contains **8 workflow tabs**: `Weather Viewer`, `Models-as-a-Service`, `Basin Delineation`, `Geographical Features`, `Training`, `Fine Tuning`, `Forecasting and Data Assimilation`, and `Account`.
-   - **Drag to Reorder**: You can click and drag any tab left or right to customize the tab order. Your layout is saved automatically in your browser.
-   - **Activity Spinners & Stop Downloads**: When a background job (such as weather syncing, attribute extraction, or fine-tuning) is running in a tab, a spinning indicator appears next to that tab's title. Click the red **`Stop Downloads`** button in the top-right corner to stop active background downloads.
-2. **Left Control Sidebar**:
-   - Changes automatically depending on which tab is active.
-   - **Collapse / Expand**: Click the collapse arrow button on the edge of the sidebar or press the **`[`** key on your keyboard to hide or show the sidebar.
-   - **Resize**: Drag the right border of the sidebar to make it wider or narrower.
-3. **Main Canvas**:
-   - Shows the interactive global **Leaflet Map** on map-based tabs (`Weather Viewer`, `Models-as-a-Service`, `Basin Delineation`, `Geographical Features`).
-   - Shows interactive **Chart.js Dashboards** on modeling tabs (`Training`, `Fine Tuning`, `Forecasting and Data Assimilation`).
-   - Shows your **Account & Basin Management Dashboard** on the `Account` tab.
+1. **Top navigation bar**:
+   - It has 8 workflow tabs: `Weather Viewer`, `Models-as-a-Service`, `Basin Delineation`, `Geographical Features`, `Training`, `Fine Tuning`, `Forecasting and Data Assimilation`, and `Account`. The `Account` tab is at the right end of the bar and shows the active account, for example `Account (Guest)`.
+   - Drag to reorder: click and drag any tab left or right to change the tab order. Your browser saves the order.
+   - Activity spinners: when a background job (such as a weather refresh, attribute extraction, or fine-tuning) is running in a tab, a spinner appears next to the tab name.
+   - Stop downloads: while a download is running, a red `Stop Downloads` button appears in the tab bar, just left of the `Account` tab. Click it to stop all active background downloads.
+2. **Left control sidebar**:
+   - The controls change with the active tab.
+   - Hide or show: click `Hide` at the top of the sidebar, click the panel button at the left end of the tab bar, or press the `[` key. When the sidebar is hidden, click the `Controls` button at the left edge of the screen to open it again.
+   - Resize: drag the right border of the sidebar to make it wider or narrower.
+3. **Main area**:
+   - The `Weather Viewer`, `Models-as-a-Service`, `Basin Delineation`, and `Geographical Features` tabs show an interactive Leaflet map.
+   - The `Fine Tuning` and `Forecasting and Data Assimilation` tabs show interactive Chart.js charts.
+   - The `Account` tab shows the data saved in your account and a table of your basins.
 
 ---
 
 ### 3.3 Tab 1: Weather Viewer
 
-The **Weather Viewer** tab displays animated global weather forecasts and satellite precipitation on the interactive map.
+The Weather Viewer tab shows animated weather forecasts and recent precipitation observations on the map.
 
 #### Left Sidebar Controls
-- **Forecast Model Selector**: Choose from 8 weather products:
-  - **ECMWF HRES** (`ecmwf_hres` — `0.25°` global deterministic 10-day forecast)
-  - **ECMWF IFS** (`ecmwf_ifs` — `0.25°` global ensemble mean forecast)
-  - **ECMWF AIFS** (`ecmwf_aifs` — `0.25°` AI-driven global forecast)
-  - **NOAA GFS** (`noaa_gfs` — `0.25°` global deterministic 16-day forecast)
-  - **NOAA GEFS** (`noaa_gefs` — `0.5°` 30-member ensemble mean forecast)
-  - **NOAA HRRR** (`noaa_hrrr` — `3 km` Continental US rapid refresh forecast)
-  - **NASA IMERG** (`nasa_imerg` — `0.1°` global satellite precipitation, 7-day lookback)
-  - **NOAA CPC** (`noaa_cpc` — `0.5°` global gauge precipitation, 7-day lookback)
-- **Sync Status & Refresh Buttons**:
-  - Each model card shows its sync status (`Ready`, `Syncing`, or `Not downloaded`) and forecast time range.
-  - Click **`Refresh All`** at the top of the model list to sync all weather models, or click the **`↻`** button on a single model card to sync just that model.
-- **Variable Selector**:
-  - **Precipitation** (`mm/hr` or `mm/day` depending on model)
-  - **Accumulated Precip** (`mm` running total from forecast start)
-  - **2m Temperature** (`°C`)
-  - **10m Wind Speed** (`m/s`)
-  - **Mean Sea Level Pressure** (`hPa`)
-- **Layer Overlays**:
-  - **Wind Streamline Particles**: Toggle animated moving wind arrows across the map.
-  - **Colour Opacity**: Drag the slider (`0%` to `100%`) to make the weather heatmap more transparent or opaque.
-  - **Show Catchments**: Toggle your delineated basin polygons on top of the weather map.
+- Model: choose one of 8 weather products. All products are shown on the same global 0.25° grid, for up to 10 days (240 hours) in 3-hour steps.
+  - ECMWF HRES (`ecmwf_hres`): 0.25° global deterministic forecast, 10 days.
+  - ECMWF IFS ENS (`ecmwf_ifs`): control member of the ECMWF ensemble forecast, 0.25°, first 10 days.
+  - ECMWF AIFS (`ecmwf_aifs`): 0.25° AI-driven global forecast, 10 days in 6-hour steps.
+  - NOAA GFS (`noaa_gfs`): 0.25° global deterministic forecast, first 10 days.
+  - NOAA GEFS (`noaa_gefs`): control member of the NOAA ensemble forecast, 0.25°, first 10 days.
+  - NOAA HRRR (`noaa_hrrr`): 3 km forecast for the continental US, 48 hours.
+  - NASA IMERG (`nasa_imerg`): 0.1° satellite precipitation (Early Run), past 10 days.
+  - NOAA CPC (`noaa_cpc`): 0.5° gauge-based precipitation over land, past 10 days.
+- Sync status and refresh:
+  - Each model button shows a tag: `run <date>` (a synced forecast run), `obs <date>` (synced observations), or `not synced`. Hold the mouse over a button to see the run time and the forecast length.
+  - Click `Refresh All` at the top of the sidebar to sync all weather models, or click the small ↻ icon on a model button to sync only that model.
+- Variable (the list depends on the model):
+  - `Rain rate` (mm/h)
+  - `Rain accumulated since forecast start` (mm). For NASA IMERG and NOAA CPC, this option is `Rain accumulated (past 10 days)`.
+  - `Air temperature (2 m)` (°C)
+  - `Sea-level pressure` (hPa)
+  - NASA IMERG and NOAA CPC have only the two rain options.
+- Layers:
+  - `Wind particles`: turn the animated wind particles on or off. This switch appears only for models with wind data.
+  - `Colour opacity`: drag the slider (10% to 100%, default 80%) to make the weather colours more or less transparent.
+  - `Show Catchments`: show or hide your basin outlines on the weather map.
 
 #### Map Controls and Point Forecast Drawer
-- **Bottom Timeline Scrubber**: Click **`Play`** to animate through forecast lead times, use the **`⏮`** / **`⏭`** step buttons to move one time step back or forward, or click **`1x`** to cycle animation speed.
-- **Click-Anywhere Point Meteogram**: Click any location on the map (or click one of your catchment polygons) to open the **Point Forecast Drawer** at the bottom of the screen. It plots the full time series of precipitation, temperature, wind speed, and pressure at that exact `(lat, lon)` coordinate.
+- Time bar (below the map): click `Play` to animate the forecast. Use the ‹ and › buttons to move one time step back or forward, the ⏮ button to go back to the forecast start, and the `1x` button to change the playback speed (1x, 2x, or 4x).
+- Point forecast: click any location on the map to open the `Point forecast` drawer below the time bar. It plots the rain rate of every model at that point, plus the 2 m temperature of the selected forecast model (ECMWF HRES when IMERG or CPC is selected). The time axis runs from 240 hours in the past (observations) to 240 hours ahead (forecasts).
 
 ---
 
 ### 3.4 Tab 2: Models-as-a-Service
 
-The **Models-as-a-Service** tab lets you view live global river flood alerts and compare discharge forecasts from external operational flood models.
+The Models-as-a-Service tab shows live river flood alerts and compares discharge forecasts from three external flood models.
 
 #### Left Sidebar Controls
-- **River Network Overlays (Multi-Select)**:
-  - Check one or more boxes to display river reaches on the map:
-    - **Google FloodHub** (HydroRIVERS network)
-    - **Copernicus GloFAS v4** (LISFLOOD `0.05°` grid)
-    - **GEOGLOWS ECMWF v2** (TDX-Hydro stream network)
-  - Click **`Refresh`** to fetch the latest flood severity statuses.
-- **Return Period Severity Legend**:
-  - River reaches are colored by their forecasted peak return period:
-    - **Blue (`Normal < 2-yr`)**: Below the 2-year flood threshold.
-    - **Yellow (`≥ 2-yr Medium`)**: Exceeds the 2-year flood threshold.
-    - **Orange (`≥ 5-yr High`)**: Exceeds the 5-year flood threshold.
-    - **Red (`≥ 20-yr Severe`)**: Exceeds the 20-year flood threshold.
-- **Forecast Comparison Panel**:
-  - Zoom in on the map until river reaches appear, then **click any river reach** (or click anywhere on the map to snap to the nearest river within `25 km`).
-  - The sidebar displays a multi-model hydrograph in **`m³/s`** comparing Google FloodHub, Copernicus GloFAS v4, and GEOGLOWS ECMWF v2 side by side, along with horizontal dashed lines for the `2-yr`, `5-yr`, and `20-yr` flood return periods.
-  - **GloFAS Reference**: Switch the main GloFAS line between **`Control`**, **`Median`**, and **`Mean`**.
-  - **Uncertainty Controls**: Click **`+ Ensemble`** to show all individual ensemble member trajectories, or **`+ Range`** to shade the `Min–Max` ensemble spread.
+- River networks (1 to 3 at a time):
+  - Click one or more model buttons to show their river reaches on the map. GloFAS is shown by default.
+    - `FloodHub`: Google FloodHub (HydroSHEDS HydroRIVERS network)
+    - `GloFAS`: Copernicus GloFAS v4 (LISFLOOD 0.05° river grid)
+    - `GEOGLOWS`: GEOGLOWS ECMWF v2 (TDX-Hydro stream network)
+  - Click `Refresh` to fetch the newest live forecasts.
+- Return-period colours: river reaches are coloured by their forecast return period. Each model uses its own colours:
+  - GloFAS (default): Blue = Normal (< 2-yr), Yellow = ≥ 2-yr Medium, Red = ≥ 5-yr High, Purple = ≥ 20-yr Severe.
+  - FloodHub: Blue = Normal (< 2-yr), Orange = Warning (≥ 2-yr), Red = Danger (≥ 5-yr), Dark red = Extreme (≥ 20-yr), grey dashed line = no forecast.
+  - GEOGLOWS: Blue = Normal (< 2-yr), Yellow = ≥ 2-yr, Orange = ≥ 10-yr, Red = ≥ 25-yr, Purple = ≥ 50-yr.
+  - When two or three networks are shown at once, normal rivers use each network's own colour, and alerts use Yellow (≥ 2-yr), Red (≥ 5-yr), and Purple (≥ 20-yr).
+
+#### Forecast View
+- Click any river reach on the map. The map moves to the left, and the forecast view opens on the right. Clicks on empty map areas do not open a forecast.
+- The hydrograph shows discharge in `m³/s`. Use the model buttons above the chart to compare Google FloodHub, Copernicus GloFAS, and GEOGLOWS ECMWF side by side. Dashed horizontal lines show each model's 2-yr, 5-yr, and 20-yr return periods.
+- GloFAS reference: switch the main GloFAS line between `Control (Unperturbed)`, `Ensemble Median`, and `Ensemble Mean`. GEOGLOWS has its own list (`Ensemble Median`, `Ensemble Mean`, `High-Res (HRES)`).
+- Ensemble options: click `+ Ensemble` to show every ensemble member (50 for GloFAS, 51 for GEOGLOWS), or `+ Range` to shade the Min–Max ensemble range.
+- Click × or press `Esc` to close the forecast view.
 
 ---
 
 ### 3.5 Tab 3: Basin Delineation
 
-The **Basin Delineation** tab lets you create new watershed polygons by clicking on the map or uploading a GeoJSON file.
+The Basin Delineation tab lets you create watershed polygons by clicking on the map or by uploading a GeoJSON file.
 
 #### Step-by-Step Workflow
-1. **Select a River Network & DEM**:
-   - Choose **`HydroRIVERS`** (HydroSHEDS 90m D8 DEM) or **`MERIT-Basins`** (MERIT-Hydro 90m D8 DEM + vector unit catchments).
-2. **Choose a Basemap**:
-   - Switch between **`Map`**, **`Satellite`**, **`OpenStreetMap`**, **`HydroSHEDS 90m DEM`**, and **`OpenTopoMap`**. Use the **River Network Opacity** slider to adjust how bright the blue river lines appear.
-3. **Turn On Delineate Mode**:
-   - Click the **`Delineate Mode`** button in the sidebar (or press **`D`** on your keyboard). Your mouse cursor will change to a crosshair.
-4. **Set the River Snap Search Radius**:
-   - Adjust the slider (`0.1 km` to `10.0 km`, default `5.0 km`). When you click near a river, OpenHydroNet snaps your click to the largest river reach within this radius so the basin traces from the true river channel instead of a hillside.
-5. **Click the Map to Delineate**:
-   - Click your desired outlet point on the map. Within a few seconds, the upstream watershed boundary appears on the map and is added to the **Active Watersheds** list.
-6. **Upload Custom Basin (Optional)**:
-   - If you already have a polygon file on your computer, click **`Upload Custom Basin (GeoJSON)`** to import a `.geojson` or `.json` file (`Feature`, `FeatureCollection`, or raw `Polygon`/`MultiPolygon` in `EPSG:4326`).
-7. **Inspect, Rename, or Export**:
-   - Click any basin in the **Active Watersheds** list to zoom to it and view its area (`km²`), perimeter (`km`), and outlet coordinates in the **Selected Basin** card.
+1. **Select a river network and DEM**:
+   - Choose `HydroRIVERS` (HydroSHEDS 90 m D8 DEM) or `MERIT-Basins` (MERIT-Hydro 90 m D8 DEM with vector unit catchments).
+2. **Choose a basemap**:
+   - Choose `Map`, `Satellite`, `OpenStreetMap`, `HydroSHEDS 90m DEM`, or `OpenTopoMap`. Use the `River Network Opacity` slider (20% to 100%, default 90%) to make the blue river lines lighter or darker.
+3. **Turn on Delineate Mode**:
+   - Click the `Delineate Mode` button in the sidebar, or press `D` while this tab is open. The mouse cursor changes to a crosshair. Press `Esc` to turn the mode off.
+4. **Set the river snap search radius**:
+   - Drag the `River Snap Search Radius` slider (0.1 km to 10.0 km, default 1.0 km). When you click near a river, OpenHydroNet moves your click onto a nearby river reach within this radius (it prefers larger rivers). This makes the basin start on the river channel, not on a hillside.
+5. **Click the map to delineate**:
+   - Click your outlet point on the map. After a few seconds, the upstream watershed boundary appears on the map and is added to the `Active Watersheds` list.
+6. **Upload a custom basin (optional)**:
+   - If you already have a polygon file, click `Upload Custom Basin (GeoJSON)` to import a `.geojson` or `.json` file (`Feature`, `FeatureCollection`, or a raw `Polygon`/`MultiPolygon` geometry, in `EPSG:4326` longitude/latitude degrees).
+7. **Inspect a basin**:
+   - Click a basin in the `Active Watersheds` list to select it, or click its zoom icon to zoom to it. The `Selected Basin` card shows the source, upstream sub-units, drainage area (km²), stream order, and outlet or centroid coordinates.
+   - To rename or delete basins, use the `Account` tab (Section 3.10).
 
 ---
 
 ### 3.6 Tab 4: Geographical Features
 
-The **Geographical Features** tab extracts and visualizes the ~210 Caravan/HydroATLAS static physical attributes for your delineated basins.
+The Geographical Features tab extracts and maps the ~210 Caravan/HydroATLAS static physical attributes of your delineated basins.
 
 #### Step-by-Step Workflow
-1. **Select Catchments**:
-   - In the left sidebar, check the basins you want to process. Use the quick-select buttons (**`Unextracted`**, **`All`**, **`None`**) to select all basins that do not have attributes yet.
-2. **Extract Attributes**:
-   - Click **`Extract Attributes`**. A progress bar shows the extraction status for each basin.
-3. **View and Export the Attribute Table**:
-   - Once a basin shows a green **`✓ Extracted`** badge, click **`Attribute Table`** on its card to open a full-screen table modal.
-   - Filter attributes by category (**`All`**, **`Topography`**, **`Climate`**, **`Soils & Geology`**, **`Land Cover`**, **`Hydrology`**, **`Anthropogenic`**) or type in the search box.
-   - Click **`Export CSV`** or **`Export JSON`** inside the modal (or click the **`CSV`** button directly on the basin card) to download the attributes to your computer.
-4. **Visualize Sub-Basin Choropleth Maps**:
-   - Click **`Map Attribute`** on an extracted basin card to color its internal HydroATLAS sub-basins on the map by any selected attribute (such as mean elevation, slope, soil clay content, or forest fraction).
+1. **Select basins**:
+   - In the sidebar list, check the basins you want to process. Use the quick-select buttons: `Unextracted` (basins without saved attributes), `All`, or `None`.
+2. **Extract attributes**:
+   - Click `Extract Attributes`. Each basin shows `Extracting…` while it runs, and the button shows how many basins are done. When a basin is finished, its row shows `✓ Saved` and the value of the attribute selected under `Map Attribute`.
+3. **View and export the attribute table**:
+   - Click `Attribute Table` (below the `Extract Attributes` button) to open a full-screen table. Choose a basin in the table's dropdown.
+   - Filter attributes by category (`All`, `Topography`, `Climate`, `Soils & Geology`, `Land Cover`, `Hydrology`, `Anthropogenic`) or type in the search box.
+   - Click `Export CSV` or `Export JSON` in the table window to download the attributes of that basin. The `CSV` button next to `Attribute Table` downloads one CSV file with all saved attributes of your account.
+4. **Map an attribute**:
+   - Choose an attribute in the `Map Attribute` dropdown (for example mean elevation, slope, clay content, or forest fraction).
+   - Under `Show on map`, choose `My Basins` (colour each of your basins by its value), `HydroATLAS` (colour the HydroATLAS sub-basins in the map view), or `Both`. For `HydroATLAS`, you can also set the `Sub-basin Level` (`Auto (Zoom)`, levels 5–10, or 12) and the opacity (15% to 90%, default 65%).
 
 ---
 
 ### 3.7 Tab 5: Training
 
-The **Training** tab lets you extract multi-year historical weather archives for your basins and configure multi-basin deep learning experiments.
+The Training tab extracts multi-year historical weather time series for your basins and adds them to one multi-basin training Zarr archive.
 
 #### Step-by-Step Workflow
-1. **Extract Historical Weather Archives**:
-   - Under **Historical Weather Extraction**, check the weather sources you want to extract (`CPC`, `IMERG`, `ERA5`, `IFS / HRES`, `GraphCast`, `ERA5-Land`, `CHIRPS`, `CERRA`).
-   - Select your **Start Date** and **End Date** (`YYYY-MM-DD`).
-   - Choose **Scope**: **`All Uploaded Basins`** or **`Selected Basin Only`**.
-   - *(Optional)* Enter an email address in **Notification Email** if you want an email when a long extraction finishes.
-   - Click **`Extract Historical Data`**. You can watch the progress bar or click **`Stop`** at any time.
-   - Click **`Browse Zarr Archives`** to inspect the extracted Zarr variables, date ranges, and storage sizes on disk.
-2. **Configure Model Architecture & Hyperparameters**:
-   - Choose the **Model Architecture** (`MeanEmbeddingForecastLSTM`, `HandoffForecastLSTM`, `CudaLSTM`, `EALSTM`, `MTSLSTM`, `Transformer`), hidden size, dropout, loss function (`CMAL`, `NSE`, `MSE`), learning rate, batch size, and sequence lengths (`Hindcast Days` and `Forecast Horizon`).
-3. **Set Temporal Splits**:
-   - Configure the **Training**, **Validation**, and **Testing** date ranges and monitor training and validation loss curves on the right-hand dashboard.
+1. **Choose a weather source**:
+   - Under `Historical Weather Archives`, pick one source in the `Weather Repository` dropdown: NOAA CPC, NASA GPM IMERG, ECMWF ERA5, ECMWF IFS HRES, GraphCast, ECMWF ERA5-Land, CHIRPS v2.0, or Copernicus CERRA. Each extraction uses one source.
+2. **Set the dates and scope**:
+   - Enter the `Start Date` and `End Date` (`YYYY-MM-DD`), or click one of the `Dataset Quick Presets`.
+   - If you have more than one basin, choose the `Extraction Scope`: all your basins (`All N Active Basins`) or only the selected basin (`Selected (<basin>)`).
+   - *(Optional)* Enter an email address in `Notification Email (optional)` to get an email when a long extraction finishes.
+3. **Extract**:
+   - Click `Extract Historical Data`. The job runs in the background, and the result card below the button shows its status. Click `Stop` at any time.
+   - Click `Browse Zarr Archives` (at the top of the main area) to see your saved Zarr stores with their variables, number of basins and time steps, and size on disk.
 
 ---
 
 ### 3.8 Tab 6: Fine Tuning
 
-The **Fine Tuning** tab adapts a pre-trained global flood model to a specific local watershed using your own local streamflow gauge records (and optional local rain/temperature gauge CSVs).
+The Fine Tuning tab adapts a pre-trained global flood model to one local watershed. It uses your own streamflow gauge records, together with global weather data extracted for the basin and/or your own local rain and temperature CSVs.
 
 #### Step-by-Step Workflow (Left Sidebar Steps 1–5)
 
 1. **Step 1 — Base Model Inventory**:
-   - Select a pre-trained global model checkpoint from the dropdown (`google-floodhub-settings-110-epochs`, `google-floodhub-settings-no-graphcast-110-epochs`, or `google-floodhub-settings-aifs-110-epochs`). The card shows the model architecture, parameter count, and required weather inputs.
+   - Select a pre-trained global model checkpoint from the dropdown (`google-floodhub-settings-110-epochs`, `google-floodhub-settings-no-graphcast-110-epochs`, or `google-floodhub-settings-aifs-110-epochs`). Models that you saved from this tab are also listed. The card shows the model architecture, head and loss, sequence length and lead time, and checkpoint epoch.
 2. **Step 2 — Basin Data & Forcings**:
-   - Select your **Clipped Watershed Polygon** from the dropdown.
-   - Click **`Extract Global Forcings for Catchment`** to extract the historical weather time series needed by the base model for your basin.
-   - Choose the **Input Forcing Source**:
-     - **`Global Data Only`** — Uses only the cloud-extracted satellite/reanalysis weather.
-     - **`Global Data + Uploaded Local Inputs`** — Combines global weather with your uploaded local weather station CSVs.
-     - **`Uploaded Local Inputs Only`** — Uses only your uploaded local weather CSVs.
-   - **Upload Target Streamflow CSV (Required)**: Upload a two-column CSV file (`date,streamflow`) and choose the physical units (**`m³/s`** or **`mm/day`**). If you choose `m³/s`, OpenHydroNet automatically converts the discharge to `mm/day` using your basin's delineated drainage area in `km²`. Click **`Download CSV Template`** if you need an example file.
-   - *(Optional)* Upload **Local Precipitation (`mm/day`)** and **Local Temperature (`°C`)** CSV files.
+   - Select your basin in the `Clipped Watershed Polygon (Account)` dropdown.
+   - The `Global Forcing Archive` card shows which global weather products the selected model needs and whether they are already extracted for your basin. Click `Extract Global Forcings for Catchment` to extract the historical weather time series that the base model needs for your basin. A progress bar shows the extraction. Click `Stop` to cancel it.
+   - Choose the `Input Forcing Source`:
+     - `Global Data Only (HRES / IMERG / CPC / AIFS)` — uses only the extracted global weather data.
+     - `Global Data + Uploaded Local Inputs` — combines the global weather data with your uploaded local precipitation and temperature CSVs.
+     - `Uploaded Local Inputs Only` — uses only your uploaded local weather CSVs.
+     - If you upload only a streamflow CSV, `Global Data Only` is used automatically.
+   - Upload the target streamflow under `Target Streamflow (Required)`: a CSV with a date column and one value column (for example `date,streamflow`). Choose its units in `CSV / Display Units` (`m³/s` or `mm/day`). If you choose `m³/s`, OpenHydroNet converts the discharge to `mm/day` with your basin's drainage area in km² (shown in `Area km² (Auto)`).
+   - *(Optional)* Under `Optional Local Input CSVs`, upload `Local Precipitation (mm/day)` and `Local Temperature (°C)` files. Click `Download CSV Template` for an example of the `date,lead_1,…,lead_7` layout (one row per date, one column per forecast lead day).
 3. **Step 3 — Train / Validation Split**:
-   - Drag the slider (`20%` to `90%`, default `70%`) to divide your overlapping streamflow dates into a chronological **Training** period and **Validation** period. The exact start and end dates for each split update live below the slider.
+   - Drag the slider (`20%` to `90%`, default `70%`) to split your streamflow dates, in time order, into a Training period and a Validation period. The start and end dates of each period update below the slider.
 4. **Step 4 — Tunable Model Components**:
-   - Choose which neural network layers to unfreeze during fine-tuning (frozen layers keep their pre-trained global weights):
-     - Use the quick-preset buttons: **`Local + Head`**, **`Local + Forecast LSTM + Head`**, or **`Unfreeze All`**, or check individual modules (`static_embedding_fc`, `local_static_embeddings_fc`, `hindcast_embeddings_fc`, `forecast_embeddings_fc`, `shared_embeddings_fc`, `hindcast_lstm`, `forecast_lstm`, `head`).
+   - Choose which network layers to unfreeze during fine-tuning (frozen layers keep their pre-trained global weights):
+     - Use the preset buttons `Local + Head`, `Local + Forecast LSTM + Head`, or `Unfreeze All`, or check single modules (`static_embedding_fc`, `local_static_embeddings_fc`, `hindcast_embeddings_fc`, `forecast_embeddings_fc`, `shared_embeddings_fc`, `hindcast_lstm`, `forecast_lstm`, `head`).
+     - The badge at the top of this step shows how many parameters will be trained.
 5. **Step 5 — Hyperparameters & Step Control**:
-   - Set **Epochs to Run Next** (e.g., `5`), **Learning Rate** (e.g., `0.0005`), **Loss** (`CMAL`, `NSE`, or `MSE`), **LR Schedule**, and **Batch Size**.
-   - Click **`Run N Epochs & Pause`**. The model trains for `N` epochs, streams live metrics to the charts, saves a checkpoint after each epoch, and pauses so you can inspect the results. Click it again to continue training for another `N` epochs, or click **`Reset`** to start over.
+   - Set `Epochs to Run Next` (default `3`), `Learning Rate` (default `0.001`), `Loss`, `LR Schedule` (`ConstantLR`, `ReduceLROnPlateau`, or `StepLR`), and `Batch Size` (default `16`). The `Loss` choices depend on the model head: CMAL-head models, such as the FloodHub checkpoints, use `CMALLoss`; other models offer `MSE`, `NSE`, `RMSE`, and `WMSE`.
+   - Click `Run N Epochs & Pause`. The model trains for `N` epochs, saves a checkpoint after each epoch, updates the charts, and pauses so you can inspect the results. Click it again to train for another `N` epochs, or click `Reset` to go back to Epoch 0 (the pre-trained weights).
 
 #### Right-Hand Fine-Tuning Dashboard
-- **Epoch Inspector Scrubber**: Drag the epoch slider at the top (or click any row in the **Epoch Checkpoint History** table at the bottom) to view the hydrograph and metrics from any saved epoch (`Epoch 0 (Pretrained Baseline)` through the latest epoch).
-- **5 Performance KPI Cards**: Displays **Train Loss**, **Validation Loss**, **Train NSE**, **Validation NSE**, and **Validation KGE**, along with the change (`Δ`) compared to the un-tuned global baseline (`Epoch 0`).
-- **Hydrograph & Hanging Hyetograph**: Plots Observed vs. Simulated Streamflow on the main axis and inverted precipitation bars from the top axis, with a vertical line separating the Training and Validation periods. Use the **`Display Units`** toggle in the chart header to switch between **`m³/s`** and **`mm/day`**.
+- Epoch Inspector: drag the epoch slider at the top (or click a row in the `Epoch Checkpoint History` table at the bottom) to see the hydrograph and metrics of any saved epoch, from Epoch 0 (the pre-trained baseline) to the latest epoch.
+- Save a model: click `Save Epoch N to Inventory` (or the save button in a table row), type a name, and click `Save to Inventory`. The saved model then appears in the model lists of the `Fine Tuning` and `Forecasting and Data Assimilation` tabs.
+- 5 KPI cards: `Train Loss`, `Validation Loss`, `Train NSE`, `Validation NSE`, and `Validation KGE`.
+- Input forcing chart: precipitation bars (mm/day) and 2 m temperature lines (°C) for all global and local forcing products over the fine-tuning period. Click products in the legend to show or hide them on the chart. This does not change the model inputs.
+- Streamflow hydrograph: observed streamflow, the pre-trained base model (Epoch 0), and the fine-tuned model at the inspected epoch. Shading and a dashed vertical line separate the Training and Validation periods. Use the `Display Units` dropdown in the chart header to switch between `m³/s` and `mm/day`.
 
 ---
 
 ### 3.9 Tab 7: Forecasting and Data Assimilation
 
-The **Forecasting and Data Assimilation** tab generates real-time operational flood forecasts for your basins, assimilates live gauge observations, and lets you run interactive **"What-If"** weather scenarios.
+The Forecasting and Data Assimilation tab makes real-time flood forecasts for your basins, assimilates live gauge observations, and lets you run interactive "What-If" weather scenarios.
 
 #### Step-by-Step Workflow (Left Sidebar Steps 1–5)
 
 1. **Step 1 — Select Custom Catchments & Start Mode**:
    - Check one or more basins in the catchment list (`All`, `None`).
-   - Choose the **Start Mode**:
-     - **`Cold Start (365d Lookback)`** — Runs the full 365-day hindcast lookback window from scratch.
-     - **`Hot Start (t₀ − 1d)`** — Loads a saved LSTM hidden state from yesterday (`t₀ − 1d`) and steps forward using only 1 day of new weather data. Select the **Forecast Issue Date (`t₀`)** to verify whether a cached state is ready.
+   - Choose the `Start Mode`:
+     - `Cold Start` — runs the full 365-day hindcast lookback from scratch.
+     - `Hot Start (t₀ − 1d)` — loads a saved LSTM state (normally from yesterday, `t₀ − 1d`) and runs only the days since that state. This button works only when a valid saved state exists for all selected basins.
+   - The panel shows the forecast issue date (`t₀`), the required state date (`t₀ − 1d`), and the date of the saved state file, so you can see whether Hot Start is possible.
 2. **Step 2 — Fetch Real-Time Weather Data**:
    - Check the real-time weather products you want to download (`ECMWF HRES`, `NASA IMERG`, `NOAA CPC`, `ECMWF AIFS`, `NOAA GFS`, `NOAA GEFS`, `ECMWF IFS-ENS`).
-   - Click **`Fetch Real-Time Data`**. Each product displays a live download progress bar.
+   - Click `Fetch Real-Time Data`. Each product shows a live download progress bar. Click `Stop Download` to cancel.
 3. **Step 3 — Realtime Streamflow (Optional)**:
-   - If you have recent gauge observations up to today (`t₀`), upload a two-column CSV (`date,discharge_cms` in `m³/s`). These observations are plotted on the hydrograph and used by Step 5 (Data Assimilation).
+   - If you have recent gauge observations up to today (`t₀`), click `Upload CSV` and choose a two-column CSV (`date,discharge_cms` in `m³/s`, dates as `YYYY-MM-DD`). These observations are plotted on the hydrograph and used by Step 5 (Data Assimilation).
 4. **Step 4 — Make Forecasts**:
-   - Choose your **Model Weights** from the dropdown (any of the 3 pre-trained global checkpoints or a fine-tuned model checkpoint you created in Tab 6).
-   - Click **`Run Model`** to generate the probabilistic flood forecast (`Median Q50`, `25th–75th` percentile band, and `5th–95th` percentile band).
+   - Choose the model in `Pretrained / Fine-Tuned Model Weights` (one of the 3 pre-trained global checkpoints, or a fine-tuned model that you saved in Tab 6). The line below the list shows the forecast and hindcast inputs that the model needs.
+   - Click `Run Model` to run the model and plot the forecast on the hydrograph.
 5. **Step 5 — Data Assimilation (Optional)**:
-   - When you have uploaded real-time streamflow in Step 3, you can correct the forecast using two methods:
-   - **Method A: `Nudging (Persistence)`** — Computes the residual error between the model and observed streamflow at issue time `t₀` and applies an exponentially decaying correction across future lead days. Drag the control points on the interactive decay curve pad or click a preset (**`Fast .30`**, **`Best .65`**, **`Slow .85`**, **`Full 1.0`**) to update the assimilated forecast immediately.
-   - **Method B: `Embedding Variational` (4D-Var)** — Optimizes latent embedding perturbations (`δe`) via backpropagation through the frozen LSTM so the hindcast trajectory matches observed streamflow over the assimilation window (`Win (Days)`).
-     - Choose the loss function (**`MSE`**, **`CMAL`**, **`NSE`**), active latent components (**`Static`**, **`Hindcast`**, **`Forecast`**), **Steps/Run**, **Learn Rate**, **Win (Days)**, and background regularization **Prior `λ_bg`** (or click a preset: **`Balanced`**, **`Tight 7d`**, **`Dynamic`**, **`Long 60d`**).
-     - Click **`Start Variational DA`** (or **`+N Steps`**) and use the **Iteration Inspector** slider to scrub through every optimization step.
+   - When you have uploaded real-time streamflow in Step 3, you can correct the forecast with two methods:
+   - **Method A: `Nudging (Persistence)`** — computes the error between the model and the observed streamflow at issue time `t₀`, and applies a correction that decays exponentially over the future lead days. Click `Enable Nudging Overlay` to show the nudged forecast on the hydrograph. Drag the control points on the decay curve pad, or click a preset (`Fast · .30`, `Best · .65`, `Slow · .85`, `Full · 1.0`), to update the forecast immediately.
+   - **Method B: `Embedding Variational` (4D-Var)** — optimizes latent embedding perturbations (`δe`) via backpropagation through the frozen LSTM so the hindcast trajectory matches observed streamflow over the assimilation window (`Win (Days)`).
+     - Choose the loss function (`MSE`, `CMAL`, `NSE`), the active latent components (`Static`, `Hindcast`, `Forecast`), `Steps/Run` (default `5`), `Learn Rate` (default `0.01`), `Win (Days)` (default `14`), and the background weight `Prior λ_bg` (default `0.50`). Or click a preset: `Balanced`, `Tight · 7d`, `Dynamic`, or `Long · 60d`.
+     - Click `Start Variational DA (N Steps)` to start from Step 0 (the prior), or `+N Steps` to continue from the inspected step. A progress bar shows the run, and `Stop` ends it early. Use the `Iteration Inspector` slider (or its ◀ ▶ buttons, or a click on its loss chart) to show any optimization step on the hydrograph.
 
 #### Right-Hand Forecast Charts & Interactive "What-If" Weather Editor
-- **Top Chart — Input Weather Forcings (Lookback + Forecast)**:
-  - Displays the historical lookback and future forecast weather variables (`Precipitation` bars and `Temperature` lines).
-  - **Interactive What-If Editing**: You can **click and drag any future precipitation bar or temperature point** directly on the top chart to test hypothetical storms (for example, doubling tomorrow's rainfall or shifting a storm earlier).
-  - Click **`Run What-If Forecast`** to re-run the neural network with your modified weather and plot the resulting **What-If Forecast** curve on the bottom hydrograph alongside the original baseline forecast. Click **`Reset Inputs`** to restore the original weather data.
-- **Bottom Chart — Streamflow Forecast Hydrograph**:
-  - Plots Historical Hindcast simulation, Observed Streamflow, Forecast Median (`Q50`), `50%` and `90%` probabilistic uncertainty bands, Assimilated Forecast, What-If Forecast, and horizontal Return-Period flood thresholds.
+- **Top chart — input weather forcings (lookback + forecast)**:
+  - Shows the historical lookback and the future forecast weather (`Precipitation` bars and `Temperature` lines). Use the `Catchment:` dropdown above the chart to choose the basin to view.
+  - Interactive What-If editing: click and drag any future precipitation bar or temperature point on the top chart to test a different storm (for example, double tomorrow's rain or move a storm one day earlier).
+  - Click `Run What-If Forecast` to run the model again with your edited weather. The result appears as a new What-If line on the bottom hydrograph, next to the baseline forecast. Click `Reset Inputs` to restore the original weather data.
+- **Bottom chart — streamflow forecast hydrograph (m³/s)**:
+  - Plots the hindcast (spin-up) simulation, the baseline forecast, observed streamflow from your CSV, the nudged forecast, the variational DA forecast, each What-If scenario, and horizontal return-period lines (2-yr to 100-yr, when available).
+  - Use the `What-If Scenarios` bar to turn each scenario on or off or delete it, or click `Delete All What-Ifs`.
 
 ---
 
 ### 3.10 Tab 8: Account
 
-The **Account** tab manages local user workspaces, monitors disk usage, and provides a single table to rename or delete basins across the entire application.
+The Account tab manages local user accounts, shows how much data each account holds, and has one table to rename or delete basins across the whole application.
 
 #### Features
-- **Account Switcher**:
-  - By default, you work in the **`Guest`** workspace.
-  - Under **Create account**, enter a name (and optional email) and click **`Create & switch`** to create a separate workspace folder (`~/.cache/openhydronet/profiles/<account_id>/`) with its own basins, attributes, weather extractions, and fine-tuned models.
-  - Switch between accounts at any time, or click **`Remove an account`** to delete an old workspace.
-- **6 Storage KPI Cards**:
-  - Shows real-time counts and disk space used across:
-    1. **Catchment polygons**
-    2. **Static attributes**
-    3. **Historical training data**
-    4. **Streamflow targets**
-    5. **Real-time forecasts**
-    6. **Models & disk use**
-- **Centralized Basins Table**:
-  - Lists every basin in the active account along with its drainage area (`km²`), outlet coordinates, and badges showing whether static attributes, historical weather, streamflow observations, and real-time forcings are present.
-  - **Rename**: Click **`Rename`** on any row to change a basin's display name everywhere in the UI.
-  - **Delete**: Click **`Delete`** on any row (or **`Delete all basins`**) to permanently remove that basin and clean up its associated polygon, static attributes, weather files, and streamflow records across all storage folders.
+- **Account switcher**:
+  - By default, you work in the `Guest` account. Guest data is deleted every time the server starts. Create an account to keep your data.
+  - Click `Create account`, enter a `Username` (and, if you like, a display name and an email), and click `Create`. OpenHydroNet creates the account and switches to it.
+  - Each account has its own folder with its own basins, attributes, weather extractions, and fine-tuned models: `<data folder>/profiles/<username>/`. The data folder is `$OPENHYDRONET_DATA_DIR`, or `frontend/data` in the repository by default. Set `$OPENHYDRONET_PROFILES_DIR` to keep accounts in another folder.
+  - Click an account in the list to switch to it. Click `Remove an account` to delete an account you no longer need.
+- **6 storage KPI cards**:
+  - Show how much data the account holds:
+    1. `Catchment polygons` (number of basins and total area)
+    2. `Static attributes`
+    3. `Historical training data`
+    4. `Streamflow targets`
+    5. `Real-time forecasts`
+    6. `Models & disk use` (number of model runs and the total disk space used by the account)
+- **Basins table**:
+  - Lists every basin in the account with its name and ID, drainage area (`km²`), and badges for its saved data (`Polygon`, `N attrs`, `Historical`, `Targets`, `Forecasts`).
+  - Rename: click `Rename` on a row to change a basin's display name everywhere in the UI.
+  - Delete: click `Delete` on a row (or `Delete all basins`) to permanently remove the basin and its polygon, static attributes, weather files, streamflow targets, and forecast data from all storage folders.
 
 ---
 
 ### 3.11 Web UI REST API Reference
 
-When `openhydronet-ui` is running, the Flask backend (`frontend/server.py`) exposes JSON REST endpoints that you can also call from `curl` or Python `requests`:
+When `openhydronet-ui` is running, the web server (`frontend/server.py`, built on the Python standard library `http.server`) exposes JSON endpoints that you can also call from `curl` or Python `requests`. The main endpoints are:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/accounts` | `GET`, `POST` | List user accounts or create a new user account. |
-| `/api/accounts/switch` | `POST` | Switch the active user account (`{"account_id": "..."}`). |
-| `/api/accounts/<account_id>/overview` | `GET` | Return storage usage KPIs and per-basin inventory for an account. |
-| `/api/accounts/<account_id>/basins/<basin_id>` | `PATCH`, `DELETE` | Rename (`{"name": "..."}`) or cascade-delete a basin across all stores. |
-| `/api/weather/models` | `GET` | List all 8 weather forecast products and their local sync status. |
-| `/api/weather/grid` | `GET` | Fetch a 2D gridded weather slice for map rendering (`model`, `variable`, `time_idx`). |
-| `/api/weather/point` | `GET` | Fetch a point forecast meteogram time series (`model`, `lat`, `lon`). |
-| `/api/weather/sync` | `POST` | Start background weather synchronization (`{"model": "all"}` or specific model ID). |
-| `/api/maas/models` | `GET` | List available external global flood models (`floodhub`, `glofas`, `geoglows`). |
-| `/api/maas/reaches` | `GET` | Fetch river reaches and return-period severity colors inside a map bounding box. |
-| `/api/maas/forecast` | `GET` | Fetch multi-model discharge forecasts and return periods for `(lat, lon)`. |
-| `/api/delineate` | `POST` | Delineate an upstream catchment polygon from `{"lat": ..., "lon": ..., "network": ...}`. |
-| `/api/catchments` | `GET`, `POST` | List all saved catchments or upload a custom GeoJSON catchment. |
-| `/api/static/extract` | `POST` | Start Caravan/HydroATLAS static attribute extraction for selected basins. |
-| `/api/static/attributes/<basin_id>` | `GET` | Return the extracted ~210 static attributes for `<basin_id>`. |
-| `/api/training/extract` | `POST` | Start historical MultiMet Zarr extraction for selected sources and date range. |
-| `/api/finetune/models` | `GET` | List pre-trained base models available for fine-tuning. |
-| `/api/finetune/step` | `POST` | Run `N` epochs of local fine-tuning and return training/validation metrics and hydrographs. |
-| `/api/forecast/fetch` | `POST` | Start real-time lookback + forecast weather extraction for selected basins and products. |
-| `/api/forecast/run` | `POST` | Run hydrological forecast inference (and optional nudging or variational DA / What-If). |
-| `/api/forecast/variational_step` | `POST` | Run iterative 4D-Var embedding variational data assimilation steps. |
-| `/api/jobs/stop-all` | `POST` | Stop all active background download and extraction jobs. |
-| `/api/health` | `GET` | Health check endpoint returning `{"status": "ok"}`. |
+| `/api/profile/list` | `GET` | List local user accounts. |
+| `/api/profile/create` | `POST` | Create a user account (`{"username": "..."}`). |
+| `/api/profile/login` | `POST` | Switch the active user account (`{"username": "..."}`). |
+| `/api/account/summary` | `GET` | Return storage usage and the basin inventory of the active account. |
+| `/api/watersheds` | `GET` | List the saved basin polygons. |
+| `/api/watersheds/rename` | `POST` | Rename a basin (`{"catchment_id": "...", "name": "..."}`). |
+| `/api/watersheds/delete` | `POST` | Delete a basin (`{"catchment_id": "..."}`). |
+| `/api/polygons/upload` | `POST` | Upload a custom GeoJSON basin polygon. |
+| `/api/delineate` | `POST` | Delineate an upstream basin polygon (`{"latitude": ..., "longitude": ..., "dataset": ...}`). |
+| `/api/weather/models` | `GET` | List the weather forecast products, map variables, and local sync status. |
+| `/api/weather/probe` | `GET` | Return point forecast time series from every synced weather model at (`lat`, `lon`). |
+| `/api/weather/sync` | `POST` | Start background weather synchronization (`{"model": "..."}` or `{"models": [...]}`). |
+| `/api/maas/models` | `GET` | List the external flood models (`floodhub`, `glofas`, `geoglows`). |
+| `/api/maas/reaches` | `GET` | Match a point (`lat`, `lon`) to river reaches in each flood model network. |
+| `/api/maas/forecast` | `GET` | Return multi-model discharge forecasts and return periods for (`lat`, `lon`). |
+| `/api/attributes/extract` | `POST` | Start static attribute extraction for selected basins. |
+| `/api/attributes/extracted` | `GET` | Return the extracted static attributes of the active account. |
+| `/api/weather/historical` | `POST` | Start historical weather extraction for selected basins and dates. |
+| `/api/finetune/models` | `GET` | List the pre-trained base models available for fine-tuning. |
+| `/api/finetune/run` | `POST` | Run `N` fine-tuning epochs and return training and validation metrics. |
+| `/api/forecast/fetch-realtime` | `POST` | Fetch real-time lookback and forecast weather for selected basins and products. |
+| `/api/forecast/run-model` | `POST` | Run the forecast model (including What-If weather inputs). |
+| `/api/forecast/assimilate` | `POST` | Run nudging or variational data assimilation for a basin. |
+| `/api/jobs` | `GET` | List background jobs. |
+| `/api/jobs/cancel` | `POST` | Cancel one job (`{"job_id": "..."}`) or, without `job_id`, stop all active downloads. |

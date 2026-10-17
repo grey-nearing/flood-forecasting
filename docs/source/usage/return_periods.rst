@@ -24,17 +24,17 @@ How the USGS Bulletin 17C Algorithm Works
 
 To estimate flood return periods at a river gauge, ``return_periods`` performs three steps:
 
-1. **Extracts Annual Peak Flows:** From a daily river discharge time series (in ``m³/s`` or ``ft³/s``), the calculator groups the record into **water years** (for example, October 1 through September 30) and finds the highest single-day flow in each year. Years with too many missing days (controlled by ``max_missing_days_in_year``, default ``30``) are skipped so incomplete years are not mistaken for dry years.
-2. **Screens Out Dry-Year Low Outliers (`MGBT`):** In arid or seasonal rivers, some dry years have zero flow or a very small peak flow. These **Potentially Influential Low Floods (PILFs)** do not follow the same physical process as large floods and can bend the fitted curve, causing inaccurate 50-year or 100-year flood estimates. The **Multiple Grubbs-Beck Test (`MGBT`)** (:py:class:`~return_periods.MultipleGrubbsBeckTester`, Cohn et al., 2013) automatically detects unusually low annual peaks using the official Bulletin 17C two-stage outward (:math:`\alpha_{\text{out}} = 0.005`) and inward (:math:`\alpha_{\text{in}} = 0.10`) significance sweeps.
-3. **Fits the Log-Pearson Type III Distribution (`EMA`):** The **Expected Moments Algorithm (`EMA`)** (:py:class:`~return_periods.GEMAFitter`) fits a Log-Pearson Type III (`LP-III`) probability distribution to the base-10 logarithms (:math:`\log_{10} Q`) of the annual peak flows. Any dry-year low outliers flagged by `MGBT` (as well as zero-flow years) are treated as **interval-censored observations** (known to be smaller than the `MGBT` threshold) rather than discarded, preserving the true length of the historical record.
+1. **Extracts Annual Peak Flows:** From a daily river discharge time series (in ``m³/s`` or ``ft³/s``), the calculator groups the record into **water years** (for example, October 1 through September 30) and finds the highest single-day flow in each year. Years with too many missing days (controlled by ``max_missing_days_in_year``, default ``100``) are skipped so incomplete years are not mistaken for dry years.
+2. **Screens Out Dry-Year Low Outliers (``MGBT``):** In arid or seasonal rivers, some dry years have zero flow or a very small peak flow. These **Potentially Influential Low Floods (PILFs)** do not follow the same physical process as large floods and can bend the fitted curve, causing inaccurate 50-year or 100-year flood estimates. The **Multiple Grubbs-Beck Test (``MGBT``)** (:py:class:`~return_periods.MultipleGrubbsBeckTester`, Cohn et al., 2013) automatically detects unusually low annual peaks using the official Bulletin 17C two-stage outward (:math:`\alpha_{\text{out}} = 0.005`) and inward (:math:`\alpha_{\text{in}} = 0.10`) significance sweeps.
+3. **Fits the Log-Pearson Type III Distribution (``EMA``):** The **Expected Moments Algorithm (``EMA``)** (:py:class:`~return_periods.GEMAFitter`) fits a Log-Pearson Type III (``LP-III``) probability distribution to the base-10 logarithms (:math:`\log_{10} Q`) of the annual peak flows. Any dry-year low outliers flagged by ``MGBT`` (as well as zero-flow years) are treated as **interval-censored observations** (known to be smaller than the ``MGBT`` threshold) rather than discarded, preserving the true length of the historical record.
 
 Available Distribution Fitters
 ------------------------------
 
-:py:class:`~return_periods.ReturnPeriodCalculator` supports three built-in fitting methods (or any custom :py:class:`~return_periods.BaseFitter` subclass):
+:py:class:`~return_periods.ReturnPeriodCalculator` supports three built-in fitting methods (or any custom :py:class:`~return_periods.BaseFitter` subclass). You must always pass ``fitter`` explicitly:
 
-* ``fitter='gema'`` (recommended default): Full USGS Bulletin 17C Expected Moments Algorithm (:py:class:`~return_periods.GEMAFitter`) with `MGBT` low-outlier censoring and optional regional skew weighting.
-* ``fitter='simple_lp3'``: Standard Method-of-Moments Log-Pearson Type III fit (:py:class:`~return_periods.SimpleLogPearson3Fitter`) without `EMA` interval censoring.
+* ``fitter='gema'`` (recommended): Full USGS Bulletin 17C Expected Moments Algorithm (:py:class:`~return_periods.GEMAFitter`) with ``MGBT`` low-outlier censoring and optional regional skew weighting.
+* ``fitter='simple_lp3'``: Standard Method-of-Moments Log-Pearson Type III fit (:py:class:`~return_periods.SimpleLogPearson3Fitter`) without ``EMA`` interval censoring.
 * ``fitter='log_linear'``: Log-linear regression on empirical plotting positions (:py:class:`~return_periods.LogLogTrendFitter`).
 
 It also provides the empirical plotting-position functions from Bulletin 17C Appendix 5 (:py:func:`~return_periods.simple_empirical_plotting_position` and :py:func:`~return_periods.threshold_exceedance_empirical_plotting_position`).
@@ -102,7 +102,7 @@ Short gauge records (for example, 10 to 30 years) can have noisy sample skewness
 4. Run MGBT Low-Outlier Screening Directly
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To inspect how many dry-year low outliers (`PILFs`) are flagged in an annual peak series and view the outlier threshold (in flow units):
+To inspect how many dry-year low outliers (PILFs) are flagged in an annual peak series and view the outlier threshold (in flow units):
 
 .. code-block:: python
 
