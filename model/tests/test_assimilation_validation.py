@@ -22,7 +22,7 @@ import pytest
 import torch
 from torch import nn
 
-from model.evaluation.assimilation import Assimilation, _frozen
+from model.evaluation.assimilation import Assimilation, frozen_model
 from model.modelzoo.mean_embedding_forecast_lstm import (
     MeanEmbeddingForecastLSTM,
 )
@@ -44,7 +44,7 @@ OUTPUT_DROPOUT = 0.3
 
 
 def _dropout_model(builder: Callable) -> MeanEmbeddingForecastLSTM:
-    """Tiny model with output dropout, to observe `_frozen`."""
+    """Tiny model with output dropout, to observe `frozen_model`."""
     options = dict(build_model(builder).cfg.as_dict())
     options['output_dropout'] = OUTPUT_DROPOUT
     with torch.random.fork_rng(devices=[]):
@@ -209,7 +209,7 @@ def test_model_state_is_restored(
 def test_frozen_only_switches_rnn_modules(
     tiny_mean_embedding_model: Callable, *, training: bool
 ) -> None:
-    """`_frozen` sets RNNs to train mode, zeroes dropout and restores all."""
+    """`frozen_model` sets RNNs to train mode, zeroes dropout, restores all."""
     model = _dropout_model(tiny_mean_embedding_model)
     model.train(mode=training)
     model.hindcast_lstm.dropout = 0.5
@@ -220,7 +220,7 @@ def test_frozen_only_switches_rnn_modules(
         if m is not model and not isinstance(m, nn.RNNBase)
     ]
 
-    with _frozen(model):
+    with frozen_model(model):
         assert model.training is training
         assert all(m.training for m in rnns)
         assert all(m.training is training for m in others)
@@ -242,7 +242,7 @@ def test_frozen_rejects_batch_norm(tiny_mean_embedding_model: Callable) -> None:
     model = build_model(tiny_mean_embedding_model)
     model.extra = nn.BatchNorm1d(2)
 
-    with pytest.raises(ValueError, match='BatchNorm1d'), _frozen(model):
+    with pytest.raises(ValueError, match='BatchNorm1d'), frozen_model(model):
         pass
 
 

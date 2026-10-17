@@ -485,6 +485,49 @@ def _populate_synthetic_realtime_zarr_stores(
         extra_ds.to_zarr(extra_path, mode='w', zarr_format=2, consolidated=True)
 
 
+def _write_single_variable_product_store(
+    rt_dyn_dir: Path,
+    prod_name: str,
+    basin_ids: list[str],
+    dates: np.ndarray,
+    *,
+    with_lead_time: bool = False,
+) -> Path:
+    """Write a minimal ``<PRODUCT>/timeseries.zarr`` store with given dates.
+
+    The single data variable is the product's canonical precipitation name.
+    """
+    if with_lead_time:
+        var_name = realtime_forecast_service.FORECAST_PRODUCTS_METADATA[
+            prod_name
+        ]['precip_var']
+    else:
+        var_name = realtime_forecast_service.NOWCAST_PRODUCTS_METADATA[
+            prod_name
+        ]['var_name']
+    n_basins = len(basin_ids)
+    coords: dict[str, object] = {'basin': basin_ids, 'date': dates}
+    if with_lead_time:
+        lead_times = pd.to_timedelta(
+            np.arange(1, EXPECTED_FORECAST_LEN + 1), unit='D'
+        ).to_numpy()
+        coords['lead_time'] = lead_times
+        values = np.ones(
+            (n_basins, len(dates), EXPECTED_FORECAST_LEN), dtype=np.float32
+        )
+        dims: tuple[str, ...] = ('basin', 'date', 'lead_time')
+    else:
+        values = np.ones((n_basins, len(dates)), dtype=np.float32)
+        dims = ('basin', 'date')
+    ds = xr.Dataset({var_name: (dims, values)}, coords=coords)
+    store_path = rt_dyn_dir / prod_name / 'timeseries.zarr'
+    if store_path.exists():
+        shutil.rmtree(store_path)
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    ds.to_zarr(store_path, mode='w', zarr_format=2, consolidated=True)
+    return store_path
+
+
 @pytest.mark.unit
 class RealtimeForecastTabTest(unittest.TestCase):
     """End-to-end unit tests for the Real-Time Forecasting Tab & Service."""
@@ -1922,12 +1965,17 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'computeBasinNudgedHydrograph',
             'initHydrographNudgingDrag',
             'NUDGED FORECAST',
-            'VARIATIONAL DA (4D-VAR',
+            'VARIATIONAL DA (',
+            'Start Variational DA',
+            'id="fcHydroLegendSubpanel"',
+            'renderHydrographLegend',
             'let fcDaAccordionExpanded = true;',
             'userSetEnabled: false',
         ):
             assert token in html
         assert 'let fcDaAccordionExpanded = false;' not in html
+        assert '4D-Var' not in html
+        assert '4D-VAR' not in html
 
     def test_daily_forecast_persistence_and_ttl_expiration(self) -> None:
         """Daily forecasts persist across refresh and auto-expire after TTL."""
@@ -2155,6 +2203,368 @@ class RealtimeForecastTabTest(unittest.TestCase):
             'async_poll: true',
         ):
             assert token in html
+
+    def test_iterative_variational_da_continuation_progress_and_inspector(
+        self,
+    ) -> None:
+        """Verify iterative variational DA, continuation, branching, and UI."""
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir, TEST_BASIN, '2026-03-30'
+        )
+        expected_obs_days = 10
+        var_csv_lines = [
+            'date,streamflow_cms',
+            *[
+                f'2026-03-{day:02d},{35.0 + (day - 20) * 1.5:.1f}'
+                for day in range(20, 20 + expected_obs_days)
+            ],
+        ]
+        code, _ = self._request(
+            'POST',
+            '/api/forecast/upload-streamflow',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'filename': 'gauge_obs_iter.csv',
+                'csv_content': '\n'.join(var_csv_lines) + '\n',
+            },
+        )
+        assert code == HTTP_OK
+
+        # 1. Fresh run for 3 steps (Steps 0..3)
+        first_steps = 3
+        code, run1 = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'method': 'variational',
+                'issue_date': '2026-03-30',
+                'window_days': expected_obs_days,
+                'regularization_weight': 0.20,
+                'initial_learning_rate': 0.02,
+                'epochs': first_steps,
+                'reset': True,
+                'continue_session': False,
+                'model_run_dir': str(self.model_run_dir),
+            },
+        )
+        assert code == HTTP_OK
+        assert run1['status'] == 'success'
+        assert run1['base_step'] == 0
+        assert run1['current_step'] == first_steps
+        assert run1['steps_ran'] == first_steps
+        assert len(run1['epoch_history']) == first_steps + 1
+        assert [h['step'] for h in run1['epoch_history']] == [0, 1, 2, 3]
+        assert run1['epoch_history'][0]['reg_loss'] == pytest.approx(0.0)
+        assert (
+            run1['epoch_history'][3]['window_rmse_cms']
+            < run1['epoch_history'][0]['window_rmse_cms']
+        )
+
+        # 2. Check GET /api/forecast/assimilate-progress reflects completed run
+        code_p, prog = self._request(
+            'GET',
+            f'/api/forecast/assimilate-progress?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code_p == HTTP_OK
+        assert prog['status'] == 'completed'
+        assert prog['current_step'] == first_steps
+        assert prog['overall_percent'] == pytest.approx(100.0)
+
+        # 3. Continue session for +2 steps with modified lr & reg weight
+        extra_steps = 2
+        total_after_continue = first_steps + extra_steps
+        code, run2 = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'method': 'variational',
+                'issue_date': '2026-03-30',
+                'window_days': expected_obs_days,
+                'regularization_weight': 0.10,
+                'initial_learning_rate': 0.015,
+                'epochs': extra_steps,
+                'continue_session': True,
+                'reset': False,
+                'model_run_dir': str(self.model_run_dir),
+            },
+        )
+        assert code == HTTP_OK
+        assert run2['base_step'] == first_steps
+        assert run2['current_step'] == total_after_continue
+        assert run2['steps_ran'] == extra_steps
+        assert [h['step'] for h in run2['epoch_history']] == [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+        ]
+        assert run2['epoch_history'][4]['learning_rate'] == pytest.approx(0.015)
+
+        # 4. Branch from earlier inspected Step 2 for +2 steps
+        branch_from = 2
+        branch_end = branch_from + extra_steps
+        code, run3 = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'method': 'variational',
+                'issue_date': '2026-03-30',
+                'window_days': expected_obs_days,
+                'regularization_weight': 0.05,
+                'initial_learning_rate': 0.025,
+                'epochs': extra_steps,
+                'continue_session': True,
+                'from_step': branch_from,
+                'model_run_dir': str(self.model_run_dir),
+            },
+        )
+        assert code == HTTP_OK
+        assert run3['base_step'] == branch_from
+        assert run3['current_step'] == branch_end
+        assert [h['step'] for h in run3['epoch_history']] == [0, 1, 2, 3, 4]
+
+        # 5. Verify POST /api/forecast/cancel-assimilate endpoint
+        code_c, cancel_res = self._request(
+            'POST',
+            '/api/forecast/cancel-assimilate',
+            {'username': self.test_user},
+        )
+        assert code_c == HTTP_OK
+        assert cancel_res['status'] == 'cancelled'
+
+        # 6. Verify frontend tokens for manual & visual iterative 4D-Var UI
+        html_path = (
+            Path(__file__).resolve().parent.parent / 'static' / 'index.html'
+        )
+        html = html_path.read_text(encoding='utf-8')
+        for token in (
+            'id="fcDaVarContinueBtn"',
+            'id="fcDaVarProgressBox"',
+            'id="fcDaVarProgressBarFill"',
+            'id="fcDaVarStopBtn"',
+            'id="fcDaVarStepsInput"',
+            'id="fcDaVarLrInput"',
+            'id="fcDaVarWindowInput"',
+            'id="fcDaVarRegInput"',
+            'id="fcDaVarInspectorBox"',
+            'id="fcDaVarLossCanvas"',
+            'id="fcDaVarStepSlider"',
+            'id="fcDaVarStepPrevBtn"',
+            'id="fcDaVarStepNextBtn"',
+            'id="fcDaVarStepReadout"',
+            'renderDaVariationalLossChart',
+            'selectVariationalInspectedStep',
+            'getActiveVariationalStepEntry',
+            'stopActiveVariationalAssimilation',
+            '/api/forecast/assimilate-progress',
+            '/api/forecast/cancel-assimilate',
+        ):
+            assert token in html
+
+    def test_variational_da_continue_requires_session_and_known_step(
+        self,
+    ) -> None:
+        """Continue/branch never restart silently; early stopping works."""
+        _populate_synthetic_realtime_zarr_stores(
+            self.profile_dir, TEST_BASIN, '2026-03-30'
+        )
+        csv_lines = [
+            'date,streamflow_cms',
+            *[f'2026-03-{day:02d},{40.0 + day:.1f}' for day in range(20, 30)],
+        ]
+        code, _ = self._request(
+            'POST',
+            '/api/forecast/upload-streamflow',
+            {
+                'username': self.test_user,
+                'catchment_id': TEST_BASIN,
+                'filename': 'gauge_obs_session.csv',
+                'csv_content': '\n'.join(csv_lines) + '\n',
+            },
+        )
+        assert code == HTTP_OK
+        base_body = {
+            'username': self.test_user,
+            'catchment_id': TEST_BASIN,
+            'method': 'variational',
+            'issue_date': '2026-03-30',
+            'window_days': 10,
+            'epochs': 2,
+            'model_run_dir': str(self.model_run_dir),
+        }
+
+        # 1. Continue without any server-side session must fail loudly
+        #    instead of silently restarting from Step 0.
+        code, res = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {**base_body, 'continue_session': True, 'reset': False},
+        )
+        assert code == HTTP_BAD_REQUEST
+        assert 'No Variational DA session' in res['message']
+
+        # 2. A fresh run creates the session (Steps 0..2).
+        code, run1 = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {**base_body, 'continue_session': False, 'reset': True},
+        )
+        assert code == HTTP_OK
+        assert run1['applied'] is True
+        assert run1['current_step'] == 2  # noqa: PLR2004
+        assert run1['stop_reason'] is None
+
+        # 3. Branching from a step that was never run must fail loudly
+        #    instead of silently continuing from the latest step.
+        code, res = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {**base_body, 'continue_session': True, 'from_step': 7},
+        )
+        assert code == HTTP_BAD_REQUEST
+        assert 'Step 7 is not available' in res['message']
+        assert 'available steps: 0..2' in res['message']
+
+        # 4. Continuing from the current step still works after the rejected
+        #    requests (the session was not corrupted by them).
+        code, run2 = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {**base_body, 'continue_session': True, 'epochs': 1},
+        )
+        assert code == HTTP_OK
+        assert run2['base_step'] == 2  # noqa: PLR2004
+        assert run2['current_step'] == 3  # noqa: PLR2004
+        assert [h['step'] for h in run2['epoch_history']] == [0, 1, 2, 3]
+
+        # 5. early_stopping_tolerance is honoured: an enormous tolerance means
+        #    the prior already satisfies the criterion, so no step is taken
+        #    and the run reports why it stopped.
+        code, run3 = self._request(
+            'POST',
+            '/api/forecast/assimilate',
+            {
+                **base_body,
+                'continue_session': False,
+                'reset': True,
+                'epochs': 3,
+                'early_stopping_tolerance': 1.0e6,
+            },
+        )
+        assert code == HTTP_OK
+        assert run3['applied'] is True
+        assert run3['steps_ran'] == 0
+        assert run3['current_step'] == 0
+        assert run3['stop_reason'] == 'converged'
+        assert [h['step'] for h in run3['epoch_history']] == [0]
+        code_p, prog = self._request(
+            'GET',
+            f'/api/forecast/assimilate-progress?catchment_id={TEST_BASIN}&username={self.test_user}',
+        )
+        assert code_p == HTTP_OK
+        assert prog['status'] == 'completed'
+        assert prog['active'] is False
+        assert prog['stop_reason'] == 'converged'
+        assert 'converged' in prog['message']
+
+    def test_fetch_progress_disk_readiness_flags_stale_zarr_stores(
+        self,
+    ) -> None:
+        """Stale stores are reported, NaT/empty date axes never crash."""
+        rt_dyn_dir = self.profile_dir / 'realtime' / 'dynamics'
+        rt_dyn_dir.mkdir(parents=True, exist_ok=True)
+        newest = pd.Timestamp('2026-03-30')
+        day = pd.Timedelta(days=1)
+        progress_url = (
+            f'/api/forecast/fetch-progress?catchment_id={TEST_BASIN}'
+            f'&username={self.test_user}'
+        )
+
+        def write_store(
+            prod_name: str,
+            last_date: pd.Timestamp,
+            *,
+            with_lead_time: bool = False,
+        ) -> None:
+            dates = pd.date_range(end=last_date, periods=5, freq='D')
+            _write_single_variable_product_store(
+                rt_dyn_dir,
+                prod_name,
+                [TEST_BASIN],
+                dates.to_numpy(),
+                with_lead_time=with_lead_time,
+            )
+
+        # 1. Every store ends on the same date: all ready, none stale. A
+        #    nowcast product lagging 3 days (publication latency) is still
+        #    current; the reference is the newest store on disk.
+        write_store('HRES', newest, with_lead_time=True)
+        write_store('CPC', newest)
+        write_store('IMERG', newest - 3 * day)
+        code, prog = self._request('GET', progress_url)
+        assert code == HTTP_OK
+        disk = prog['products_disk_status']
+        for prod_name in ('HRES', 'CPC', 'IMERG'):
+            assert disk[prod_name]['store_exists'] is True
+            assert disk[prod_name]['ready_on_disk'] is True
+            assert disk[prod_name]['stale_on_disk'] is False
+        assert disk['HRES']['last_date'] == '2026-03-30'
+        assert disk['IMERG']['last_date'] == '2026-03-27'
+        assert set(prog['completed_products']) >= {'HRES', 'CPC', 'IMERG'}
+
+        # 2. A nowcast store more than 5 days behind the newest store and a
+        #    forecast store one issue date behind are both stale, not ready.
+        write_store('IMERG', newest - 6 * day)
+        write_store('HRES', newest - day, with_lead_time=True)
+        code, prog = self._request('GET', progress_url)
+        assert code == HTTP_OK
+        disk = prog['products_disk_status']
+        assert disk['CPC']['ready_on_disk'] is True
+        assert disk['IMERG']['ready_on_disk'] is False
+        assert disk['IMERG']['stale_on_disk'] is True
+        assert disk['IMERG']['last_date'] == '2026-03-24'
+        assert disk['HRES']['ready_on_disk'] is False
+        assert disk['HRES']['stale_on_disk'] is True
+        assert disk['HRES']['last_date'] == '2026-03-29'
+        assert disk['HRES']['basins_count'] == 1
+        assert 'IMERG' not in prog['completed_products']
+        assert 'HRES' not in prog['completed_products']
+
+        # 3. A trailing NaT date or an empty date axis must not raise, must
+        #    not lose the basin list, and reports an unknown last date.
+        nat_dates = np.array(
+            ['2026-03-28', '2026-03-29', 'NaT'], dtype='datetime64[ns]'
+        )
+        _write_single_variable_product_store(
+            rt_dyn_dir, 'CPC', [TEST_BASIN], nat_dates
+        )
+        _write_single_variable_product_store(
+            rt_dyn_dir,
+            'IMERG',
+            [TEST_BASIN],
+            np.array([], dtype='datetime64[ns]'),
+        )
+        code, prog = self._request('GET', progress_url)
+        assert code == HTTP_OK
+        disk = prog['products_disk_status']
+        for prod_name in ('CPC', 'IMERG'):
+            assert disk[prod_name]['store_exists'] is True
+            assert disk[prod_name]['basins_count'] == 1
+            assert disk[prod_name]['last_date'] is None
+            assert disk[prod_name]['ready_on_disk'] is True
+            assert disk[prod_name]['stale_on_disk'] is False
+        # The only dated store left defines the reference, so it is current.
+        assert disk['HRES']['ready_on_disk'] is True
+        assert disk['HRES']['stale_on_disk'] is False
 
 
 if __name__ == '__main__':

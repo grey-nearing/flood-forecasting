@@ -13,10 +13,10 @@
 # limitations under the License.
 
 # ruff: noqa: PLR2004
-"""Early stopping of the DA engine: the `_converged` rule and its effect.
+"""Early stopping of the DA engine: `converged_sequences` and its effect.
 
-`_converged` is tested directly because its per-sequence decision cannot be
-observed through ``assimilate`` without re-deriving the rule.
+`converged_sequences` is tested directly because its per-sequence decision
+cannot be observed through ``assimilate`` without re-deriving the rule.
 """
 
 from collections.abc import Callable
@@ -24,7 +24,7 @@ from collections.abc import Callable
 import pytest
 import torch
 
-from model.evaluation.assimilation import _converged
+from model.evaluation.assimilation import converged_sequences
 from model.tests.da_helpers import (
     ALL_COMPONENTS,
     assimilate,
@@ -132,7 +132,9 @@ def test_converged(
     expected: list[bool],
 ) -> None:
     """Relative error at the last step (or max over the window) <= 0.05."""
-    converged = _converged(_col(pred), _col(obs), _col(y_full), tolerance=0.05)
+    converged = converged_sequences(
+        _col(pred), _col(obs), _col(y_full), tolerance=0.05
+    )
 
     assert converged.tolist() == expected
 
@@ -144,7 +146,10 @@ def test_converged_requires_every_target() -> None:
     pred = torch.tensor([[[1.01, 1.5]], [[1.01, 1.01]]])
     y_full = torch.zeros(2, 1, 2)
 
-    assert _converged(pred, obs, y_full, 0.05).tolist() == [False, True]
+    assert converged_sequences(pred, obs, y_full, 0.05).tolist() == [
+        False,
+        True,
+    ]
 
 
 @pytest.mark.unit

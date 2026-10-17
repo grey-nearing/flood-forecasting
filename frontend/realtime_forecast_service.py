@@ -59,8 +59,17 @@ from frontend.config import (
 )
 from model.datasetzoo.caravan import load_caravan_attributes
 from model.datautils.scaler import Scaler
-from model.evaluation.assimilation import Assimilation
+from model.evaluation.assimilation import (
+    clip_per_sequence_grad_norm,
+    converged_sequences,
+    frozen_model,
+)
 from model.modelzoo import get_model, load_model_weights
+from model.training import (
+    get_loss_obj,
+    get_optimizer,
+    get_regularization_obj,
+)
 from model.utils.assimilationconfig import AssimilationConfig
 from model.utils.config import Config
 from model.utils.configutils import (
@@ -226,6 +235,7 @@ _DEFAULT_LOOKBACK_DAYS = 14
 _DEFAULT_LEAD_TIME_DAYS = 7
 _HINDCAST_TAIL_DAYS = 14
 _NDIM_3D = 3
+_MAX_NOWCAST_LAG_DAYS = 5
 
 NOWCAST_PRODUCTS_METADATA: dict[str, dict[str, Any]] = {
     'IMERG': {
@@ -399,6 +409,14 @@ _FETCH_PROGRESS_BY_USER: dict[str, dict[str, Any]] = {}
 _FETCH_CANCEL_EVENTS: dict[str, threading.Event] = {}
 _RUN_PROGRESS_LOCK = threading.Lock()
 _RUN_PROGRESS_BY_USER: dict[str, dict[str, Any]] = {}
+_DA_PROGRESS_LOCK = threading.Lock()
+_DA_PROGRESS_BY_USER: dict[str, dict[str, Any]] = {}
+_DA_CANCEL_EVENTS: dict[str, threading.Event] = {}
+_DA_SESSION_LOCK = threading.Lock()
+_DA_SESSIONS_BY_KEY: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+# Most recent (user, basin, model, issue date) Variational DA sessions kept
+# in memory for Continue / branch-from-step; the oldest is evicted first.
+_MAX_DA_SESSIONS = 16
 _FETCH_THREAD_LOCAL = threading.local()
 _TQDM_PATCH_LOCK = threading.Lock()
 _TQDM_PATCH_INSTALLED = False
@@ -1264,6 +1282,8 @@ def upload_realtime_streamflow_csv(
         updated_basins.append(cid_str)
 
     zarr_path = _sync_assimilation_zarr_from_uploads(username)
+    with _DA_SESSION_LOCK:
+        _DA_SESSIONS_BY_KEY.clear()
     target_cid = (
         str(catchment_id).strip()
         if (catchment_id and str(catchment_id).strip() in updated_basins)
@@ -1343,6 +1363,8 @@ def clear_realtime_streamflow_csv(
     if csv_path.exists():
         csv_path.unlink()
     _sync_assimilation_zarr_from_uploads(username)
+    with _DA_SESSION_LOCK:
+        _DA_SESSIONS_BY_KEY.clear()
     status_payload = get_realtime_status(
         username=username,
         catchment_id=cid_str,
@@ -1535,6 +1557,9 @@ def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
         cached = _ZARR_META_CACHE.get(mkey)
         if cached is not None:
             return cached
+    basins: list[str] = []
+    last_date_str: str | None = None
+    has_lead_time = False
     try:
         with _open_zarr_self_healing(store_path) as ds:
             basins = (
@@ -1542,17 +1567,31 @@ def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
                 if 'basin' in ds.coords
                 else []
             )
+            has_lead_time = 'lead_time' in ds.dims
+            if 'date' in ds.coords and int(ds.sizes.get('date', 0)) > 0:
+                last_raw = ds.coords['date'].to_numpy()[-1]
+                if pd.isna(last_raw):
+                    logger.warning(
+                        'Zarr store %s ends with a NaT date coordinate; '
+                        'its freshness cannot be determined.',
+                        store_path,
+                    )
+                else:
+                    last_date_str = _format_date_str(
+                        pd.Timestamp(last_raw).floor('D')
+                    )
     except Exception:
         logger.warning(
             'Could not read Zarr store metadata at %s',
             store_path,
             exc_info=True,
         )
-        basins = []
     entry: dict[str, Any] = {
         'basins': basins,
         'lower_map': {b.lower(): b for b in basins},
         'latest_issue_by_basin': {},
+        'last_date': last_date_str,
+        'has_lead_time': has_lead_time,
     }
     with _ZARR_CACHE_LOCK:
         existing = _ZARR_META_CACHE.get(mkey)
@@ -2608,6 +2647,8 @@ def _invalidate_zarr_caches() -> None:
     with _ZARR_CACHE_LOCK:
         _ZARR_META_CACHE.clear()
         _ZARR_WINDOW_CACHE.clear()
+    with _DA_SESSION_LOCK:
+        _DA_SESSIONS_BY_KEY.clear()
 
 
 def _normalize_user_key(username: str | None) -> str:
@@ -2630,28 +2671,56 @@ def _inspect_products_disk_readiness(
         if k not in all_prods:
             all_prods.append(k)
 
+    metas_by_prod: dict[str, dict[str, Any]] = {}
+    for prod_name in all_prods:
+        store_path = stores.get(prod_name)
+        if store_path is not None and _is_valid_zarr_store(store_path):
+            metas_by_prod[prod_name] = _get_cached_store_meta(store_path)
+
+    all_last_dates = [
+        str(m['last_date'])
+        for m in metas_by_prod.values()
+        if m.get('last_date')
+    ]
+    ref_last_date = max(all_last_dates) if all_last_dates else None
+
     readiness: dict[str, dict[str, Any]] = {}
     for prod_name in all_prods:
         store_path = stores.get(prod_name)
-        valid_store = store_path is not None and _is_valid_zarr_store(
-            store_path
-        )
-        ready_for_basin = False
+        meta = metas_by_prod.get(prod_name)
+        valid_store = meta is not None and store_path is not None
+        has_basins = False
+        is_current = True
         basins_count = 0
-        if valid_store and store_path is not None:
-            meta = _get_cached_store_meta(store_path)
+        last_date = meta.get('last_date') if meta is not None else None
+        if valid_store and meta is not None:
             basins_count = len(meta['basins'])
             if eval_ids:
-                ready_for_basin = all(
+                has_basins = all(
                     cid in meta['basins'] or cid.lower() in meta['lower_map']
                     for cid in eval_ids
                 )
             else:
-                ready_for_basin = basins_count > 0
+                has_basins = basins_count > 0
+            if ref_last_date and last_date:
+                if meta.get('has_lead_time'):
+                    is_current = str(last_date) >= str(ref_last_date)
+                else:
+                    delta_days = int(
+                        (
+                            pd.Timestamp(ref_last_date)
+                            - pd.Timestamp(last_date)
+                        ).days
+                    )
+                    is_current = delta_days <= _MAX_NOWCAST_LAG_DAYS
+        ready_for_basin = bool(has_basins and is_current)
+        stale_on_disk = bool(has_basins and not is_current)
         readiness[prod_name] = {
             'product': prod_name,
             'store_exists': bool(valid_store),
-            'ready_on_disk': bool(ready_for_basin),
+            'ready_on_disk': ready_for_basin,
+            'stale_on_disk': stale_on_disk,
+            'last_date': last_date,
             'basins_count': basins_count,
             'zarr_path': str(store_path) if valid_store else None,
         }
@@ -3960,7 +4029,7 @@ def _assemble_inference_tensors(
     for p_name, s_path in stores.items():
         if not _is_valid_zarr_store(s_path):
             continue
-        ds_obj = xr.open_zarr(s_path, consolidated=False)
+        ds_obj = _open_cached_zarr_window(s_path, hindcast_dates, t0)
         open_datasets[p_name.lower()] = ds_obj
         open_datasets[p_name.upper()] = ds_obj
 
@@ -5008,16 +5077,331 @@ _DEFAULT_VARIATIONAL_WINDOW_DAYS = 14
 _MAX_VARIATIONAL_WINDOW_DAYS = 180
 _DEFAULT_VARIATIONAL_REG_WEIGHT = 0.5
 _DEFAULT_VARIATIONAL_LR = 0.01
-_DEFAULT_VARIATIONAL_EPOCHS = 30
+_DEFAULT_VARIATIONAL_EPOCHS = 5
 _MAX_VARIATIONAL_EPOCHS = 200
 _DEFAULT_VARIATIONAL_LOSS = 'MSE'
 _DEFAULT_VARIATIONAL_CLIP_NORM = 1.0
-_DEFAULT_VARIATIONAL_TOLERANCE = 0.05
+_DEFAULT_VARIATIONAL_TOLERANCE: float | None = None
 _ALL_ASSIMILATION_COMPONENTS = (
     'static_embedding',
     'hindcast_embedding',
     'forecast_embedding',
 )
+
+
+def _init_user_da_progress(  # noqa: PLR0913
+    user_key: str,
+    catchment_id: str,
+    model_id: str,
+    issue_date_str: str,
+    *,
+    base_step: int,
+    total_steps: int,
+    prior_rmse: float | None,
+    message: str | None = None,
+) -> dict[str, Any]:
+    """Initialize live per-iteration variational DA progress for user."""
+    now = time.time()
+    target_step = base_step + total_steps
+    if message is None:
+        message = (
+            f'Starting Variational DA backprop '
+            f'(Step {base_step} → {target_step})...'
+            if total_steps > 0
+            else 'Evaluating Step 0 (Prior)...'
+        )
+    state: dict[str, Any] = {
+        'active': True,
+        'status': 'running',
+        'username': user_key,
+        'catchment_id': catchment_id,
+        'model_id': model_id,
+        'issue_date': issue_date_str,
+        'started_at': now,
+        'updated_at': now,
+        'elapsed_seconds': 0.0,
+        'base_step': base_step,
+        'current_step': base_step,
+        'target_step': target_step,
+        'steps_completed': 0,
+        'total_steps': total_steps,
+        'overall_percent': 0.0,
+        'total_loss': None,
+        'obs_loss': None,
+        'reg_loss': None,
+        'window_rmse_cms': prior_rmse,
+        'prior_window_rmse_cms': prior_rmse,
+        'message': message,
+        'error': None,
+    }
+    with _DA_PROGRESS_LOCK:
+        _DA_PROGRESS_BY_USER[user_key] = state
+    return state
+
+
+def _update_user_da_progress(  # noqa: C901, PLR0912, PLR0913
+    user_key: str,
+    *,
+    event: str,
+    current_step: int | None = None,
+    steps_completed: int | None = None,
+    total_loss: float | None = None,
+    obs_loss: float | None = None,
+    reg_loss: float | None = None,
+    window_rmse_cms: float | None = None,
+    error: str | None = None,
+    stop_reason: str | None = None,
+) -> None:
+    """Update live variational DA progress state in a thread-safe way."""
+    now = time.time()
+    with _DA_PROGRESS_LOCK:
+        state = _DA_PROGRESS_BY_USER.get(user_key)
+        if state is None:
+            return
+        state['updated_at'] = now
+        state['elapsed_seconds'] = round(
+            max(0.0, now - float(state.get('started_at') or now)), 2
+        )
+        tot = max(1, int(state.get('total_steps') or 1))
+        if current_step is not None:
+            state['current_step'] = int(current_step)
+        if steps_completed is not None:
+            state['steps_completed'] = int(steps_completed)
+        if total_loss is not None:
+            state['total_loss'] = round(float(total_loss), 6)
+        if obs_loss is not None:
+            state['obs_loss'] = round(float(obs_loss), 6)
+        if reg_loss is not None:
+            state['reg_loss'] = round(float(reg_loss), 6)
+        if window_rmse_cms is not None:
+            state['window_rmse_cms'] = round(float(window_rmse_cms), 3)
+        if stop_reason is not None:
+            state['stop_reason'] = stop_reason
+
+        done = int(state.get('steps_completed') or 0)
+        cur_s = int(state.get('current_step') or 0)
+        tgt_s = int(state.get('target_step') or tot)
+        if event == 'step':
+            state['overall_percent'] = round(
+                min(99.5, 100.0 * done / tot),
+                1,
+            )
+            loss_txt = (
+                f' · Loss {state["total_loss"]:.4f}'
+                if state.get('total_loss') is not None
+                else ''
+            )
+            rmse_txt = (
+                f' · RMSE {state["window_rmse_cms"]:.1f} m³/s'
+                if state.get('window_rmse_cms') is not None
+                else ''
+            )
+            state['message'] = (
+                f'Step {cur_s}/{tgt_s} ({done}/{tot}){loss_txt}{rmse_txt}'
+            )
+        elif event == 'complete':
+            state['active'] = False
+            state['status'] = 'completed'
+            state['overall_percent'] = 100.0
+            rmse_txt = (
+                f' · RMSE {state["window_rmse_cms"]:.1f} m³/s'
+                if state.get('window_rmse_cms') is not None
+                else ''
+            )
+            stop_txt = (
+                f' · stopped early: {stop_reason.replace("_", " ")}'
+                if stop_reason
+                else ''
+            )
+            state['message'] = (
+                f'Completed Step {cur_s}{rmse_txt} '
+                f'({state["elapsed_seconds"]:.2f}s){stop_txt}'
+            )
+        elif event == 'cancelled':
+            state['active'] = False
+            state['status'] = 'cancelled'
+            state['message'] = f'Stopped at Step {cur_s} by user.'
+        elif event == 'skipped':
+            state['active'] = False
+            state['status'] = 'skipped'
+            state['message'] = (
+                'No gauge observation overlaps the model hindcast; '
+                'prior returned unchanged.'
+            )
+        elif event == 'error':
+            state['active'] = False
+            state['status'] = 'error'
+            state['error'] = error or 'Variational DA failed'
+            state['message'] = f'Variational DA failed: {state["error"]}'
+
+
+def _fail_active_da_progress(username: str | None, *, error: str) -> None:
+    """Mark the user's variational DA progress as failed if a run is active."""
+    user_key = _normalize_user_key(username)
+    with _DA_PROGRESS_LOCK:
+        state = _DA_PROGRESS_BY_USER.get(user_key)
+        is_active = bool(state is not None and state.get('active'))
+    if is_active:
+        _update_user_da_progress(user_key, event='error', error=error)
+
+
+def get_variational_assimilation_progress(
+    username: str | None,
+    catchment_id: str | None = None,
+) -> dict[str, Any]:
+    """Return live per-iteration variational DA progress for ``username``."""
+    user_key = _normalize_user_key(username)
+    with _DA_PROGRESS_LOCK:
+        raw_state = _DA_PROGRESS_BY_USER.get(user_key)
+        snapshot = copy.deepcopy(raw_state) if raw_state is not None else None
+    if snapshot is None:
+        return {
+            'status': 'idle',
+            'active': False,
+            'username': user_key,
+            'catchment_id': catchment_id,
+            'model_id': _DEFAULT_MODEL_ID,
+            'issue_date': None,
+            'started_at': None,
+            'updated_at': None,
+            'elapsed_seconds': 0.0,
+            'base_step': 0,
+            'current_step': 0,
+            'target_step': 0,
+            'steps_completed': 0,
+            'total_steps': 0,
+            'overall_percent': 0.0,
+            'total_loss': None,
+            'obs_loss': None,
+            'reg_loss': None,
+            'window_rmse_cms': None,
+            'prior_window_rmse_cms': None,
+            'message': None,
+            'error': None,
+            'stop_reason': None,
+        }
+    if snapshot.get('active') and snapshot.get('started_at'):
+        snapshot['elapsed_seconds'] = round(
+            max(0.0, time.time() - float(snapshot['started_at'])),
+            2,
+        )
+    return snapshot
+
+
+def cancel_variational_assimilation(
+    username: str | None = None,
+) -> dict[str, Any]:
+    """Cooperatively stop an active variational DA optimization loop."""
+    user_key = _normalize_user_key(username)
+    was_active = False
+    with _DA_PROGRESS_LOCK:
+        ev = _DA_CANCEL_EVENTS.get(user_key)
+        if ev is not None:
+            ev.set()
+        state = _DA_PROGRESS_BY_USER.get(user_key)
+        if state is not None and state.get('active'):
+            was_active = True
+            state['active'] = False
+            state['status'] = 'cancelled'
+            state['updated_at'] = time.time()
+            state['message'] = (
+                f'Stopped at Step {state.get("current_step", 0)} by user.'
+            )
+    return {
+        'status': 'cancelled',
+        'username': user_key,
+        'was_active': was_active,
+        'progress': get_variational_assimilation_progress(user_key),
+    }
+
+
+def _build_full_observed_overrides(
+    cur_full_embeddings: dict[str, torch.Tensor],
+    active_window_tensors: dict[str, torch.Tensor],
+    win_start_idx: int,
+    win_end_idx: int,
+    seq_len: int,
+) -> dict[str, torch.Tensor]:
+    """Assemble full ``[0, seq_len)`` embedding overrides for ``forward()``."""
+    overrides: dict[str, torch.Tensor] = {}
+    for c_name in _ALL_ASSIMILATION_COMPONENTS:
+        if c_name == 'static_embedding':
+            overrides[c_name] = active_window_tensors.get(
+                c_name, cur_full_embeddings[c_name]
+            )
+        elif c_name in active_window_tensors:
+            base_full = cur_full_embeddings[c_name]
+            overrides[c_name] = torch.cat(
+                [
+                    base_full[:, :win_start_idx],
+                    active_window_tensors[c_name],
+                    base_full[:, win_end_idx:seq_len],
+                ],
+                dim=1,
+            )
+        else:
+            overrides[c_name] = cur_full_embeddings[c_name][:, :seq_len]
+    return overrides
+
+
+def _compute_component_shifts(
+    prior_embeddings: dict[str, torch.Tensor],
+    current_embeddings: dict[str, torch.Tensor],
+    win_start_idx: int,
+    win_end_idx: int,
+) -> dict[str, float]:
+    """Compute relative L2 embedding shifts vs Step 0 prior in ``window``."""
+    shifts: dict[str, float] = {}
+    for c_name in _ALL_ASSIMILATION_COMPONENTS:
+        if c_name in prior_embeddings and c_name in current_embeddings:
+            p_t = prior_embeddings[c_name].detach().float()
+            a_t = current_embeddings[c_name].detach().float()
+            if p_t.ndim >= _NDIM_3D:
+                p_t = p_t[:, win_start_idx:win_end_idx]
+                a_t = a_t[:, win_start_idx:win_end_idx]
+            v_mask = torch.isfinite(p_t) & torch.isfinite(a_t)
+            if bool(v_mask.any()):
+                diff_norm = float(
+                    torch.linalg.vector_norm((a_t - p_t)[v_mask]).item()
+                )
+                base_norm = float(torch.linalg.vector_norm(p_t[v_mask]).item())
+                shifts[c_name] = round(diff_norm / max(base_norm, 1e-6), 4)
+            else:
+                shifts[c_name] = 0.0
+    return shifts
+
+
+def _build_assimilated_series_points(  # noqa: PLR0913, PLR0917
+    step_q_cms: np.ndarray,
+    prior_q_cms: np.ndarray,
+    hindcast_dates: pd.DatetimeIndex,
+    forecast_dates: pd.DatetimeIndex,
+    win_start_idx: int,
+    win_end_idx: int,
+    seq_len: int,
+    lead_time: int,
+) -> list[dict[str, Any]]:
+    """Build continuous assimilated series over visible hindcast + forecast."""
+    all_dates_ts = list(hindcast_dates) + list(forecast_dates)
+    tail_start_idx = max(0, min(win_start_idx, seq_len - _HINDCAST_TAIL_DAYS))
+    series: list[dict[str, Any]] = []
+    for idx in range(tail_start_idx, seq_len + lead_time):
+        d_str = _format_date_str(all_dates_ts[idx])
+        a_q = _clean_float(step_q_cms[idx])
+        b_q = _clean_float(prior_q_cms[idx])
+        if a_q is None or b_q is None:
+            continue
+        series.append(
+            {
+                'date': d_str,
+                'discharge_cms': round(a_q, 3),
+                'baseline_cms': round(b_q, 3),
+                'delta_cms': round(a_q - b_q, 3),
+                'in_window': bool(win_start_idx <= idx < win_end_idx),
+                'is_forecast': bool(idx >= seq_len),
+            }
+        )
+    return series
 
 
 def _normalize_assimilation_components(  # noqa: C901, PLR0912
@@ -5088,6 +5472,154 @@ def _normalize_assimilation_components(  # noqa: C901, PLR0912
     return list(_ALL_ASSIMILATION_COMPONENTS)
 
 
+def _eval_da_loss_tensors(  # noqa: PLR0913, PLR0917
+    model: Any,  # noqa: ANN401
+    output: dict[str, torch.Tensor],
+    active_window_tensors: dict[str, torch.Tensor],
+    prior_window_refs: dict[str, torch.Tensor],
+    weights_map: dict[str, float],
+    loss_obj: Any,  # noqa: ANN401
+    loss_data: dict[str, torch.Tensor],
+    win_start_idx: int,
+    win_end_idx: int,
+    *,
+    fits_head_outputs: bool,
+) -> tuple[torch.Tensor, float, float, float]:
+    """Evaluate Variational DA objective (obs + prior reg) on window slice."""
+    point = model.point_prediction(output)[:, win_start_idx:win_end_idx]
+    if not fits_head_outputs:
+        prediction: dict[str, torch.Tensor] = {'y_hat': point}
+    else:
+        prediction = {
+            k: v[:, win_start_idx:win_end_idx]
+            for k, v in output.items()
+            if isinstance(v, torch.Tensor)
+            and v.ndim >= _NDIM_3D
+            and v.shape[1] >= win_end_idx
+        }
+    n_win = max(1, win_end_idx - win_start_idx)
+    total_loss_t, all_losses_t = loss_obj(
+        prediction,
+        loss_data,
+        predict_last_n=n_win,
+        other_model_data={
+            'optimized_components': active_window_tensors,
+            'baseline_components': prior_window_refs,
+            'component_weights': weights_map,
+        },
+    )
+    obs_loss_t = all_losses_t.get('loss', total_loss_t)
+    reg_loss_t = total_loss_t - obs_loss_t
+    return (
+        total_loss_t,
+        float(total_loss_t.detach().item()),
+        float(obs_loss_t.detach().item()),
+        float(reg_loss_t.detach().item()),
+    )
+
+
+def _build_da_step_entry(  # noqa: PLR0913
+    step_num: int,
+    pred_dict: dict[str, torch.Tensor],
+    cur_full_embeddings: dict[str, torch.Tensor],
+    prior_full_embeddings: dict[str, torch.Tensor],
+    *,
+    total_loss_val: float,
+    obs_loss_val: float,
+    reg_loss_val: float,
+    prior_q_cms: np.ndarray,
+    y_cms_arr: np.ndarray,
+    bundle: dict[str, Any],
+    area_km2: float,
+    hindcast_dates: pd.DatetimeIndex,
+    forecast_dates: pd.DatetimeIndex,
+    win_start_idx: int,
+    win_end_idx: int,
+    seq_len: int,
+    lead_time: int,
+    lr_val: float,
+    reg_val: float,
+    win_val: int,
+    loss_name: str,
+    comp_names: list[str],
+) -> tuple[dict[str, Any], np.ndarray]:
+    """Build per-iteration history entry with hydrograph, RMSE, and shifts."""
+    with torch.no_grad():
+        step_mm, step_q_cms, step_quantiles = _unscale_predictions(
+            pred_dict=pred_dict,
+            bundle=bundle,
+            area_km2=area_km2,
+            lead_time=lead_time,
+        )
+    step_fc, step_hc, step_peak_q, step_peak_date = (
+        _format_forecast_and_hindcast_series(
+            mm_per_day=step_mm,
+            q_cms=step_q_cms,
+            prob_quantiles_cms=step_quantiles,
+            hindcast_dates=hindcast_dates,
+            forecast_dates=forecast_dates,
+        )
+    )
+    win_obs = y_cms_arr[win_start_idx:win_end_idx]
+    win_step = step_q_cms[win_start_idx:win_end_idx]
+    valid_win = np.isfinite(win_obs) & np.isfinite(win_step)
+    if bool(np.any(valid_win)):
+        diff = win_step[valid_win] - win_obs[valid_win]
+        step_rmse: float | None = round(
+            float(np.sqrt(np.mean(diff**2))),
+            3,
+        )
+    else:
+        step_rmse = None
+
+    step_shifts = _compute_component_shifts(
+        prior_full_embeddings,
+        cur_full_embeddings,
+        win_start_idx,
+        win_end_idx,
+    )
+    step_assim_series = _build_assimilated_series_points(
+        step_q_cms=step_q_cms,
+        prior_q_cms=prior_q_cms,
+        hindcast_dates=hindcast_dates,
+        forecast_dates=forecast_dates,
+        win_start_idx=win_start_idx,
+        win_end_idx=win_end_idx,
+        seq_len=seq_len,
+        lead_time=lead_time,
+    )
+    entry = {
+        'step': int(step_num),
+        'total_loss': (
+            round(float(total_loss_val), 6)
+            if np.isfinite(total_loss_val)
+            else None
+        ),
+        'obs_loss': (
+            round(float(obs_loss_val), 6) if np.isfinite(obs_loss_val) else None
+        ),
+        'reg_loss': (
+            round(float(reg_loss_val), 6) if np.isfinite(reg_loss_val) else None
+        ),
+        'window_rmse_cms': step_rmse,
+        'component_shifts': step_shifts,
+        'peak_discharge_cms': (
+            round(step_peak_q, 3) if step_peak_q is not None else None
+        ),
+        'peak_date': step_peak_date,
+        'learning_rate': round(float(lr_val), 5),
+        'regularization_weight': round(float(reg_val), 4),
+        'window_days': int(win_val),
+        'loss': str(loss_name),
+        'assimilation_components': list(comp_names),
+        'hindcast_tail': step_hc,
+        'forecast': step_fc,
+        'assimilated_series': step_assim_series,
+        'nudged_series': step_assim_series,
+    }
+    return entry, step_q_cms
+
+
 def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR0915
     username: str | None,
     catchment_id: str,
@@ -5101,6 +5633,9 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
     assimilation_components: Any = None,  # noqa: ANN401
     clip_gradient_norm: float | None = _DEFAULT_VARIATIONAL_CLIP_NORM,
     early_stopping_tolerance: float | None = _DEFAULT_VARIATIONAL_TOLERANCE,
+    continue_session: bool = False,
+    reset: bool = False,
+    from_step: int | None = None,
     observed_series: Sequence[dict[str, Any]] | None = None,
     model_id: str = _DEFAULT_MODEL_ID,
     model_run_dir: Path | None = None,
@@ -5108,17 +5643,26 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
     temp_overrides: dict[str, float] | None = None,
     product_overrides: dict[str, dict[str, dict[str, float]]] | None = None,
 ) -> dict[str, Any]:
-    """Run variational latent-embedding DA via ``Assimilation``.
+    """Run iterative variational latent-embedding DA with step-by-step history.
 
     Optimizes the selected latent embeddings of ``MeanEmbeddingForecastLSTM``
     (``static_embedding``, ``hindcast_embedding``, ``forecast_embedding``)
-    over an observation window preceding ``issue_date`` using Karan Ruparell's
-    ``Assimilation`` and ``AssimilationConfig`` engine while keeping all neural
-    network weights frozen.
+    over an observation window preceding ``issue_date`` while keeping all
+    neural network weights frozen. Supports continuing from the current or any
+    previously inspected step with updated learning parameters, live progress
+    polling, and per-iteration visual inspection (`epoch_history`).
+
+    Raises:
+        ValueError: If ``continue_session`` is requested without a server-side
+            session for this basin and issue date, or ``from_step`` is not a
+            step of that session.
+        RuntimeError: If the loss, gradient, or update is not finite at the
+            first requested step, so that no latent update can be applied.
     """
     cid_str = str(catchment_id or '').strip()
     if not cid_str:
         raise ValueError('catchment_id is required for data assimilation.')
+    user_key = _normalize_user_key(username)
 
     t0 = resolve_issue_date(
         username=username,
@@ -5127,6 +5671,34 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
         probe_ecmwf=False,
     )
     issue_date_str = _format_date_str(t0)
+    session_key = (
+        user_key,
+        cid_str,
+        str(model_id or _DEFAULT_MODEL_ID),
+        issue_date_str,
+    )
+    if reset:
+        with _DA_SESSION_LOCK:
+            _DA_SESSIONS_BY_KEY.pop(session_key, None)
+    epochs_clamped = int(np.clip(int(epochs), 0, _MAX_VARIATIONAL_EPOCHS))
+
+    # Register the cancel event and a live "preparing" progress state before
+    # the (slow) model/input loading, so that a Stop request issued during
+    # setup is honoured and the progress poller never shows the previous
+    # run's final state as if it belonged to this run.
+    cancel_ev = threading.Event()
+    with _DA_PROGRESS_LOCK:
+        _DA_CANCEL_EVENTS[user_key] = cancel_ev
+    _init_user_da_progress(
+        user_key=user_key,
+        catchment_id=cid_str,
+        model_id=model_id,
+        issue_date_str=issue_date_str,
+        base_step=0,
+        total_steps=epochs_clamped,
+        prior_rmse=None,
+        message='Preparing model inputs for Variational DA...',
+    )
 
     bundle = {
         **_load_forecast_model_bundle(
@@ -5152,7 +5724,6 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
     )
     reg_clamped = float(np.clip(float(regularization_weight), 0.0, 100.0))
     lr_clamped = float(np.clip(float(initial_learning_rate), 1e-5, 1.0))
-    epochs_clamped = int(np.clip(int(epochs), 0, _MAX_VARIATIONAL_EPOCHS))
     comp_spec = _normalize_assimilation_components(assimilation_components)
     comp_names = (
         list(comp_spec.keys())
@@ -5221,6 +5792,7 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
 
     finite_hc_idx = np.where(np.isfinite(y_cms_arr[:seq_len]))[0]
     if len(finite_hc_idx) == 0:
+        _update_user_da_progress(user_key, event='skipped')
         return {
             'status': 'success',
             'method': 'variational',
@@ -5237,12 +5809,21 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
             'regularization_weight': round(reg_clamped, 4),
             'initial_learning_rate': round(lr_clamped, 5),
             'epochs': epochs_clamped,
+            'base_step': 0,
+            'current_step': 0,
+            'steps_ran': 0,
+            'cancelled': False,
+            'stop_reason': None,
             'loss': str(loss or _DEFAULT_VARIATIONAL_LOSS).upper(),
             'assimilation_components': comp_names,
             'component_shifts': dict.fromkeys(comp_names, 0.0),
             'n_valid_obs': 0,
             'prior_window_rmse_cms': None,
             'assimilated_window_rmse_cms': None,
+            'total_loss': None,
+            'obs_loss': None,
+            'reg_loss': None,
+            'epoch_history': [],
             'hindcast_tail': prior_hc_series,
             'forecast': prior_fc_series,
             'baseline_hindcast_tail': prior_hc_series,
@@ -5282,7 +5863,7 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
     y_mm_arr = y_cms_arr / cms_factor
     y_scaled_arr = ((y_mm_arr - y_center) / y_scale).astype(np.float32)
 
-    batch_for_da = {
+    batch_for_da: dict[str, torch.Tensor] = {
         'x_d_hindcast': model_input['x_d_hindcast'],
         'x_d_forecast': model_input['x_d_forecast'],
         'x_s': model_input['x_s'],
@@ -5313,7 +5894,7 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
         'assimilation_window': int(effective_window),
         'regularization_weight': float(reg_clamped),
         'initial_learning_rate': float(lr_clamped),
-        'epochs': int(epochs_clamped),
+        'epochs': max(1, int(epochs_clamped)),
         'optimizer': 'Adam',
         'loss': req_loss,
     }
@@ -5326,99 +5907,431 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
         da_block['early_stopping_tolerance'] = float(early_stopping_tolerance)
 
     parent_dict = dict(cfg.as_dict())
-    # AssimilationConfig._validate_window checks window <= seq_length - lead,
-    # whereas MeanEmbeddingForecastLSTM tensors have length seq_len + lead_time.
     parent_dict['seq_length'] = int(seq_len + lead_time)
     parent_dict['lead_time'] = int(lead_time)
-
-    t_start = time.perf_counter()
     assim_cfg = AssimilationConfig(da_block, parent_cfg=parent_dict)
-    engine = Assimilation(assim_cfg)
-    assimilated_dict = engine.assimilate(model, batch_for_da)
-    elapsed_sec = time.perf_counter() - t_start
 
-    with torch.no_grad():
-        assim_mm, assim_q_cms, assim_quantiles = _unscale_predictions(
-            pred_dict=assimilated_dict,
+    loss_obj = get_loss_obj(assim_cfg, per_sequence=True)
+    loss_obj.set_regularization_terms(get_regularization_obj(assim_cfg))
+    fits_head_outputs = req_loss == 'CMAL'
+    loss_data: dict[str, torch.Tensor] = {
+        'y': batch_for_da['y'][:, win_start_idx:win_end_idx],
+    }
+    if 'per_basin_target_stds' in batch_for_da:
+        loss_data['per_basin_target_stds'] = batch_for_da[
+            'per_basin_target_stds'
+        ]
+    weights_map = {
+        name: float(spec['regularization_weight'])
+        for name, spec in assim_cfg.assimilation_components.items()
+    }
+
+    prior_full_embeddings: dict[str, torch.Tensor] = {
+        c_name: (
+            prior_dict[c_name].detach().float().clone()
+            if c_name == 'static_embedding'
+            else prior_dict[c_name][:, :seq_len].detach().float().clone()
+        )
+        for c_name in _ALL_ASSIMILATION_COMPONENTS
+    }
+    prior_window_refs: dict[str, torch.Tensor] = {
+        c_name: (
+            prior_full_embeddings[c_name]
+            if c_name == 'static_embedding'
+            else prior_full_embeddings[c_name][:, win_start_idx:win_end_idx]
+        )
+        for c_name in comp_names
+    }
+
+    # Check if we are continuing an existing session for this (user, basin, t0)
+    session_state: dict[str, Any] | None = None
+    if continue_session and not reset:
+        with _DA_SESSION_LOCK:
+            session_state = _DA_SESSIONS_BY_KEY.get(session_key)
+        if session_state is None:
+            raise ValueError(
+                'No Variational DA session exists on the server for '
+                f'{cid_str} at issue date {issue_date_str} (sessions are '
+                'cleared when forcing or gauge data change or the server '
+                'restarts). Click Start to begin a new session.'
+            )
+
+    if session_state is not None:
+        step_embs_map: dict[int, dict[str, torch.Tensor]] = session_state[
+            'step_embeddings'
+        ]
+        history_list: list[dict[str, Any]] = list(session_state['history'])
+        target_from = (
+            int(from_step)
+            if from_step is not None
+            else int(session_state['current_step'])
+        )
+        if target_from not in step_embs_map:
+            raise ValueError(
+                f'Step {target_from} is not available in the current '
+                'Variational DA session (available steps: 0..'
+                f'{max(step_embs_map)}).'
+            )
+        base_step = target_from
+        cur_full_embeddings = {
+            k: v.detach().float().clone()
+            for k, v in step_embs_map[target_from].items()
+        }
+        history_list = [
+            h for h in history_list if int(h.get('step', 0)) <= base_step
+        ]
+        step_embs_map = {
+            s: embs for s, embs in step_embs_map.items() if s <= base_step
+        }
+    else:
+        base_step = 0
+        cur_full_embeddings = {
+            k: v.detach().float().clone()
+            for k, v in prior_full_embeddings.items()
+        }
+        with torch.no_grad():
+            _, prior_tot_l, prior_obs_l, prior_reg_l = _eval_da_loss_tensors(
+                model=model,
+                output=prior_dict,
+                active_window_tensors=prior_window_refs,
+                prior_window_refs=prior_window_refs,
+                weights_map=weights_map,
+                loss_obj=loss_obj,
+                loss_data=loss_data,
+                win_start_idx=win_start_idx,
+                win_end_idx=win_end_idx,
+                fits_head_outputs=fits_head_outputs,
+            )
+        step0_entry, _ = _build_da_step_entry(
+            0,
+            prior_dict,
+            prior_full_embeddings,
+            prior_full_embeddings,
+            total_loss_val=prior_tot_l,
+            obs_loss_val=prior_obs_l,
+            reg_loss_val=prior_reg_l,
+            prior_q_cms=prior_q_cms,
+            y_cms_arr=y_cms_arr,
             bundle=bundle,
             area_km2=area_km2,
-            lead_time=lead_time,
-        )
-
-    assim_fc_series, assim_hc_series, peak_q, peak_date = (
-        _format_forecast_and_hindcast_series(
-            mm_per_day=assim_mm,
-            q_cms=assim_q_cms,
-            prob_quantiles_cms=assim_quantiles,
             hindcast_dates=hindcast_dates,
             forecast_dates=forecast_dates,
+            win_start_idx=win_start_idx,
+            win_end_idx=win_end_idx,
+            seq_len=seq_len,
+            lead_time=lead_time,
+            lr_val=lr_clamped,
+            reg_val=reg_clamped,
+            win_val=win_clamped,
+            loss_name=req_loss,
+            comp_names=comp_names,
         )
-    )
+        history_list = [step0_entry]
+        step_embs_map = {
+            0: {
+                k: v.detach().float().clone()
+                for k, v in prior_full_embeddings.items()
+            }
+        }
 
-    # Relative L2 embedding shift diagnostics inside the assimilation window
-    component_shifts: dict[str, float] = {}
-    for c_name in _ALL_ASSIMILATION_COMPONENTS:
-        if c_name in prior_dict and c_name in assimilated_dict:
-            p_t = prior_dict[c_name].detach().float()
-            a_t = assimilated_dict[c_name].detach().float()
-            if p_t.ndim >= _NDIM_3D:
-                p_t = p_t[:, win_start_idx:win_end_idx]
-                a_t = a_t[:, win_start_idx:win_end_idx]
-            v_mask = torch.isfinite(p_t) & torch.isfinite(a_t)
-            if bool(v_mask.any()):
-                diff_norm = float(
-                    torch.linalg.vector_norm((a_t - p_t)[v_mask]).item()
-                )
-                base_norm = float(torch.linalg.vector_norm(p_t[v_mask]).item())
-                component_shifts[c_name] = round(
-                    diff_norm / max(base_norm, 1e-6), 4
-                )
-            else:
-                component_shifts[c_name] = 0.0
-
-    # Window RMSE diagnostics in m^3/s
+    # Window prior RMSE diagnostic
     win_obs = y_cms_arr[win_start_idx:win_end_idx]
     win_prior = prior_q_cms[win_start_idx:win_end_idx]
-    win_assim = assim_q_cms[win_start_idx:win_end_idx]
-    valid_win = (
-        np.isfinite(win_obs) & np.isfinite(win_prior) & np.isfinite(win_assim)
+    valid_prior_win = np.isfinite(win_obs) & np.isfinite(win_prior)
+    n_valid_obs = int(np.sum(valid_prior_win))
+    prior_rmse: float | None = (
+        round(
+            float(
+                np.sqrt(
+                    np.mean(
+                        (win_prior[valid_prior_win] - win_obs[valid_prior_win])
+                        ** 2
+                    )
+                )
+            ),
+            3,
+        )
+        if n_valid_obs > 0
+        else None
     )
-    n_valid_obs = int(np.sum(valid_win))
-    if n_valid_obs > 0:
-        prior_diff = win_prior[valid_win] - win_obs[valid_win]
-        assim_diff = win_assim[valid_win] - win_obs[valid_win]
-        prior_rmse: float | None = round(
-            float(np.sqrt(np.mean(prior_diff**2))),
-            3,
-        )
-        assim_rmse: float | None = round(
-            float(np.sqrt(np.mean(assim_diff**2))),
-            3,
-        )
-    else:
-        prior_rmse = None
-        assim_rmse = None
 
-    # Continuous assimilated series over visible hindcast tail + forecast window
-    all_dates_ts = list(hindcast_dates) + list(forecast_dates)
-    tail_start_idx = max(0, min(win_start_idx, seq_len - _HINDCAST_TAIL_DAYS))
-    assimilated_series: list[dict[str, Any]] = []
-    for idx in range(tail_start_idx, seq_len + lead_time):
-        d_str = _format_date_str(all_dates_ts[idx])
-        a_q = _clean_float(assim_q_cms[idx])
-        b_q = _clean_float(prior_q_cms[idx])
-        if a_q is None or b_q is None:
-            continue
-        assimilated_series.append(
-            {
-                'date': d_str,
-                'discharge_cms': round(a_q, 3),
-                'baseline_cms': round(b_q, 3),
-                'delta_cms': round(a_q - b_q, 3),
-                'in_window': bool(win_start_idx <= idx < win_end_idx),
-                'is_forecast': bool(idx >= seq_len),
-            }
+    _init_user_da_progress(
+        user_key=user_key,
+        catchment_id=cid_str,
+        model_id=model_id,
+        issue_date_str=issue_date_str,
+        base_step=base_step,
+        total_steps=epochs_clamped,
+        prior_rmse=prior_rmse,
+    )
+
+    t_start = time.perf_counter()
+    cancelled = False
+    stop_reason: str | None = None
+    steps_ran = 0
+    cur_step = base_step
+    tolerance = assim_cfg.early_stopping_tolerance
+
+    if epochs_clamped > 0:
+        active_window_tensors: dict[str, torch.Tensor] = {
+            c_name: (
+                cur_full_embeddings[c_name]
+                .detach()
+                .float()
+                .clone()
+                .requires_grad_(requires_grad=True)
+                if c_name == 'static_embedding'
+                else cur_full_embeddings[c_name][:, win_start_idx:win_end_idx]
+                .detach()
+                .float()
+                .clone()
+                .requires_grad_(requires_grad=True)
+            )
+            for c_name in comp_names
+        }
+        param_groups: list[dict[str, Any]] = []
+        for c_name, tensor in active_window_tensors.items():
+            group: dict[str, Any] = {'params': [tensor]}
+            c_lr = assim_cfg.assimilation_components[c_name][
+                'initial_learning_rate'
+            ]
+            if c_lr is not None:
+                group['lr'] = float(c_lr)
+            param_groups.append(group)
+        optimizer = get_optimizer(param_groups, assim_cfg)
+
+        # Determine whether any component has prior edits outside current window
+        has_prev_edits = base_step > 0
+        device_type = batch_for_da['y'].device.type
+        if not torch.amp.is_autocast_available(device_type):
+            device_type = 'cpu'
+
+        try:
+            with (
+                torch.autocast(device_type=device_type, enabled=False),
+                frozen_model(model),
+            ):
+                for step_idx in range(1, epochs_clamped + 1):
+                    if cancel_ev.is_set():
+                        cancelled = True
+                        break
+
+                    last_finite_win = {
+                        k: v.detach().clone()
+                        for k, v in active_window_tensors.items()
+                    }
+                    optimizer.zero_grad()
+
+                    if has_prev_edits:
+                        fwd_overrides = _build_full_observed_overrides(
+                            cur_full_embeddings,
+                            active_window_tensors,
+                            win_start_idx,
+                            win_end_idx,
+                            seq_len,
+                        )
+                        fwd_slice = (0, seq_len)
+                    else:
+                        fwd_overrides = active_window_tensors
+                        fwd_slice = (win_start_idx, win_end_idx)
+
+                    out_step = model(
+                        batch_for_da,
+                        assimilation_overrides=fwd_overrides,
+                        assimilation_slice=fwd_slice,
+                    )
+                    if tolerance is not None:
+                        point_win = model.point_prediction(out_step)[
+                            :, win_start_idx:win_end_idx
+                        ]
+                        converged = converged_sequences(
+                            point_win.detach(),
+                            loss_data['y'],
+                            batch_for_da['y'],
+                            float(tolerance),
+                        )
+                        if bool(converged.all()):
+                            stop_reason = 'converged'
+                            break
+                    loss_t, _, _, _ = _eval_da_loss_tensors(
+                        model=model,
+                        output=out_step,
+                        active_window_tensors=active_window_tensors,
+                        prior_window_refs=prior_window_refs,
+                        weights_map=weights_map,
+                        loss_obj=loss_obj,
+                        loss_data=loss_data,
+                        win_start_idx=win_start_idx,
+                        win_end_idx=win_end_idx,
+                        fits_head_outputs=fits_head_outputs,
+                    )
+                    if not bool(torch.isfinite(loss_t)):
+                        stop_reason = 'non_finite_loss'
+                        break
+                    loss_t.backward()
+                    if any(
+                        t.grad is not None
+                        and not bool(torch.isfinite(t.grad).all())
+                        for t in active_window_tensors.values()
+                    ):
+                        stop_reason = 'non_finite_gradient'
+                        break
+                    if assim_cfg.clip_gradient_norm is not None:
+                        clip_per_sequence_grad_norm(
+                            active_window_tensors.values(),
+                            float(assim_cfg.clip_gradient_norm),
+                        )
+                    optimizer.step()
+                    if any(
+                        not bool(torch.isfinite(t.detach()).all())
+                        for t in active_window_tensors.values()
+                    ):
+                        for k, v in last_finite_win.items():
+                            active_window_tensors[k].data.copy_(v)
+                        stop_reason = 'non_finite_update'
+                        break
+
+                    # Commit updated window into cur_full_embeddings
+                    with torch.no_grad():
+                        cur_full_embeddings = _build_full_observed_overrides(
+                            cur_full_embeddings,
+                            {
+                                k: v.detach().clone()
+                                for k, v in active_window_tensors.items()
+                            },
+                            win_start_idx,
+                            win_end_idx,
+                            seq_len,
+                        )
+                        eval_overrides = (
+                            cur_full_embeddings
+                            if has_prev_edits
+                            else {
+                                k: v.detach().clone()
+                                for k, v in active_window_tensors.items()
+                            }
+                        )
+                        eval_slice = (
+                            (0, seq_len)
+                            if has_prev_edits
+                            else (win_start_idx, win_end_idx)
+                        )
+                        post_dict = model(
+                            batch_for_da,
+                            assimilation_overrides=eval_overrides,
+                            assimilation_slice=eval_slice,
+                        )
+                        _, step_tot_l, step_obs_l, step_reg_l = (
+                            _eval_da_loss_tensors(
+                                model=model,
+                                output=post_dict,
+                                active_window_tensors={
+                                    k: v.detach()
+                                    for k, v in active_window_tensors.items()
+                                },
+                                prior_window_refs=prior_window_refs,
+                                weights_map=weights_map,
+                                loss_obj=loss_obj,
+                                loss_data=loss_data,
+                                win_start_idx=win_start_idx,
+                                win_end_idx=win_end_idx,
+                                fits_head_outputs=fits_head_outputs,
+                            )
+                        )
+
+                    cur_step = base_step + step_idx
+                    steps_ran = step_idx
+                    step_entry, _ = _build_da_step_entry(
+                        cur_step,
+                        post_dict,
+                        cur_full_embeddings,
+                        prior_full_embeddings,
+                        total_loss_val=step_tot_l,
+                        obs_loss_val=step_obs_l,
+                        reg_loss_val=step_reg_l,
+                        prior_q_cms=prior_q_cms,
+                        y_cms_arr=y_cms_arr,
+                        bundle=bundle,
+                        area_km2=area_km2,
+                        hindcast_dates=hindcast_dates,
+                        forecast_dates=forecast_dates,
+                        win_start_idx=win_start_idx,
+                        win_end_idx=win_end_idx,
+                        seq_len=seq_len,
+                        lead_time=lead_time,
+                        lr_val=lr_clamped,
+                        reg_val=reg_clamped,
+                        win_val=win_clamped,
+                        loss_name=req_loss,
+                        comp_names=comp_names,
+                    )
+                    history_list.append(step_entry)
+                    step_embs_map[cur_step] = {
+                        k: v.detach().float().clone()
+                        for k, v in cur_full_embeddings.items()
+                    }
+                    _update_user_da_progress(
+                        user_key,
+                        event='step',
+                        current_step=cur_step,
+                        steps_completed=steps_ran,
+                        total_loss=step_tot_l,
+                        obs_loss=step_obs_l,
+                        reg_loss=step_reg_l,
+                        window_rmse_cms=step_entry['window_rmse_cms'],
+                    )
+        except Exception as exc:
+            _update_user_da_progress(user_key, event='error', error=str(exc))
+            raise
+
+    if stop_reason is not None and stop_reason != 'converged':
+        if steps_ran == 0:
+            msg = (
+                f'Variational DA for {cid_str} produced a '
+                f'{stop_reason.replace("_", " ")} at the first backprop step '
+                f'(Step {base_step + 1}); no latent update could be applied. '
+                'Reduce the learning rate or the assimilation window.'
+            )
+            _update_user_da_progress(user_key, event='error', error=msg)
+            raise RuntimeError(msg)
+        logger.warning(
+            'Variational DA for %s stopped after %d of %d steps at Step %d '
+            'because of a %s; returning the last finite state.',
+            cid_str,
+            steps_ran,
+            epochs_clamped,
+            cur_step,
+            stop_reason.replace('_', ' '),
         )
+
+    elapsed_sec = time.perf_counter() - t_start
+    latest_entry = history_list[-1]
+    _update_user_da_progress(
+        user_key,
+        event='cancelled' if cancelled else 'complete',
+        current_step=cur_step,
+        steps_completed=steps_ran,
+        total_loss=latest_entry.get('total_loss'),
+        obs_loss=latest_entry.get('obs_loss'),
+        reg_loss=latest_entry.get('reg_loss'),
+        window_rmse_cms=latest_entry.get('window_rmse_cms'),
+        stop_reason='cancelled' if cancelled else stop_reason,
+    )
+
+    with _DA_SESSION_LOCK:
+        _DA_SESSIONS_BY_KEY.pop(session_key, None)
+        while len(_DA_SESSIONS_BY_KEY) >= _MAX_DA_SESSIONS:
+            _DA_SESSIONS_BY_KEY.pop(next(iter(_DA_SESSIONS_BY_KEY)))
+        _DA_SESSIONS_BY_KEY[session_key] = {
+            'current_step': cur_step,
+            'current_embeddings': {
+                k: v.detach().float().clone()
+                for k, v in cur_full_embeddings.items()
+            },
+            'step_embeddings': step_embs_map,
+            'history': history_list,
+            'updated_at': time.time(),
+        }
 
     anchor_date = _format_date_str(hindcast_dates[last_obs_idx])
     window_start_date = _format_date_str(hindcast_dates[win_start_idx])
@@ -5440,20 +6353,29 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
         'regularization_weight': round(reg_clamped, 4),
         'initial_learning_rate': round(lr_clamped, 5),
         'epochs': epochs_clamped,
+        'base_step': base_step,
+        'current_step': cur_step,
+        'steps_ran': steps_ran,
+        'cancelled': cancelled,
+        'stop_reason': 'cancelled' if cancelled else stop_reason,
         'loss': req_loss,
         'assimilation_components': comp_names,
-        'component_shifts': component_shifts,
+        'component_shifts': latest_entry['component_shifts'],
         'n_valid_obs': n_valid_obs,
         'prior_window_rmse_cms': prior_rmse,
-        'assimilated_window_rmse_cms': assim_rmse,
-        'hindcast_tail': assim_hc_series,
-        'forecast': assim_fc_series,
+        'assimilated_window_rmse_cms': latest_entry['window_rmse_cms'],
+        'total_loss': latest_entry['total_loss'],
+        'obs_loss': latest_entry['obs_loss'],
+        'reg_loss': latest_entry['reg_loss'],
+        'epoch_history': history_list,
+        'hindcast_tail': latest_entry['hindcast_tail'],
+        'forecast': latest_entry['forecast'],
         'baseline_hindcast_tail': prior_hc_series,
         'baseline_forecast': prior_fc_series,
-        'nudged_series': assimilated_series,
-        'assimilated_series': assimilated_series,
-        'peak_discharge_cms': round(peak_q, 3) if peak_q is not None else None,
-        'peak_date': peak_date,
+        'nudged_series': latest_entry['assimilated_series'],
+        'assimilated_series': latest_entry['assimilated_series'],
+        'peak_discharge_cms': latest_entry['peak_discharge_cms'],
+        'peak_date': latest_entry['peak_date'],
         'baseline_peak_discharge_cms': (
             round(prior_peak_q, 3) if prior_peak_q is not None else None
         ),
@@ -5528,6 +6450,9 @@ def run_data_assimilation_for_basin(  # noqa: PLR0913
     assimilation_components: Any = None,  # noqa: ANN401
     clip_gradient_norm: float | None = _DEFAULT_VARIATIONAL_CLIP_NORM,
     early_stopping_tolerance: float | None = _DEFAULT_VARIATIONAL_TOLERANCE,
+    continue_session: bool = False,
+    reset: bool = False,
+    from_step: int | None = None,
     model_id: str = _DEFAULT_MODEL_ID,
     model_run_dir: Path | None = None,
     precip_overrides: dict[str, Any] | None = None,
@@ -5579,29 +6504,39 @@ def run_data_assimilation_for_basin(  # noqa: PLR0913
         '4dvar',
         '4d_var',
     ):
-        return run_variational_assimilation_for_basin(
-            username=username,
-            catchment_id=cid_str,
-            issue_date=issue_date,
-            window_days=(
-                _DEFAULT_VARIATIONAL_WINDOW_DAYS
-                if window_days is None
-                else window_days
-            ),
-            regularization_weight=regularization_weight,
-            initial_learning_rate=initial_learning_rate,
-            epochs=epochs,
-            loss=loss,
-            assimilation_components=assimilation_components,
-            clip_gradient_norm=clip_gradient_norm,
-            early_stopping_tolerance=early_stopping_tolerance,
-            observed_series=observed_series,
-            model_id=model_id,
-            model_run_dir=model_run_dir,
-            precip_overrides=precip_overrides,
-            temp_overrides=temp_overrides,
-            product_overrides=product_overrides,
-        )
+        try:
+            return run_variational_assimilation_for_basin(
+                username=username,
+                catchment_id=cid_str,
+                issue_date=issue_date,
+                window_days=(
+                    _DEFAULT_VARIATIONAL_WINDOW_DAYS
+                    if window_days is None
+                    else window_days
+                ),
+                regularization_weight=regularization_weight,
+                initial_learning_rate=initial_learning_rate,
+                epochs=epochs,
+                loss=loss,
+                assimilation_components=assimilation_components,
+                clip_gradient_norm=clip_gradient_norm,
+                early_stopping_tolerance=early_stopping_tolerance,
+                continue_session=continue_session,
+                reset=reset,
+                from_step=from_step,
+                observed_series=observed_series,
+                model_id=model_id,
+                model_run_dir=model_run_dir,
+                precip_overrides=precip_overrides,
+                temp_overrides=temp_overrides,
+                product_overrides=product_overrides,
+            )
+        except Exception as exc:
+            # Setup failures (missing stores, invalid session, ...) happen
+            # after the live progress state was registered; close it out so
+            # the progress poller never reports a dead run as active.
+            _fail_active_da_progress(username, error=str(exc))
+            raise
 
     raise ValueError(
         f'Unsupported data assimilation method {method!r}; expected '
