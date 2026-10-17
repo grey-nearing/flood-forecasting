@@ -26,6 +26,7 @@ apidoc:
 	@echo "Generating API documentation..."
 	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR)" "$(PACKAGEDIR)/tests"
 	@$(SPHINXAPIDOC) -f -e -T -o "$(SOURCEDIR)/api" "$(PACKAGEDIR2)" "$(PACKAGEDIR2)/tests" "$(PACKAGEDIR2)/tools"
+	@python3 -c 'from pathlib import Path; p = Path("$(SOURCEDIR)/api/return_periods.rst"); p.write_text(p.read_text().replace(":undoc-members:\n", ":undoc-members:\n   :no-index:\n"))'
 	@printf "Modules\n=======\n\n.. toctree::\n   :maxdepth: 4\n\n   model\n   catchment_delineation\n   static_extractor\n   gridded_archive_builders\n   timeseries_extractors\n   weather_fetcher\n   maas\n   return_periods\n   benchmarks\n" > "$(SOURCEDIR)/api/modules.rst"
 
 # Target to clean API docs

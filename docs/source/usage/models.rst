@@ -1,61 +1,67 @@
 Modelzoo
 ========
 
-This section provides an overview of the forecasting models available in the library.
+This section describes the deep learning flood forecasting models and output heads included in OpenHydroNet.
 
 Model Heads
 -----------
-The head of the model is used on top of the model class and relates the outputs of the model to the predicted variable.
+
+A **model head** sits on top of the recurrent neural network (LSTM) and maps the hidden state to the predicted streamflow (in ``mm/day``, the unit of Caravan streamflow).
 
 Regression
 ^^^^^^^^^^
-:py:class:`model.modelzoo.head.Regression` provides a single layer *regression* head, that includes different activation options for the output.
+
+:py:class:`model.modelzoo.head.Regression` is a single linear layer that predicts one deterministic value (point estimate) for each target variable and time step. It supports ``linear``, ``relu``, and ``softplus`` output activations.
 
 CMAL
 ^^^^
-:py:class:`model.modelzoo.head.CMAL` implements a *Countable Mixture of Asymmetric Laplacians* head. That is, a mixture density network with asymmetric Laplace distributions as components.
+
+:py:class:`model.modelzoo.head.CMAL` implements a **Countable Mixture of Asymmetric Laplacians (CMAL)** head. Instead of predicting a single number, CMAL predicts the parameters of a probability distribution (location, scale, and asymmetry for ``n_distributions`` mixture components). Sampling from this distribution produces an ensemble of streamflow trajectories that captures forecast uncertainty and skewed flood peaks.
 
 Model Classes
 -------------
 
 BaseModel
 ^^^^^^^^^
-Abstract base class from which all models derive. Do not use this class for model training.
+
+:py:class:`model.modelzoo.basemodel.BaseModel` is the abstract base class that all forecasting models inherit from. Do not select ``BaseModel`` directly in a configuration file.
 
 .. _handoff-forecast-lstm:
 
 Handoff-Forecast-LSTM
 ^^^^^^^^^^^^^^^^^^^^^
-:py:class:`model.modelzoo.handoff_forecast_lstm.HandoffForecastLSTM` is a forecasting model
-that uses a state-handoff to transition from a hindcast sequence (LSTM)
-model to a forecast sequence (LSTM) model. The hindcast model is run from the past up to present
-(the issue time of the forecast) and then passes the cell state and hidden state of the LSTM into
-a (nonlinear) handoff network, which is then used to initialize the cell state and hidden state of a
-new LSTM that rolls out over the forecast period.
 
-This is a former produciton model that was previously used for the `Google FloodHub <https://sites.research.google/floods/>`__. 
-It is described in detail in [Nearing2024]_.
+:py:class:`model.modelzoo.handoff_forecast_lstm.HandoffForecastLSTM` (config key ``handoff_forecast_lstm``) splits each prediction into two time windows:
+
+1. **Hindcast window (past weather):** A hindcast LSTM reads historical weather observations (such as satellite and gauge precipitation, temperature, and solar radiation) up to the forecast issue date.
+2. **State handoff:** At the forecast issue date, a feed-forward neural network (configured by ``state_handoff_network``) transforms the final hidden state and cell state of the hindcast LSTM into the initial states of a second LSTM.
+3. **Forecast window (future weather):** The forecast LSTM rolls forward over the forecast lead time (for example, 7 days ahead) using numerical or AI weather forecasts as inputs.
+
+``HandoffForecastLSTM`` is a **former operational model** used in an earlier (2024) release of `Google FloodHub <https://sites.research.google/floods/>`__. The architecture and global ungauged evaluation are described in [Nearing2024]_.
 
 .. _mean-embedding-forecast-lstm:
 
 Mean-Embedding-Forecast-LSTM
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-:py:class:`model.modelzoo.mean_embedding_forecast_lstm.MeanEmbeddingForecastLSTM` is a forecasting
-model that uses separate embedding networks for hindcast and forecast inputs. It aggregates these inputs
-using masked means before passing them into respective LSTMs for the hindcast and forecast periods.
 
-This is the current production model, as of December 2025, for the `Google FloodHub <https://sites.research.google/floods/>`__. 
-It is described in detail in [Gauch2025]_.
+:py:class:`model.modelzoo.mean_embedding_forecast_lstm.MeanEmbeddingForecastLSTM` (config key ``mean_embedding_forecast_lstm``) extends the encoder-decoder LSTM design to handle multiple weather products that may have missing dates or different start years:
 
-Implementing a new model
+1. **Per-product embeddings:** Each weather product (such as ``imerg``, ``cpc``, ``era5land``, ``hres``, ``graphcast``, or ``aifs``) passes through its own small feed-forward embedding network.
+2. **Masked-mean aggregation:** At each daily time step, the model averages the embeddings of all weather products that have valid (non-``NaN``) data on that day. If one satellite or forecast product is missing on a given day, the model continues smoothly using the remaining products.
+3. **Hindcast and forecast LSTMs:** The combined hindcast embedding feeds into the hindcast LSTM, whose state transitions into the forecast LSTM over the future lead-time window.
+
+``MeanEmbeddingForecastLSTM`` is a **former operational model** used in a previous (2025) release of `Google FloodHub <https://sites.research.google/floods/>`__. The multi-product embedding design is described in [Gauch2025]_.
+
+Implementing a New Model
 ^^^^^^^^^^^^^^^^^^^^^^^^
-The listing below shows the skeleton of a template model you can use to start implementing your own model.
 
-**Crucial Steps:**
+The code block below shows the template for adding a custom model architecture to OpenHydroNet.
 
-1.  **Inherit from BaseModel:** Your class must inherit from :py:class:`model.modelzoo.basemodel.BaseModel`.
-2.  **Define module_parts:** You must define a list called ``module_parts`` containing the names of the sub-modules (e.g., LSTMs, Linear layers) in your class. This is required for the fine-tuning logic to know which parts of the model to freeze or unfreeze.
-3.  **Register the Model:** Once implemented, you must modify :py:func:`model.modelzoo.__init__.get_model` to instantiate your class when its name is found in the config.
+**Required steps:**
+
+1. **Inherit from BaseModel:** Subclass :py:class:`model.modelzoo.basemodel.BaseModel`.
+2. **List the model parts:** Put the attribute names of all trainable sub-modules in ``module_parts``. Fine-tuning (``run finetune``) uses this list to know which layers to freeze or update.
+3. **Register the model:** Add your model name and class to :py:func:`model.modelzoo.get_model` in ``model/modelzoo/__init__.py``.
 
 .. code-block:: python
 
@@ -66,24 +72,12 @@ The listing below shows the skeleton of a template model you can use to start im
 
     class TemplateModel(BaseModel):
 
-        # The `module_parts` variable is a list of all of the different model components.
-        # You must construct and name these components. This is necessary in order to freeze
-        # and unfreeze individual components for fine tuning.
+        # List all trainable sub-module attribute names so fine-tuning can
+        # selectively freeze or unfreeze individual model parts.
         module_parts = [...]
 
         def __init__(self, cfg: dict):
-            """Initialize the model
-
-            Each model receives as only input the config dictionary. From this, the entire model can be implemented.
-
-            Each Model inherits from the BaseModel, which implements some universal functionality. The basemodel also
-            defines the output_size, which can be used here as a given attribute (self.output_size)
-
-            Parameters
-            ----------
-            cfg : dict
-                Configuration of the run, read from the config file with some additional keys (such as number of basins).
-            """
+            """Initialize the model from a parsed Config object."""
             super(TemplateModel, self).__init__(cfg=cfg)
 
             ###########################
@@ -91,36 +85,27 @@ The listing below shows the skeleton of a template model you can use to start im
             ###########################
 
         def forward(self, data: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-            """Forward pass through the model
-          
+            """Run a forward pass through the model.
+
             Parameters
             ----------
-            - 'x_d_hindcast': Hindcast dynamic inputs 
-              Shape: [batch, seq_length, features]
-            - 'x_d_forecast': Forecast dynamic inputs 
-              Shape: [batch, lead_time, features]
-            - 'x_s': Static inputs 
-              Shape: [batch, features]
-            
+            data : dict[str, torch.Tensor]
+                Input batch dictionary containing:
+                - 'x_d_hindcast': Historical dynamic inputs, shape [batch, seq_length, features]
+                - 'x_d_forecast': Forecast dynamic inputs, shape [batch, lead_time, features]
+                - 'x_s': Static watershed attributes, shape [batch, features]
+
             Returns
             -------
             dict[str, torch.Tensor]
-                The dictionary must contain the key 'y_hat' with predictions.
-                Shape: [batch, seq_length, num_targets]
+                Dictionary containing ``'y_hat'`` with shape
+                ``[batch, seq_length, self.output_size]``.
             """
-
-            ###############################
-            # Implement forward pass here #
-            ###############################
-            
-            # Example forward pass (remove when you add your own modeling logic)
             hindcast = data['x_d_hindcast']
             forecast = data['x_d_forecast']
             statics = data['x_s']
-            
-            # ... implement your forecasting logic here ...
-            
-            # Example placeholder output (remove when you add your own modeling logic)
+
+            # Replace with your custom forecasting logic:
             batch_size, seq_len, _ = hindcast.shape
             output = torch.zeros(batch_size, seq_len, self.output_size)
 
@@ -129,6 +114,6 @@ The listing below shows the skeleton of a template model you can use to start im
 References
 ^^^^^^^^^^
 
-.. [Nearing2024] Nearing, Grey, et al. "Global prediction of extreme floods in ungauged watersheds <https://www.nature.com/articles/s41586-024-07145-1>_." Nature (2024).
+.. [Nearing2024] Nearing, Grey, et al. "`Global prediction of extreme floods in ungauged watersheds <https://www.nature.com/articles/s41586-024-07145-1>`__." *Nature* 627, 559–563 (2024).
 
-.. [Gauch2025] Gauch, Martin, et al. "How to deal with missing input data <https://hess.copernicus.org/articles/29/6221/2025/>_." Hydrology and Earth System Sciences (2025).
+.. [Gauch2025] Gauch, Martin, et al. "`How to deal with missing input data <https://hess.copernicus.org/articles/29/6221/2025/>`__." *Hydrology and Earth System Sciences* 29, 6221–6238 (2025).

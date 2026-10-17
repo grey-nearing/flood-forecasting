@@ -4,55 +4,20 @@ return\_periods package
 Submodules
 ----------
 
-.. automodule:: return_periods.return_period_calculator
-   :members:
-   :show-inheritance:
-   :undoc-members:
+.. toctree::
+   :maxdepth: 4
 
-.. automodule:: return_periods.generalized_expected_moments_algorithm
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-.. automodule:: return_periods.grubbs_beck_tester
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-.. automodule:: return_periods.theoretical_distribution_utilities
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-.. automodule:: return_periods.empirical_distribution_utilities
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-.. automodule:: return_periods.extract_peaks_utilities
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-.. automodule:: return_periods.plotting_utilities
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-.. automodule:: return_periods.return_period_visualizer
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-.. automodule:: return_periods.base_fitter
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-.. automodule:: return_periods.exceptions
-   :members:
-   :show-inheritance:
-   :undoc-members:
+   return_periods.base_fitter
+   return_periods.empirical_distribution_utilities
+   return_periods.exceptions
+   return_periods.extract_peaks_utilities
+   return_periods.forecast_evaluation
+   return_periods.generalized_expected_moments_algorithm
+   return_periods.grubbs_beck_tester
+   return_periods.plotting_utilities
+   return_periods.return_period_calculator
+   return_periods.return_period_visualizer
+   return_periods.theoretical_distribution_utilities
 
 Module contents
 ---------------
@@ -61,4 +26,4 @@ Module contents
    :members:
    :show-inheritance:
    :undoc-members:
-   :noindex:
+   :no-index:

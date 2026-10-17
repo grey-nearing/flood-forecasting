@@ -2,40 +2,54 @@
 Catchment Delineation
 =====================
 
-This guide explains how to create watershed boundary polygons and calculate drainage areas (:math:`\text{km}^2`) for streamflow gauges using the ``delineate-catchment`` tool.
+This guide explains how to trace upstream watershed boundary polygons (``EPSG:4326``) and calculate drainage areas (:math:`\text{km}^2`) for river gauges using ``delineate-catchment`` and ``download-merit-d8-tiles``.
 
 .. note::
    **Do you need this tool?**
-   If you are using gauges from the published Caravan or MultiMet collections, **you do not need to run this tool**. Pre-delineated watershed boundary polygons are already available in ``gs://open-multimet/caravan-new/<collection>/shapefiles-rederived/`` and ``gs://caravan-multimet/v1.1``.
+   If you are using gauges from the published Caravan or Caravan-MultiMet collections, **you do not need to run this tool**. Pre-delineated watershed boundary polygons are already available in ``gs://open-multimet/caravan-new/<collection>/shapefiles-rederived/`` and ``gs://caravan-multimet/v1.1``.
 
-   Use this tool only when you want to delineate watershed boundary polygons for new gauge locations or evaluate delineation accuracy against reference polygons.
+   Use this tool when you want to delineate watershed boundary polygons for new river gauge locations or evaluate delineation accuracy against reference polygons.
+
+.. contents:: On this page
+   :local:
+   :depth: 2
 
 --------
 Overview
 --------
 
-To extract weather forcing data (MultiMet) or static catchment attributes (Caravan) for a new streamflow gauge, you first need the **polygon boundary** of the land area that drains into that gauge.
+To extract weather time series (MultiMet) or static watershed attributes (Caravan) for a new river gauge, you first need the **polygon boundary** of the land area that drains into that gauge (also called the *outlet* or *pour point*).
 
 Given the latitude and longitude of a river gauge, ``delineate-catchment`` produces that polygon in three steps:
 
-1. **Snaps to the river channel:** Gauge coordinates recorded by water agencies are often a few hundred meters away from the center of the river on a digital map. The tool searches nearby 90-meter grid cells (about ``1.1 km`` by default) to place the point directly on the river channel. If you also know the approximate drainage area of the gauge (``--expected-area`` or ``--area-col``), the tool searches up to ``7.2 km`` around the point to find the specific river channel matching that area.
-2. **Traces upstream water flow:** Each 90-meter pixel in a flow-direction map records which of its 8 neighboring pixels water flows into. Starting from the snapped river point, the tool follows water flow backward (upstream) through every pixel that drains into the gauge. If a large river crosses from one 5°×5° map tile into neighboring tiles, the tool loads those tiles automatically so rivers are never cut off at tile borders.
-3. **Saves the polygon:** All upstream pixels are combined into a single boundary polygon and saved as a **GeoJSON**, **GeoParquet**, or **ESRI Shapefile** with the calculated drainage area in square kilometers (:math:`\text{km}^2`).
+1. **Snaps to the river channel:** Gauge coordinates recorded by water agencies are often a few hundred meters away from the center of the river on a digital map. The tool searches nearby 90 m grid cells (about ``1.1 km`` by default) to move the point directly onto the river channel. If you also know the approximate drainage area of the gauge (``--expected-area`` or ``--area-col``), the tool searches up to ``7.2 km`` around the point to find the specific river channel matching that area.
+2. **Traces upstream water flow:** Each 90 m pixel in a **D8 flow-direction map** records which of its 8 neighboring pixels water flows into. Starting from the snapped river point, the tool follows water flow backward (upstream) through every pixel that drains into the gauge. If a large river crosses from one 5° × 5° map tile into neighboring tiles, the tool loads those tiles automatically so rivers are never cut off at tile borders.
+3. **Saves the polygon:** All upstream pixels are combined into a single boundary polygon (in ``EPSG:4326`` / WGS84 coordinates) and saved as a **GeoJSON**, **GeoParquet**, or **ESRI Shapefile** with the calculated drainage area in square kilometers (:math:`\text{km}^2`).
 
 -----------------
 Data Requirements
 -----------------
 
-Before running ``delineate-catchment``, you need a folder (local or on Google Cloud Storage ``gs://``) containing 90-meter (3-arc-second) D8 flow-direction map tiles saved as 5°×5° NumPy (``.npy``) files named by their top-left corner coordinate (such as ``n35w090.npy`` or ``n40w090.npy``).
+Before running ``delineate-catchment``, you need a folder (local or on Google Cloud Storage ``gs://``) containing 90 m (3-arc-second) D8 flow-direction map tiles saved as 5° × 5° NumPy (``.npy``) files named by their top-left corner coordinate (such as ``n35w090.npy`` or ``n40w090.npy``).
 
-* **If you already have a folder or GCS bucket of 5°×5° ``.npy`` tiles:** Pass that folder directly with ``--tiles-dir /path/to/tiles_5deg`` (or ``--gcs-uri gs://... --cache-dir /tmp/tile_cache``).
-* **If you are starting from raw HydroSHEDS or MERIT GeoTIFF files:** Use ``multimet/catchment_delineation/tools/slice_continental_dems.py`` to slice the continental ``.tif`` files into 5°×5° ``.npy`` tiles:
+* **Canonical HydroSHEDS 90 m tiles on GCS:** Public 5° × 5° HydroSHEDS 90 m tiles are hosted at ``gs://open-multimet/ancillary-data/dems/tiles_5deg``. Pass ``--gcs-uri gs://open-multimet/ancillary-data/dems/tiles_5deg --cache-dir /tmp/tile_cache`` (or ``--tiles-dir /path/to/local/tiles_5deg``).
+* **Downloading MERIT-Hydro 90 m tiles from Google Earth Engine (``download-merit-d8-tiles``):** If you want to use MERIT-Hydro 90 m flow-direction grids (``--dem merit_hydro_90m``), use the ``download-merit-d8-tiles`` CLI tool to download 5° × 5° ``.npy`` tiles from Google Earth Engine:
 
-.. code-block:: bash
+  .. code-block:: bash
 
-   python multimet/catchment_delineation/tools/slice_continental_dems.py \
-     --input-tifs /path/to/raw_hydrosheds_tifs/*.tif \
-     --out-dir /path/to/tiles_5deg
+     download-merit-d8-tiles \
+       --target-dir /path/to/merit_tiles_5deg \
+       --ee-project your-gcp-project-id \
+       --bbox -125 24 -66 50 \
+       --workers 12
+
+* **Slicing raw continental GeoTIFF files:** If you have raw HydroSHEDS or MERIT GeoTIFF files on disk, use ``multimet/catchment_delineation/tools/slice_continental_dems.py`` to slice them into 5° × 5° ``.npy`` tiles:
+
+  .. code-block:: bash
+
+     python multimet/catchment_delineation/tools/slice_continental_dems.py \
+       --input-tifs /path/to/raw_hydrosheds_tifs/*.tif \
+       --out-dir /path/to/tiles_5deg
 
 -----------
 Quick Start
@@ -58,12 +72,12 @@ Run ``delineate-catchment`` with ``--lat``, ``--lon``, ``--tiles-dir``, and an o
      --pretty
 
 .. tip::
-   Whenever your water agency provides a published drainage area for a gauge, pass it with ``--expected-area`` (in :math:`\text{km}^2`). This guarantees the point snaps to the main river rather than a small nearby creek.
+   Whenever your water agency provides a published drainage area for a gauge, pass it with ``--expected-area`` (in :math:`\text{km}^2`). This helps the tool snap to the main river rather than a small nearby tributary.
 
 2. Delineate a Table of Gauges (CSV or Parquet)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-If you have many gauges, put them in a CSV or Parquet file (for example, ``gauges.csv``):
+If you have many gauges, list them in a CSV or Parquet file (for example, ``gauges.csv``):
 
 .. code-block:: text
 
@@ -71,7 +85,7 @@ If you have many gauges, put them in a CSV or Parquet file (for example, ``gauge
    camels_01013500,47.2374,-68.5826,2252.7
    camels_03335500,40.4172,-86.8858,18821.0
 
-Then run ``delineate-catchment`` with ``--csv`` and ``--workers`` to process multiple gauges at the same time:
+Then run ``delineate-catchment`` with ``--csv`` and ``--workers`` to process multiple gauges in parallel:
 
 .. code-block:: bash
 
@@ -85,7 +99,7 @@ Then run ``delineate-catchment`` with ``--csv`` and ``--workers`` to process mul
 3. Save in Standard Caravan Folder Layout
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-If your ``gauge_id`` values follow the Caravan naming style ``<subdataset>_<id>`` (such as ``camels_01013500`` or ``grdc_6340110``), add ``--preserve-caravan-dirs`` and ``--output-dir``. This saves the polygons into the folder structure expected by Caravan and MultiMet tools:
+If your ``gauge_id`` values follow the Caravan naming style ``<subdataset>_<id>`` (such as ``camels_01013500`` or ``grdc_6340110``), add ``--preserve-caravan-dirs`` and ``--output-dir``. This writes the polygons into the folder structure expected by Caravan and MultiMet tools:
 
 .. code-block:: bash
 
@@ -116,14 +130,14 @@ This creates:
 4. Read Map Tiles from Google Cloud Storage
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-If your 5°×5° ``.npy`` tiles are stored in a ``gs://`` bucket, provide both ``--gcs-uri`` and a local ``--cache-dir`` where downloaded tiles can be stored temporarily. Add ``--clean-cache`` if you want those downloaded files deleted automatically when the command finishes:
+If your 5° × 5° ``.npy`` tiles are stored in a ``gs://`` bucket, provide both ``--gcs-uri`` and a local ``--cache-dir`` where downloaded tiles can be stored temporarily. Add ``--clean-cache`` if you want those downloaded files deleted automatically when the command finishes:
 
 .. code-block:: bash
 
    delineate-catchment \
      --csv gauges.csv \
      --area-col area_km2 \
-     --gcs-uri gs://your-bucket/tiles_5deg \
+     --gcs-uri gs://open-multimet/ancillary-data/dems/tiles_5deg \
      --cache-dir /tmp/dem_tile_cache \
      --clean-cache \
      --workers 8 \
@@ -150,38 +164,36 @@ You can also run delineation directly inside a Python script or notebook:
    print("Gauge ID:", feature["properties"]["catchment_id"])
    print("Area (km²):", feature["properties"]["area_km2"])
 
------------------------
+----------------------
 What to Watch Out For
------------------------
+----------------------
 
 Please keep these five points in mind when running the tool:
 
 1. **Always provide your tile and output paths**
    Pass the path to your map tiles (``--tiles-dir`` or ``--gcs-uri`` + ``--cache-dir``) and your output destination (``-o`` or ``--output-dir``).
 
-2. **Gauges on wide rivers need an expected area hint (``--expected-area`` or ``--area-col``)**
-   On a 90-meter grid, a wide river (like the Danube, Mississippi, or Amazon) is many pixels wide. A gauge coordinate near the riverbank can sit closer to a tiny creek on the bank than to the center of the main river.
+2. **Gauges on wide rivers benefit from an expected area hint (``--expected-area`` or ``--area-col``)**
+   On a 90 m grid, a wide river (such as the Danube, Mississippi, or Amazon) spans many pixels. A gauge coordinate near the riverbank can sit closer to a tiny creek on the bank than to the center of the main river.
 
    * Passing ``--expected-area`` (or ``--area-col`` for CSV tables) tells the tool to find the nearby channel whose drainage area is within ``±50%`` (configurable via ``--area-tolerance``) of the expected area.
-   * If you provide an expected area and no river within ``~7.2 km`` matches that area, the tool logs a ``[AREA HINT FAILURE]`` error and raises ``CatchmentAreaMismatchError`` rather than outputting a mismatched polygon.
+   * If you provide an expected area and no river within ``~7.2 km`` matches that area, the tool logs an ``[AREA HINT FAILURE]`` error and raises ``CatchmentAreaMismatchError`` rather than outputting a mismatched polygon.
 
-3. **Latitude limit (``-56°S`` to ``60°N``)**
-   The 90-meter HydroSHEDS flow-direction maps cover latitudes from ``-56°S`` to ``60°N``.
-
-   * If a gauge is north of ``60°N`` (such as in northern Norway, Sweden, Finland, Alaska, or northern Canada), it is outside map coverage.
-   * Likewise, if a gauge sits south of ``60°N`` (for example at ``59.8°N``) but its upstream river reaches north across ``60°N``, the tool stops rather than cutting the river off at the ``60°N`` border. In batch runs, these basins are recorded with ``status: "MISSING_DATA: ..."`` and ``geometry: null``.
+3. **Latitude coverage**
+   * **HydroSHEDS 90 m (``--dem hydrosheds_90m``):** Covers latitudes from ``-56°S`` to ``60°N``. If a gauge is north of ``60°N`` or its upstream river reaches north across ``60°N``, the tool stops rather than cutting the river off at the ``60°N`` border. In batch runs, these basins are recorded with ``status: "MISSING_DATA: ..."`` and ``geometry: null``.
+   * **MERIT-Hydro 90 m (``--dem merit_hydro_90m``):** Extends high-latitude coverage up to ``90°N`` when MERIT-Hydro 5° × 5° D8 tiles are used.
 
 4. **All upstream map tiles must be present**
-   Large rivers can start hundreds of kilometers away from the gauge and cross several 5°×5° map tiles (named ``{lat_top}{lon_left}.npy``, such as ``n40w090.npy`` and ``n45w090.npy``). If your ``--tiles-dir`` has the tile for the gauge location but is missing an upstream tile that flows into that river, the tool raises ``FileNotFoundError`` instead of returning a chopped-off polygon.
+   Large rivers can start hundreds of kilometers away from the gauge and cross several 5° × 5° map tiles (named ``{lat_top}{lon_left}.npy``, such as ``n40w090.npy`` and ``n45w090.npy``). If your ``--tiles-dir`` has the tile for the gauge location but is missing an upstream tile that flows into that river, the tool raises ``FileNotFoundError`` instead of returning a truncated polygon.
 
 5. **Coordinate order and measurement units**
 
-   * **Coordinates:** Always use standard decimal degrees (``EPSG:4326`` / WGS84) with **latitude first** (``-56`` to ``60``) and **longitude second** (``-180`` to ``180``).
+   * **Coordinates:** Always use decimal degrees (``EPSG:4326`` / WGS84) with **latitude first** and **longitude second** (``-180`` to ``180``).
    * **Drainage areas:** All area inputs (``--expected-area``, ``--area-col``) and outputs (``area_km2``, ``area``) are in **square kilometers** (:math:`\text{km}^2`).
 
-------------------------------
-Command-Line Arguments (CLI)
-------------------------------
+----------------------------------------------------
+``delineate-catchment`` Command-Line Arguments (CLI)
+----------------------------------------------------
 
 All arguments for ``delineate-catchment`` (also runnable as ``python -m multimet.catchment_delineation``) are listed below by group.
 
@@ -193,79 +205,56 @@ Coordinate Input Options
 -  ``--id`` *(string, default: None)*: Custom name or gauge ID when running a single point with ``--lat`` and ``--lon`` (e.g., ``USGS_05592500``). If omitted, an ID is generated automatically from the coordinates.
 -  ``--coords`` *(one or more strings, default: None)*: Space-separated ``"lat,lon"`` coordinate pairs for running a few points without creating a CSV file (e.g., ``--coords "39.68,-88.77" "40.42,-86.89"``).
 -  ``--csv`` *(path or gs:// URI, default: None)*: Path to a CSV or Parquet file containing gauge coordinates, or a Caravan directory containing ``attributes/`` tables.
--  ``--lat-col`` *(string, default: auto-detected)*: Name of the latitude column in your ``--csv`` file. You only need this if your column is not named ``latitude``, ``lat``, ``gauge_lat``, ``caravan:gauge_lat``, ``outlet_lat``, or ``pour_point_lat``.
--  ``--lon-col`` *(string, default: auto-detected)*: Name of the longitude column in your ``--csv`` file. You only need this if your column is not named ``longitude``, ``lon``, ``long``, ``lng``, ``gauge_lon``, ``caravan:gauge_lon``, ``outlet_lon``, or ``pour_point_lon``.
--  ``--id-col`` *(string, default: auto-detected)*: Name of the gauge ID column in your ``--csv`` file. You only need this if your column is not named ``gauge_id``, ``catchment_id``, ``station_id``, ``hybas_id``, ``id``, or ``caravan:gauge_id``.
--  ``--workers``, ``-w`` *(int, default: 1)*: Number of CPU processes to run in parallel during batch runs. Set this to the number of CPU cores on your machine (for example, ``--workers 8``) to speed up CSV processing.
+-  ``--lat-col`` *(string, default: auto-detected)*: Name of the latitude column in your ``--csv`` file. Recognized defaults: ``latitude``, ``lat``, ``gauge_lat``, ``caravan:gauge_lat``, ``outlet_lat``, ``pour_point_lat``.
+-  ``--lon-col`` *(string, default: auto-detected)*: Name of the longitude column in your ``--csv`` file. Recognized defaults: ``longitude``, ``lon``, ``long``, ``lng``, ``gauge_lon``, ``caravan:gauge_lon``, ``outlet_lon``, ``pour_point_lon``.
+-  ``--id-col`` *(string, default: auto-detected)*: Name of the gauge ID column in your ``--csv`` file. Recognized defaults: ``gauge_id``, ``catchment_id``, ``station_id``, ``hybas_id``, ``id``, ``caravan:gauge_id``.
+-  ``--workers``, ``-w`` *(int, default: 1)*: Number of CPU processes to run in parallel during batch runs.
 
-Map Tile & River Snapping Options
+Algorithm, DEM & Snapping Options
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
--  ``--tiles-dir`` *(path or gs:// URI, default: None)*: Folder containing the 5°×5° ``.npy`` flow-direction tiles (such as ``n35w090.npy`` or ``n40w090.npy``). You must provide either ``--tiles-dir`` or ``--gcs-uri``. If you pass a ``gs://`` URI to ``--tiles-dir``, you must also specify ``--cache-dir``.
--  ``--gcs-uri`` *(gs:// URI, default: None)*: Google Cloud Storage folder containing the 5°×5° ``.npy`` flow-direction tiles. Must be paired with ``--cache-dir``.
--  ``--cache-dir`` *(local path, default: None)*: Local folder where tiles downloaded from Google Cloud Storage are saved. Required whenever ``--gcs-uri`` is used or when ``--tiles-dir`` points to a ``gs://`` path.
--  ``--snap-window`` *(int, default: 12)*: Half-width of the search box (in 90-meter grid cells) used to snap the gauge coordinate onto the nearest river channel. The default of ``12`` cells searches roughly ``1.1 km`` in each direction around the input coordinate.
--  ``--expected-area`` *(float, default: None)*: Approximate expected drainage area in :math:`\text{km}^2` for a single gauge (or applied to all points if ``--area-col`` is not set). When set, the tool searches up to ``80`` grid cells (``~7.2 km``) for a river channel whose upstream area matches ``--expected-area`` within ``--area-tolerance``. If no river matches, the tool logs an error and refuses to output a polygon.
--  ``--area-col`` *(string, default: None)*: Column name in your ``--csv`` or Parquet file containing the expected drainage area (:math:`\text{km}^2`) for each gauge. Rows with an empty/NaN value in this column fall back to regular snapping without an area hint.
--  ``--area-tolerance`` *(float, default: 0.50)*: Allowed relative difference between the delineated area and ``--expected-area`` / ``--area-col``. The default ``0.50`` accepts a river channel whose area is within ``±50%`` (from ``0.5×`` to ``1.5×``) of the expected area.
--  ``--max-cells`` *(int, default: None)*: Optional upper limit on the number of 90-meter grid cells traced upstream. By default this is ``None`` (no limit), so even continental rivers are traced all the way to their source. If you set a number and a river exceeds it, the tool aborts that basin rather than returning a cut-off polygon.
+-  ``--dem`` *(string, default: ``hydrosheds_90m``)*: Digital Elevation Model (DEM) dataset identifier (``hydrosheds_90m`` or ``merit_hydro_90m``).
+-  ``--mode`` *(choice: ``dem``, ``hybrid``, ``ridgeline``, ``exact_pour_point``, ``unit_catchment``; default: ``dem``)*: Delineation method:
+
+   * ``dem``: Pure 90 m D8 flow-direction grid tracing.
+   * ``hybrid``: Vector river reach snapping (HydroRIVERS or MERIT-Basins) combined with 90 m D8 grid tracing.
+   * ``ridgeline``: Dissolves all upstream vector unit catchments (HydroBASINS Level 12 or MERIT-Basins).
+   * ``exact_pour_point``: Dissolves upstream vector unit catchments and clips the local outlet unit catchment at the pour point.
+   * ``unit_catchment``: Returns only the local vector unit catchment containing the pour point.
+
+-  ``--tiles-dir`` *(path or gs:// URI, default: None)*: Folder containing the 5° × 5° ``.npy`` flow-direction tiles (such as ``n35w090.npy``). You must provide either ``--tiles-dir`` or ``--gcs-uri`` (for ``dem`` and ``hybrid`` modes).
+-  ``--gcs-uri`` *(gs:// URI, default: None)*: Google Cloud Storage folder containing the 5° × 5° ``.npy`` flow-direction tiles (e.g., ``gs://open-multimet/ancillary-data/dems/tiles_5deg``). Must be paired with ``--cache-dir``.
+-  ``--cache-dir`` *(local path, default: None)*: Local folder where tiles downloaded from Google Cloud Storage are saved.
+-  ``--hydrorivers-shp`` *(path, default: None)*: Path to ``HydroRIVERS_v10.shp`` (used in ``hybrid`` and ``exact_pour_point`` modes with HydroSHEDS).
+-  ``--hydrobasins-dir`` *(path, default: None)*: Directory containing HydroBASINS Level 12 shapefiles (used in ``ridgeline``, ``exact_pour_point``, and ``unit_catchment`` modes with HydroSHEDS).
+-  ``--merit-rivers-dir`` *(path, default: None)*: Directory containing MERIT-Basins ``riv_pfaf_*.shp`` files (used in ``hybrid`` and vector modes with MERIT-Hydro).
+-  ``--merit-catchments-dir`` *(path, default: None)*: Directory containing MERIT-Basins ``cat_pfaf_*.shp`` files (used in vector modes with MERIT-Hydro).
+-  ``--snap-window`` *(int, default: 12)*: Half-width of the search box (in 90 m grid cells) used to snap the gauge coordinate onto the nearest river channel (``12`` cells is roughly ``1.1 km``).
+-  ``--expected-area`` *(float, default: None)*: Approximate expected drainage area in :math:`\text{km}^2` for a single gauge (or applied to all points if ``--area-col`` is not set). Searches up to ``80`` grid cells (``~7.2 km``) for a river channel whose upstream area matches ``--expected-area`` within ``--area-tolerance``.
+-  ``--area-col`` *(string, default: None)*: Column name in your ``--csv`` or Parquet file containing the expected drainage area (:math:`\text{km}^2`) for each gauge.
+-  ``--area-tolerance`` *(float, default: 0.50)*: Allowed relative difference between the delineated area and ``--expected-area`` / ``--area-col`` (``0.50`` = ``±50%``).
+-  ``--max-cells`` *(int, default: None)*: Optional upper limit on the number of 90 m grid cells traced upstream (``None`` means no limit).
 
 Output & Utility Options
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
--  ``-o``, ``--output`` *(path or gs:// URI, default: stdout)*: File path where the delineated polygons are saved. Supported file extensions are ``.geojson`` (or ``.json``), ``.geoparquet`` (or ``.parquet``), and ``.shp`` (ESRI Shapefile). If neither ``-o`` nor ``--output-dir`` is given, GeoJSON is printed to the terminal.
+-  ``-o``, ``--output`` *(path or gs:// URI, default: stdout)*: File path where the delineated polygons are saved (``.geojson``, ``.geoparquet``, ``.parquet``, or ``.shp``).
 -  ``--output-dir`` *(path or gs:// URI, default: None)*: Root folder for saving multi-file or Caravan-structured outputs.
--  ``--preserve-caravan-dirs`` *(flag, default: False)*: Groups gauges by the dataset prefix in ``gauge_id`` (the text before the first underscore, such as ``camels`` in ``camels_01013500``) and saves outputs into ``<output-dir>/shapefiles/<subdataset>/<subdataset>_basin_shapes.*``.
--  ``--format`` *(choice: all, geoparquet, parquet, geojson, shp; default: all)*: File format(s) to write when using ``--output-dir`` or ``--preserve-caravan-dirs``.
--  ``--pretty`` *(flag, default: False)*: Formats JSON/GeoJSON output with indentation and line breaks so it is easier for humans to read.
--  ``--clean-cache`` *(flag, default: False)*: Deletes only the ``.npy`` tile files that were downloaded into ``--cache-dir`` during this run, leaving any previously existing files untouched.
--  ``--list-tiles`` *(flag, default: False)*: Lists all ``.npy`` tile files found in ``--tiles-dir`` and exits immediately.
+-  ``--preserve-caravan-dirs`` *(flag, default: False)*: Groups gauges by the dataset prefix in ``gauge_id`` (such as ``camels`` in ``camels_01013500``) and saves outputs into ``<output-dir>/shapefiles/<subdataset>/<subdataset>_basin_shapes.*``.
+-  ``--format`` *(choice: ``all``, ``geoparquet``, ``parquet``, ``geojson``, ``shp``; default: ``all``)*: File format(s) to write when using ``--output-dir`` or ``--preserve-caravan-dirs``.
+-  ``--pretty`` *(flag, default: False)*: Formats JSON/GeoJSON output with indentation.
+-  ``--clean-cache`` *(flag, default: False)*: Deletes only the ``.npy`` tile files that were downloaded into ``--cache-dir`` during this run.
+-  ``--list-tiles`` *(flag, default: False)*: Lists all ``.npy`` tile files found in ``--tiles-dir`` and exits.
 
---------------------------------------------------------
-Benchmark Tools (``benchmark-catchment`` & Dataset Prep)
---------------------------------------------------------
+-------------------------------------------------------------
+``download-merit-d8-tiles`` Command-Line Arguments (CLI)
+-------------------------------------------------------------
 
-Building a Reference Benchmark Dataset (``build_benchmark_dataset.py``)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Use ``download-merit-d8-tiles`` (``multimet.catchment_delineation.tools.download_merit_d8_tiles``) to download 5° × 5° MERIT-Hydro 90 m D8 flow-direction ``.npy`` tiles from Google Earth Engine:
 
-To build a stratified reference benchmark Parquet file from reference shapefiles, coordinate tables, and a world continents GeoJSON file:
-
-.. code-block:: bash
-
-   python benchmarks/tools/build_benchmark_dataset.py \
-     --shapes /path/to/grdc_basin_shapes.shp /path/to/camels_shapefiles_dir \
-     --coords-csv /path/to/grdc_attributes.csv /path/to/caravan_coordinates.csv \
-     --world-geojson /path/to/naturalearth_lowres.geojson \
-     --output /path/to/benchmark_basins_1000.parquet
-
--  ``--shapes`` *(one or more paths, required)*: Reference shapefile paths (``.shp``) or directories containing ``*_basin_shapes.shp`` files.
--  ``--coords-csv`` *(zero or more paths, default: [])*: Optional path(s) to coordinate CSV files (such as ``grdc_attributes.csv`` or ``coordinates.csv``). Also checks for ``coordinates.csv`` next to each shapefile.
--  ``--world-geojson`` *(path, required)*: Path to world continents GeoJSON file (containing ``continent`` and ``geometry``).
--  ``--output`` *(path, required)*: Output Parquet file path (``.parquet``) with columns ``gauge_id``, ``continent``, ``hemisphere``, ``size_tier``, ``latitude``, ``longitude``, ``reference_area_km2``, and ``geometry_wkt``.
-
-Running the Benchmark (``benchmark-catchment``)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Use ``benchmark-catchment`` to measure polygon accuracy (Intersection-over-Union, Dice score, and relative area error) against a reference dataset of published gauge polygons:
-
-.. code-block:: bash
-
-   benchmark-catchment \
-     --dataset /path/to/benchmark_basins_1000.parquet \
-     --tiles-dir /path/to/tiles_5deg \
-     --workers 16 \
-     --output benchmark_results.csv
-
--  ``--dataset`` *(path or gs:// URI, required)*: Path to the benchmark Parquet file containing reference gauge coordinates, reference areas (``reference_area_km2``), and reference polygons (``geometry_wkt``).
--  ``--tiles-dir`` *(path or gs:// URI, default: None)*: Local folder (or ``gs://`` URI) containing the 5°×5° ``.npy`` flow-direction tiles.
--  ``--gcs-uri`` *(gs:// URI, default: None)*: Google Cloud Storage URI containing the 5°×5° ``.npy`` tiles (requires ``--cache-dir``).
--  ``--cache-dir`` *(local path, default: None)*: Local folder used to store tiles downloaded from ``--gcs-uri``.
--  ``--output`` *(path, default: None)*: Optional output file path (``.csv`` or ``.parquet``) to save per-basin benchmark scores.
--  ``--workers`` *(int, default: 8)*: Number of parallel CPU worker processes.
--  ``--samples`` *(int, default: None)*: Optional number of basins to randomly sample (balanced across continents and basin sizes) for a faster test run.
--  ``--continents`` *(one or more strings, default: None)*: Run only on basins in the listed continents (e.g., ``--continents Europe "North America"``).
--  ``--size-tiers`` *(one or more strings, default: None)*: Run only on specific basin size buckets (``1_micro``, ``2_small``, ``3_medium``, ``4_large``, ``5_macro``).
--  ``--snap-window`` *(int, default: 12)*: Search window half-width in 90-meter grid cells around each gauge.
--  ``--no-area-hint`` *(flag, default: False)*: Turn off passing ``reference_area_km2`` as the ``--expected-area`` hint during benchmark runs (area hints are enabled by default).
--  ``--area-tolerance`` *(float, default: 0.50)*: Allowed relative tolerance around ``reference_area_km2`` when area hints are enabled (default ``0.50`` = ``±50%``).
--  ``--clean-cache`` *(flag, default: False)*: Delete only the ``.npy`` tile files downloaded into ``--cache-dir`` during the benchmark run.
+-  ``--target-dir`` *(path, required)*: Destination directory where ``.npy`` tiles are saved.
+-  ``--ee-project`` *(string, required)*: Google Cloud project ID with Google Earth Engine enabled.
+-  ``--tiles`` *(one or more strings, mutually exclusive with ``--reference-tiles-dir`` and ``--bbox``)*: Explicit 5° × 5° tile names to download (for example, ``n40w090 n45w090``).
+-  ``--reference-tiles-dir`` *(path, mutually exclusive with ``--tiles`` and ``--bbox``)*: Existing directory of ``.npy`` tiles whose tile names should be mirrored.
+-  ``--bbox`` *(4 floats ``MIN_LON MIN_LAT MAX_LON MAX_LAT``, mutually exclusive with ``--tiles`` and ``--reference-tiles-dir``)*: Geographic bounding box in decimal degrees (``EPSG:4326``) to cover.
+-  ``--workers`` *(int, default: 12)*: Number of parallel download threads.

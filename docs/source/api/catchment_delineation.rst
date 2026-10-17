@@ -45,3 +45,11 @@ multimet.catchment_delineation.gcs
    :members:
    :show-inheritance:
    :undoc-members:
+
+multimet.catchment_delineation.tools.download_merit_d8_tiles
+------------------------------------------------------------
+
+.. automodule:: multimet.catchment_delineation.tools.download_merit_d8_tiles
+   :members:
+   :show-inheritance:
+   :undoc-members:

@@ -16,10 +16,12 @@
 # OpenHydroNet Configuration File
 # ==============================================================================
 # This YAML file defines all parameters for training the Mean Embedding
-# Forecast LSTM on the full MultiMet Caravan dataset.
-
+# Forecast LSTM on the full MultiMet Caravan dataset. It replicates the 2025
+# generation of Google FloodHub (a former operational model that has since been
+# superseded by a newer model release).
+#
 # The model is described in this paper:
-#   Gauch, M., et al. "How to deal w\_ missing input data." 
+#   Gauch, M., et al. "How to deal with missing input data."
 #   Hydrology and Earth System Sciences 29.21 (2025): 6221-6235.
 #   https://hess.copernicus.org/articles/29/6221/2025/
 
@@ -58,10 +60,12 @@ train_basin_file: ~/flood-forecasting/model/example-configs/multimet-basins-list
 validation_basin_file: ~/flood-forecasting/model/example-configs/multimet-basins-list-without-chirps.txt
 test_basin_file: ~/flood-forecasting/model/example-configs/multimet-basins-list-without-chirps.txt
 
-# Directory containing the target data (streamflow observations).
-targets_data_dir: Caravan-nc
-# Directory containing static catchment attributes (e.g., area, elevation).
-statics_data_dir: Caravan-nc
+# Directory containing the target data (streamflow.zarr, created by
+# `run convert-caravan`).
+targets_data_dir: ~/data/Caravan-zarr
+# Directory containing static catchment attributes (attributes.zarr, created by
+# `run convert-caravan`).
+statics_data_dir: ~/data/Caravan-zarr
 # Directory containing dynamic meteorological forcing data (rain, temp, etc.).
 # 'gs://' indicates data is streamed directly from Google Cloud Storage.
 dynamics_data_dir: gs://caravan-multimet/v1.1

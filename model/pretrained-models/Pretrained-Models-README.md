@@ -1,34 +1,38 @@
-# Google FloodHub: Pre-Trained OpenHydroNet Weights
+# Pre-Trained OpenHydroNet Weights (2025 FloodHub Generation)
 
-This directory (`model/pretrained-models/`) contains a pre-trained global model run (`google-floodhub-settings-110-epochs`) using the Google FloodHub architecture (`mean_embedding_forecast_lstm` in `model`). Use these weights to warm-start fine-tuning on local watersheds or to run spatial generalization (Prediction in Ungauged Basins) experiments.
+This directory (`model/pretrained-models/`) contains three pre-trained global model checkpoints (`google-floodhub-settings-110-epochs`, `google-floodhub-settings-no-graphcast-110-epochs`, and `google-floodhub-settings-aifs-110-epochs`) using the `mean_embedding_forecast_lstm` architecture in `model`. These checkpoints replicate the 2025 generation of Google FloodHub (a **former operational model** that has since been superseded by a newer model release). Use these weights to warm-start fine-tuning on local watersheds or to run spatial generalization (Prediction in Ungauged Basins) experiments.
 
 > **IMPORTANT — Methodological Caveat (Read Before Using):**
 >
-> **This model was trained on the full historical period (`01/01/1982`–`30/09/2023`) without a temporal holdout split.**
+> **These models were trained on the full historical period (`01/01/1982`–`30/09/2023`) without a temporal holdout split.**
 >
-> Because the model saw the entire `01/01/1982`–`30/09/2023` timeline during training, **do not evaluate temporal forecasting skill on the 1982–2023 period for basins in the training list.** Evaluating on in-sample dates and basins causes data leakage and produces artificially inflated metrics. See **Appropriate & Inappropriate Use Cases** below.
+> Because the models saw the entire `01/01/1982`–`30/09/2023` timeline during training, **do not evaluate temporal forecasting skill on the 1982–2023 period for basins in the training list.** Evaluating on in-sample dates and basins causes data leakage and produces artificially inflated metrics. See **Appropriate & Inappropriate Use Cases** below.
 
 ---
 
 ## 1. Model Overview
 
-We provide a pre-trained global baseline model trained on the Caravan-MultiMet dataset (excluding the CHIRPS precipitation product):
+We provide three pre-trained global baseline checkpoints trained on the Caravan-MultiMet dataset (excluding the CHIRPS precipitation product):
 
-### Full Basin Baseline (`google-floodhub-settings-110-epochs`)
+| Checkpoint Directory | Weights File | Hindcast Weather Inputs | Forecast Weather Inputs |
+| :--- | :--- | :--- | :--- |
+| **`google-floodhub-settings-110-epochs/`** | `model_epoch110.pt` | `hres`, `graphcast`, `imerg`, `cpc` | `hres`, `graphcast` |
+| **`google-floodhub-settings-no-graphcast-110-epochs/`** | `model_epoch110.pt` | `hres`, `imerg`, `cpc` | `hres` |
+| **`google-floodhub-settings-aifs-110-epochs/`** | `model_epoch110.pt` | `hres`, `aifs`, `imerg`, `cpc` | `hres`, `aifs` |
 
-- **Model Architecture:** `mean_embedding_forecast_lstm` (`model.modelzoo.mean_embedding_forecast_lstm.MeanEmbeddingForecastLSTM`)
+- **Model Architecture:** `mean_embedding_forecast_lstm` (`model.modelzoo.mean_embedding_forecast_lstm.MeanEmbeddingForecastLSTM`, Gauch et al., 2025)
 - **Reference Configuration:** [`model/example-configs/floodhub-settings-config.yml`](../example-configs/floodhub-settings-config.yml)
 - **Training Period:** `01/01/1982` to `30/09/2023`
 - **Training Basin List:** `15,955` listed basins (`10,137` evaluable basins with streamflow observations) in [`model/example-configs/multimet-basins-list-without-chirps.txt`](../example-configs/multimet-basins-list-without-chirps.txt)
 
 ---
 
-## 2. Contents of the Release
+## 2. Contents of Each Checkpoint Directory
 
-The runtime directory `model/pretrained-models/google-floodhub-settings-110-epochs/` includes all files required by the `openhydronet` (`model`) package:
+Each checkpoint folder in `model/pretrained-models/` includes all files required by the `openhydronet` (`model`) package:
 
 - **Model Weights (`model_epoch110.pt`):** Trained neural network parameters saved at epoch 110.
-- **Pre-Computed Scalers (`scaler.zarr/`):** Feature and target normalization statistics (`center`, `scale`, `mean`, `std`) computed across the global training dataset. When you fine-tune this model, `model` automatically loads `scaler.zarr` so your local inputs are normalized identically to the pre-trained features.
+- **Pre-Computed Scalers (`scaler.zarr/`):** Feature and target normalization statistics (`center`, `scale`, `mean`, `std`) computed across the global training dataset. When you fine-tune one of these models, `model` automatically loads `scaler.zarr` so your local inputs are normalized identically to the pre-trained features.
 - **Run Configuration (`config.yml`):** Exact hyperparameters, dynamic input products, and static catchment attributes used for the run.
 - **In-Sample Evaluation Metrics (`test/model_epoch110/test_metrics.csv`):** Full-dataset (`10,137`-basin) in-sample metrics for verification.
 
