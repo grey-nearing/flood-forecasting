@@ -59,6 +59,11 @@ from frontend.config import (
 )
 from model.datasetzoo.caravan import load_caravan_attributes
 from model.datautils.scaler import Scaler
+from model.evaluation.assimilation import (
+    clip_per_sequence_grad_norm,
+    converged_sequences,
+    frozen_model,
+)
 from model.modelzoo import get_model, load_model_weights
 from model.training import (
     get_loss_obj,
@@ -79,7 +84,7 @@ from multimet.timeseries_extractors.zarr_writer import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +414,9 @@ _DA_PROGRESS_BY_USER: dict[str, dict[str, Any]] = {}
 _DA_CANCEL_EVENTS: dict[str, threading.Event] = {}
 _DA_SESSION_LOCK = threading.Lock()
 _DA_SESSIONS_BY_KEY: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+# Most recent (user, basin, model, issue date) Variational DA sessions kept
+# in memory for Continue / branch-from-step; the oldest is evicted first.
+_MAX_DA_SESSIONS = 16
 _FETCH_THREAD_LOCAL = threading.local()
 _TQDM_PATCH_LOCK = threading.Lock()
 _TQDM_PATCH_INSTALLED = False
@@ -1549,6 +1557,7 @@ def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
         cached = _ZARR_META_CACHE.get(mkey)
         if cached is not None:
             return cached
+    basins: list[str] = []
     last_date_str: str | None = None
     has_lead_time = False
     try:
@@ -1560,17 +1569,23 @@ def _get_cached_store_meta(store_path: Path) -> dict[str, Any]:
             )
             has_lead_time = 'lead_time' in ds.dims
             if 'date' in ds.coords and int(ds.sizes.get('date', 0)) > 0:
-                last_ts = pd.Timestamp(ds.coords['date'].to_numpy()[-1]).floor(
-                    'D'
-                )
-                last_date_str = _format_date_str(last_ts)
+                last_raw = ds.coords['date'].to_numpy()[-1]
+                if pd.isna(last_raw):
+                    logger.warning(
+                        'Zarr store %s ends with a NaT date coordinate; '
+                        'its freshness cannot be determined.',
+                        store_path,
+                    )
+                else:
+                    last_date_str = _format_date_str(
+                        pd.Timestamp(last_raw).floor('D')
+                    )
     except Exception:
         logger.warning(
             'Could not read Zarr store metadata at %s',
             store_path,
             exc_info=True,
         )
-        basins = []
     entry: dict[str, Any] = {
         'basins': basins,
         'lower_map': {b.lower(): b for b in basins},
@@ -5067,7 +5082,6 @@ _MAX_VARIATIONAL_EPOCHS = 200
 _DEFAULT_VARIATIONAL_LOSS = 'MSE'
 _DEFAULT_VARIATIONAL_CLIP_NORM = 1.0
 _DEFAULT_VARIATIONAL_TOLERANCE: float | None = None
-_DA_CLIP_EPS = 1e-6
 _ALL_ASSIMILATION_COMPONENTS = (
     'static_embedding',
     'hindcast_embedding',
@@ -5084,10 +5098,18 @@ def _init_user_da_progress(  # noqa: PLR0913
     base_step: int,
     total_steps: int,
     prior_rmse: float | None,
+    message: str | None = None,
 ) -> dict[str, Any]:
     """Initialize live per-iteration variational DA progress for user."""
     now = time.time()
     target_step = base_step + total_steps
+    if message is None:
+        message = (
+            f'Starting Variational DA backprop '
+            f'(Step {base_step} → {target_step})...'
+            if total_steps > 0
+            else 'Evaluating Step 0 (Prior)...'
+        )
     state: dict[str, Any] = {
         'active': True,
         'status': 'running',
@@ -5109,12 +5131,7 @@ def _init_user_da_progress(  # noqa: PLR0913
         'reg_loss': None,
         'window_rmse_cms': prior_rmse,
         'prior_window_rmse_cms': prior_rmse,
-        'message': (
-            f'Starting Variational DA backprop '
-            f'(Step {base_step} → {target_step})...'
-            if total_steps > 0
-            else 'Evaluating Step 0 (Prior)...'
-        ),
+        'message': message,
         'error': None,
     }
     with _DA_PROGRESS_LOCK:
@@ -5122,7 +5139,7 @@ def _init_user_da_progress(  # noqa: PLR0913
     return state
 
 
-def _update_user_da_progress(  # noqa: C901, PLR0913
+def _update_user_da_progress(  # noqa: C901, PLR0912, PLR0913
     user_key: str,
     *,
     event: str,
@@ -5133,6 +5150,7 @@ def _update_user_da_progress(  # noqa: C901, PLR0913
     reg_loss: float | None = None,
     window_rmse_cms: float | None = None,
     error: str | None = None,
+    stop_reason: str | None = None,
 ) -> None:
     """Update live variational DA progress state in a thread-safe way."""
     now = time.time()
@@ -5157,6 +5175,8 @@ def _update_user_da_progress(  # noqa: C901, PLR0913
             state['reg_loss'] = round(float(reg_loss), 6)
         if window_rmse_cms is not None:
             state['window_rmse_cms'] = round(float(window_rmse_cms), 3)
+        if stop_reason is not None:
+            state['stop_reason'] = stop_reason
 
         done = int(state.get('steps_completed') or 0)
         cur_s = int(state.get('current_step') or 0)
@@ -5188,19 +5208,41 @@ def _update_user_da_progress(  # noqa: C901, PLR0913
                 if state.get('window_rmse_cms') is not None
                 else ''
             )
+            stop_txt = (
+                f' · stopped early: {stop_reason.replace("_", " ")}'
+                if stop_reason
+                else ''
+            )
             state['message'] = (
                 f'Completed Step {cur_s}{rmse_txt} '
-                f'({state["elapsed_seconds"]:.2f}s)'
+                f'({state["elapsed_seconds"]:.2f}s){stop_txt}'
             )
         elif event == 'cancelled':
             state['active'] = False
             state['status'] = 'cancelled'
             state['message'] = f'Stopped at Step {cur_s} by user.'
+        elif event == 'skipped':
+            state['active'] = False
+            state['status'] = 'skipped'
+            state['message'] = (
+                'No gauge observation overlaps the model hindcast; '
+                'prior returned unchanged.'
+            )
         elif event == 'error':
             state['active'] = False
             state['status'] = 'error'
             state['error'] = error or 'Variational DA failed'
             state['message'] = f'Variational DA failed: {state["error"]}'
+
+
+def _fail_active_da_progress(username: str | None, *, error: str) -> None:
+    """Mark the user's variational DA progress as failed if a run is active."""
+    user_key = _normalize_user_key(username)
+    with _DA_PROGRESS_LOCK:
+        state = _DA_PROGRESS_BY_USER.get(user_key)
+        is_active = bool(state is not None and state.get('active'))
+    if is_active:
+        _update_user_da_progress(user_key, event='error', error=error)
 
 
 def get_variational_assimilation_progress(
@@ -5236,6 +5278,7 @@ def get_variational_assimilation_progress(
             'prior_window_rmse_cms': None,
             'message': None,
             'error': None,
+            'stop_reason': None,
         }
     if snapshot.get('active') and snapshot.get('started_at'):
         snapshot['elapsed_seconds'] = round(
@@ -5270,52 +5313,6 @@ def cancel_variational_assimilation(
         'was_active': was_active,
         'progress': get_variational_assimilation_progress(user_key),
     }
-
-
-@contextlib.contextmanager
-def _freeze_model_for_da(model: torch.nn.Module) -> Iterator[None]:
-    """Freeze model weights and disable dropout during latent backprop."""
-    requires_grad = {p: p.requires_grad for p in model.parameters()}
-    dropout_p = {
-        m: m.p for m in model.modules() if isinstance(m, torch.nn.Dropout)
-    }
-    rnns = {
-        m: (m.training, m.dropout)
-        for m in model.modules()
-        if isinstance(m, torch.nn.RNNBase)
-    }
-    try:
-        for p in requires_grad:
-            p.requires_grad_(requires_grad=False)
-        for m in dropout_p:
-            m.p = 0.0
-        for m in rnns:
-            m.dropout = 0.0
-            m.train(mode=True)
-        yield
-    finally:
-        for p, flag in requires_grad.items():
-            p.requires_grad_(flag)
-        for m, p in dropout_p.items():
-            m.p = p
-        for m, (training, dropout) in rnns.items():
-            m.dropout = dropout
-            m.train(training)
-
-
-def _clip_da_gradients(
-    tensors: Iterable[torch.Tensor],
-    max_norm: float,
-) -> None:
-    """Clip per-sequence gradient norm for latent embedding tensors."""
-    grad_tensors = [t for t in tensors if t.grad is not None]
-    if not grad_tensors:
-        return
-    sq_norm = sum(t.grad.flatten(1).pow(2).sum(dim=1) for t in grad_tensors)
-    eps = max(_DA_CLIP_EPS, float(torch.finfo(sq_norm.dtype).eps))
-    scale = (max_norm / (sq_norm.sqrt() + eps)).clamp(max=1.0)
-    for t in grad_tensors:
-        t.grad.mul_(scale.view(-1, *([1] * (t.grad.ndim - 1))))
 
 
 def _build_full_observed_overrides(
@@ -5654,6 +5651,13 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
     neural network weights frozen. Supports continuing from the current or any
     previously inspected step with updated learning parameters, live progress
     polling, and per-iteration visual inspection (`epoch_history`).
+
+    Raises:
+        ValueError: If ``continue_session`` is requested without a server-side
+            session for this basin and issue date, or ``from_step`` is not a
+            step of that session.
+        RuntimeError: If the loss, gradient, or update is not finite at the
+            first requested step, so that no latent update can be applied.
     """
     cid_str = str(catchment_id or '').strip()
     if not cid_str:
@@ -5676,6 +5680,25 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
     if reset:
         with _DA_SESSION_LOCK:
             _DA_SESSIONS_BY_KEY.pop(session_key, None)
+    epochs_clamped = int(np.clip(int(epochs), 0, _MAX_VARIATIONAL_EPOCHS))
+
+    # Register the cancel event and a live "preparing" progress state before
+    # the (slow) model/input loading, so that a Stop request issued during
+    # setup is honoured and the progress poller never shows the previous
+    # run's final state as if it belonged to this run.
+    cancel_ev = threading.Event()
+    with _DA_PROGRESS_LOCK:
+        _DA_CANCEL_EVENTS[user_key] = cancel_ev
+    _init_user_da_progress(
+        user_key=user_key,
+        catchment_id=cid_str,
+        model_id=model_id,
+        issue_date_str=issue_date_str,
+        base_step=0,
+        total_steps=epochs_clamped,
+        prior_rmse=None,
+        message='Preparing model inputs for Variational DA...',
+    )
 
     bundle = {
         **_load_forecast_model_bundle(
@@ -5701,7 +5724,6 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
     )
     reg_clamped = float(np.clip(float(regularization_weight), 0.0, 100.0))
     lr_clamped = float(np.clip(float(initial_learning_rate), 1e-5, 1.0))
-    epochs_clamped = int(np.clip(int(epochs), 0, _MAX_VARIATIONAL_EPOCHS))
     comp_spec = _normalize_assimilation_components(assimilation_components)
     comp_names = (
         list(comp_spec.keys())
@@ -5770,6 +5792,7 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
 
     finite_hc_idx = np.where(np.isfinite(y_cms_arr[:seq_len]))[0]
     if len(finite_hc_idx) == 0:
+        _update_user_da_progress(user_key, event='skipped')
         return {
             'status': 'success',
             'method': 'variational',
@@ -5790,6 +5813,7 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
             'current_step': 0,
             'steps_ran': 0,
             'cancelled': False,
+            'stop_reason': None,
             'loss': str(loss or _DEFAULT_VARIATIONAL_LOSS).upper(),
             'assimilation_components': comp_names,
             'component_shifts': dict.fromkeys(comp_names, 0.0),
@@ -5923,40 +5947,42 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
     session_state: dict[str, Any] | None = None
     if continue_session and not reset:
         with _DA_SESSION_LOCK:
-            existing = _DA_SESSIONS_BY_KEY.get(session_key)
-            if existing is not None:
-                session_state = existing
+            session_state = _DA_SESSIONS_BY_KEY.get(session_key)
+        if session_state is None:
+            raise ValueError(
+                'No Variational DA session exists on the server for '
+                f'{cid_str} at issue date {issue_date_str} (sessions are '
+                'cleared when forcing or gauge data change or the server '
+                'restarts). Click Start to begin a new session.'
+            )
 
     if session_state is not None:
-        step_embs_map: dict[int, dict[str, torch.Tensor]] = session_state.get(
-            'step_embeddings', {}
-        )
-        history_list: list[dict[str, Any]] = list(
-            session_state.get('history', [])
-        )
+        step_embs_map: dict[int, dict[str, torch.Tensor]] = session_state[
+            'step_embeddings'
+        ]
+        history_list: list[dict[str, Any]] = list(session_state['history'])
         target_from = (
             int(from_step)
             if from_step is not None
-            else int(session_state.get('current_step', 0))
+            else int(session_state['current_step'])
         )
-        if target_from in step_embs_map:
-            base_step = target_from
-            cur_full_embeddings = {
-                k: v.detach().float().clone()
-                for k, v in step_embs_map[target_from].items()
-            }
-            history_list = [
-                h for h in history_list if int(h.get('step', 0)) <= base_step
-            ]
-            step_embs_map = {
-                s: embs for s, embs in step_embs_map.items() if s <= base_step
-            }
-        else:
-            base_step = int(session_state.get('current_step', 0))
-            cur_full_embeddings = {
-                k: v.detach().float().clone()
-                for k, v in session_state['current_embeddings'].items()
-            }
+        if target_from not in step_embs_map:
+            raise ValueError(
+                f'Step {target_from} is not available in the current '
+                'Variational DA session (available steps: 0..'
+                f'{max(step_embs_map)}).'
+            )
+        base_step = target_from
+        cur_full_embeddings = {
+            k: v.detach().float().clone()
+            for k, v in step_embs_map[target_from].items()
+        }
+        history_list = [
+            h for h in history_list if int(h.get('step', 0)) <= base_step
+        ]
+        step_embs_map = {
+            s: embs for s, embs in step_embs_map.items() if s <= base_step
+        }
     else:
         base_step = 0
         cur_full_embeddings = {
@@ -6029,9 +6055,6 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
         else None
     )
 
-    cancel_ev = threading.Event()
-    with _DA_PROGRESS_LOCK:
-        _DA_CANCEL_EVENTS[user_key] = cancel_ev
     _init_user_da_progress(
         user_key=user_key,
         catchment_id=cid_str,
@@ -6044,8 +6067,10 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
 
     t_start = time.perf_counter()
     cancelled = False
+    stop_reason: str | None = None
     steps_ran = 0
     cur_step = base_step
+    tolerance = assim_cfg.early_stopping_tolerance
 
     if epochs_clamped > 0:
         active_window_tensors: dict[str, torch.Tensor] = {
@@ -6084,7 +6109,7 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
         try:
             with (
                 torch.autocast(device_type=device_type, enabled=False),
-                _freeze_model_for_da(model),
+                frozen_model(model),
             ):
                 for step_idx in range(1, epochs_clamped + 1):
                     if cancel_ev.is_set():
@@ -6115,6 +6140,19 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
                         assimilation_overrides=fwd_overrides,
                         assimilation_slice=fwd_slice,
                     )
+                    if tolerance is not None:
+                        point_win = model.point_prediction(out_step)[
+                            :, win_start_idx:win_end_idx
+                        ]
+                        converged = converged_sequences(
+                            point_win.detach(),
+                            loss_data['y'],
+                            batch_for_da['y'],
+                            float(tolerance),
+                        )
+                        if bool(converged.all()):
+                            stop_reason = 'converged'
+                            break
                     loss_t, _, _, _ = _eval_da_loss_tensors(
                         model=model,
                         output=out_step,
@@ -6128,6 +6166,7 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
                         fits_head_outputs=fits_head_outputs,
                     )
                     if not bool(torch.isfinite(loss_t)):
+                        stop_reason = 'non_finite_loss'
                         break
                     loss_t.backward()
                     if any(
@@ -6135,9 +6174,10 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
                         and not bool(torch.isfinite(t.grad).all())
                         for t in active_window_tensors.values()
                     ):
+                        stop_reason = 'non_finite_gradient'
                         break
                     if assim_cfg.clip_gradient_norm is not None:
-                        _clip_da_gradients(
+                        clip_per_sequence_grad_norm(
                             active_window_tensors.values(),
                             float(assim_cfg.clip_gradient_norm),
                         )
@@ -6148,6 +6188,7 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
                     ):
                         for k, v in last_finite_win.items():
                             active_window_tensors[k].data.copy_(v)
+                        stop_reason = 'non_finite_update'
                         break
 
                     # Commit updated window into cur_full_embeddings
@@ -6243,6 +6284,26 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
             _update_user_da_progress(user_key, event='error', error=str(exc))
             raise
 
+    if stop_reason is not None and stop_reason != 'converged':
+        if steps_ran == 0:
+            msg = (
+                f'Variational DA for {cid_str} produced a '
+                f'{stop_reason.replace("_", " ")} at the first backprop step '
+                f'(Step {base_step + 1}); no latent update could be applied. '
+                'Reduce the learning rate or the assimilation window.'
+            )
+            _update_user_da_progress(user_key, event='error', error=msg)
+            raise RuntimeError(msg)
+        logger.warning(
+            'Variational DA for %s stopped after %d of %d steps at Step %d '
+            'because of a %s; returning the last finite state.',
+            cid_str,
+            steps_ran,
+            epochs_clamped,
+            cur_step,
+            stop_reason.replace('_', ' '),
+        )
+
     elapsed_sec = time.perf_counter() - t_start
     latest_entry = history_list[-1]
     _update_user_da_progress(
@@ -6254,9 +6315,13 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
         obs_loss=latest_entry.get('obs_loss'),
         reg_loss=latest_entry.get('reg_loss'),
         window_rmse_cms=latest_entry.get('window_rmse_cms'),
+        stop_reason='cancelled' if cancelled else stop_reason,
     )
 
     with _DA_SESSION_LOCK:
+        _DA_SESSIONS_BY_KEY.pop(session_key, None)
+        while len(_DA_SESSIONS_BY_KEY) >= _MAX_DA_SESSIONS:
+            _DA_SESSIONS_BY_KEY.pop(next(iter(_DA_SESSIONS_BY_KEY)))
         _DA_SESSIONS_BY_KEY[session_key] = {
             'current_step': cur_step,
             'current_embeddings': {
@@ -6292,6 +6357,7 @@ def run_variational_assimilation_for_basin(  # noqa: C901, PLR0912, PLR0913, PLR
         'current_step': cur_step,
         'steps_ran': steps_ran,
         'cancelled': cancelled,
+        'stop_reason': 'cancelled' if cancelled else stop_reason,
         'loss': req_loss,
         'assimilation_components': comp_names,
         'component_shifts': latest_entry['component_shifts'],
@@ -6438,32 +6504,39 @@ def run_data_assimilation_for_basin(  # noqa: PLR0913
         '4dvar',
         '4d_var',
     ):
-        return run_variational_assimilation_for_basin(
-            username=username,
-            catchment_id=cid_str,
-            issue_date=issue_date,
-            window_days=(
-                _DEFAULT_VARIATIONAL_WINDOW_DAYS
-                if window_days is None
-                else window_days
-            ),
-            regularization_weight=regularization_weight,
-            initial_learning_rate=initial_learning_rate,
-            epochs=epochs,
-            loss=loss,
-            assimilation_components=assimilation_components,
-            clip_gradient_norm=clip_gradient_norm,
-            early_stopping_tolerance=early_stopping_tolerance,
-            continue_session=continue_session,
-            reset=reset,
-            from_step=from_step,
-            observed_series=observed_series,
-            model_id=model_id,
-            model_run_dir=model_run_dir,
-            precip_overrides=precip_overrides,
-            temp_overrides=temp_overrides,
-            product_overrides=product_overrides,
-        )
+        try:
+            return run_variational_assimilation_for_basin(
+                username=username,
+                catchment_id=cid_str,
+                issue_date=issue_date,
+                window_days=(
+                    _DEFAULT_VARIATIONAL_WINDOW_DAYS
+                    if window_days is None
+                    else window_days
+                ),
+                regularization_weight=regularization_weight,
+                initial_learning_rate=initial_learning_rate,
+                epochs=epochs,
+                loss=loss,
+                assimilation_components=assimilation_components,
+                clip_gradient_norm=clip_gradient_norm,
+                early_stopping_tolerance=early_stopping_tolerance,
+                continue_session=continue_session,
+                reset=reset,
+                from_step=from_step,
+                observed_series=observed_series,
+                model_id=model_id,
+                model_run_dir=model_run_dir,
+                precip_overrides=precip_overrides,
+                temp_overrides=temp_overrides,
+                product_overrides=product_overrides,
+            )
+        except Exception as exc:
+            # Setup failures (missing stores, invalid session, ...) happen
+            # after the live progress state was registered; close it out so
+            # the progress poller never reports a dead run as active.
+            _fail_active_da_progress(username, error=str(exc))
+            raise
 
     raise ValueError(
         f'Unsupported data assimilation method {method!r}; expected '

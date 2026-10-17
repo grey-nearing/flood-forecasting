@@ -10759,7 +10759,13 @@
           const pkPart = (pk !== null && pk !== undefined)
             ? ` · Peak ${Number(pk).toFixed(1)} m³/s`
             : '';
-          varStepReadout.innerText = `${lossPart}${rmsePart}${pkPart}`;
+          // Surface why the last run ended before its requested step count
+          // (user Stop, early-stopping convergence, or a non-finite loss/gradient).
+          const stopReason = state.varResult.stop_reason;
+          const stopPart = (stopReason && inspectedStep === maxStep)
+            ? ` · stopped: ${String(stopReason).replace(/_/g, ' ')}`
+            : '';
+          varStepReadout.innerText = `${lossPart}${rmsePart}${pkPart}${stopPart}`;
         } else if (state.varResult && state.varResult.applied === false) {
           varStepReadout.innerText = 'Upload overlapping gauge CSV in Step 3 before running Variational DA.';
         } else {
@@ -11039,6 +11045,7 @@
 
     function startDaVariationalProgressPolling(basinId) {
       stopDaVariationalProgressPolling();
+      let pollInFlight = false;
       const pollOnce = async () => {
         const bid = String(basinId || getActiveForecastBasinId() || '').trim();
         const st = getBasinDaState(bid);
@@ -11046,19 +11053,25 @@
           stopDaVariationalProgressPolling();
           return;
         }
+        // Never stack overlapping requests when a poll takes longer than the interval.
+        if (pollInFlight) return;
+        pollInFlight = true;
         try {
           const u = (activeProfileInfo && activeProfileInfo.username) ? activeProfileInfo.username : 'guest';
           const resp = await fetch(`/api/forecast/assimilate-progress?catchment_id=${encodeURIComponent(bid)}&username=${encodeURIComponent(u)}`, {
             headers: { 'X-User-Profile': u }
           });
           if (!resp.ok) return;
-          const prog = await resp.json();
-          if (st.varRunning && prog && typeof prog === 'object') {
+          const prog = await safeParseJsonResponse(resp);
+          if (!prog || prog._nonJson) return;
+          if (st.varRunning && typeof prog === 'object') {
             st.varProgress = prog;
             updateDaControlsUI();
           }
         } catch (err) {
           // Ignore transient polling errors
+        } finally {
+          pollInFlight = false;
         }
       };
       fcDaVarProgressPollTimer = setInterval(pollOnce, 220);

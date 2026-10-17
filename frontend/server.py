@@ -2886,7 +2886,7 @@ class OpenHydroNetHandler(BaseHTTPRequestHandler):
                     else None
                 ),
             )
-        except (ValueError, FileNotFoundError) as exc:
+        except (ValueError, FileNotFoundError, RuntimeError) as exc:
             self._send_error(str(exc), status=400)
             return
         self._send_json(payload)

@@ -194,7 +194,7 @@ class Assimilation:
         # optimizer epsilon and overflows the loss, see the module docstring.
         with (
             torch.autocast(device_type=device_type, enabled=False),
-            _frozen(model),
+            frozen_model(model),
         ):
             return self._assimilate(model, data, components)
 
@@ -377,7 +377,7 @@ class Assimilation:
         state.freeze(bad)
         _zero_grad_rows(state.optimized.values(), bad)
         if self.cfg.clip_gradient_norm is not None:
-            _clip_per_sequence(
+            clip_per_sequence_grad_norm(
                 state.optimized.values(), self.cfg.clip_gradient_norm
             )
         optimizer.step()
@@ -394,7 +394,9 @@ class Assimilation:
         tolerance = self.cfg.early_stopping_tolerance
         if tolerance is None:
             return None
-        return _converged(point, problem.observed, problem.y, tolerance)
+        return converged_sequences(
+            point, problem.observed, problem.y, tolerance
+        )
 
     def _prediction(
         self,
@@ -511,7 +513,7 @@ def _check_component_lengths(
 
 
 @contextlib.contextmanager
-def _frozen(model: nn.Module) -> Iterator[None]:
+def frozen_model(model: nn.Module) -> Iterator[None]:
     """Freeze weights and disable dropout; restore everything on exit.
 
     Only the recurrent modules are put in training mode, because cuDNN only
@@ -557,7 +559,7 @@ def _frozen(model: nn.Module) -> Iterator[None]:
             m.train(training)
 
 
-def _converged(
+def converged_sequences(
     pred: torch.Tensor,
     obs: torch.Tensor,
     y_full: torch.Tensor,
@@ -658,7 +660,7 @@ def _restore_rows(
             tensor[rows] = values[name][rows]
 
 
-def _clip_per_sequence(
+def clip_per_sequence_grad_norm(
     tensors: Iterable[torch.Tensor], max_norm: float
 ) -> None:
     """Clip the gradient norm of every sequence (batch row) independently.
